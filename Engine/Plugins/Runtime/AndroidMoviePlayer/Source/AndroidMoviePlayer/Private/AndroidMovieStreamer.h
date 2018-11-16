@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MoviePlayer.h"
-#include "AndroidJavaMediaPlayer.h"
+#include "Android/AndroidJavaMediaPlayer.h"
 #include "Slate/SlateTextures.h"
 
 // The actual streamer class
@@ -49,7 +49,7 @@ private:
 	/**
 	Java side interface for MediaPlayer utility.
 	*/
-	TSharedPtr<FJavaAndroidMediaPlayer>    JavaMediaPlayer;
+	TSharedPtr<FJavaAndroidMediaPlayer, ESPMode::ThreadSafe> JavaMediaPlayer;
 
 	/**
 	Some state for the playing movie.

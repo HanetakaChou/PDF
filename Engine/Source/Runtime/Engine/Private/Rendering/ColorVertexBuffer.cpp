@@ -8,7 +8,7 @@
 #include "StaticMeshVertexData.h"
 
 /*-----------------------------------------------------------------------------
-	FColorVertexBuffer
+FColorVertexBuffer
 -----------------------------------------------------------------------------*/
 
 /** The implementation of the static mesh color-only vertex data storage type. */
@@ -62,12 +62,13 @@ void FColorVertexBuffer::CleanUp()
 	}
 }
 
-void FColorVertexBuffer::Init(uint32 InNumVertices)
+void FColorVertexBuffer::Init(uint32 InNumVertices, bool bNeedsCPUAccess)
 {
 	NumVertices = InNumVertices;
+	NeedsCPUAccess = bNeedsCPUAccess;
 
 	// Allocate the vertex data storage type.
-	AllocateData();
+	AllocateData(bNeedsCPUAccess);
 
 	// Allocate the vertex data buffer.
 	VertexData->ResizeBuffer(NumVertices);
@@ -75,13 +76,14 @@ void FColorVertexBuffer::Init(uint32 InNumVertices)
 }
 
 /**
- * Initializes the buffer with the given vertices, used to convert legacy layouts.
- * @param InVertices - The vertices to initialize the buffer with.
- */
-void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices)
+* Initializes the buffer with the given vertices, used to convert legacy layouts.
+* @param InVertices - The vertices to initialize the buffer with.
+*/
+void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bNeedsCPUAccess)
 {
 	// First, make sure that there is at least one non-default vertex color in the original data.
 	const int32 InVertexCount = InVertices.Num();
+	NeedsCPUAccess = bNeedsCPUAccess;
 	bool bAllColorsAreOpaqueWhite = true;
 	bool bAllColorsAreEqual = true;
 
@@ -121,7 +123,7 @@ void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices)
 	}
 	else
 	{
-		Init(InVertexCount);
+		Init(InVertexCount, bNeedsCPUAccess);
 
 		// Copy the vertices into the buffer.
 		for(int32 VertexIndex = 0;VertexIndex < InVertices.Num();VertexIndex++)
@@ -134,43 +136,65 @@ void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices)
 }
 
 /**
- * Initializes this vertex buffer with the contents of the given vertex buffer.
- * @param InVertexBuffer - The vertex buffer to initialize from.
- */
-void FColorVertexBuffer::Init(const FColorVertexBuffer& InVertexBuffer)
+* Initializes this vertex buffer with the contents of the given vertex buffer.
+* @param InVertexBuffer - The vertex buffer to initialize from.
+*/
+void FColorVertexBuffer::Init(const FColorVertexBuffer& InVertexBuffer, bool bNeedsCPUAccess)
 {
+	NeedsCPUAccess = bNeedsCPUAccess;
 	if ( NumVertices )
 	{
-		Init(InVertexBuffer.GetNumVertices());
+		Init(InVertexBuffer.GetNumVertices(), bNeedsCPUAccess);
 		const uint8* InData = InVertexBuffer.Data;
 		FMemory::Memcpy( Data, InData, Stride * NumVertices );
 	}
 }
 
-/**
-* Removes the cloned vertices used for extruding shadow volumes.
-* @param NumVertices - The real number of static mesh vertices which should remain in the buffer upon return.
-*/
-void FColorVertexBuffer::RemoveLegacyShadowVolumeVertices(uint32 InNumVertices)
+void FColorVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
 {
-	if( VertexData != NULL )
+	if (VertexData == nullptr && NumVerticesToAppend > 0)
 	{
-		VertexData->ResizeBuffer(InNumVertices);
-		NumVertices = InNumVertices;
+		check( NumVertices == 0 );
 
-		// Make a copy of the vertex data pointer.
-		Data = VertexData->GetDataPointer();
+		// Allocate the vertex data storage type if the buffer was never allocated before
+		AllocateData(NeedsCPUAccess);
+	}
+
+	if( NumVerticesToAppend > 0 )
+	{
+		// @todo: check if all opaque white, and if so append nothing
+
+		check( VertexData != nullptr );	// Must only be called after Init() has already initialized the buffer!
+		check( Vertices != nullptr );
+
+		const uint32 FirstDestVertexIndex = NumVertices;
+		NumVertices += NumVerticesToAppend;
+		VertexData->ResizeBuffer( NumVertices );
+		if( NumVertices > 0 )
+		{
+			Data = VertexData->GetDataPointer();
+
+			// Copy the vertices into the buffer.
+			for( uint32 VertexIter = 0; VertexIter < NumVerticesToAppend; ++VertexIter )
+			{
+				const FStaticMeshBuildVertex& SourceVertex = Vertices[ VertexIter ];
+
+				const uint32 DestVertexIndex = FirstDestVertexIndex + VertexIter;
+				VertexColor( DestVertexIndex ) = SourceVertex.Color;
+			}
+		}
 	}
 }
 
 /**
-* Serializer
-*
-* @param	Ar				Archive to serialize with
-* @param	bNeedsCPUAccess	Whether the elements need to be accessed by the CPU
-*/
+ * Serializer
+ *
+ * @param	Ar				Archive to serialize with
+ * @param	bNeedsCPUAccess	Whether the elements need to be accessed by the CPU
+ */
 void FColorVertexBuffer::Serialize( FArchive& Ar, bool bNeedsCPUAccess )
 {
+	NeedsCPUAccess = bNeedsCPUAccess;
 	FStripDataFlags StripFlags(Ar, 0, VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX);
 
 	if (Ar.IsSaving() && NumVertices > 0 && VertexData == NULL)
@@ -267,7 +291,7 @@ void FColorVertexBuffer::ImportText(const TCHAR* SourceText)
 		++SourceText;
 
 		NumVertices = VertexCount;
-		AllocateData();
+		AllocateData(NeedsCPUAccess);
 		VertexData->ResizeBuffer(NumVertices);
 		uint8 *Dst = (uint8 *)VertexData->GetDataPointer();
 
@@ -310,14 +334,15 @@ void FColorVertexBuffer::GetVertexColors( TArray<FColor>& OutColors ) const
 }
 
 /** Load from raw color array */
-void FColorVertexBuffer::InitFromColorArray( const FColor *InColors, const uint32 Count, const uint32 InStride )
+void FColorVertexBuffer::InitFromColorArray( const FColor *InColors, const uint32 Count, const uint32 InStride, bool bNeedsCPUAccess)
 {
 	check( Count > 0 );
 
 	NumVertices = Count;
+	NeedsCPUAccess = bNeedsCPUAccess;
 
 	// Allocate the vertex data storage type.
-	AllocateData();
+	AllocateData(bNeedsCPUAccess);
 
 	// Copy the colors
 	{

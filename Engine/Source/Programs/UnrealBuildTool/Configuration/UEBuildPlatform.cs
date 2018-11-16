@@ -28,23 +28,19 @@ namespace UnrealBuildTool
 		public readonly CppPlatform DefaultCppPlatform;
 
 		/// <summary>
-		/// Cached copy of the list of folders to exclude for this platform
+		/// All the platform folder names
 		/// </summary>
-		private FileSystemName[] CachedExcludedFolderNames;
+		private static string[] CachedPlatformFolderNames;
 
 		/// <summary>
-		/// List of all confidential folder names
+		/// Cached copy of the list of folders to include for this platform
 		/// </summary>
-		public static readonly FileSystemName[] RestrictedFolderNames =
-		{
-			new FileSystemName("EpicInternal"),
-			new FileSystemName("CarefullyRedist"),
-			new FileSystemName("NotForLicensees"),
-			new FileSystemName("NoRedist"),
-			new FileSystemName("PS4"),
-			new FileSystemName("XboxOne"),
-			new FileSystemName("Switch")
-		};
+		private string[] CachedIncludedFolderNames;
+
+		/// <summary>
+		/// Cached copy of the list of folders to exclude for this platform
+		/// </summary>
+		private string[] CachedExcludedFolderNames;
 
 		/// <summary>
 		/// Constructor.
@@ -58,34 +54,64 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Finds a list of folder names to exclude when building for this platform
+		/// Gets an array of all platform folder names
 		/// </summary>
-		public FileSystemName[] GetExcludedFolderNames()
+		/// <returns>Array of platform folders</returns>
+		public static string[] GetPlatformFolderNames()
 		{
-			if(CachedExcludedFolderNames == null)
+			if(CachedPlatformFolderNames == null)
 			{
+				List<string> PlatformFolderNames = new List<string>();
+
 				// Find all the platform folders to exclude from the list of precompiled modules
-				List<FileSystemName> Names = new List<FileSystemName>();
 				foreach (UnrealTargetPlatform TargetPlatform in Enum.GetValues(typeof(UnrealTargetPlatform)))
 				{
-					if (TargetPlatform != UnrealTargetPlatform.Unknown && TargetPlatform != Platform)
+					if (TargetPlatform != UnrealTargetPlatform.Unknown)
 					{
-						Names.Add(new FileSystemName(TargetPlatform.ToString()));
+						PlatformFolderNames.Add(TargetPlatform.ToString());
 					}
 				}
 
 				// Also exclude all the platform groups that this platform is not a part of
-				List<UnrealPlatformGroup> IncludePlatformGroups = new List<UnrealPlatformGroup>(UEBuildPlatform.GetPlatformGroups(Platform));
 				foreach (UnrealPlatformGroup PlatformGroup in Enum.GetValues(typeof(UnrealPlatformGroup)))
 				{
-					if (!IncludePlatformGroups.Contains(PlatformGroup))
-					{
-						Names.Add(new FileSystemName(PlatformGroup.ToString()));
-					}
+					PlatformFolderNames.Add(PlatformGroup.ToString());
 				}
 
 				// Save off the list as an array
-				CachedExcludedFolderNames = Names.ToArray();
+				CachedPlatformFolderNames = PlatformFolderNames.ToArray();
+			}
+			return CachedPlatformFolderNames;
+		}
+
+		/// <summary>
+		/// Finds a list of folder names to include when building for this platform
+		/// </summary>
+		virtual public string[] GetIncludedFolderNames()
+		{
+			if(CachedIncludedFolderNames == null)
+			{
+				List<string> Names = new List<string>();
+
+				Names.Add(Platform.ToString());
+				foreach(UnrealPlatformGroup Group in UEBuildPlatform.GetPlatformGroups(Platform))
+				{
+					Names.Add(Group.ToString());
+				}
+
+				CachedIncludedFolderNames = Names.ToArray();
+			}
+			return CachedIncludedFolderNames;
+		}
+
+		/// <summary>
+		/// Finds a list of folder names to exclude when building for this platform
+		/// </summary>
+		public string[] GetExcludedFolderNames()
+		{
+			if(CachedExcludedFolderNames == null)
+			{
+				CachedExcludedFolderNames = GetPlatformFolderNames().Except(GetIncludedFolderNames()).ToArray();
 			}
 			return CachedExcludedFolderNames;
 		}
@@ -94,6 +120,14 @@ namespace UnrealBuildTool
 		/// Whether the required external SDKs are installed for this platform. Could be either a manual install or an AutoSDK.
 		/// </summary>
 		public abstract SDKStatus HasRequiredSDKsInstalled();
+
+		/// <summary>
+		/// Whether this platform requires specific Visual Studio version.
+		/// </summary>
+		public virtual VCProjectFileFormat GetRequiredVisualStudioVersion()
+		{
+			return VCProjectFileFormat.Default;
+		}
 
 		/// <summary>
 		/// Gets all the registered platforms
@@ -153,6 +187,16 @@ namespace UnrealBuildTool
 					FindBuildProductsToClean(SubDir, NamePrefixes, NameSuffixes, FilesToClean, DirectoriesToClean);
 				}
 			}
+		}
+
+		/// <summary>
+		/// Enumerates any additional directories needed to clean this target
+		/// </summary>
+		/// <param name="Target">The target to clean</param>
+		/// <param name="FilesToDelete">Receives a list of files to be removed</param>
+		/// <param name="DirectoriesToDelete">Receives a list of directories to be removed</param>
+		public virtual void FindAdditionalBuildProductsToClean(ReadOnlyTargetRules Target, List<FileReference> FilesToDelete, List<DirectoryReference> DirectoriesToDelete)
+		{
 		}
 
 		/// <summary>
@@ -256,14 +300,6 @@ namespace UnrealBuildTool
 		}
 
 		public virtual void PostBuildSync(UEBuildTarget Target)
-		{
-		}
-
-		/// <summary>
-		/// Called immediately after UnrealHeaderTool is executed to generated code for all UObjects modules.  Only is called if UnrealHeaderTool was actually run in this session.
-		/// </summary>
-		/// <param name="Manifest">List of UObject modules we generated code for.</param>
-		public virtual void PostCodeGeneration(UHTManifest Manifest)
 		{
 		}
 
@@ -407,15 +443,17 @@ namespace UnrealBuildTool
 			{
 				case CppPlatform.Win32:			return UnrealTargetPlatform.Win32;
 				case CppPlatform.Win64:			return UnrealTargetPlatform.Win64;
-				case CppPlatform.Mac:				return UnrealTargetPlatform.Mac;
-				case CppPlatform.XboxOne:			return UnrealTargetPlatform.XboxOne;
-				case CppPlatform.PS4:				return UnrealTargetPlatform.PS4;
-				case CppPlatform.Android:			return UnrealTargetPlatform.Android;
-				case CppPlatform.IOS:				return UnrealTargetPlatform.IOS;
+				case CppPlatform.Mac:			return UnrealTargetPlatform.Mac;
+				case CppPlatform.XboxOne:		return UnrealTargetPlatform.XboxOne;
+				case CppPlatform.PS4:			return UnrealTargetPlatform.PS4;
+				case CppPlatform.Android:		return UnrealTargetPlatform.Android;
+				case CppPlatform.IOS:			return UnrealTargetPlatform.IOS;
 				case CppPlatform.HTML5:			return UnrealTargetPlatform.HTML5;
 				case CppPlatform.Linux:			return UnrealTargetPlatform.Linux;
 				case CppPlatform.TVOS:			return UnrealTargetPlatform.TVOS;
-				case CppPlatform.Switch: 			return UnrealTargetPlatform.Switch;
+				case CppPlatform.Switch: 		return UnrealTargetPlatform.Switch;
+				case CppPlatform.Quail:			return UnrealTargetPlatform.Quail;
+				case CppPlatform.Lumin:			return UnrealTargetPlatform.Lumin;
 			}
 			throw new BuildException("CPPTargetPlatformToUnrealTargetPlatform: Unknown CPPTargetPlatform {0}", InCPPPlatform.ToString());
 		}
@@ -470,7 +508,7 @@ namespace UnrealBuildTool
 				case UnrealTargetPlatform.Win64:
 					return ";";
 				default:
-					Log.TraceWarning("PATH var delimiter unknown for platform " + BuildHostPlatform.Current.Platform.ToString() + " using ';'");
+					Log.TraceWarning("PATH variable delimiter unknown for platform " + BuildHostPlatform.Current.Platform.ToString() + " using ';'");
 					return ";";
 			}
 		}
@@ -489,6 +527,14 @@ namespace UnrealBuildTool
 		public virtual bool CanUseXGE()
 		{
 			return true;
+		}
+
+		/// <summary>
+		/// If this platform can be compiled with the parallel executor
+		/// </summary>
+		public virtual bool CanUseParallelExecutor()
+		{
+			return CanUseXGE();
 		}
 
 		/// <summary>
@@ -551,25 +597,14 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Get the extension to use for debug info for the given binary type
+		/// Get the extensions to use for debug info for the given binary type
 		/// </summary>
 		/// <param name="InTarget">Options for the target being built</param>
 		/// <param name="InBinaryType"> The binary type being built</param>
-		/// <returns>string    The debug info extension (i.e. 'pdb')</returns>
-		public virtual string GetDebugInfoExtension(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
+		/// <returns>string[]    The debug info extensions (i.e. 'pdb')</returns>
+		public virtual string[] GetDebugInfoExtensions(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
 		{
-			throw new BuildException("GetDebugInfoExtension for {0} not handled in {1}", InBinaryType.ToString(), this.ToString());
-		}
-
-		/// <summary>
-		/// Whether the editor should be built for this platform or not
-		/// </summary>
-		/// <param name="InPlatform"> The UnrealTargetPlatform being built</param>
-		/// <param name="InConfiguration">The UnrealTargetConfiguration being built</param>
-		/// <returns>bool   true if the editor should be built, false if not</returns>
-		public virtual bool ShouldNotBuildEditor(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration)
-		{
-			return false;
+			throw new BuildException("GetDebugInfoExtensions for {0} not handled in {1}", InBinaryType.ToString(), this.ToString());
 		}
 
 		/// <summary>
@@ -581,18 +616,6 @@ namespace UnrealBuildTool
 		public virtual bool BuildRequiresCookedData(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration)
 		{
 			return false;
-		}
-
-		/// <summary>
-		/// Whether this platform requires the use of absolute paths in Unity files. The compiler will try to combine paths in
-		/// each #include directive with the standard include paths, and unity files in intermediate directories can result in the
-		/// maximum path length being exceeded on Windows. On the other hand, remote compilation requires relative paths so
-		/// dependency checking works correctly on the local machine as well as on the remote machine.
-		/// </summary>
-		/// <returns>bool true if it is required, false if not</returns>
-		public virtual bool UseAbsolutePathsInUnityFiles()
-		{
-			return true;
 		}
 
 		/// <summary>
@@ -631,30 +654,6 @@ namespace UnrealBuildTool
 		{
 			List<FileReference> TempList = new List<FileReference>() { BinaryName };
 			return TempList;
-		}
-
-		/// <summary>
-		/// Return whether this platform has uniquely named binaries across multiple games
-		/// </summary>
-		public virtual bool HasUniqueBinaries()
-		{
-			return true;
-		}
-
-		/// <summary>
-		/// Return whether we wish to have this platform's binaries in our builds
-		/// </summary>
-		public virtual bool IsBuildRequired()
-		{
-			return true;
-		}
-
-		/// <summary>
-		/// Return whether we wish to have this platform's binaries in our CIS tests
-		/// </summary>
-		public virtual bool IsCISRequired()
-		{
-			return true;
 		}
 
 		/// <summary>
@@ -751,6 +750,15 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Check for whether we require a build for platform reasons
+		/// return true if the project requires a build
+		/// </summary>
+		public virtual bool RequiresBuild(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName)
+		{
+			return false;
+		}
+
+		/// <summary>
 		/// Get a list of extra modules the platform requires.
 		/// This is to allow undisclosed platforms to add modules they need without exposing information about the platform.
 		/// </summary>
@@ -822,6 +830,25 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Checks if platform is part of a given platform group
+		/// </summary>
+		/// <param name="Platform">The platform to check</param>
+		/// <param name="PlatformGroup">The platform group to check</param>
+		/// <returns>True if platform is part of a platform group</returns>
+		internal static bool IsPlatformInGroup(UnrealTargetPlatform Platform, UnrealPlatformGroup PlatformGroup)
+		{
+			List<UnrealTargetPlatform> Platforms = UEBuildPlatform.GetPlatformsInGroup(PlatformGroup);
+			if (Platforms != null)
+			{
+				return Platforms.Contains(Platform);
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+		/// <summary>
 		/// Whether this platform should create debug information or not
 		/// </summary>
 		/// <param name="Target">The target being built</param>
@@ -836,6 +863,16 @@ namespace UnrealBuildTool
 		/// <param name="Target">The target being built</param>
 		/// <returns>New toolchain instance.</returns>
 		public abstract UEToolChain CreateToolChain(CppPlatform CppPlatform, ReadOnlyTargetRules Target);
+
+		/// <summary>
+		/// Creates a temp toolchain instance for the given project - will not be used to compile with, and is only needed on some platforms
+		/// </summary>
+		/// <param name="ProjectFile">The project to make the toolchain for</param>
+		/// <returns>New toolchain instance.</returns>
+		public virtual UEToolChain CreateTempToolChainForProject(FileReference ProjectFile)
+		{
+			return null;
+		}
 
 		/// <summary>
 		/// Deploys the given target

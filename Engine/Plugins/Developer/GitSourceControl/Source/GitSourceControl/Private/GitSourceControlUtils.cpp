@@ -17,7 +17,6 @@
 #endif
 
 
-
 namespace GitSourceControlConstants
 {
 	/** The maximum number of files we submit in a single Git command */
@@ -76,11 +75,9 @@ static bool RunCommandInternalRaw(const FString& InCommand, const FString& InPat
 		}
 
 		// Specify the working copy (the root) of the git repository (before the command itself)
-		FullCommand  = TEXT("--work-tree=\"");
+		FullCommand  = TEXT("-C \"");
 		FullCommand += RepositoryRoot;
-		// and the ".git" subdirectory in it (before the command itself)
-		FullCommand += TEXT("\" --git-dir=\"");
-		FullCommand += FPaths::Combine(*RepositoryRoot, TEXT(".git\" "));
+		FullCommand += TEXT("\" ");
 	}
 	// then the git command itself ("status", "log", "commit"...)
 	LogableCommand += InCommand;
@@ -167,9 +164,8 @@ FString FindGitBinaryPath()
 	if(!bFound)
 	{
 		// else the install dir for the current user: C:\Users\UserName\AppData\Local\Programs\Git\cmd
-		TCHAR AppDataLocalPath[4096];
-		FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"), AppDataLocalPath, ARRAY_COUNT(AppDataLocalPath));
-		GitBinaryPath = FString::Printf(TEXT("%s/Programs/Git/cmd/git.exe"), AppDataLocalPath);
+		FString AppDataLocalPath = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+		GitBinaryPath = FString::Printf(TEXT("%s/Programs/Git/cmd/git.exe"), *AppDataLocalPath);
 		bFound = CheckGitAvailability(GitBinaryPath);
 	}
 
@@ -190,9 +186,8 @@ FString FindGitBinaryPath()
 	if(!bFound)
 	{
 		// C:\Users\UserName\AppData\Local\Atlassian\SourceTree\git_local\bin
-		TCHAR AppDataLocalPath[4096];
-		FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"), AppDataLocalPath, ARRAY_COUNT(AppDataLocalPath));
-		GitBinaryPath = FString::Printf(TEXT("%s/Atlassian/SourceTree/git_local/bin/git.exe"), AppDataLocalPath);
+		FString AppDataLocalPath = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+		GitBinaryPath = FString::Printf(TEXT("%s/Atlassian/SourceTree/git_local/bin/git.exe"), *AppDataLocalPath);
 		bFound = CheckGitAvailability(GitBinaryPath);
 	}
 
@@ -201,20 +196,19 @@ FString FindGitBinaryPath()
 	{
 		// The latest GitHub Desktop adds its binaries into the local appdata directory:
 		// C:\Users\UserName\AppData\Local\GitHub\PortableGit_c2ba306e536fdf878271f7fe636a147ff37326ad\cmd
-		TCHAR AppDataLocalPath[4096];
-		FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"), AppDataLocalPath, ARRAY_COUNT(AppDataLocalPath));
-		FString SearchPath = FString::Printf(TEXT("%s/GitHub/PortableGit_*"), AppDataLocalPath);
+		FString AppDataLocalPath = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+		FString SearchPath = FString::Printf(TEXT("%s/GitHub/PortableGit_*"), *AppDataLocalPath);
 		TArray<FString> PortableGitFolders;
 		IFileManager::Get().FindFiles(PortableGitFolders, *SearchPath, false, true);
 		if(PortableGitFolders.Num() > 0)
 		{
 			// FindFiles just returns directory names, so we need to prepend the root path to get the full path.
-			GitBinaryPath = FString::Printf(TEXT("%s/GitHub/%s/cmd/git.exe"), AppDataLocalPath, *(PortableGitFolders.Last())); // keep only the last PortableGit found
+			GitBinaryPath = FString::Printf(TEXT("%s/GitHub/%s/cmd/git.exe"), *AppDataLocalPath, *(PortableGitFolders.Last())); // keep only the last PortableGit found
 			bFound = CheckGitAvailability(GitBinaryPath);
 			if (!bFound)
 			{
 				// If Portable git is not found in "cmd/" subdirectory, try the "bin/" path that was in use before
-				GitBinaryPath = FString::Printf(TEXT("%s/GitHub/%s/bin/git.exe"), AppDataLocalPath, *(PortableGitFolders.Last())); // keep only the last PortableGit found
+				GitBinaryPath = FString::Printf(TEXT("%s/GitHub/%s/bin/git.exe"), *AppDataLocalPath, *(PortableGitFolders.Last())); // keep only the last PortableGit found
 				bFound = CheckGitAvailability(GitBinaryPath);
 			}
 		}
@@ -420,6 +414,22 @@ bool GetBranchName(const FString& InPathToGitBinary, const FString& InRepository
 	return bResults;
 }
 
+bool GetRemoteUrl(const FString& InPathToGitBinary, const FString& InRepositoryRoot, FString& OutRemoteUrl)
+{
+	TArray<FString> InfoMessages;
+	TArray<FString> ErrorMessages;
+	TArray<FString> Parameters;
+	Parameters.Add(TEXT("get-url"));
+	Parameters.Add(TEXT("origin"));
+	const bool bResults = RunCommandInternal(TEXT("remote"), InPathToGitBinary, InRepositoryRoot, Parameters, TArray<FString>(), InfoMessages, ErrorMessages);
+	if (bResults && InfoMessages.Num() > 0)
+	{
+		OutRemoteUrl = InfoMessages[0];
+	}
+
+	return bResults;
+}
+
 bool RunCommand(const FString& InCommand, const FString& InPathToGitBinary, const FString& InRepositoryRoot, const TArray<FString>& InParameters, const TArray<FString>& InFiles, TArray<FString>& OutResults, TArray<FString>& OutErrorMessages)
 {
 	bool bResult = true;
@@ -494,7 +504,7 @@ bool RunCommit(const FString& InPathToGitBinary, const FString& InRepositoryRoot
 	}
 	else
 	{
-		RunCommandInternal(TEXT("commit"), InPathToGitBinary, InRepositoryRoot, InParameters, InFiles, OutResults, OutErrorMessages);
+		bResult = RunCommandInternal(TEXT("commit"), InPathToGitBinary, InRepositoryRoot, InParameters, InFiles, OutResults, OutErrorMessages);
 	}
 
 	return bResult;
@@ -863,11 +873,9 @@ bool RunDumpToFile(const FString& InPathToGitBinary, const FString& InRepository
 	if(!InRepositoryRoot.IsEmpty())
 	{
 		// Specify the working copy (the root) of the git repository (before the command itself)
-		FullCommand  = TEXT("--work-tree=\"");
+		FullCommand  = TEXT("-C \"");
 		FullCommand += InRepositoryRoot;
-		// and the ".git" subdirectory in it (before the command itself)
-		FullCommand += TEXT("\" --git-dir=\"");
-		FullCommand += FPaths::Combine(*InRepositoryRoot, TEXT(".git\" "));
+		FullCommand += TEXT("\" ");
 	}
 
 	// then the git command itself
@@ -946,7 +954,6 @@ bool RunDumpToFile(const FString& InPathToGitBinary, const FString& InRepository
 
 	return (ReturnCode == 0);
 }
-
 
 /**
  * Translate file actions from the given Git log --name-status command to keywords used by the Editor UI.

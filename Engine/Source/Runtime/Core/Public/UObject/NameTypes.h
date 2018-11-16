@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include "Containers/StringConv.h"
 #include "UObject/UnrealNames.h"
 #include "Templates/Atomic.h"
+#include "Serialization/StructuredArchive.h"
 
 /*----------------------------------------------------------------------------
 	Definitions.
@@ -19,7 +20,7 @@
 
 /** 
  * Do we want to support case-variants for FName?
- * This will add an extra NAME_INDEX variable to FName, but means that ToString() will return you the exact same 
+ * This will add an extra NAME_INunrealDEX variable to FName, but means that ToString() will return you the exact same 
  * string that FName::Init was called with (which is useful if your FNames are shown to the end user)
  * Currently this is enabled for the Editor and any Programs (such as UHT), but not the Runtime
  */
@@ -222,22 +223,14 @@ public:
 	bool IsEqual( const WIDECHAR* InName, const ENameCase CompareMethod ) const;
 
 	/**
-	 * @return direct access to ANSI name if stored in ANSI
+	 * @return create a copy of the ANSI name
 	 */
-	inline ANSICHAR const* GetAnsiName() const
-	{
-		check(!IsWide());
-		return AnsiName;
-	}
+	void GetAnsiName(ANSICHAR(&OutName)[NAME_SIZE]) const;
 
 	/**
-	 * @return direct access to wide name if stored in widechars
+	 * @return direct access to WIDE name if stored in widechars
 	 */
-	inline WIDECHAR const* GetWideName() const
-	{
-		check(IsWide());
-		return WideName;
-	}
+	void GetWideName(WIDECHAR(&OutName)[NAME_SIZE]) const;
 
 	static CORE_API int32 GetSize( const TCHAR* Name );
 
@@ -252,10 +245,39 @@ public:
 
 	// Functions.
 	CORE_API void Write(FArchive& Ar) const;
+	CORE_API void Write(FStructuredArchive::FSlot Slot) const;
 
 	// Friend for access to Flags.
 	template<typename TCharType>
 	friend FNameEntry* AllocateNameEntry(const TCharType* Name, NAME_INDEX Index);
+
+private:
+	friend class FName;
+
+	friend struct FNameEntrySerialized;
+
+	template <typename TCharType>
+	friend struct FNameInitHelper;
+
+	/**
+	 * @return direct access to ANSI name if stored in ANSI
+	 */
+	ANSICHAR const* GetAnsiNamePtr(ANSICHAR(&OptionalTempBuffer)[NAME_SIZE]) const;
+
+	/**
+	 * @return direct access to wide name if stored in widechars
+	 */
+	WIDECHAR const* GetWideNamePtr(WIDECHAR(&OptionalTempBuffer)[NAME_SIZE]) const;
+
+	/**
+	 * updates the stored name if ANSI
+	 */
+	void SetAnsiName(const ANSICHAR* SrcName, int32 SrcNameLen);
+
+	/**
+	 * updates the stored name in widechars
+	 */
+	void SetWideName(const WIDECHAR* SrcName, int32 SrcNameLen);
 };
 
 /**
@@ -328,6 +350,12 @@ struct FNameEntrySerialized
 	friend CORE_API FArchive& operator<<(FArchive& Ar, FNameEntrySerialized* E)
 	{
 		return Ar << *E;
+	}
+
+	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FNameEntrySerialized& E);
+	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FNameEntrySerialized* E)
+	{
+		Slot << *E;
 	}
 };
 
@@ -608,27 +636,17 @@ public:
 	/**
 	 * Returns the underlying ANSI string pointer.  No allocations.  Will fail if this is actually a wide name.
 	 */
-	FORCEINLINE ANSICHAR const* GetPlainANSIString() const
+	FORCEINLINE void GetPlainANSIString(ANSICHAR (&AnsiName)[NAME_SIZE]) const
 	{
-		if (const FNameEntry* CurEntry = GetDisplayNameEntry())
-		{
-			return CurEntry->GetAnsiName();
-		}
-
-		return "*INVALID*";
+		GetDisplayNameEntry()->GetAnsiName(AnsiName);
 	}
 
 	/**
 	 * Returns the underlying WIDE string pointer.  No allocations.  Will fail if this is actually an ANSI name.
 	 */
-	FORCEINLINE WIDECHAR const* GetPlainWIDEString() const
+	FORCEINLINE void GetPlainWIDEString(WIDECHAR (&WideName)[NAME_SIZE]) const
 	{
-		if (const FNameEntry* CurEntry = GetDisplayNameEntry())
-		{
-			return CurEntry->GetWideName();
-		}
-
-		return L"*INVALID*";
+		GetDisplayNameEntry()->GetWideName(WideName);
 	}
 
 	const FNameEntry* GetComparisonNameEntry() const;
@@ -978,11 +996,13 @@ public:
 			{
 				if (Entry->IsWide())
 				{
-					bAreNamesMatching = !FPlatformString::Stricmp(WideOtherPtr, Entry->GetWideName());
+					WIDECHAR EntryTempBuffer[NAME_SIZE];
+					bAreNamesMatching = !FPlatformString::Stricmp(WideOtherPtr, Entry->GetWideNamePtr(EntryTempBuffer));
 				}
 				else
 				{
-					bAreNamesMatching = !FPlatformString::Stricmp(WideOtherPtr, Entry->GetAnsiName());
+					ANSICHAR EntryTempBuffer[NAME_SIZE];
+					bAreNamesMatching = !FPlatformString::Stricmp(WideOtherPtr, Entry->GetAnsiNamePtr(EntryTempBuffer));
 				}
 			}
 		}
@@ -1200,7 +1220,6 @@ private:
 
 	/** Singleton to retrieve the critical section. */
 	static FCriticalSection* GetCriticalSection();
-
 };
 
 template<> struct TIsZeroConstructType<class FName> { enum { Value = true }; };
@@ -1212,17 +1231,14 @@ inline uint32 GetTypeHash( const FName N )
 	return N.GetComparisonIndex() + N.GetNumber();
 }
 
-namespace Lex
+FORCEINLINE FString LexToString(const FName& Name)
 {
-	FORCEINLINE FString ToString(const FName& Name)
-	{
-		return Name.ToString();
-	}
+	return Name.ToString();
+}
 
-	FORCEINLINE void FromString(FName& Name, const TCHAR* Str)
-	{
-		Name = FName(Str);
-	}
+FORCEINLINE void LexFromString(FName& Name, const TCHAR* Str)
+{
+	Name = FName(Str);
 }
 
 FORCEINLINE FMinimalName NameToMinimalName(const FName& InName)
@@ -1285,3 +1301,43 @@ struct FNameSortIndexes
 		return A.CompareIndexes(B) < 0;
 	}
 };
+
+#ifndef WITH_CUSTOM_NAME_ENCODING
+
+	inline void FNameEntry::GetAnsiName(ANSICHAR(&OutName)[NAME_SIZE]) const
+	{
+		check(!IsWide());
+		FCStringAnsi::Strcpy(OutName, AnsiName);
+	}
+
+	inline void FNameEntry::GetWideName(WIDECHAR(&OutName)[NAME_SIZE]) const
+	{
+		check(IsWide());
+		FCStringWide::Strcpy(OutName, WideName);
+	}
+
+	inline ANSICHAR const* FNameEntry::GetAnsiNamePtr(ANSICHAR(&OptionalTempBuffer)[NAME_SIZE]) const
+	{
+		check(!IsWide());
+		return AnsiName;
+	}
+
+	inline WIDECHAR const* FNameEntry::GetWideNamePtr(WIDECHAR(&OptionalTempBuffer)[NAME_SIZE]) const
+	{
+		check(IsWide());
+		return WideName;
+	}
+
+	inline void FNameEntry::SetAnsiName(const ANSICHAR* SrcName, int32 SrcNameLen)
+	{
+		check(!IsWide());
+		FCStringAnsi::Strcpy(AnsiName, SrcNameLen + 1, SrcName);
+	}
+
+	inline void FNameEntry::SetWideName(const WIDECHAR* SrcName, int32 SrcNameLen)
+	{
+		check(IsWide());
+		FCStringWide::Strcpy(WideName, SrcNameLen + 1, SrcName);
+	}
+
+#endif

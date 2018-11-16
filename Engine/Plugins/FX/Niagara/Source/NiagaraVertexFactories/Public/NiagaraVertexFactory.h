@@ -15,6 +15,34 @@
 class FMaterial;
 
 
+class FNiagaraNullSortedIndicesVertexBuffer : public FVertexBuffer
+{
+public:
+	/**
+	* Initialize the RHI for this rendering resource
+	*/
+	virtual void InitRHI() override
+	{
+		// create a static vertex buffer
+		FRHIResourceCreateInfo CreateInfo;
+		void* BufferData = nullptr;
+		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(int32), BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
+		FMemory::Memzero(BufferData, sizeof(int32));
+		RHIUnlockVertexBuffer(VertexBufferRHI);
+
+		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(int32), PF_R32_SINT);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		VertexBufferSRV.SafeRelease();
+		FVertexBuffer::ReleaseRHI();
+	}
+
+	FShaderResourceViewRHIRef VertexBufferSRV;
+};
+extern TGlobalResource<FNiagaraNullSortedIndicesVertexBuffer> GFNiagaraNullSortedIndicesVertexBuffer;
+
 /**
 * Enum identifying the type of a particle vertex factory.
 */
@@ -47,15 +75,7 @@ public:
 	{
 		bNeedsDeclaration = false;
 	}
-
-	NIAGARAVERTEXFACTORIES_API static void Init()
-	{
-		if (DummyBuffer.Buffer == nullptr)
-		{
-			DummyBuffer.Initialize(4, 1, PF_R32_UINT);
-		}
-	}
-
+	
 	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FVertexFactory::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
@@ -100,8 +120,6 @@ public:
 		return true;
 	}
 
-protected:
-	static FRWBuffer DummyBuffer;
 private:
 
 	/** Last state where we set this. We only need to setup these once per frame, so detemine same frame by number, time, and view family. */

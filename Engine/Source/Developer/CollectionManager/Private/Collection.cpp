@@ -13,6 +13,7 @@
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
+#include "Misc/EngineBuildSettings.h"
 
 #define LOCTEXT_NAMESPACE "CollectionManager"
 
@@ -144,7 +145,7 @@ bool FCollection::Load(FText& OutError)
 	return true;
 }
 
-bool FCollection::Save(FText& OutError)
+bool FCollection::Save(const TArray<FText>& AdditionalChangelistText, FText& OutError)
 {
 	if ( !ensure(SourceFilename.Len()) )
 	{
@@ -236,7 +237,7 @@ bool FCollection::Save(FText& OutError)
 			// Check in the file if the save was successful
 			if ( bSaveSuccessful )
 			{
-				if ( !CheckinCollection(OutError) )
+				if ( !CheckinCollection(AdditionalChangelistText, OutError) )
 				{
 					UE_LOG(LogCollectionManager, Error, TEXT("Failed to check in a collection successfully saving: %s"), *CollectionName.ToString());
 					bSaveSuccessful = false;
@@ -842,7 +843,7 @@ bool FCollection::CheckoutCollection(FText& OutError)
 	return bSuccessfullyCheckedOut;
 }
 
-bool FCollection::CheckinCollection(FText& OutError)
+bool FCollection::CheckinCollection(const TArray<FText>& AdditionalChangelistText, FText& OutError)
 {
 	if ( !ensure(SourceFilename.Len()) )
 	{
@@ -965,12 +966,18 @@ bool FCollection::CheckinCollection(FText& OutError)
 		}
 	}
 
-	FText ChangelistDesc = ChangelistDescBuilder.ToText();
-	if (ChangelistDesc.IsEmpty())
+	if (ChangelistDescBuilder.IsEmpty())
 	{
 		// No changes could be detected
-		ChangelistDesc = FText::Format(LOCTEXT("CollectionNotModifiedDesc", "Collection '{0}' not modified"), CollectionNameText);
+		ChangelistDescBuilder.AppendLineFormat(LOCTEXT("CollectionNotModifiedDesc", "Collection '{0}' not modified"), CollectionNameText);
 	}
+
+	for (const FText& AdditionalText : AdditionalChangelistText)
+	{
+		ChangelistDescBuilder.AppendLine(AdditionalText);
+	}
+
+	FText ChangelistDesc = ChangelistDescBuilder.ToText();
 
 	// Finally check in the file
 	TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();

@@ -10,7 +10,8 @@ class FStereoPanoramaManager
 public:
 
 	FStereoPanoramaManager()
-		: PanoramicScreenshotCommand(
+		: SceneCapturer(nullptr)
+		, PanoramicScreenshotCommand(
 			TEXT("SP.PanoramicScreenshot"),
 			*NSLOCTEXT("StereoPanorama", "CommandText_ScreenShot", "Takes a panoramic screenshot").ToString(),
 			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FStereoPanoramaManager::PanoramicScreenshot))
@@ -26,13 +27,15 @@ public:
             TEXT("SP.TogglePause"),
 			*NSLOCTEXT("StereoPanorama", "CommandText_PauseGame", "Toggles Pausing/Unpausing of the game through StereoPanorama Plugin").ToString(),
 			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FStereoPanoramaManager::PanoramicTogglePause))
-		, SceneCapturer(nullptr)
 	{ }
 
 public:
 
 	void Cleanup();
 	bool ValidateRendererState() const;
+
+	// To check previous job is finished.
+	bool CheckPreviousJobState() const;
 
 	void PanoramicScreenshot(const TArray<FString>& Args);
 	void PanoramicScreenshot(const int32 InStartFrame, const int32 InEndFrame, FStereoCaptureDoneDelegate& InStereoCaptureDoneDelegate);
@@ -57,6 +60,8 @@ public:
 	static IConsoleVariable* ShouldOverrideInitialYaw;
 	static IConsoleVariable* ForcedInitialYaw;
 	static IConsoleVariable* FadeStereoToZeroAtSides;
+	/** This will use camera's rotation. Use param by adding desired axis. Pitch=1 Yaw=2 Roll=4, All axis is 7 (=1+2+4) */
+	static IConsoleVariable* UseCameraRotation;
 
 public:
 

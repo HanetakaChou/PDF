@@ -8,7 +8,7 @@
 MTLPP_BEGIN
 
 template<>
-struct IMPTable<id<MTLRenderCommandEncoder>, void> : public IMPTableCommandEncoder<id<MTLRenderCommandEncoder>>
+struct MTLPP_EXPORT IMPTable<id<MTLRenderCommandEncoder>, void> : public IMPTableCommandEncoder<id<MTLRenderCommandEncoder>>
 {
 	IMPTable()
 	{
@@ -88,10 +88,10 @@ struct IMPTable<id<MTLRenderCommandEncoder>, void> : public IMPTableCommandEncod
 	, INTERPOSE_CONSTRUCTOR(SetTilesamplerstatesWithrange, C)
 	, INTERPOSE_CONSTRUCTOR(SetTilesamplerstateLodminclampLodmaxclampAtindex, C)
 	, INTERPOSE_CONSTRUCTOR(SetTilesamplerstatesLodminclampsLodmaxclampsWithrange, C)
+	, INTERPOSE_CONSTRUCTOR(dispatchThreadsPerTile, C)
 	, INTERPOSE_CONSTRUCTOR(tileWidth, C)
 	, INTERPOSE_CONSTRUCTOR(tileHeight, C)
 	, INTERPOSE_CONSTRUCTOR(setThreadgroupMemoryLength, C)
-	, INTERPOSE_CONSTRUCTOR(dispatchThreadsPerTile, C)
 	{
 	}
 	
@@ -175,7 +175,7 @@ struct IMPTable<id<MTLRenderCommandEncoder>, void> : public IMPTableCommandEncod
 };
 
 template<typename InterposeClass>
-struct IMPTable<id<MTLRenderCommandEncoder>, InterposeClass> : public IMPTable<id<MTLRenderCommandEncoder>, void>
+struct MTLPP_EXPORT IMPTable<id<MTLRenderCommandEncoder>, InterposeClass> : public IMPTable<id<MTLRenderCommandEncoder>, void>
 {
 	IMPTable()
 	{

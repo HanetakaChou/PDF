@@ -24,6 +24,19 @@ FDelegateHandle FTicker::AddTicker(const FTickerDelegate& InDelegate, float InDe
 	return InDelegate.GetHandle();
 }
 
+
+FDelegateHandle FTicker::AddTicker(const TCHAR* InName, float InDelay, TFunction<bool(float)> Function)
+{
+	// todo - use InName for profiling. Added in sig to be forward looking..
+
+	FTickerDelegate Delegate = FTickerDelegate::CreateLambda(Function);
+
+	// We can add elements safely even during tick.
+	Elements.Emplace(CurrentTime + InDelay, InDelay, Delegate);
+
+	return Delegate.GetHandle();
+}
+
 void FTicker::RemoveTicker(FDelegateHandle Handle)
 {
 	// must remove the handle from both arrays because we could be in the middle of a tick, 
@@ -33,13 +46,10 @@ void FTicker::RemoveTicker(FDelegateHandle Handle)
 	Elements.RemoveAllSwap(CompareHandle);
 	TickedElements.RemoveAllSwap(CompareHandle);
 	// if we are ticking, we must check for the edge case of the CurrentElement removing itself.
-	if (bInTick)
+	if (bInTick && CompareHandle(CurrentElement))
 	{
-		if (CompareHandle(CurrentElement))
-		{
-			// Technically it's possible for someone to try to remove CurrentDelegate multiple times, so make sure we never set this value to false in here.
-			bCurrentElementRemoved = true;
-		}
+		// Technically it's possible for someone to try to remove CurrentDelegate multiple times, so make sure we never set this value to false in here.
+		bCurrentElementRemoved = true;
 	}
 }
 
@@ -95,6 +105,8 @@ void FTicker::Tick(float DeltaTime)
 
 	// Now that we've considered all the delegates, we swap it back into the Elements array.
 	Exchange(TickedElements, Elements);
+	// Also clear the CurrentElement delegate as our tick is done
+	CurrentElement.Delegate.Unbind();
 }
 
 FTicker::FElement::FElement() 
@@ -117,6 +129,11 @@ bool FTicker::FElement::Fire(float DeltaTime)
 	return false;
 }
 
+#if PLATFORM_WINDOWS && PLATFORM_32BITS
+// Workaround for ICE on VC++ 2017 14.13.26128 for UE4Game Win32
+PRAGMA_DISABLE_OPTIMIZATION
+#endif
+
 FTickerObjectBase::FTickerObjectBase(float InDelay, FTicker& InTicker)
 	: Ticker(InTicker)
 {
@@ -124,6 +141,10 @@ FTickerObjectBase::FTickerObjectBase(float InDelay, FTicker& InTicker)
 	FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FTickerObjectBase::Tick);
 	TickHandle = Ticker.AddTicker(TickDelegate, InDelay);
 }
+
+#if PLATFORM_WINDOWS && PLATFORM_32BITS
+PRAGMA_ENABLE_OPTIMIZATION
+#endif
 
 FTickerObjectBase::~FTickerObjectBase()
 {

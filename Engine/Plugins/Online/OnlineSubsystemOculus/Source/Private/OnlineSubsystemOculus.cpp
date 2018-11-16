@@ -12,7 +12,7 @@
 #include "OnlineVoiceOculus.h"
 
 #if PLATFORM_ANDROID
-#include "AndroidApplication.h"
+#include "Android/AndroidApplication.h"
 #endif
 
 #if !defined(OVRPL_DISABLED) && WITH_EDITOR
@@ -135,6 +135,11 @@ IOnlineChatPtr FOnlineSubsystemOculus::GetChatInterface() const
 }
 
 IOnlineTurnBasedPtr FOnlineSubsystemOculus::GetTurnBasedInterface() const
+{
+	return nullptr;
+}
+
+IOnlineTournamentPtr FOnlineSubsystemOculus::GetTournamentInterface() const
 {
 	return nullptr;
 }

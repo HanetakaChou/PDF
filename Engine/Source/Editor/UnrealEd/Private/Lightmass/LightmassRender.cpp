@@ -194,7 +194,7 @@ struct FLightmassMaterialCompiler : public FProxyMaterialCompiler
 
 	virtual int32 VertexInterpolator(uint32 InterpolatorIndex) override
 	{
-		return Compiler->Constant4(0.f,0.f,0.f,0.f);
+		return Compiler->VertexInterpolator(InterpolatorIndex);
 	}
 
 	virtual int32 RealTime(bool bPeriodic, float Period) override
@@ -265,7 +265,7 @@ public:
 
 					// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
 					// This is necessary as we change FMaterial attributes like GetShadingModel(), which factor into the ShouldCache functions that determine dependent shader types
-					ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes);
+					ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, GMaxRHIShaderPlatform);
 				}
 
 				// Override with a special usage so we won't re-use the shader map used by the material for rendering
@@ -316,15 +316,16 @@ public:
 
 	////////////////
 	// FMaterialRenderProxy interface.
-	virtual const FMaterial* GetMaterial(ERHIFeatureLevel::Type FeatureLevel) const override
+	virtual void GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial) const override
 	{
 		if(GetRenderingThreadShaderMap())
 		{
-			return this;
+			OutMaterialRenderProxy = this;
+			OutMaterial = this;
 		}
 		else
 		{
-			return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterial(FeatureLevel);
+			UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterialWithFallback(FeatureLevel, OutMaterialRenderProxy, OutMaterial);
 		}
 	}
 
@@ -806,6 +807,14 @@ public:
 			break;
 		}
 		return false;
+	}
+
+	virtual void GatherExpressionsForCustomInterpolators(TArray<UMaterialExpression*>& OutExpressions) const override
+	{
+		if (Material)
+		{
+			Material->GetAllExpressionsForCustomInterpolators(OutExpressions);
+		}
 	}
 
 private:

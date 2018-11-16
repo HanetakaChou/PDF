@@ -10,19 +10,26 @@
 #include "VulkanContext.h"
 #include "VulkanMemory.h"
 #include "PipelineStateCache.h"
+#include "Misc/OutputDeviceRedirector.h"
+
 
 extern CORE_API bool GIsGPUCrashed;
+
+static FString		EventDeepString(TEXT("EventTooDeep"));
+static const uint32	EventDeepCRC = FCrc::StrCrc32<TCHAR>(*EventDeepString);
 
 /**
  * Initializes the static variables, if necessary.
  */
 void FVulkanGPUTiming::PlatformStaticInitialize(void* UserData)
 {
+	GIsSupported = false;
+
 	// Are the static variables initialized?
 	check( !GAreGlobalsInitialized );
 
 	FVulkanGPUTiming* Caller = (FVulkanGPUTiming*)UserData;
-	if (Caller && Caller->Device)
+	if (Caller && Caller->Device && FVulkanPlatform::SupportsTimestampRenderQueries())
 	{
 		const VkPhysicalDeviceLimits& Limits = Caller->Device->GetDeviceProperties().limits;
 		bool bSupportsTimestamps = (Limits.timestampComputeAndGraphics == VK_TRUE);
@@ -31,8 +38,81 @@ void FVulkanGPUTiming::PlatformStaticInitialize(void* UserData)
 			UE_LOG(LogVulkanRHI, Warning, TEXT("Timestamps not supported on Device"));
 			return;
 		}
-		GTimingFrequency = 1;
+		GTimingFrequency = (uint64)((1.0f / Limits.timestampPeriod) * 1000.0f * 1000.0f * 1000.0f);
 	}
+}
+
+void FVulkanGPUTiming::CalibrateTimers(FVulkanCommandListContext& InCmdContext)
+{
+#if VULKAN_USE_NEW_QUERIES
+
+	// TODO: Implement VULKAN_USE_NEW_QUERIES version
+
+#else
+	FVulkanDevice* Device = InCmdContext.GetDevice();
+	FVulkanRenderQuery* TimestampQuery = new FVulkanRenderQuery(RQT_AbsoluteTime);
+
+	{
+		FVulkanCmdBuffer* CmdBuffer = InCmdContext.GetCommandBufferManager()->GetUploadCmdBuffer();
+		InCmdContext.EndRenderQueryInternal(CmdBuffer, TimestampQuery);
+		InCmdContext.GetCommandBufferManager()->SubmitUploadCmdBuffer();
+	}
+
+	uint64 CPUTimestamp = 0;
+	uint64 GPUTimestampMicroseconds = 0;
+
+	const bool bWait = true;
+	if (TimestampQuery->GetResult(Device, GPUTimestampMicroseconds, bWait))
+	{
+		CPUTimestamp = FPlatformTime::Cycles64();
+
+		GCalibrationTimestamp.CPUMicroseconds = uint64(FPlatformTime::ToSeconds64(CPUTimestamp) * 1e6);
+		GCalibrationTimestamp.GPUMicroseconds = GPUTimestampMicroseconds;
+	}
+
+	delete TimestampQuery;
+
+#endif
+}
+
+void FVulkanDynamicRHI::RHICalibrateTimers()
+{
+	check(IsInRenderingThread());
+
+	FScopedRHIThreadStaller StallRHIThread(FRHICommandListExecutor::GetImmediateCommandList());
+
+	FVulkanGPUTiming::CalibrateTimers(GetDevice()->GetImmediateContext());
+}
+
+
+FVulkanStagingBuffer::~FVulkanStagingBuffer()
+{
+	if (StagingBuffer)
+	{
+		FVulkanVertexBuffer* VertexBuffer = ResourceCast(GetBackingBuffer());
+		VertexBuffer->GetParent()->GetStagingManager().ReleaseBuffer(nullptr, StagingBuffer);
+	}
+}
+
+FStagingBufferRHIRef FVulkanDynamicRHI::RHICreateStagingBuffer(FVertexBufferRHIParamRef BackingBuffer)
+{
+	return new FVulkanStagingBuffer(BackingBuffer);
+}
+
+void* FVulkanDynamicRHI::RHILockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI, uint32 Offset, uint32 SizeRHI)
+{
+	FVulkanStagingBuffer* StagingBuffer = ResourceCast(StagingBufferRHI);
+	uint32 QueuedEndOffset = StagingBuffer->QueuedNumBytes + StagingBuffer->QueuedOffset;
+	uint32 EndOffset = Offset + SizeRHI;
+	check(Offset < StagingBuffer->QueuedNumBytes && EndOffset <= QueuedEndOffset);
+	//#todo-rco: Apply the offset in case it doesn't match
+	return StagingBuffer->StagingBuffer->GetMappedPointer();
+}
+
+void FVulkanDynamicRHI::RHIUnlockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI)
+{
+	FVulkanStagingBuffer* StagingBuffer = ResourceCast(StagingBufferRHI);
+	Device->GetStagingManager().ReleaseBuffer(nullptr, StagingBuffer->StagingBuffer);
 }
 
 /**
@@ -49,8 +129,8 @@ void FVulkanGPUTiming::Initialize()
 	{
 		for (int32 Index = 0; Index < MaxTimers; ++Index)
 		{
-			Timers[Index].Begin = new FOLDVulkanRenderQuery(CmdContext->GetDevice(), RQT_AbsoluteTime);
-			Timers[Index].End = new FOLDVulkanRenderQuery(CmdContext->GetDevice(), RQT_AbsoluteTime);
+			Timers[Index].Begin = new FVulkanRenderQuery(RQT_AbsoluteTime);
+			Timers[Index].End = new FVulkanRenderQuery(RQT_AbsoluteTime);
 		}
 	}
 }
@@ -79,11 +159,16 @@ void FVulkanGPUTiming::StartTiming(FVulkanCmdBuffer* CmdBuffer)
 	{
 		CurrentTimerIndex = (CurrentTimerIndex + 1) % MaxTimers;
 		NumActiveTimers = FMath::Min(NumActiveTimers + 1, (int32)MaxTimers);
+/*
 		if (CmdBuffer == nullptr)
 		{
 			CmdBuffer = CmdContext->GetCommandBufferManager()->GetActiveCmdBuffer();
 		}
-		CmdContext->EndRenderQueryInternal(CmdBuffer, Timers[CurrentTimerIndex].Begin);
+		Timers[CurrentTimerIndex].BeginCmdBuffer = CmdBuffer;
+		Timers[CurrentTimerIndex].BeginFenceCounter = CmdBuffer->GetFenceSignaledCounter();
+		CmdContext->RHIEndRenderQuery(Timers[CurrentTimerIndex].Begin);
+*/
+
 		bIsTiming = true;
 	}
 }
@@ -97,11 +182,15 @@ void FVulkanGPUTiming::EndTiming(FVulkanCmdBuffer* CmdBuffer)
 	// Issue a timestamp query for the 'end' time.
 	if (GIsSupported && bIsTiming)
 	{
+/*
 		if (CmdBuffer == nullptr)
 		{
 			CmdBuffer = CmdContext->GetCommandBufferManager()->GetActiveCmdBuffer();
 		}
-		CmdContext->EndRenderQueryInternal(CmdBuffer, Timers[CurrentTimerIndex].End);
+		Timers[CurrentTimerIndex].EndCmdBuffer = CmdBuffer;
+		Timers[CurrentTimerIndex].EndFenceCounter = CmdBuffer->GetFenceSignaledCounter();
+		CmdContext->RHIEndRenderQuery(Timers[CurrentTimerIndex].End);
+*/
 		bIsTiming = false;
 		bEndTimestampIssued = true;
 	}
@@ -117,6 +206,7 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 {
 	if (GIsSupported)
 	{
+/*
 		uint64 BeginTime, EndTime;
 		int32 TimerIndex = CurrentTimerIndex;
 		if (!bGetCurrentResultsAndBlock)
@@ -124,7 +214,21 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 			// Go backwards through the list
 			for (int32 Index = 1; Index < NumActiveTimers; ++Index)
 			{
+#if VULKAN_USE_NEW_QUERIES
+				check(Timers[TimerIndex].BeginCmdBuffer->GetSubmittedFenceCounter() >= Timers[TimerIndex].BeginFenceCounter);
+				check(Timers[TimerIndex].EndCmdBuffer->GetSubmittedFenceCounter() >= Timers[TimerIndex].EndFenceCounter);
+				if (Timers[TimerIndex].EndCmdBuffer->GetFenceSignaledCounter() <= Timers[TimerIndex].EndFenceCounter)
 				{
+					// Nothing here...
+					int i = 0;
+					++i;
+				}
+				else if (Timers[TimerIndex].Begin->HasQueryBeenEnded() && Timers[TimerIndex].End->HasQueryBeenEnded())
+#endif
+				{
+#if VULKAN_USE_NEW_QUERIES
+					check(Timers[TimerIndex].BeginCmdBuffer->GetFenceSignaledCounter() > Timers[TimerIndex].BeginFenceCounter);
+#endif
 					check(Device == CmdContext->GetDevice());
 					if (Timers[TimerIndex].Begin->GetResult(Device, BeginTime, false))
 					{
@@ -151,14 +255,23 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 		if (bGetCurrentResultsAndBlock)
 		{
 			TimerIndex = CurrentTimerIndex;
+#if VULKAN_USE_NEW_QUERIES
+			check(Timers[TimerIndex].Begin->HasQueryBeenEnded() && Timers[TimerIndex].End->HasQueryBeenEnded());
+#endif
+
 			if (Timers[TimerIndex].Begin->GetResult(Device, BeginTime, true))
 			{
 				if (Timers[TimerIndex].End->GetResult(Device, EndTime, true))
 				{
+#if VULKAN_USE_NEW_QUERIES
+					check(BeginTime < EndTime);
+					return (EndTime - BeginTime);
+#else
 					if (BeginTime < EndTime)
 					{
 						return (EndTime - BeginTime);
 					}
+#endif
 				}
 				else
 				{
@@ -170,15 +283,19 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 				checkf(0, TEXT("Could not wait for Begin timer query result!"));
 			}
 		}
+		*/
 	}
 
 	return 0;
 }
 
+#if VULKAN_USE_NEW_QUERIES
+#else
 static double ConvertTiming(uint64 Delta)
 {
 	return Delta / 1e6;
 }
+#endif
 
 /** Start this frame of per tracking */
 void FVulkanEventNodeFrame::StartFrame()
@@ -200,7 +317,14 @@ float FVulkanEventNodeFrame::GetRootTimingResults()
 	{
 		const uint64 GPUTiming = RootEventTiming.GetTiming(true);
 
+#if VULKAN_USE_NEW_QUERIES
+		// In milliseconds
+/*
+		RootResult = (double)GPUTiming / (double)RootEventTiming.GetTimingFrequency();
+*/
+#else
 		RootResult = ConvertTiming(GPUTiming);
+#endif
 	}
 
 	return (float)RootResult;
@@ -213,7 +337,14 @@ float FVulkanEventNode::GetTiming()
 	if (Timing.IsSupported())
 	{
 		const uint64 GPUTiming = Timing.GetTiming(true);
+#if VULKAN_USE_NEW_QUERIES
+		// In milliseconds
+/*
+		Result = (double)GPUTiming / (double)Timing.GetTimingFrequency();
+*/
+#else
 		Result = ConvertTiming(GPUTiming);
+#endif
 	}
 
 	return Result;
@@ -222,6 +353,16 @@ float FVulkanEventNode::GetTiming()
 
 void FVulkanGPUProfiler::BeginFrame()
 {
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+	if (GGPUCrashDebuggingEnabled && Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+	{
+		static auto* CrashCollectionEnableCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.collectionenable"));
+		static auto* CrashCollectionDataDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.datadepth"));
+		bTrackingGPUCrashData = CrashCollectionEnableCvar ? CrashCollectionEnableCvar->GetValueOnRenderThread() != 0 : false;
+		GPUCrashDataDepth = CrashCollectionDataDepth ? CrashCollectionDataDepth->GetValueOnRenderThread() : -1;
+	}
+#endif
+
 	bCommandlistSubmitted = false;
 	CurrentEventNode = NULL;
 	check(!bTrackingEvents);
@@ -325,6 +466,111 @@ void FVulkanGPUProfiler::EndFrame()
 	}
 }
 
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+void FVulkanGPUProfiler::PushMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TCHAR* Name)
+{
+	uint32 CRC = 0;
+	if (GPUCrashDataDepth < 0 || PushPopStack.Num() < GPUCrashDataDepth)
+	{
+		CRC = FCrc::StrCrc32<TCHAR>(Name);
+
+		if (CachedStrings.Num() > 10000)
+		{
+			CachedStrings.Empty(10000);
+			CachedStrings.Emplace(EventDeepCRC, EventDeepString);
+		}
+
+		if (CachedStrings.Find(CRC) == nullptr)
+		{
+			CachedStrings.Emplace(CRC, FString(Name));
+		}
+	}
+	else
+	{
+		CRC = EventDeepCRC;
+	}
+
+	PushPopStack.Push(CRC);
+	FVulkanPlatform::WriteCrashMarker(Device->GetOptionalExtensions(), CmdBuffer, DestBuffer, TArrayView<uint32>(PushPopStack), true);
+}
+
+void FVulkanGPUProfiler::PopMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer)
+{
+	if (PushPopStack.Num() > 0)
+	{
+		PushPopStack.Pop(false);
+		FVulkanPlatform::WriteCrashMarker(Device->GetOptionalExtensions(), CmdBuffer, DestBuffer, TArrayView<uint32>(PushPopStack), false);
+	}
+}
+
+void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
+{
+#if VULKAN_SUPPORTS_AMD_BUFFER_MARKER
+	if (Device->GetOptionalExtensions().HasAMDBufferMarker)
+	{
+		uint32* Entries = (uint32*)BufferData;
+		uint32 NumCRCs = *Entries++;
+		for (uint32 Index = 0; Index < NumCRCs; ++Index)
+		{
+			const FString* Frame = CachedStrings.Find(*Entries);
+			UE_LOG(LogVulkanRHI, Error, TEXT("[VK_AMD_buffer_info] %i: %s (CRC 0x%x)"), Index, Frame ? *(*Frame) : TEXT("<undefined>"), *Entries);
+			++Entries;
+		}
+	}
+	else
+#endif
+	{
+#if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
+		if (Device->GetOptionalExtensions().HasNVDiagnosticCheckpoints)
+		{
+			TArray<VkCheckpointDataNV> Data;
+			uint32 Num = 0;
+			VkQueue QueueHandle = Device->GetGraphicsQueue()->GetHandle();
+			VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, nullptr);
+			Data.AddUninitialized(Num);
+			VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, &Data[0]);
+			check(Num == Data.Num());
+			for (uint32 Index = 0; Index < Num; ++Index)
+			{
+				check(Data[Index].sType == VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
+				uint32 Value = (uint32)(size_t)Data[Index].pCheckpointMarker;
+				const FString* Frame = CachedStrings.Find(Value);
+				UE_LOG(LogVulkanRHI, Error, TEXT("[VK_NV_device_diagnostic_checkpoints] %i: Stage 0x%x, %s (CRC 0x%x)"), Index, Data[Index].stage, Frame ? *(*Frame) : TEXT("<undefined>"), Value);
+			}
+			GLog->PanicFlushThreadedLogs();
+			GLog->Flush();
+		}
+#endif
+	}
+}
+#endif
+
+#include "VulkanRHIBridge.h"
+namespace VulkanRHIBridge
+{
+	uint64 GetInstance(FVulkanDynamicRHI* RHI)
+	{
+		return (uint64)RHI->GetInstance();
+	}
+
+	FVulkanDevice* GetDevice(FVulkanDynamicRHI* RHI)
+	{
+		return RHI->GetDevice();
+	}
+
+	// Returns a VkDevice
+	uint64 GetLogicalDevice(FVulkanDevice* Device)
+	{
+		return (uint64)Device->GetInstanceHandle();
+	}
+
+	// Returns a VkDeviceVkPhysicalDevice
+	uint64 GetPhysicalDevice(FVulkanDevice* Device)
+	{
+		return (uint64)Device->GetPhysicalHandle();
+	}
+}
+
 
 #include "ShaderParameterUtils.h"
 #include "RHIStaticStates.h"
@@ -340,11 +586,10 @@ namespace VulkanRHI
 		VkBuffer Buffer = VK_NULL_HANDLE;
 
 		VkBufferCreateInfo BufferCreateInfo;
-		FMemory::Memzero(BufferCreateInfo);
-		BufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		ZeroVulkanStruct(BufferCreateInfo, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
 		BufferCreateInfo.size = Size;
 		BufferCreateInfo.usage = BufferUsageFlags;
-		VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkCreateBuffer(Device, &BufferCreateInfo, nullptr, &Buffer));
+		VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkCreateBuffer(Device, &BufferCreateInfo, VULKAN_CPU_ALLOCATOR, &Buffer));
 
 		VulkanRHI::vkGetBufferMemoryRequirements(Device, Buffer, &OutMemoryRequirements);
 
@@ -408,9 +653,17 @@ namespace VulkanRHI
 		UE_LOG(LogVulkanRHI, Error, TEXT("%s failed, VkResult=%d\n at %s:%u \n with error %s"),
 			ANSI_TO_TCHAR(VkFunction), (int32)Result, ANSI_TO_TCHAR(Filename), Line, *ErrorString);
 
-		//#todo-rco: Don't need this yet...
-		//TerminateOnDeviceRemoved(Result);
-		//TerminateOnOutOfMemory(Result, false);
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+		if (GIsGPUCrashed && GGPUCrashDebuggingEnabled)
+		{
+			FVulkanDynamicRHI* RHI = (FVulkanDynamicRHI*)GDynamicRHI;
+			FVulkanDevice* Device = RHI->GetDevice();
+			if (Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+			{
+				Device->GetImmediateContext().GetGPUProfiler().DumpCrashMarkers(Device->GetCrashMarkerMappedPointer());
+			}
+		}
+#endif
 
 		UE_LOG(LogVulkanRHI, Fatal, TEXT("%s failed, VkResult=%d\n at %s:%u \n with error %s"),
 			ANSI_TO_TCHAR(VkFunction), (int32)Result, ANSI_TO_TCHAR(Filename), Line, *ErrorString);
@@ -420,11 +673,13 @@ namespace VulkanRHI
 DEFINE_STAT(STAT_VulkanDrawCallTime);
 DEFINE_STAT(STAT_VulkanDispatchCallTime);
 DEFINE_STAT(STAT_VulkanDrawCallPrepareTime);
+DEFINE_STAT(STAT_VulkanCustomPresentTime);
 DEFINE_STAT(STAT_VulkanDispatchCallPrepareTime);
 DEFINE_STAT(STAT_VulkanGetOrCreatePipeline);
 DEFINE_STAT(STAT_VulkanGetDescriptorSet);
 DEFINE_STAT(STAT_VulkanPipelineBind);
-DEFINE_STAT(STAT_VulkanNumBoundShaderState);
+DEFINE_STAT(STAT_VulkanNumCmdBuffers);
+DEFINE_STAT(STAT_VulkanNumPSOs);
 DEFINE_STAT(STAT_VulkanNumRenderPasses);
 DEFINE_STAT(STAT_VulkanNumFrameBuffers);
 DEFINE_STAT(STAT_VulkanNumBufferViews);
@@ -437,12 +692,14 @@ DEFINE_STAT(STAT_VulkanDynamicIBLockTime);
 DEFINE_STAT(STAT_VulkanUPPrepTime);
 DEFINE_STAT(STAT_VulkanUniformBufferCreateTime);
 DEFINE_STAT(STAT_VulkanApplyDSUniformBuffers);
+DEFINE_STAT(STAT_VulkanApplyPackedUniformBuffers);
 DEFINE_STAT(STAT_VulkanSRVUpdateTime);
 DEFINE_STAT(STAT_VulkanUAVUpdateTime);
 DEFINE_STAT(STAT_VulkanDeletionQueue);
 DEFINE_STAT(STAT_VulkanQueueSubmit);
 DEFINE_STAT(STAT_VulkanQueuePresent);
 DEFINE_STAT(STAT_VulkanNumQueries);
+DEFINE_STAT(STAT_VulkanNumQueryPools);
 DEFINE_STAT(STAT_VulkanWaitQuery);
 DEFINE_STAT(STAT_VulkanWaitFence);
 DEFINE_STAT(STAT_VulkanResetQuery);
@@ -451,7 +708,6 @@ DEFINE_STAT(STAT_VulkanAcquireBackBuffer);
 DEFINE_STAT(STAT_VulkanStagingBuffer);
 DEFINE_STAT(STAT_VulkanVkCreateDescriptorPool);
 DEFINE_STAT(STAT_VulkanNumDescPools);
-DEFINE_STAT(STAT_VulkanDescriptorSetAllocator);
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 DEFINE_STAT(STAT_VulkanUpdateDescriptorSets);
 DEFINE_STAT(STAT_VulkanNumUpdateDescriptors);

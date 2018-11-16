@@ -23,11 +23,11 @@ DEFINE_LOG_CATEGORY_STATIC(LogD3D11ShaderCompiler, Log, All);
 #pragma warning(push)
 #pragma warning(disable : 4005)	// macro redefinition
 
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <D3D11.h>
 	#include <D3Dcompiler.h>
 	#include <d3d11Shader.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #undef DrawText
 
 #pragma warning(pop)
@@ -155,7 +155,7 @@ static const TCHAR* GetShaderProfileName(FShaderTarget Target)
 			return TEXT("cs_5_0");
 		}
 	}
-	else if(Target.Platform == SP_PCD3D_SM4 || Target.Platform == SP_PCD3D_ES2 || Target.Platform == SP_PCD3D_ES3_1)
+	else if(Target.Platform == SP_PCD3D_SM4)
 	{
 		checkSlow(Target.Frequency == SF_Vertex ||
 			Target.Frequency == SF_Pixel ||
@@ -170,6 +170,23 @@ static const TCHAR* GetShaderProfileName(FShaderTarget Target)
 			return TEXT("vs_4_0");
 		case SF_Geometry:
 			return TEXT("gs_4_0");
+		}
+	}
+	else if (Target.Platform == SP_PCD3D_ES2 || Target.Platform == SP_PCD3D_ES3_1)
+	{
+		checkSlow(Target.Frequency == SF_Vertex ||
+			Target.Frequency == SF_Pixel ||
+			Target.Frequency == SF_Geometry);
+
+		//set defines and profiles for the appropriate shader paths
+		switch(Target.Frequency)
+		{
+		case SF_Pixel:
+			return TEXT("ps_5_0");
+		case SF_Vertex:
+			return TEXT("vs_5_0");
+		case SF_Geometry:
+			return TEXT("gs_5_0");
 		}
 	}
 
@@ -639,6 +656,11 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 			FileWriter->Serialize((ANSICHAR*)AnsiSourceFile.Get(), AnsiSourceFile.Length());
 			{
 				FString Line = CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
+
+				Line += TEXT("#if 0 /*DIRECT COMPILE*/\n");
+				Line += CreateShaderCompilerWorkerDirectCommandLine(Input);
+				Line += TEXT("\n#endif /*DIRECT COMPILE*/\n");
+
 				FileWriter->Serialize(TCHAR_TO_ANSI(*Line), Line.Len());
 			}
 			FileWriter->Close();
@@ -1132,15 +1154,15 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 
 					if (Input.Target.Platform == SP_PCD3D_SM5)
 					{
-						BindCount = 1;
-
 						// Assign the name and optionally strip any "[#]" suffixes
 						TCHAR *BracketLocation = FCString::Strchr(OfficialName, TEXT('['));
 						if (BracketLocation)
 						{
-							*BracketLocation = 0;
+							BindCount = 1;
 
-							const int32 NumCharactersBeforeArray = BracketLocation - OfficialName;
+							// This needs to include the first [ character otherwise it will include non array textures with matching starting characters.
+							// e.g. "LightMapTexturesTest" which is not part of "LightMapTextures[#]" would be included as the last index of "LightMapTextures"
+							const int32 NumCharactersToCompare = BracketLocation - OfficialName + 1;
 
 							// In SM5, for some reason, array suffixes are included in Name, i.e. "LightMapTextures[0]", rather than "LightMapTextures"
 							// Additionally elements in an array are listed as SEPERATE bound resources.
@@ -1152,7 +1174,7 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 								D3D11_SHADER_INPUT_BIND_DESC BindDesc2;
 								Reflector->GetResourceBindingDesc(ResourceIndex + 1, &BindDesc2);
 
-								if (BindDesc2.Type == BindDesc.Type && FCStringAnsi::Strncmp(BindDesc2.Name, BindDesc.Name, NumCharactersBeforeArray) == 0)
+								if (BindDesc2.Type == BindDesc.Type && FCStringAnsi::Strncmp(BindDesc2.Name, BindDesc.Name, NumCharactersToCompare) == 0)
 								{
 									BindCount++;
 									// Skip over this resource since it is part of an array
@@ -1163,16 +1185,19 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 									break;
 								}
 							}
+
+							// Array loop is complete, now the array suffix can be removed.
+							*BracketLocation = 0;
 						}
 					}
 
 					if (BindDesc.Type == D3D10_SIT_SAMPLER)
 					{
-						NumSamplers = FMath::Max(NumSamplers, BindDesc.BindPoint + BindDesc.BindCount);
+						NumSamplers = FMath::Max(NumSamplers, BindDesc.BindPoint + BindCount);
 					}
 					else if (BindDesc.Type == D3D10_SIT_TEXTURE)
 					{
-						NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + BindDesc.BindCount);
+						NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + BindCount);
 					}
 
 					// Add a parameter for the texture only, the sampler index will be invalid
@@ -1181,7 +1206,7 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 						0,
 						BindDesc.BindPoint,
 						BindCount
-						);
+					);
 				}
 				else if (BindDesc.Type == D3D11_SIT_UAV_RWTYPED || BindDesc.Type == D3D11_SIT_UAV_RWSTRUCTURED ||
 					BindDesc.Type == D3D11_SIT_UAV_RWBYTEADDRESS || BindDesc.Type == D3D11_SIT_UAV_RWSTRUCTURED_WITH_COUNTER ||
@@ -1516,10 +1541,7 @@ void CompileD3D11Shader(const FShaderCompilerInput& Input,FShaderCompilerOutput&
 		}
 	}
 
-	if (!RemoveUniformBuffersFromSource(PreprocessedShaderSource))
-	{
-		return;
-	}
+	RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShaderSource);
 
 	// Override default compiler path to newer dll
 	CompilerPath = FPaths::EngineDir();
@@ -1600,6 +1622,11 @@ void CompileD3D11Shader(const FShaderCompilerInput& Input,FShaderCompilerOutput&
 			NewError.StrippedErrorMessage = CurrentError;
 		}
 		Output.Errors.Add(NewError);
+	}
+
+	if (Input.ExtraSettings.bExtractShaderSource)
+	{
+		Output.OptionalFinalShaderSource = PreprocessedShaderSource;
 	}
 }
 

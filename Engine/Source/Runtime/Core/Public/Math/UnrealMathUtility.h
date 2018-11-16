@@ -11,7 +11,11 @@
 
 // Assert on non finite numbers. Used to track NaNs.
 #ifndef ENABLE_NAN_DIAGNOSTIC
-	#define ENABLE_NAN_DIAGNOSTIC 0
+	#if UE_BUILD_DEBUG
+		#define ENABLE_NAN_DIAGNOSTIC 1
+	#else
+		#define ENABLE_NAN_DIAGNOSTIC 0
+	#endif
 #endif
 
 /*-----------------------------------------------------------------------------
@@ -283,15 +287,25 @@ struct FMath : public FPlatformMath
 
 	/** Divides two integers and rounds up */
 	template <class T>
-	static FORCEINLINE T DivideAndRoundUp(T Dividend,T Divisor)
+	static FORCEINLINE T DivideAndRoundUp(T Dividend, T Divisor)
 	{
 		return (Dividend + Divisor - 1) / Divisor;
 	}
 
+	/** Divides two integers and rounds down */
 	template <class T>
-	static FORCEINLINE T DivideAndRoundDown(T Dividend,T Divisor)
+	static FORCEINLINE T DivideAndRoundDown(T Dividend, T Divisor)
 	{
 		return Dividend / Divisor;
+	}
+
+	/** Divides two integers and rounds to nearest */
+	template <class T>
+	static FORCEINLINE T DivideAndRoundNearest(T Dividend, T Divisor)
+	{
+		return (Dividend >= 0)
+			? (Dividend + Divisor / 2) / Divisor
+			: (Dividend - Divisor / 2 + 1) / Divisor;
 	}
 
 	/**
@@ -310,7 +324,7 @@ struct FMath : public FPlatformMath
 	}
 
 	/**
-	* Computes the sine and cosine of a scalar float.
+	* Computes the sine and cosine of a scalar value.
 	*
 	* @param ScalarSin	Pointer to where the Sin result should be stored
 	* @param ScalarCos	Pointer to where the Cos result should be stored
@@ -365,7 +379,7 @@ struct FMath : public FPlatformMath
 	//		FASTASIN_HALF_PI	== 1.5707963050f  == 0x3fC90FDA
 #define FASTASIN_HALF_PI (1.5707963050f)
 	/**
-	* Computes the ASin of a scalar float.
+	* Computes the ASin of a scalar value.
 	*
 	* @param Value  input angle
 	* @return ASin of Value
@@ -585,7 +599,15 @@ struct FMath : public FPlatformMath
 	/** Calculates the percentage along a line from MinValue to MaxValue that Value is. */
 	static FORCEINLINE float GetRangePct(float MinValue, float MaxValue, float Value)
 	{
-		return (Value - MinValue) / (MaxValue - MinValue);
+		// Avoid Divide by Zero.
+		// But also if our range is a point, output whether Value is before or after.
+		const float Divisor = MaxValue - MinValue;
+		if (FMath::IsNearlyZero(Divisor))
+		{
+			return (Value >= MaxValue) ? 1.f : 0.f;
+		}
+
+		return (Value - MinValue) / Divisor;
 	}
 
 	/** Same as above, but taking a 2d vector as the range. */
@@ -925,6 +947,12 @@ struct FMath : public FPlatformMath
 	/** Interpolate Linear Color from Current to Target. Scaled by distance to Target, so it has a strong start speed and ease out. */
 	static CORE_API FLinearColor CInterpTo(const FLinearColor& Current, const FLinearColor& Target, float DeltaTime, float InterpSpeed);
 
+	/** Interpolate quaternion from Current to Target with constant step (in radians) */
+	static CORE_API FQuat QInterpConstantTo(const FQuat& Current, const FQuat& Target, float DeltaTime, float InterpSpeed);
+
+	/** Interpolate quaternion from Current to Target. Scaled by angle to Target, so it has a strong start speed and ease out. */
+	static CORE_API FQuat QInterpTo(const FQuat& Current, const FQuat& Target, float DeltaTime, float InterpSpeed);
+
 	/**
 	 * Simple function to create a pulsating scalar value
 	 *
@@ -941,6 +969,17 @@ struct FMath : public FPlatformMath
 
 	// Geometry intersection 
 
+	/**
+	 * Find the intersection of a ray and a plane.  The ray has a start point with an infinite length.  Assumes that the
+	 * line and plane do indeed intersect; you must make sure they're not parallel before calling.
+	 *
+	 * @param RayOrigin	The start point of the ray
+	 * @param RayDirection	The direction the ray is pointing (normalized vector)
+	 * @param Plane	The plane to intersect with
+	 *
+	 * @return The point of intersection between the ray and the plane.
+	 */
+	static FVector RayPlaneIntersection( const FVector& RayOrigin, const FVector& RayDirection, const FPlane& Plane );
 
 	/**
 	 * Find the intersection of a line and an offset plane. Assumes that the
@@ -969,9 +1008,18 @@ struct FMath : public FPlatformMath
 	 */
 	static FVector LinePlaneIntersection( const FVector &Point1, const FVector &Point2, const FPlane  &Plane);
 
+
 	// @parma InOutScissorRect should be set to View.ViewRect before the call
 	// @return 0: light is not visible, 1:use scissor rect, 2: no scissor rect needed
 	static CORE_API uint32 ComputeProjectedSphereScissorRect(struct FIntRect& InOutScissorRect, FVector SphereOrigin, float Radius, FVector ViewOrigin, const FMatrix& ViewMatrix, const FMatrix& ProjMatrix);
+
+	// @param ConeOrigin Cone origin
+	// @param ConeDirection Cone direction
+	// @param ConeRadius Cone Radius
+	// @param CosConeAngle Cos of the cone angle
+	// @param SinConeAngle Sin of the cone angle
+	// @return Minimal bounding sphere encompassing given cone
+	static FSphere ComputeBoundingSphereForCone(FVector const& ConeOrigin, FVector const& ConeDirection, float ConeRadius, float CosConeAngle, float SinConeAngle);
 
 	/** 
 	 * Determine if a plane and an AABB intersect
@@ -980,6 +1028,15 @@ struct FMath : public FPlatformMath
 	 * @return if collision occurs
 	 */
 	static CORE_API bool PlaneAABBIntersection(const FPlane& P, const FBox& AABB);
+
+	/**
+	 * Determine the position of an AABB relative to a plane:
+	 * completely above (in the direction of the normal of the plane), completely below or intersects it
+	 * @param P - the plane to test
+	 * @param AABB - the axis aligned bounding box to test
+	 * @return -1 if below, 1 if above, 0 if intersects
+	 */
+	static CORE_API int32 PlaneAABBRelativePosition(const FPlane& P, const FBox& AABB);
 
 	/**
 	 * Performs a sphere vs box intersection test using Arvo's algorithm:
@@ -1489,4 +1546,13 @@ struct FMath : public FPlatformMath
 		int32 CurrentGcd = GreatestCommonDivisor(a, b);
 		return CurrentGcd == 0 ? 0 : (a / CurrentGcd) * b;
 	}
+
+	/**
+	 * Generates a 1D Perlin noise from the given value.  Returns a continuous random value between -1.0 and 1.0.
+	 *
+	 * @param	Value	The input value that Perlin noise will be generated from.  This is usually a steadily incrementing time value.
+	 *
+	 * @return	Perlin noise in the range of -1.0 to 1.0
+	 */
+	static CORE_API float PerlinNoise1D(const float Value);
 };

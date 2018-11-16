@@ -7,6 +7,8 @@
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "UObject/PropertyPortFlags.h"
+#include "AudioCompressionSettings.h"
+
 #include "IOSRuntimeSettings.generated.h"
 
 UENUM()
@@ -38,13 +40,16 @@ UENUM()
 	IOS_8 = 8 UMETA(Hidden),
 
 	/** iOS 9 */
-	IOS_9 = 9 UMETA(DisplayName = "9.0"),
+	IOS_9 = 9 UMETA(Hidden),
 
 	/** iOS 10 */
 	IOS_10 = 10 UMETA(DisplayName = "10.0"),
 
 	/** iOS 11 */
 	IOS_11 = 11 UMETA(DisplayName = "11.0"),
+
+	/** iOS 12 */
+	IOS_12 = 12 UMETA(DisplayName = "12.0"),
 
 };
 
@@ -62,6 +67,19 @@ enum class EIOSMetalShaderStandard : uint8
 	
 	/** Metal Shaders Compatible With iOS 11.0/tvOS 11.0 or later (std=ios-metal2.0) */
 	IOSMetalSLStandard_2_0 = 3 UMETA(DisplayName="Metal v2.0 (iOS 11.0/tvOS 11.0)"),
+    
+    /** Metal Shaders Compatible With iOS 12.0/tvOS 12.0 or later (std=ios-metal2.1) */
+    IOSMetalSLStandard_2_1 = 4 UMETA(DisplayName="Metal v2.1 (iOS 12.0/tvOS 12.0)"),
+};
+
+UENUM()
+enum class EIOSLandscapeOrientation : uint8
+{
+	/** Landscape Left */
+	LandscapeLeft = 0 UMETA(DisplayName = "Landscape (left home button)"),
+
+	/** Landscape Right */
+	LandscapeRight = 1 UMETA(DisplayName = "Landscape (right home button)"),
 };
 
 /**
@@ -191,6 +209,10 @@ public:
     UPROPERTY(GlobalConfig, EditAnywhere, Category = Online)
     uint32 bEnableRemoteNotificationsSupport : 1;
     
+    // Should background fetch support be enabled?
+    UPROPERTY(GlobalConfig, EditAnywhere, Category = Online)
+    uint32 bEnableBackgroundFetch : 1;
+    
 	// Whether or not to compile iOS Metal shaders for the Mobile renderer (requires iOS 8+ and an A7 processor).
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Rendering, meta = (DisplayName = "Metal Mobile Renderer"))
 	bool bSupportsMetal;
@@ -307,6 +329,10 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input, meta = (DisplayName = "Use AppleTV Remote absolute trackpad values"))
 	bool bUseRemoteAbsoluteDpadValues;
 	
+	// If checked, Bluetooth connected controllers will send input
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input, meta = (DisplayName = "Allow MFi (Bluetooth) controllers"))
+	bool bAllowControllers;
+	
 	// Supports default portrait orientation. Landscape will not be supported.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = DeviceOrientations)
 	uint32 bSupportsPortraitOrientation : 1;
@@ -322,6 +348,10 @@ public:
 	// Supports right landscape orientation. Portrait will not be supported.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = DeviceOrientations)
 	uint32 bSupportsLandscapeRightOrientation : 1;
+
+	// The Preferred Orientation will be used as the initial orientation at launch when both Landscape Left and Landscape Right orientations are to be supported.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = DeviceOrientations, meta = (DisplayName = "Preferred Landscape Orientation"))
+	EIOSLandscapeOrientation PreferredLandscapeOrientation;
 
 	// Specifies the the display name for the application. This will be displayed under the icon on the device.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = BundleInformation)
@@ -447,10 +477,43 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString OcclusionPlugin;
 
+	/** Various overrides for how this platform should handle compression and decompression */
+	UPROPERTY(config, EditAnywhere, Category = "Audio")
+	FPlatformRuntimeAudioCompressionOverrides CompressionOverrides;
+
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides")
+	bool bResampleForDevice;
+
+	// Mapping of which sample rates are used for each sample rate quality for a specific platform.
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides|ResamplingQuality", meta = (DisplayName = "Max"))
+	float MaxSampleRate;
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides|ResamplingQuality", meta = (DisplayName = "High"))
+	float HighSampleRate;
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides|ResamplingQuality", meta = (DisplayName = "Medium"))
+	float MedSampleRate;
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides|ResamplingQuality", meta = (DisplayName = "Low"))
+	float LowSampleRate;
+
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides|ResamplingQuality", meta = (DisplayName = "Min"))
+	float MinSampleRate;
+
+	// Scales all compression qualities when cooking to this platform. For example, 0.5 will halve all compression qualities, and 1.0 will leave them unchanged.
+	UPROPERTY(config, EditAnywhere, Category = "Audio|CookOverrides")
+	float CompressionQualityModifier;
+
 #if WITH_EDITOR
 	// UObject interface
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostInitProperties() override;
 	// End of UObject interface
 #endif
+
+private:
+	virtual void EnsureOrientationInProjectDefaultEngine();
+
 };

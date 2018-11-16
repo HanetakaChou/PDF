@@ -325,6 +325,22 @@ bool FString::EndsWith(const FString& InSuffix, ESearchCase::Type SearchCase ) c
 	}
 }
 
+bool FString::RemoveFromStart( const TCHAR* InPrefix, ESearchCase::Type SearchCase )
+{
+	if ( *InPrefix == 0 )
+	{
+		return false;
+	}
+
+	if ( StartsWith( InPrefix, SearchCase ) )
+	{
+		RemoveAt( 0, FCString::Strlen(InPrefix) );
+		return true;
+	}
+
+	return false;
+}
+
 bool FString::RemoveFromStart( const FString& InPrefix, ESearchCase::Type SearchCase )
 {
 	if ( InPrefix.IsEmpty() )
@@ -335,6 +351,23 @@ bool FString::RemoveFromStart( const FString& InPrefix, ESearchCase::Type Search
 	if ( StartsWith( InPrefix, SearchCase ) )
 	{
 		RemoveAt( 0, InPrefix.Len() );
+		return true;
+	}
+
+	return false;
+}
+
+bool FString::RemoveFromEnd( const TCHAR* InSuffix, ESearchCase::Type SearchCase )
+{
+	if ( *InSuffix == 0 )
+	{
+		return false;
+	}
+
+	if ( EndsWith( InSuffix, SearchCase ) )
+	{
+		int32 SuffixLen = FCString::Strlen(InSuffix);
+		RemoveAt( Len() - SuffixLen, SuffixLen );
 		return true;
 	}
 
@@ -852,7 +885,7 @@ int32 FString::ParseIntoArray( TArray<FString>& OutArray, const TCHAR* pchDelim,
 	OutArray.Reset();
 	const TCHAR *Start = Data.GetData();
 	const int32 DelimLength = FCString::Strlen(pchDelim);
-	if (Start && DelimLength)
+	if (Start && *Start != TEXT('\0') && DelimLength)
 	{
 		while( const TCHAR *At = FCString::Strstr(Start,pchDelim) )
 		{
@@ -1488,7 +1521,7 @@ int32 FindMatchingClosingParenthesis(const FString& TargetString, const int32 St
 	return INDEX_NONE;
 }
 
-FString SlugStringForValidName(const FString& DisplayString)
+FString SlugStringForValidName(const FString& DisplayString, const TCHAR* ReplaceWith /*= TEXT("")*/)
 {
 	FString GeneratedName = DisplayString;
 
@@ -1498,7 +1531,7 @@ FString SlugStringForValidName(const FString& DisplayString)
 		for ( int32 BadCharacterIndex = 0; BadCharacterIndex < ARRAY_COUNT(INVALID_OBJECTNAME_CHARACTERS) - 1; ++BadCharacterIndex )
 		{
 			const TCHAR TestChar[2] = { INVALID_OBJECTNAME_CHARACTERS[BadCharacterIndex], 0 };
-			const int32 NumReplacedChars = GeneratedName.ReplaceInline(TestChar, TEXT(""));
+			const int32 NumReplacedChars = GeneratedName.ReplaceInline(TestChar, ReplaceWith);
 		}
 	}
 

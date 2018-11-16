@@ -260,3 +260,31 @@ bool FGuid::ParseExact(const FString& GuidString, EGuidFormats Format, FGuid& Ou
 
 	return true;
 }
+
+FArchive& operator<<(FArchive& Ar, FGuid& G)
+{
+	return Ar << G.A << G.B << G.C << G.D;
+}
+
+void operator<<(FStructuredArchive::FSlot Slot, FGuid& G)
+{
+	if (Slot.GetUnderlyingArchive().IsTextFormat())
+	{
+		if (Slot.GetUnderlyingArchive().IsLoading())
+		{
+			FString AsString;
+			Slot << AsString;
+			LexFromString(G, *AsString);
+		}
+		else
+		{
+			FString AsString = LexToString(G);
+			Slot << AsString;
+		}
+	}
+	else
+	{
+		FStructuredArchive::FRecord Record = Slot.EnterRecord();
+		Record << NAMED_ITEM("A", G.A) << NAMED_ITEM("B", G.B) << NAMED_ITEM("C", G.C) << NAMED_ITEM("D", G.D);
+	}
+}

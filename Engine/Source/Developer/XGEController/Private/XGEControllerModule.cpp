@@ -20,13 +20,14 @@
 
 #if PLATFORM_WINDOWS
 
-	#include "AllowWindowsPlatformTypes.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <winreg.h>
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 
 	#define XGE_CONTROL_WORKER_NAME		TEXT("XGEControlWorker")
 	#define XGE_CONTROL_WORKER_FILENAME	TEXT("XGEControlWorker.exe")
 	#define XGE_CONTROL_WORKER_REL_DIR	TEXT("../../../Engine/Binaries/Win64/")
+	#define XGE_CONTROL_WORKER_EXE_PATH TEXT("../../../Engine/Binaries/Win64/XGEControlWorker.exe")
 
 #else
 #error XGE Controller is not supported on non-Windows platforms.
@@ -142,16 +143,16 @@ public:
 };
 
 FXGEControllerModule::FXGEControllerModule()
-	: bShutdown(false)
-	, bSupported(false)
+	: bSupported(false)
 	, bInitialized(false)
-	, bRestartWorker(false)
 	, ControlWorkerDirectory(FPaths::ConvertRelativePathToFull(XGE_CONTROL_WORKER_REL_DIR))
 	, RootWorkingDirectory(FString::Printf(TEXT("%sUnrealXGEWorkingDir/"), FPlatformProcess::UserTempDir()))
 	, WorkingDirectory(RootWorkingDirectory + FGuid::NewGuid().ToString(EGuidFormats::Digits))
 	, PipeName(FString::Printf(TEXT("UnrealEngine-XGE-%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)))
-	, WriteOutThreadEvent(FPlatformProcess::CreateSynchEvent(false))
 	, TasksCS(new FCriticalSection)
+	, bShutdown(false)
+	, bRestartWorker(false)
+	, WriteOutThreadEvent(FPlatformProcess::CreateSynchEvent(false))
 	, LastEventTime(0)
 {}
 
@@ -177,6 +178,11 @@ bool FXGEControllerModule::IsSupported()
 
 #if PLATFORM_WINDOWS
 
+	if (!FPlatformProcess::SupportsMultithreading())
+	{
+		return false; // current implementation requires worker threads
+	}
+
 	// Check the command line to see if the XGE controller has been enabled/disabled.
 	// This overrides the value of the console variable.
 	if (FParse::Param(FCommandLine::Get(), TEXT("xgecontroller")))
@@ -191,12 +197,23 @@ bool FXGEControllerModule::IsSupported()
 	// Check for a valid installation of Incredibuild by seeing if xgconsole.exe exists.
 	if (XGEControllerVariables::Enabled == 1)
 	{
+		// Try to read from the registry
+		FString RegistryPathString;
+
+		if (!FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Xoreax\\IncrediBuild\\Builder"), TEXT("Folder"), RegistryPathString))
+		{
+			FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\WOW6432Node\\Xoreax\\IncrediBuild\\Builder"), TEXT("Folder"), RegistryPathString);
+		}
+
+		if (!RegistryPathString.IsEmpty())
+		{
+			RegistryPathString = FPaths::Combine(RegistryPathString, TEXT("xgConsole.exe"));
+		}
+
 		// Try to find xgConsole.exe from the PATH environment variable
 		FString PathString;
 		{
-			TCHAR EnvVariable[32 * 1024];
-			FPlatformMisc::GetEnvironmentVariable(TEXT("Path"), EnvVariable, ARRAY_COUNT(EnvVariable));
-			FString EnvString(EnvVariable);
+			FString EnvString = FPlatformMisc::GetEnvironmentVariable(TEXT("Path"));
 			int32 PathStart = EnvString.Find(TEXT("Xoreax\\IncrediBuild"), ESearchCase::IgnoreCase, ESearchDir::FromStart);
 			if (PathStart != INDEX_NONE)
 			{
@@ -216,6 +233,7 @@ bool FXGEControllerModule::IsSupported()
 		// List of possible paths to xgconsole.exe
 		const FString Paths[] =
 		{
+			*RegistryPathString,
 			TEXT("C:\\Program Files\\Xoreax\\IncrediBuild\\xgConsole.exe"),
 			TEXT("C:\\Program Files (x86)\\Xoreax\\IncrediBuild\\xgConsole.exe"),
 			*PathString
@@ -391,6 +409,13 @@ void FXGEControllerModule::WriteOutThreadProc()
 		{
 			UE_LOG(LogXGEController, Fatal, TEXT("Failed to launch the XGE control worker process."));
 		}
+
+		// If the engine crashes, we don't get a chance to kill the build process.
+		// Start up the build monitor process to monitor for engine crashes.
+		uint32 BuildMonitorProcessID;
+		FString XGMonitorArgs = FString::Printf(TEXT("-xgemonitor %d %d"), FPlatformProcess::GetCurrentProcessId(), XGConsoleProcID);
+		FProcHandle BuildMonitorHandle = FPlatformProcess::CreateProc(XGE_CONTROL_WORKER_EXE_PATH, *XGMonitorArgs, true, false, false, &BuildMonitorProcessID, 0, nullptr, nullptr);
+		FPlatformProcess::CloseProc(BuildMonitorHandle);
 
 		// Wait for the controller to connect to the output pipe
 		if (!OutputNamedPipe.OpenConnection())
@@ -574,5 +599,10 @@ XGECONTROLLER_API IXGEController& IXGEController::Get()
 }
 
 IMPLEMENT_MODULE(FXGEControllerModule, XGEController);
+
+#else
+
+// Workaround for module not having any exported symbols
+XGECONTROLLER_API int XgeControllerExportedSymbol = 0;
 
 #endif // WITH_XGE_CONTROLLER

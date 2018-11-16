@@ -4,13 +4,15 @@
 #include "NiagaraNodeWithDynamicPins.h"
 
 #include "ScopedTransaction.h"
-#include "SComboButton.h"
-#include "SBoxPanel.h"
-#include "SImage.h"
-#include "MultiBoxBuilder.h"
-#include "SEditableTextBox.h"
-#include "SInlineEditableTextBlock.h"
-#include "SBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Images/SImage.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Layout/SBox.h"
+#include "SNiagaraParameterMapView.h"
+#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraGraphPinAdd"
 
@@ -41,7 +43,7 @@ void SNiagaraGraphPinAdd::Construct(const FArguments& InArgs, UEdGraphPin* InGra
 
 TSharedRef<SWidget>	SNiagaraGraphPinAdd::ConstructAddButton()
 {
-	return SNew(SComboButton)
+	AddButton = SNew(SComboButton)
 		.HasDownArrow(false)
 		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 		.ForegroundColor(FSlateColor::UseForeground())
@@ -56,34 +58,24 @@ TSharedRef<SWidget>	SNiagaraGraphPinAdd::ConstructAddButton()
 			.ColorAndOpacity(FSlateColor::UseForeground())
 			.Image(FEditorStyle::GetBrush("Plus"))
 		];
+
+	return AddButton.ToSharedRef();
 }
 
 TSharedRef<SWidget> SNiagaraGraphPinAdd::OnGetAddButtonMenuContent()
 {
-	TArray<UEdGraphPin*> Pins = GetPinObj()->GetOwningNode()->GetAllPins();
-	EEdGraphPinDirection PinDir = GetPinObj()->Direction;
-
-	int32 FirstPinSameDir = Pins.IndexOfByPredicate([&](UEdGraphPin* InObj) -> bool
-	{
-		return InObj && (InObj->Direction == PinDir);
-	});
-
-	int32 IndexOfPin = Pins.IndexOfByPredicate([&](UEdGraphPin* InObj) -> bool
-	{
-		return InObj && (InObj == GetPinObj());
-	});
-
-	int PinIdx = 0;
-	if (FirstPinSameDir != -1 && IndexOfPin != -1)
-	{
-		PinIdx = IndexOfPin - FirstPinSameDir;
-	}
-
-	FString WorkingName = FString::Printf(TEXT("%s%d"), PinDir == EEdGraphPinDirection::EGPD_Input ? TEXT("Input") : TEXT("Output"), PinIdx);
-
 	if (OwningNode != nullptr)
 	{
-		return OwningNode->GenerateAddPinMenu(WorkingName, this);
+		TArray<TWeakObjectPtr<UNiagaraGraph>> Graphs;
+		Graphs.Add(OwningNode->GetNiagaraGraph());
+		TSharedRef<SNiagaraAddParameterMenu> MenuWidget = SNew(SNiagaraAddParameterMenu, Graphs)
+			.OnAddParameter_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddParameter, GetPinObj()) // For non custom actions
+			.OnCollectCustomActions_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::CollectAddPinActions, GetPinObj())
+			.OnAllowMakeType_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AllowNiagaraTypeForAddPin)
+			.IsParameterRead(GraphPinObj ? GraphPinObj->Direction == EGPD_Output : true);
+		
+		AddButton->SetMenuContentWidgetToFocus(MenuWidget->GetSearchBox());
+		return MenuWidget;
 	}
 	else
 	{
@@ -92,12 +84,4 @@ TSharedRef<SWidget> SNiagaraGraphPinAdd::OnGetAddButtonMenuContent()
 
 }
 
-void SNiagaraGraphPinAdd::OnAddType(FNiagaraVariable InAdd)
-{
-	if (OwningNode != nullptr)
-	{
-		FScopedTransaction AddNewPinTransaction(LOCTEXT("AddNewPinTransaction", "Add pin to node"));
-		OwningNode->RequestNewTypedPin(GetPinObj()->Direction, InAdd.GetType(), InAdd.GetName());
-	}
-}
 #undef LOCTEXT_NAMESPACE

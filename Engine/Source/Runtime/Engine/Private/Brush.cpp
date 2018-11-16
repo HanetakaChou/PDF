@@ -37,7 +37,7 @@ ABrush::ABrush(const FObjectInitializer& ObjectInitializer)
 {
 	BrushComponent = CreateDefaultSubobject<UBrushComponent>(TEXT("BrushComponent0"));
 	BrushComponent->Mobility = EComponentMobility::Static;
-	BrushComponent->bGenerateOverlapEvents = false;
+	BrushComponent->SetGenerateOverlapEvents(false);
 	BrushComponent->SetCanEverAffectNavigation(false);
 
 	RootComponent = BrushComponent;
@@ -72,6 +72,22 @@ void ABrush::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyCha
 	}
 
 	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+}
+
+FName ABrush::GetCustomIconName() const
+{
+	if (BrushType == Brush_Add)
+	{
+		static const FName AdditiveIconName("ClassIcon.BrushAdditive");
+		return AdditiveIconName;
+	}
+	else if (BrushType == Brush_Subtract)
+	{
+		static const FName SubtactiveIconName("ClassIcon.BrushSubtractive");
+		return SubtactiveIconName;
+	}
+
+	return NAME_None;
 }
 
 void ABrush::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)

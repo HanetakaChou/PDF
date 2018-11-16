@@ -36,11 +36,12 @@ ENUM_CLASS_FLAGS(EDrawingPolicyOverrideFlags);
 
 struct FDrawingPolicyRenderState
 {
-	FDrawingPolicyRenderState(const FSceneView& SceneView) : 
+	FDrawingPolicyRenderState(const FSceneView& SceneView, FUniformBufferRHIParamRef InPassUniformBuffer = nullptr) : 
 		  BlendState(nullptr)
 		, DepthStencilState(nullptr)
 		, DepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead)
 		, ViewUniformBuffer(SceneView.ViewUniformBuffer)
+		, PassUniformBuffer(InPassUniformBuffer)
 		, StencilRef(0)
 		, ViewOverrideFlags(EDrawingPolicyOverrideFlags::None)
 		, DitheredLODTransitionAlpha(0.0f)
@@ -53,6 +54,7 @@ struct FDrawingPolicyRenderState
 		BlendState(nullptr)
 		, DepthStencilState(nullptr)
 		, ViewUniformBuffer()
+		, PassUniformBuffer(nullptr)
 		, StencilRef(0)
 		, ViewOverrideFlags(EDrawingPolicyOverrideFlags::None)
 		, DitheredLODTransitionAlpha(0.0f)
@@ -64,6 +66,7 @@ struct FDrawingPolicyRenderState
 		, DepthStencilState(DrawRenderState.DepthStencilState)
 		, DepthStencilAccess(DrawRenderState.DepthStencilAccess)
 		, ViewUniformBuffer(DrawRenderState.ViewUniformBuffer)
+		, PassUniformBuffer(DrawRenderState.PassUniformBuffer)
 		, StencilRef(DrawRenderState.StencilRef)
 		, ViewOverrideFlags(DrawRenderState.ViewOverrideFlags)
 		, DitheredLODTransitionAlpha(DrawRenderState.DitheredLODTransitionAlpha)
@@ -121,6 +124,16 @@ public:
 		return ViewUniformBuffer;
 	}
 
+	FORCEINLINE_DEBUGGABLE void SetPassUniformBuffer(FUniformBufferRHIParamRef InPassUniformBuffer)
+	{
+		PassUniformBuffer = InPassUniformBuffer;
+	}
+
+	FORCEINLINE_DEBUGGABLE FUniformBufferRHIParamRef GetPassUniformBuffer() const
+	{
+		return PassUniformBuffer;
+	}
+
 	FORCEINLINE_DEBUGGABLE uint32 GetStencilRef() const
 	{
 		return StencilRef;
@@ -159,6 +172,7 @@ private:
 	FExclusiveDepthStencil::Type	DepthStencilAccess;
 
 	TUniformBufferRef<FViewUniformShaderParameters>	ViewUniformBuffer;
+	FUniformBufferRHIParamRef		PassUniformBuffer;
 	uint32							StencilRef;
 
 	//not sure if those should belong here
@@ -256,13 +270,18 @@ FORCEINLINE_DEBUGGABLE FMeshDrawingPolicyOverrideSettings ComputeMeshOverrideSet
 * Creates and sets the base PSO so that resources can be set. Generally best to call during SetSharedState.
 */
 template<class DrawingPolicyType>
-void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolicyType& DrawingPolicy, const FDrawingPolicyRenderState& DrawRenderState, const FBoundShaderStateInput& BoundShaderStateInput)
+void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolicyType& DrawingPolicy, const FDrawingPolicyRenderState& DrawRenderState, const FBoundShaderStateInput& BoundShaderStateInput, const FMaterialRenderProxy* InMaterialRenderProxy)
 {
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 
 	GraphicsPSOInit.PrimitiveType = DrawingPolicy.GetPrimitiveType();
 	GraphicsPSOInit.BoundShaderState = BoundShaderStateInput;
 	GraphicsPSOInit.RasterizerState = DrawingPolicy.ComputeRasterizerState(DrawRenderState.GetViewOverrideFlags());
+
+	if (InMaterialRenderProxy != nullptr)
+	{
+		GraphicsPSOInit.ImmutableSamplerState = InMaterialRenderProxy->ImmutableSamplerState;
+	}
 
 	check(DrawRenderState.GetDepthStencilState());
 	check(DrawRenderState.GetBlendState());
@@ -328,6 +347,11 @@ public:
 	void ApplyDitheredLODTransitionState(FDrawingPolicyRenderState& DrawRenderState, const FViewInfo& ViewInfo, const FStaticMesh& Mesh, const bool InAllowStencilDither)
 	{
 		OnlyApplyDitheredLODTransitionState(DrawRenderState, ViewInfo, Mesh, InAllowStencilDither);
+	}
+
+	const FMaterialRenderProxy* GetPipelineMaterialRenderProxy(const FMaterialRenderProxy* ElementMaterialRenderProxy)
+	{
+		return MaterialRenderProxy;
 	}
 
 	FDrawingPolicyMatchResult Matches(const FMeshDrawingPolicy& OtherDrawer, bool bForReals = false) const

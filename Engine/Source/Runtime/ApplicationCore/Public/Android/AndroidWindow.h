@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "GenericWindow.h"
-#include "GenericApplication.h"
+#include "GenericPlatform/GenericWindow.h"
+#include "GenericPlatform/GenericApplication.h"
 #include <android/native_window.h> 
-#include <android/native_window_jni.h> 
+#if USE_ANDROID_JNI
+#include <android/native_window_jni.h>
+#endif
 
 
 /**
@@ -33,7 +35,6 @@ public:
 	/** Returns the rectangle of the screen the window is associated with */
 	virtual bool GetFullScreenInfo( int32& X, int32& Y, int32& Width, int32& Height ) const override;
 
-	
 	virtual void SetOSWindowHandle(void*);
 
 	static FPlatformRect GetScreenRect();
@@ -55,6 +56,12 @@ protected:
 	virtual EWindowMode::Type GetWindowMode() const override { return EWindowMode::Fullscreen; }
 
 private:
+	/** called from GetScreenRect function */
+	/** test cached values from the latest computations stored by CacheRect to decide their validity with the provided arguments */
+	static bool IsCachedRectValid(const bool bMosaicEnabled, const float RequestedContentScaleFactor, ANativeWindow* Window);
+	/** caches some values used to compute the size of the window by GetScreenRect function */
+	static void CacheRect(ANativeWindow* Window, const int32 Width, const int32 Height, const float RequestedContentScaleFactor, const bool bMosaicEnabled);
+
 	/**
 	 * Protect the constructor; only TSharedRefs of this class can be made.
 	 */

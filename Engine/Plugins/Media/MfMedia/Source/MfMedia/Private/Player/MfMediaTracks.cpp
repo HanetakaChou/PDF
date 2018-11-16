@@ -10,6 +10,7 @@
 #include "Math/IntPoint.h"
 #include "MediaHelpers.h"
 #include "MediaSamples.h"
+#include "MediaPlayerOptions.h"
 #include "Misc/ScopeLock.h"
 
 #include "MfMediaAudioSample.h"
@@ -17,10 +18,10 @@
 #include "MfMediaUtils.h"
 
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
-	#include "AllowWindowsPlatformTypes.h"
+	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
 #else
-	#include "XboxOneAllowPlatformTypes.h"
+	#include "XboxOne/XboxOneAllowPlatformTypes.h"
 #endif
 
 #define MFMEDIATRACKS_TRACE_SAMPLES 0
@@ -164,7 +165,7 @@ IMFSourceReader* FMfMediaTracks::GetSourceReader()
 }
 
 
-void FMfMediaTracks::Initialize(IMFMediaSource* InMediaSource, IMFSourceReaderCallback* InSourceReaderCallback, const TSharedRef<FMediaSamples, ESPMode::ThreadSafe>& InSamples)
+void FMfMediaTracks::Initialize(IMFMediaSource* InMediaSource, IMFSourceReaderCallback* InSourceReaderCallback, const TSharedRef<FMediaSamples, ESPMode::ThreadSafe>& InSamples, const FMediaPlayerOptions* PlayerOptions)
 {
 	Shutdown();
 
@@ -239,6 +240,21 @@ void FMfMediaTracks::Initialize(IMFMediaSource* InMediaSource, IMFSourceReaderCa
 	Algo::Reverse(AudioTracks);
 	Algo::Reverse(CaptionTracks);
 	Algo::Reverse(VideoTracks);
+
+	if (PlayerOptions)
+	{
+		// Select tracks based on the options provided
+		SelectTrack(EMediaTrackType::Audio, PlayerOptions->Tracks.Audio);
+		SelectTrack(EMediaTrackType::Caption, PlayerOptions->Tracks.Caption);
+		SelectTrack(EMediaTrackType::Video, PlayerOptions->Tracks.Video);
+	}
+	else
+	{
+		// Select default tracks
+		SelectTrack(EMediaTrackType::Audio, 0);
+		SelectTrack(EMediaTrackType::Caption, INDEX_NONE);
+		SelectTrack(EMediaTrackType::Video, 0);
+	}
 }
 
 
@@ -1156,48 +1172,31 @@ bool FMfMediaTracks::AddStreamToTracks(uint32 StreamIndex, FString& OutInfo)
 					SampleFormat = EMediaTextureSampleFormat::CharNV12;
 				}
 #if PLATFORM_WINDOWS
+				else if (OutputSubType == MFVideoFormat_RGB32)
+				{
+					BufferDim = OutputDim;
+					BufferStride = OutputDim.X * 4;
+					SampleFormat = EMediaTextureSampleFormat::CharBMP;
+				}
 				else
 				{
-					long SampleStride = ::MFGetAttributeUINT32(OutputType, MF_MT_DEFAULT_STRIDE, 0);
+					int32 AlignedOutputX = OutputDim.X;
 
-					if (OutputSubType == MFVideoFormat_RGB32)
+					if ((SubType == MFVideoFormat_H264) || (SubType == MFVideoFormat_H264_ES))
 					{
-						SampleFormat = EMediaTextureSampleFormat::CharBMP;
-
-						if (SampleStride == 0)
-						{
-							::MFGetStrideForBitmapInfoHeader(OutputSubType.Data1, OutputDim.X, &SampleStride);
-						}
-
-						if (SampleStride == 0)
-						{
-							SampleStride = OutputDim.X * 4;
-						}
+						AlignedOutputX = Align(AlignedOutputX, 16);
 					}
-					else
-					{
-						SampleFormat = EMediaTextureSampleFormat::CharYUY2;
 
-						if (SampleStride == 0)
-						{
-							int32 AlignedOutputX = OutputDim.X;
-
-							if ((SubType == MFVideoFormat_H264) || (SubType == MFVideoFormat_H264_ES))
-							{
-								AlignedOutputX = Align(AlignedOutputX, 16);
-							}
-
-							SampleStride = AlignedOutputX * 2;
-						}
-					}
+					int32 SampleStride = AlignedOutputX * 2; // 2 bytes per pixel
 
 					if (SampleStride < 0)
 					{
 						SampleStride = -SampleStride;
 					}
 
-					BufferDim = FIntPoint(SampleStride / 4, OutputDim.Y);
+					BufferDim = FIntPoint(AlignedOutputX / 2, OutputDim.Y); // 2 pixels per texel
 					BufferStride = SampleStride;
+					SampleFormat = EMediaTextureSampleFormat::CharYUY2;
 				}
 #endif //PLATFORM_WINDOWS
 			}
@@ -1526,9 +1525,9 @@ void FMfMediaTracks::UpdateVideo()
 #undef LOCTEXT_NAMESPACE
 
 #if PLATFORM_WINDOWS
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 #else
-	#include "XboxOneHidePlatformTypes.h"
+	#include "XboxOne/XboxOneHidePlatformTypes.h"
 #endif
 
 #endif //MFMEDIA_SUPPORTED_PLATFORM

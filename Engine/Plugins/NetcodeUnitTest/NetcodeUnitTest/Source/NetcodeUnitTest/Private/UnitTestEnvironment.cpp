@@ -17,7 +17,9 @@ TMap<FString, FUnitTestEnvironment*> UnitTestEnvironments;
 
 void FUnitTestEnvironment::AddUnitTestEnvironment(FString Game, FUnitTestEnvironment* Env)
 {
-	if (UnitTestEnvironments.Find(Game) == NULL)
+	// @todo #JohnB: This memleaks Env if the game is already added (relevant to hot reload situations)
+	// @todo #JohnB: Actually....this memleaks Env always! (including normal shutdown) Need to refactor this code - shared pointer?
+	if (UnitTestEnvironments.Find(Game) == nullptr)
 	{
 		UnitTestEnvironments.Add(Game, Env);
 
@@ -97,6 +99,9 @@ FString FUnitTestEnvironment::GetDefaultServerParameters(FString InLogCmds/*=TEX
 	// Need to force all shader compilation, to happen with ShaderCompileWorker, so it can be detected easily;
 	// sometimes it would occur within threads in the main UE4 process, which was not possible to detect, and which this disables
 	ReturnVal += TEXT(" -ini:Engine:[DevOptions.Shaders]:bAllowAsynchronousShaderCompiling=False");
+
+	// Need to disable Steam by default, on servers, to eliminate spurious warnings
+	ReturnVal += TEXT(" -NoSteam");
 
 	return ReturnVal;
 }

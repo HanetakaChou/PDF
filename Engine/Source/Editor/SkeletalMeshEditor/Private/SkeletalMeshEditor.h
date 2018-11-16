@@ -9,7 +9,7 @@
 #include "EditorUndoClient.h"
 #include "Toolkits/IToolkitHost.h"
 #include "ISkeletalMeshEditor.h"
-#include "ArrayView.h"
+#include "Containers/ArrayView.h"
 
 class IDetailsView;
 class IPersonaToolkit;
@@ -97,6 +97,7 @@ private:
 	void HandleSelectionChanged(const TArrayView<TSharedPtr<ISkeletonTreeItem>>& InSelectedItems, ESelectInfo::Type InSelectInfo);
 
 	void HandleReimportMesh();
+	void HandleReimportAllMesh();
 
 	/** Callback for toggling UV drawing in the viewport */
 	void ToggleMeshSectionSelection();
@@ -124,6 +125,10 @@ private:
 	void RemoveClothing(int32 InLodIndex, int32 InSectionIndex);
 	//////////////////////////////////////////////////////////////////////////
 
+	// Generate LOD sections menu handlers
+	void OnRemoveSectionFromLodAndBelowMenuItemClicked(int32 LodIndex, int32 SectionIndex);
+	//////////////////////////////////////////////////////////////////////////
+
 private:
 	void ExtendMenu();
 
@@ -132,9 +137,6 @@ private:
 	void BindCommands();
 
 public:
-	/** Multicast delegate fired on anim notifies changing */
-	FSimpleMulticastDelegate OnChangeAnimNotifies;
-
 	/** Multicast delegate fired on global undo/redo */
 	FSimpleMulticastDelegate OnPostUndo;
 

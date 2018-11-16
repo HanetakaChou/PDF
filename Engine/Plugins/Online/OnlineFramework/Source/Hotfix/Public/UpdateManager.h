@@ -64,6 +64,8 @@ enum class EUpdateCompletionStatus : uint8
 	UpdateFailure_NotLoggedIn
 };
 
+HOTFIX_API FString LexToString(EUpdateCompletionStatus Status);
+
 /**
  * Possible outcomes at the end of just the patch check
  */
@@ -144,6 +146,7 @@ private:
 public:
 
 	UUpdateManager();
+	virtual ~UUpdateManager();
 
 	/**
 	 * Reset so you can call StartCheck again
@@ -261,11 +264,20 @@ protected:
 	/** Amount of time to wait at the end of the entire check before notifying listening entities (availability check only) */
 	UPROPERTY(Config)
 	float UpdateCheckAvailabilityCompleteDelay;
+	/** Check the platform OSS for an update */
+	UPROPERTY(Config)
+	bool bCheckPlatformOSSForUpdate;
+	/** Check the default OSS for an update */
+	UPROPERTY(Config)
+	bool bCheckOSSForUpdate;
+
 
 	/**
 	 * Patch check
 	 */
 	virtual void StartPatchCheck();
+	virtual void StartPlatformOSSPatchCheck();
+	virtual void StartOSSPatchCheck();
 	virtual void OnCheckForPatchComplete(const FUniqueNetId& UniqueId, EUserPrivileges::Type Privilege, uint32 PrivilegeResult, bool bConsoleCheck);
 	virtual void PatchCheckComplete(EPatchCheckResult PatchResult);
 
@@ -312,6 +324,23 @@ protected:
 
 	/** Change the state of the update manager */
 	virtual void SetUpdateState(EUpdateState NewState);
+
+	/** If application is suspended longer than this, trigger an update check when resuming */
+	UPROPERTY(Config)
+	int32 AppSuspendedUpdateCheckTimeSeconds;
+
+	/** Time when application was deactivated */
+	FDateTime DeactivatedTime;
+
+	/** Register deactivate/reactivate delegates */
+	void RegisterDelegates();
+	/** Unregister deactivate/reactivate delegates */
+	void UnregisterDelegates();
+
+	/** Called when application is about to be deactivated */
+	virtual void OnApplicationWillDeactivate();
+	/** Called when application has been reactivated */
+	virtual void OnApplicationHasReactivated();
 
 protected:
 

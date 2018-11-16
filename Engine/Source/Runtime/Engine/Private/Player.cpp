@@ -70,18 +70,19 @@ FString UPlayer::ConsoleCommand(const FString& Cmd, bool bWriteToLog)
 	return TEXT("");
 }
 
-APlayerController* UPlayer::GetPlayerController(UWorld* InWorld) const
+APlayerController* UPlayer::GetPlayerController(const UWorld* const InWorld) const
 {
 	if (InWorld == nullptr)
 	{
 		return PlayerController;
 	}
 
-	for ( FConstPlayerControllerIterator Iterator = InWorld->GetPlayerControllerIterator(); Iterator; ++Iterator)
+	for (FConstPlayerControllerIterator Iterator = InWorld->GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
-		if ( (*Iterator)->GetLocalPlayer() == this )
+		APlayerController* PC = Iterator->Get();
+		if (PC && PC->GetLocalPlayer() == this)
 		{
-			return Iterator->Get();
+			return PC;
 		}
 	}
 

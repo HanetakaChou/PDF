@@ -12,7 +12,8 @@
  *****************************************************************************/
 
 FMovieSceneMediaData::FMovieSceneMediaData()
-	: MediaPlayer(nullptr)
+	: bOverrideMediaPlayer(false)
+	, MediaPlayer(nullptr)
 	, SeekOnOpenTime(FTimespan::MinValue())
 { }
 
@@ -43,15 +44,24 @@ void FMovieSceneMediaData::SeekOnOpen(FTimespan Time)
 }
 
 
-void FMovieSceneMediaData::Setup()
+void FMovieSceneMediaData::Setup(UMediaPlayer* OverrideMediaPlayer)
 {
-	if (MediaPlayer == nullptr)
+	// Ensure we don't already have a media player set. Setup should only be called once
+	check(!MediaPlayer);
+
+	if (OverrideMediaPlayer)
+	{
+		MediaPlayer = OverrideMediaPlayer;
+		bOverrideMediaPlayer = true;
+	}
+	else if (MediaPlayer == nullptr)
 	{
 		MediaPlayer = NewObject<UMediaPlayer>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UMediaPlayer::StaticClass()));
-		MediaPlayer->OnMediaEvent().AddRaw(this, &FMovieSceneMediaData::HandleMediaPlayerEvent);
-		MediaPlayer->PlayOnOpen = false;
-		MediaPlayer->AddToRoot();
 	}
+
+	MediaPlayer->PlayOnOpen = false;
+	MediaPlayer->OnMediaEvent().AddRaw(this, &FMovieSceneMediaData::HandleMediaPlayerEvent);
+	MediaPlayer->AddToRoot();
 }
 
 
@@ -62,7 +72,12 @@ void FMovieSceneMediaData::HandleMediaPlayerEvent(EMediaEvent Event)
 {
 	if ((Event != EMediaEvent::MediaOpened) || (SeekOnOpenTime < FTimespan::Zero()))
 	{
-		return;
+		return; // we only care about seek on open
+	}
+
+	if (!MediaPlayer->SupportsSeeking())
+	{
+		return; // media can't seek
 	}
 
 	const FTimespan MediaTime = SeekOnOpenTime % MediaPlayer->GetDuration();

@@ -9,35 +9,6 @@
 #define LOCTEXT_NAMESPACE "MovieSceneStringTrack"
 
 
-/* UMovieSceneStringTrack interface
- *****************************************************************************/
-
-bool UMovieSceneStringTrack::AddKeyToSection(float Time, const FString& String)
-{
-	UMovieSceneSection* TargetSection = MovieSceneHelpers::FindNearestSectionAtTime(Sections, Time);
-
-	if (TargetSection == nullptr)
-	{
-		TargetSection = CreateNewSection();
-		TargetSection->SetStartTime(Time);
-		TargetSection->SetEndTime(Time);
-
-		Sections.Add(TargetSection);
-	}
-
-	UMovieSceneStringSection* StringSection = Cast<UMovieSceneStringSection>(TargetSection);
-
-	if (StringSection == nullptr)
-	{
-		return false;
-	}
-
-	StringSection->AddKey(Time, String, EMovieSceneKeyInterpolation::Auto);
-
-	return true;
-}
-
-
 /* UMovieSceneTrack interface
  *****************************************************************************/
 
@@ -49,7 +20,7 @@ void UMovieSceneStringTrack::AddSection(UMovieSceneSection& Section)
 
 UMovieSceneSection* UMovieSceneStringTrack::CreateNewSection()
 {
-	return NewObject<UMovieSceneSection>(this, UMovieSceneStringSection::StaticClass(), NAME_None, RF_Transactional);
+	return NewObject<UMovieSceneStringSection>(this, NAME_None, RF_Transactional);
 }
 
 
@@ -61,19 +32,6 @@ FMovieSceneEvalTemplatePtr UMovieSceneStringTrack::CreateTemplateForSection(cons
 const TArray<UMovieSceneSection*>& UMovieSceneStringTrack::GetAllSections() const
 {
 	return Sections;
-}
-
-
-TRange<float> UMovieSceneStringTrack::GetSectionBoundaries() const
-{
-	TRange<float> SectionBoundaries = TRange<float>::Empty();
-
-	for (auto& Section : Sections)
-	{
-		SectionBoundaries = TRange<float>::Hull(SectionBoundaries, Section->GetRange());
-	}
-
-	return SectionBoundaries;
 }
 
 

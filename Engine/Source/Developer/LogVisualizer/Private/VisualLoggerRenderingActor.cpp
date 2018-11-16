@@ -1,7 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "VisualLoggerRenderingActor.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "VisualLogger/VisualLogger.h"
 #include "LogVisualizerSettings.h"
 #include "VisualLoggerDatabase.h"
@@ -10,6 +10,11 @@
 #include "GeomTools.h"
 #endif // WITH_EDITOR
 #include "VisualLoggerRenderingComponent.h"
+
+namespace FDebugDrawing
+{
+	const FVector NavOffset(0, 0, 15);
+}
 
 class UVisualLoggerRenderingComponent;
 class FVisualLoggerSceneProxy final : public FDebugRenderSceneProxy
@@ -73,6 +78,7 @@ FPrimitiveSceneProxy* UVisualLoggerRenderingComponent::CreateSceneProxy()
 		VLogSceneProxy->Cones.Append(CurrentShapes.Value.Cones);
 		VLogSceneProxy->Texts.Append(CurrentShapes.Value.Texts);
 		VLogSceneProxy->Cylinders.Append(CurrentShapes.Value.Cylinders);
+		VLogSceneProxy->ArrowLines.Append(CurrentShapes.Value.Arrows);
 		VLogSceneProxy->Capsles.Append(CurrentShapes.Value.Capsules);
 	}
 
@@ -84,6 +90,7 @@ FPrimitiveSceneProxy* UVisualLoggerRenderingComponent::CreateSceneProxy()
 		VLogSceneProxy->Cones.Append(RenderingActor->TestDebugShapes.Cones);
 		VLogSceneProxy->Texts.Append(RenderingActor->TestDebugShapes.Texts);
 		VLogSceneProxy->Cylinders.Append(RenderingActor->TestDebugShapes.Cylinders);
+		VLogSceneProxy->ArrowLines.Append(RenderingActor->TestDebugShapes.Arrows);
 		VLogSceneProxy->Capsles.Append(RenderingActor->TestDebugShapes.Capsules);
 	}
 
@@ -396,7 +403,7 @@ void AVisualLoggerRenderingActor::GetDebugShapes(const FVisualLogDevice::FVisual
 		}
 
 
-		const FVector CorridorOffset = NavigationDebugDrawing::PathOffset * 1.25f;
+		const FVector CorridorOffset = FDebugDrawing::NavOffset * 1.25f;
 		const FColor Color = ElementToDraw->GetFColor();
 
 		switch (ElementToDraw->GetType())
@@ -629,7 +636,9 @@ void AVisualLoggerRenderingActor::GetDebugShapes(const FVisualLogDevice::FVisual
 		case EVisualLoggerShapeElement::NavAreaMesh:
 		{
 			if (ElementToDraw->Points.Num() == 0)
+			{
 				continue;
+			}
 
 			struct FHeaderData
 			{
@@ -690,6 +699,30 @@ void AVisualLoggerRenderingActor::GetDebugShapes(const FVisualLogDevice::FVisual
 					);
 			}
 
+		}
+			break;
+
+		case EVisualLoggerShapeElement::Arrow:
+		{
+			const bool bDrawLabels = ElementToDraw->Description.IsEmpty() == false && ElementToDraw->Points.Num() > 2;
+			const FVector* Location = ElementToDraw->Points.GetData();
+
+			if (bDrawLabels)
+			{
+				for (int32 Index = 0; Index + 1 < ElementToDraw->Points.Num(); Index += 2, Location += 2)
+				{
+					DebugShapes.Arrows.Add(FDebugRenderSceneProxy::FArrowLine(*Location, *(Location + 1), Color));
+					const FString PrintString = FString::Printf(TEXT("%s_%d"), *ElementToDraw->Description, Index);
+					DebugShapes.Texts.Add(FDebugRenderSceneProxy::FText3d(PrintString, (*Location + (*(Location + 1) - *Location) / 2), Color));
+				}
+			}
+			else
+			{
+				for (int32 Index = 0; Index + 1 < ElementToDraw->Points.Num(); Index += 2, Location += 2)
+				{
+					DebugShapes.Arrows.Add(FDebugRenderSceneProxy::FArrowLine(*Location, *(Location + 1), Color));
+				}
+			}
 		}
 			break;
 		}

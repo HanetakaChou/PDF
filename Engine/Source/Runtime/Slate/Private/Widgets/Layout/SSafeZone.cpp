@@ -4,8 +4,27 @@
 #include "Layout/LayoutUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/CoreDelegates.h"
+#include "Widgets/SViewport.h"
 
-float SSafeZone::SafeZoneScale = 1.0f;
+float GSafeZoneScale = 1.0f;
+static FAutoConsoleVariableRef CVarDumpVMIR(
+	TEXT("SafeZone.Scale"),
+	GSafeZoneScale,
+	TEXT("The safezone scale."),
+	ECVF_Default
+);
+
+void SSafeZone::SetGlobalSafeZoneScale(float InScale)
+{
+	GSafeZoneScale = InScale;
+
+	FCoreDelegates::OnSafeFrameChangedEvent.Broadcast();
+}
+
+float SSafeZone::GetGlobalSafeZoneScale()
+{
+	return GSafeZoneScale;
+}
 
 void SSafeZone::Construct( const FArguments& InArgs )
 {
@@ -24,15 +43,17 @@ void SSafeZone::Construct( const FArguments& InArgs )
 	bPadRight = InArgs._PadRight;
 	bPadTop = InArgs._PadTop;
 	bPadBottom = InArgs._PadBottom;
+	bSafeMarginNeedsUpdate = true;
 
 #if WITH_EDITOR
 	OverrideScreenSize = InArgs._OverrideScreenSize;
 	OverrideDpiScale = InArgs._OverrideDpiScale;
+	FSlateApplication::Get().OnDebugSafeZoneChanged.AddSP(this, &SSafeZone::DebugSafeAreaUpdated);
 #endif
 
 	SetTitleSafe(bIsTitleSafe);
 
-	OnSafeFrameChangedHandle = FCoreDelegates::OnSafeFrameChangedEvent.AddSP(this, &SSafeZone::SafeAreaUpdated);
+	OnSafeFrameChangedHandle = FCoreDelegates::OnSafeFrameChangedEvent.AddSP(this, &SSafeZone::UpdateSafeMargin);
 }
 
 SSafeZone::~SSafeZone()
@@ -40,62 +61,52 @@ SSafeZone::~SSafeZone()
 	FCoreDelegates::OnSafeFrameChangedEvent.Remove(OnSafeFrameChangedHandle);
 }
 
-
-void SSafeZone::SetSafeZoneScale(float InScale)
-{
-	SafeZoneScale = InScale;
-
-	FCoreDelegates::OnSafeFrameChangedEvent.Broadcast();
-}
-
-float SSafeZone::GetSafeZoneScale()
-{
-	return SafeZoneScale;
-}
-
-void SSafeZone::SafeAreaUpdated()
-{
-	SetTitleSafe(bIsTitleSafe);
-}
-
 void SSafeZone::SetTitleSafe( bool InIsTitleSafe )
 {
-	FDisplayMetrics Metrics;
-	FSlateApplication::Get().GetDisplayMetrics( Metrics );
+	UpdateSafeMargin();
+}
 
-	const FMargin DeviceSafeMargin =
-#if PLATFORM_IOS
-		// Hack: This is a temp solution to support iPhoneX safeArea. TitleSafePaddingSize and ActionSafePaddingSize should be FVector4 and use them separately.
-		bIsTitleSafe
-		? FMargin(Metrics.TitleSafePaddingSize.X, Metrics.TitleSafePaddingSize.Y, Metrics.TitleSafePaddingSize.Z, Metrics.TitleSafePaddingSize.W)
-		: FMargin(Metrics.ActionSafePaddingSize.X, Metrics.ActionSafePaddingSize.Y, Metrics.ActionSafePaddingSize.Z, Metrics.ActionSafePaddingSize.W);
-#else
-		bIsTitleSafe ?
-		FMargin(Metrics.TitleSafePaddingSize.X, Metrics.TitleSafePaddingSize.Y) :
-		FMargin(Metrics.ActionSafePaddingSize.X, Metrics.ActionSafePaddingSize.Y);
-#endif
-
+void SSafeZone::UpdateSafeMargin() const
+{
+	bSafeMarginNeedsUpdate = true;
 
 #if WITH_EDITOR
-	if ( OverrideScreenSize.IsSet() )
+	if (OverrideScreenSize.IsSet() && !OverrideScreenSize.GetValue().IsZero())
 	{
-		const float WidthPaddingRatio = DeviceSafeMargin.Left / ( Metrics.PrimaryDisplayWidth * 0.5f );
-		const float HeightPaddingRatio = DeviceSafeMargin.Top / ( Metrics.PrimaryDisplayHeight * 0.5f );
-		const FMargin OverrideSafeMargin = FMargin(WidthPaddingRatio * OverrideScreenSize->X * 0.5f, HeightPaddingRatio * OverrideScreenSize->Y * 0.5f);
-
-		SafeMargin = OverrideSafeMargin;
+		FSlateApplication::Get().GetSafeZoneSize(SafeMargin, OverrideScreenSize.GetValue());
 	}
 	else
 #endif
 	{
-		SafeMargin = DeviceSafeMargin;
+		// Need to get owning viewport not display 
+		// use pixel values (same as custom safe zone above)
+		TSharedPtr<SViewport> GameViewport = FSlateApplication::Get().GetGameViewport();
+		if (GameViewport.IsValid())
+		{
+			TSharedPtr<ISlateViewport> ViewportInterface = GameViewport->GetViewportInterface().Pin();
+			if (ViewportInterface.IsValid())
+			{
+				const FIntPoint ViewportSize = ViewportInterface->GetSize();
+				FSlateApplication::Get().GetSafeZoneSize(SafeMargin, ViewportSize);
+			}
+			else
+			{
+				return;
+			}
+		}
+		else
+		{
+			return;
+		}
 	}
 
 #if PLATFORM_XBOXONE
-	SafeMargin = SafeMargin * SafeZoneScale;
+	SafeMargin = SafeMargin * GSafeZoneScale;
 #endif
 
 	SafeMargin = FMargin(bPadLeft ? SafeMargin.Left : 0.0f, bPadTop ? SafeMargin.Top : 0.0f, bPadRight ? SafeMargin.Right : 0.0f, bPadBottom ? SafeMargin.Bottom : 0.0f);
+
+	bSafeMarginNeedsUpdate = false;
 }
 
 void SSafeZone::SetSidesToPad(bool InPadLeft, bool InPadRight, bool InPadTop, bool InPadBottom)
@@ -114,14 +125,23 @@ void SSafeZone::SetOverrideScreenInformation(TOptional<FVector2D> InScreenSize, 
 {
 	OverrideScreenSize = InScreenSize;
 	OverrideDpiScale = InOverrideDpiScale;
-
 	SetTitleSafe(bIsTitleSafe);
+}
+
+void SSafeZone::DebugSafeAreaUpdated(const FMargin& NewSafeZone, bool bShouldRecacheMetrics)
+{
+	UpdateSafeMargin();
 }
 
 #endif
 
 FMargin SSafeZone::GetSafeMargin(float InLayoutScale) const
 {
+	if (bSafeMarginNeedsUpdate)
+	{
+		UpdateSafeMargin();
+	}
+
 	const FMargin SlotPadding = Padding.Get() + (ComputeScaledSafeMargin(InLayoutScale) * SafeAreaScale);
 	return SlotPadding;
 }

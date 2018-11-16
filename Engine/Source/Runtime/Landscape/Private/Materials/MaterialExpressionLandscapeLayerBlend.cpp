@@ -28,9 +28,9 @@ UMaterialExpressionLandscapeLayerBlend::UMaterialExpressionLandscapeLayerBlend(c
 	};
 	static FConstructorStatics ConstructorStatics;
 
+#if WITH_EDITORONLY_DATA
 	bIsParameterExpression = true;
 
-#if WITH_EDITORONLY_DATA
 	MenuCategories.Add(ConstructorStatics.NAME_Landscape);
 #endif
 }
@@ -42,11 +42,12 @@ FGuid& UMaterialExpressionLandscapeLayerBlend::GetParameterExpressionId()
 }
 
 
-void UMaterialExpressionLandscapeLayerBlend::Serialize(FArchive& Ar)
+void UMaterialExpressionLandscapeLayerBlend::Serialize(FStructuredArchive::FRecord Record)
 {
-	Super::Serialize(Ar);
+	Super::Serialize(Record);
+	FArchive& UnderlyingArchive = Record.GetUnderlyingArchive();
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_ADD_LB_WEIGHTBLEND)
+	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UE4Ver() < VER_UE4_ADD_LB_WEIGHTBLEND)
 	{
 		// convert any LB_AlphaBlend entries to LB_WeightBlend
 		for (FLayerBlendInput& LayerInput : Layers)
@@ -59,6 +60,7 @@ void UMaterialExpressionLandscapeLayerBlend::Serialize(FArchive& Ar)
 	}
 }
 
+#if WITH_EDITOR
 
 const TArray<FExpressionInput*> UMaterialExpressionLandscapeLayerBlend::GetInputs()
 {
@@ -116,7 +118,6 @@ FName UMaterialExpressionLandscapeLayerBlend::GetInputName(int32 InputIndex) con
 	return NAME_None;
 }
 
-#if WITH_EDITOR
 uint32 UMaterialExpressionLandscapeLayerBlend::GetInputType(int32 InputIndex)
 {
 	int32 Idx = 0;

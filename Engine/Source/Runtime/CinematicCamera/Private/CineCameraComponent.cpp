@@ -10,6 +10,7 @@
 #include "Materials/Material.h"
 #include "GameFramework/WorldSettings.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "DrawDebugHelpers.h"
 
 #define LOCTEXT_NAMESPACE "CineCameraComponent"
 
@@ -30,16 +31,21 @@ UCineCameraComponent::UCineCameraComponent()
 	LensSettings.MinFStop = 2.f;
 	LensSettings.MaxFStop = 2.f;
 	LensSettings.MinimumFocusDistance = 15.f;
+	LensSettings.DiaphragmBladeCount = FPostProcessSettings::kDefaultDepthOfFieldBladeCount;
 
 #if WITH_EDITORONLY_DATA
 	bTickInEditor = true;
-	PrimaryComponentTick.bCanEverTick = true;
 #endif
+	
+	PrimaryComponentTick.bCanEverTick = true;
+	bAutoActivate = true;
 
 	bConstrainAspectRatio = true;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Default to CircleDOF, but allow the user to customize it
 	PostProcessSettings.DepthOfFieldMethod = DOFM_CircleDOF;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	RecalcDerivedData();
 
@@ -49,13 +55,13 @@ UCineCameraComponent::UCineCameraComponent()
 		// overrides CameraComponent's camera mesh
 		static ConstructorHelpers::FObjectFinder<UStaticMesh> EditorCameraMesh(TEXT("/Engine/EditorMeshes/Camera/SM_CineCam.SM_CineCam"));
 		CameraMesh = EditorCameraMesh.Object;
-
-		static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(TEXT("/Engine/ArtTools/RenderToTexture/Meshes/S_1_Unit_Plane.S_1_Unit_Plane"));
-		DebugFocusPlaneMesh = PlaneMesh.Object;
-
-		static ConstructorHelpers::FObjectFinder<UMaterial> PlaneMat(TEXT("/Engine/EngineDebugMaterials/M_SimpleTranslucent.M_SimpleTranslucent"));
-		DebugFocusPlaneMaterial = PlaneMat.Object;
 	}
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(TEXT("/Engine/ArtTools/RenderToTexture/Meshes/S_1_Unit_Plane.S_1_Unit_Plane"));
+	FocusPlaneVisualizationMesh = PlaneMesh.Object;
+
+	static ConstructorHelpers::FObjectFinder<UMaterial> PlaneMat(TEXT("/Engine/EngineDebugMaterials/M_SimpleTranslucent.M_SimpleTranslucent"));
+	FocusPlaneVisualizationMaterial = PlaneMat.Object;
 #endif
 }
 
@@ -64,28 +70,8 @@ void UCineCameraComponent::PostInitProperties()
 	Super::PostInitProperties();
 
 	// default filmback
-	FNamedFilmbackPreset* const DefaultFilmbackPreset = FilmbackPresets.FindByPredicate(
-		[&](FNamedFilmbackPreset const& Preset)
-		{
-			return (Preset.Name == DefaultFilmbackPresetName);
-		}
-	);
-	if (DefaultFilmbackPreset)
-	{
-		FilmbackSettings = DefaultFilmbackPreset->FilmbackSettings;
-	}
-
-	// default lens
-	FNamedLensPreset* const DefaultLensPreset = LensPresets.FindByPredicate(
-		[&](FNamedLensPreset const& Preset)
-		{
-			return (Preset.Name == DefaultLensPresetName);
-		}
-	);
-	if (DefaultLensPreset)
-	{
-		LensSettings = DefaultLensPreset->LensSettings;
-	}
+	SetFilmbackPresetByName(DefaultFilmbackPresetName);
+	SetLensPresetByName(DefaultLensPresetName);
 
 	// other lens defaults
 	CurrentAperture = DefaultLensFStop;
@@ -101,11 +87,52 @@ void UCineCameraComponent::PostLoad()
 	Super::PostLoad();
 }
 
+static const FColor DebugFocusPointSolidColor(102, 26, 204, 153);		// purple
+static const FColor DebugFocusPointOutlineColor = FColor::Black;
+
 void UCineCameraComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 #if WITH_EDITORONLY_DATA
-	UpdateDebugFocusPlane();
+	// make sure drawing is set up
+	if (FocusSettings.bDrawDebugFocusPlane)
+	{
+		if (DebugFocusPlaneComponent == nullptr)
+		{
+			CreateDebugFocusPlane();
+		}
+
+		UpdateDebugFocusPlane();
+	}
+	else
+	{
+		if (DebugFocusPlaneComponent != nullptr)
+		{
+			DestroyDebugFocusPlane();
+		}
+	}
 #endif
+
+#if ENABLE_DRAW_DEBUG
+	if (FocusSettings.TrackingFocusSettings.bDrawDebugTrackingFocusPoint)
+	{
+		AActor const* const TrackedActor = FocusSettings.TrackingFocusSettings.ActorToTrack;
+
+		FVector FocusPoint;
+		if (TrackedActor)
+		{
+			FTransform const BaseTransform = TrackedActor->GetActorTransform();
+			FocusPoint = BaseTransform.TransformPosition(FocusSettings.TrackingFocusSettings.RelativeOffset);
+		}
+		else
+		{
+			FocusPoint = FocusSettings.TrackingFocusSettings.RelativeOffset;
+		}
+
+		::DrawDebugSolidBox(GetWorld(), FocusPoint, FVector(12.f), DebugFocusPointSolidColor);
+		::DrawDebugBox(GetWorld(), FocusPoint, FVector(12.f), DebugFocusPointOutlineColor);
+	}
+#endif // ENABLE_DRAW_DEBUG
+
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
@@ -191,6 +218,7 @@ void UCineCameraComponent::SetFilmbackPresetByName(const FString& InPresetName)
 		if (P.Name == InPresetName)
 		{
 			FilmbackSettings = P.FilmbackSettings;
+			break;
 		}
 	}
 }
@@ -221,6 +249,7 @@ void UCineCameraComponent::SetLensPresetByName(const FString& InPresetName)
 		if (P.Name == InPresetName)
 		{
 			LensSettings = P.LensSettings;
+			break;
 		}
 	}
 }
@@ -308,28 +337,64 @@ void UCineCameraComponent::GetCameraView(float DeltaTime, FMinimalViewInfo& Desi
 	Super::GetCameraView(DeltaTime, DesiredView);
 
 	UpdateCameraLens(DeltaTime, DesiredView);
+
+	bResetInterpolation = false;
 }
 
+#if WITH_EDITOR
+FText UCineCameraComponent::GetFilmbackText() const
+{
+	const float SensorWidth = FilmbackSettings.SensorWidth;
+	const float SensorHeight = FilmbackSettings.SensorHeight;
+
+	// Search presets for one that matches
+	const FNamedFilmbackPreset* Preset = UCineCameraComponent::GetFilmbackPresets().FindByPredicate([&](const FNamedFilmbackPreset& InPreset) {
+		return InPreset.FilmbackSettings.SensorWidth == SensorWidth && InPreset.FilmbackSettings.SensorHeight == SensorHeight;
+	});
+
+	if (Preset)
+	{
+		return FText::FromString(Preset->Name);
+	}
+	else
+	{
+		FNumberFormattingOptions Opts = FNumberFormattingOptions().SetMaximumFractionalDigits(1);
+		return FText::Format(
+			LOCTEXT("CustomFilmbackFormat", "Custom ({0}mm x {1}mm)"),
+			FText::AsNumber(SensorWidth, &Opts),
+			FText::AsNumber(SensorHeight, &Opts)
+		);
+	}
+}
+#endif
+
+#if WITH_EDITORONLY_DATA
 void UCineCameraComponent::UpdateDebugFocusPlane()
 {
-#if WITH_EDITORONLY_DATA
-	if (FocusSettings.bDrawDebugFocusPlane && DebugFocusPlaneMesh && DebugFocusPlaneComponent)
+	if (FocusPlaneVisualizationMesh && DebugFocusPlaneComponent)
 	{
 		FVector const CamLocation = GetComponentTransform().GetLocation();
 		FVector const CamDir = GetComponentTransform().GetRotation().Vector();
-		FVector const FocusPoint = GetComponentTransform().GetLocation() + CamDir * GetDesiredFocusDistance(CamLocation);
+
+		UWorld const* const World = GetWorld();
+		float const FocusDistance = (World && World->IsGameWorld()) ? CurrentFocusDistance : GetDesiredFocusDistance(CamLocation);		// in editor, use desired focus distance directly, no interp
+		FVector const FocusPoint = GetComponentTransform().GetLocation() + CamDir * FocusDistance;
+
 		DebugFocusPlaneComponent->SetWorldLocation(FocusPoint);
 	}
-#endif
 }
-
+#endif
 
 void UCineCameraComponent::UpdateCameraLens(float DeltaTime, FMinimalViewInfo& DesiredView)
 {
 	if (FocusSettings.FocusMethod == ECameraFocusMethod::None)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldMethod = false;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldFstop = false;
+		DesiredView.PostProcessSettings.bOverride_DepthOfFieldMinFstop = false;
+		DesiredView.PostProcessSettings.bOverride_DepthOfFieldBladeCount = false;
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldFocalDistance = false;
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldSensorWidth = false;
 	}
@@ -337,11 +402,19 @@ void UCineCameraComponent::UpdateCameraLens(float DeltaTime, FMinimalViewInfo& D
 	{
 		// Update focus/DoF
 		DesiredView.PostProcessBlendWeight = 1.f;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldMethod = true;
 		DesiredView.PostProcessSettings.DepthOfFieldMethod = PostProcessSettings.DepthOfFieldMethod;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldFstop = true;
 		DesiredView.PostProcessSettings.DepthOfFieldFstop = CurrentAperture;
+
+		DesiredView.PostProcessSettings.bOverride_DepthOfFieldMinFstop = true;
+		DesiredView.PostProcessSettings.DepthOfFieldMinFstop = LensSettings.MinFStop;
+
+		DesiredView.PostProcessSettings.bOverride_DepthOfFieldBladeCount = true;
+		DesiredView.PostProcessSettings.DepthOfFieldBladeCount = LensSettings.DiaphragmBladeCount;
 
 		CurrentFocusDistance = GetDesiredFocusDistance(DesiredView.Location);
 
@@ -365,8 +438,6 @@ void UCineCameraComponent::UpdateCameraLens(float DeltaTime, FMinimalViewInfo& D
 		DesiredView.PostProcessSettings.bOverride_DepthOfFieldSensorWidth = true;
 		DesiredView.PostProcessSettings.DepthOfFieldSensorWidth = FilmbackSettings.SensorWidth;
 	}
-
-	bResetInterpolation = false;
 }
 
 void UCineCameraComponent::NotifyCameraCut()
@@ -386,8 +457,8 @@ void UCineCameraComponent::CreateDebugFocusPlane()
 		{
 			DebugFocusPlaneComponent = NewObject<UStaticMeshComponent>(MyOwner, NAME_None, RF_Transactional | RF_TextExportTransient);
 			DebugFocusPlaneComponent->SetupAttachment(this);
-			DebugFocusPlaneComponent->bIsEditorOnly = true;
-			DebugFocusPlaneComponent->SetStaticMesh(DebugFocusPlaneMesh);
+			DebugFocusPlaneComponent->SetIsVisualizationComponent(true);
+			DebugFocusPlaneComponent->SetStaticMesh(FocusPlaneVisualizationMesh);
 			DebugFocusPlaneComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			DebugFocusPlaneComponent->bHiddenInGame = false;
 			DebugFocusPlaneComponent->CastShadow = false;
@@ -400,7 +471,7 @@ void UCineCameraComponent::CreateDebugFocusPlane()
 
 			DebugFocusPlaneComponent->RegisterComponentWithWorld(GetWorld());
 
-			DebugFocusPlaneMID = DebugFocusPlaneComponent->CreateAndSetMaterialInstanceDynamicFromMaterial(0, DebugFocusPlaneMaterial);
+			DebugFocusPlaneMID = DebugFocusPlaneComponent->CreateAndSetMaterialInstanceDynamicFromMaterial(0, FocusPlaneVisualizationMaterial);
 			if (DebugFocusPlaneMID)
 			{
 				DebugFocusPlaneMID->SetVectorParameterValue(FName(TEXT("Color")), FocusSettings.DebugFocusPlaneColor.ReinterpretAsLinear());

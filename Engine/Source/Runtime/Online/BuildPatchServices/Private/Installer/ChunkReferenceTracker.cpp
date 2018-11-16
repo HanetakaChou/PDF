@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Installer/ChunkReferenceTracker.h"
+#include "Templates/Greater.h"
 #include "Algo/Sort.h"
 #include "Misc/ScopeLock.h"
 
@@ -13,7 +14,7 @@ namespace BuildPatchServices
 	{
 	public:
 		FChunkReferenceTracker(const FBuildPatchAppManifestRef& InstallManifest, const TSet<FString>& FilesToConstruct);
-		FChunkReferenceTracker(const FBuildPatchAppManifestRef& InstallManifest);
+		FChunkReferenceTracker(TArray<FGuid> CustomUseStack);
 
 		~FChunkReferenceTracker();
 
@@ -26,25 +27,25 @@ namespace BuildPatchServices
 		// IChunkReferenceTracker interface end.
 
 	private:
-		TMap<FGuid, int32> ReferenceCount;
+		TMap<FGuid, FThreadSafeCounter> ReferenceCount;
 		TArray<FGuid> UseStack;
-		mutable FCriticalSection ThreadLockCs;
+		mutable FCriticalSection UseStackCs;
 	};
 
 	FChunkReferenceTracker::FChunkReferenceTracker(const FBuildPatchAppManifestRef& InstallManifest, const TSet<FString>& FilesToConstruct)
 		: ReferenceCount()
 		, UseStack()
-		, ThreadLockCs()
+		, UseStackCs()
 	{
 		// Create our full list of chunks, including dupe references, and track the reference count of each chunk.
 		for (const FString& File : FilesToConstruct)
 		{
-			const FFileManifestData* NewFileManifest = InstallManifest->GetFileManifest(File);
+			const FFileManifest* NewFileManifest = InstallManifest->GetFileManifest(File);
 			if (NewFileManifest != nullptr)
 			{
-				for (const FChunkPartData& ChunkPart : NewFileManifest->FileChunkParts)
+				for (const FChunkPart& ChunkPart : NewFileManifest->ChunkParts)
 				{
-					ReferenceCount.FindOrAdd(ChunkPart.Guid)++;
+					ReferenceCount.FindOrAdd(ChunkPart.Guid).Increment();
 					UseStack.Add(ChunkPart.Guid);
 				}
 			}
@@ -54,31 +55,15 @@ namespace BuildPatchServices
 		UE_LOG(LogChunkReferenceTracker, VeryVerbose, TEXT("Created. Total references:%d. Unique chunks:%d"), UseStack.Num(), ReferenceCount.Num());
 	}
 
-	FChunkReferenceTracker::FChunkReferenceTracker(const FBuildPatchAppManifestRef& InstallManifest)
+	FChunkReferenceTracker::FChunkReferenceTracker(TArray<FGuid> CustomChunkReferences)
 		: ReferenceCount()
-		, UseStack()
-		, ThreadLockCs()
+		, UseStack(MoveTemp(CustomChunkReferences))
+		, UseStackCs()
 	{
-		// Create our full list of chunks, no dupes, just one reference per chunk in the correct order.
-		TArray<FString> AllFiles;
-		TSet<FGuid> AllChunks;
-		InstallManifest->GetFileList(AllFiles);
-		for (const FString& File : AllFiles)
+		ReferenceCount.Reserve(UseStack.Num());
+		for (const FGuid& Chunk : UseStack)
 		{
-			const FFileManifestData* NewFileManifest = InstallManifest->GetFileManifest(File);
-			if (NewFileManifest != nullptr)
-			{
-				for (const FChunkPartData& ChunkPart : NewFileManifest->FileChunkParts)
-				{
-					bool bWasAlreadyInSet = false;
-					AllChunks.Add(ChunkPart.Guid, &bWasAlreadyInSet);
-					if (!bWasAlreadyInSet)
-					{
-						ReferenceCount.Add(ChunkPart.Guid, 1);
-						UseStack.Add(ChunkPart.Guid);
-					}
-				}
-			}
+			ReferenceCount.FindOrAdd(Chunk).Increment();
 		}
 		// Reverse the order of UseStack so it can be used as a stack.
 		Algo::Reverse(UseStack);
@@ -91,12 +76,10 @@ namespace BuildPatchServices
 
 	TSet<FGuid> FChunkReferenceTracker::GetReferencedChunks() const
 	{
-		// Thread lock to protect access to ReferenceCount.
-		FScopeLock ThreadLock(&ThreadLockCs);
 		TSet<FGuid> ReferencedChunks;
-		for (const TPair<FGuid, int32>& Pair : ReferenceCount)
+		for (const TPair<FGuid, FThreadSafeCounter>& Pair : ReferenceCount)
 		{
-			if (Pair.Value > 0)
+			if (Pair.Value.GetValue() > 0)
 			{
 				ReferencedChunks.Add(Pair.Key);
 			}
@@ -106,15 +89,13 @@ namespace BuildPatchServices
 
 	int32 FChunkReferenceTracker::GetReferenceCount(const FGuid& ChunkId) const
 	{
-		// Thread lock to protect access to ReferenceCount.
-		FScopeLock ThreadLock(&ThreadLockCs);
-		return ReferenceCount.Contains(ChunkId) ? ReferenceCount[ChunkId] : 0;
+		return ReferenceCount.Contains(ChunkId) ? ReferenceCount[ChunkId].GetValue() : 0;
 	}
 
 	void FChunkReferenceTracker::SortByUseOrder(TArray<FGuid>& ChunkList, ESortDirection Direction) const
 	{
 		// Thread lock to protect access to UseStack.
-		FScopeLock ThreadLock(&ThreadLockCs);
+		FScopeLock ThreadLock(&UseStackCs);
 		struct FIndexCache
 		{
 			FIndexCache(const TArray<FGuid>& InArray)
@@ -136,19 +117,19 @@ namespace BuildPatchServices
 		FIndexCache ChunkUseIndexes(UseStack);
 		switch (Direction)
 		{
-		case ESortDirection::Ascending:
-			Algo::SortBy(ChunkList, [&ChunkUseIndexes](const FGuid& Id) { return ChunkUseIndexes.GetIndex(Id); }, TGreater<int32>());
-			break;
-		case ESortDirection::Descending:
-			Algo::SortBy(ChunkList, [&ChunkUseIndexes](const FGuid& Id) { return ChunkUseIndexes.GetIndex(Id); }, TLess<int32>());
-			break;
+			case ESortDirection::Ascending:
+				Algo::SortBy(ChunkList, [&ChunkUseIndexes](const FGuid& Id) { return ChunkUseIndexes.GetIndex(Id); }, TGreater<int32>());
+				break;
+			case ESortDirection::Descending:
+				Algo::SortBy(ChunkList, [&ChunkUseIndexes](const FGuid& Id) { return ChunkUseIndexes.GetIndex(Id); }, TLess<int32>());
+				break;
 		}
 	}
 
 	TArray<FGuid> FChunkReferenceTracker::GetNextReferences(int32 Count, const TFunction<bool(const FGuid&)>& SelectPredicate) const
 	{
 		// Thread lock to protect access to UseStack.
-		FScopeLock ThreadLock(&ThreadLockCs);
+		FScopeLock ThreadLock(&UseStackCs);
 		TSet<FGuid> AddedIds;
 		TArray<FGuid> NextReferences;
 		for (int32 UseStackIdx = UseStack.Num() - 1; UseStackIdx >= 0 && Count > NextReferences.Num(); --UseStackIdx)
@@ -165,11 +146,11 @@ namespace BuildPatchServices
 
 	bool FChunkReferenceTracker::PopReference(const FGuid& ChunkId)
 	{
-		// Thread lock to protect access to ReferenceCount and UseStack.
-		FScopeLock ThreadLock(&ThreadLockCs);
+		// Thread lock to protect access to UseStack.
+		FScopeLock ThreadLock(&UseStackCs);
 		if (UseStack.Last() == ChunkId)
 		{
-			ReferenceCount[ChunkId]--;
+			ReferenceCount[ChunkId].Decrement();
 			UseStack.Pop();
 			return true;
 		}
@@ -181,8 +162,8 @@ namespace BuildPatchServices
 		return new FChunkReferenceTracker(InstallManifest, FilesToConstruct);
 	}
 
-	IChunkReferenceTracker* FChunkReferenceTrackerFactory::Create(const FBuildPatchAppManifestRef& InstallManifest)
+	IChunkReferenceTracker* FChunkReferenceTrackerFactory::Create(TArray<FGuid> CustomChunkReferences)
 	{
-		return new FChunkReferenceTracker(InstallManifest);
+		return new FChunkReferenceTracker(MoveTemp(CustomChunkReferences));
 	}
 }

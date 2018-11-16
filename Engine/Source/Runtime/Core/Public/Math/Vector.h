@@ -20,7 +20,7 @@
 #include "Math/Axis.h"
 
 #if PLATFORM_VECTOR_CUBIC_INTERP_SSE
-#include "UnrealMathSSE.h"
+#include "Math/UnrealMathSSE.h"
 #endif
 
 /**
@@ -543,6 +543,9 @@ public:
 	 */
 	FVector BoundToCube(float Radius) const;
 
+	/** Get a copy of this vector, clamped inside of a cube. */
+	FVector BoundToBox(const FVector& Min, const FVector Max) const;
+
 	/** Create a copy of this vector, with its magnitude clamped between Min and Max. */
 	FVector GetClampedToSize(float Min, float Max) const;
 
@@ -621,6 +624,14 @@ public:
 	 * @return Normalized copy if safe, otherwise returns zero vector.
 	 */
 	FVector GetSafeNormal2D(float Tolerance=SMALL_NUMBER) const;
+
+	/**
+	* Calculates normalized 2D version of vector without checking for zero length.
+	*
+	* @return Normalized 2D version of vector.
+	* @see GetSafeNormal2D()
+	*/
+	FVector GetUnsafeNormal2D() const;
 
 	/**
 	 * Returns the cosine of the angle between this vector and another projected onto the XY plane (no Z).
@@ -975,10 +986,32 @@ public:
 		// See TArray::BulkSerialize for detailed description of implied limitations.
 		return Ar << V.X << V.Y << V.Z;
 	}
+
+	/**
+	 * Structured archive slot serializer.
+	 *
+	 * @param Slot Structured archive slot.
+	 * @param V Vector to serialize.
+	 */
+	friend void operator<<(FStructuredArchive::FSlot Slot, FVector& V)
+	{
+		// @warning BulkSerialize: FVector is serialized as memory dump
+		// See TArray::BulkSerialize for detailed description of implied limitations.
+		FStructuredArchive::FStream Stream = Slot.EnterStream();
+		Stream.EnterElement() << V.X;
+		Stream.EnterElement() << V.Y;
+		Stream.EnterElement() << V.Z;
+	}
 	
 	bool Serialize(FArchive& Ar)
 	{
 		Ar << *this;
+		return true;
+	}
+
+	bool Serialize(FStructuredArchive::FSlot Slot)
+	{
+		Slot << *this;
 		return true;
 	}
 
@@ -1576,6 +1609,17 @@ FORCEINLINE FVector FVector::BoundToCube(float Radius) const
 		);
 }
 
+FORCEINLINE FVector FVector::BoundToBox(const FVector& Min, const FVector Max) const
+{
+	return FVector
+	(
+		FMath::Clamp(X, Min.X, Max.X),
+		FMath::Clamp(Y, Min.Y, Max.Y),
+		FMath::Clamp(Z, Min.Z, Max.Z)
+	);
+}
+
+
 FORCEINLINE FVector FVector::GetClampedToSize(float Min, float Max) const
 {
 	float VecSize = Size();
@@ -1763,6 +1807,12 @@ FORCEINLINE FVector FVector::GetSafeNormal2D(float Tolerance) const
 	}
 
 	const float Scale = FMath::InvSqrt(SquareSum);
+	return FVector(X*Scale, Y*Scale, 0.f);
+}
+
+FORCEINLINE FVector FVector::GetUnsafeNormal2D() const
+{
+	const float Scale = FMath::InvSqrt(X * X + Y * Y);
 	return FVector(X*Scale, Y*Scale, 0.f);
 }
 

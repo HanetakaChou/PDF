@@ -18,9 +18,9 @@
 #include "OSVRInputPrivate.h"
 #include "Containers/Queue.h"
 
-#include "GenericPlatformMath.h"
+#include "GenericPlatform/GenericPlatformMath.h"
 #include "OSVREntryPoint.h"
-#include "GenericApplicationMessageHandler.h"
+#include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "OSVRTypes.h"
 #include "IOSVR.h"
 #include "OSVRHMD.h"
@@ -53,12 +53,12 @@ class OSVRButton
 public:
     OSVRButton() {}
     OSVRButton(OSVRButtonType _type, FName _key, const FString& _ifacePath) :
-        type(_type), key(_key), ifacePath(_ifacePath)
+        key(_key), ifacePath(_ifacePath), type(_type)
     {
     }
 
     OSVRButton(OSVRButtonType _type, OSVRThresholdType _thresholdType, float _threshold, FName _key, const FString& _ifacePath) :
-        type(_type), thresholdType(_thresholdType), threshold(_threshold), key(_key), ifacePath(_ifacePath)
+        threshold(_threshold), key(_key), ifacePath(_ifacePath), type(_type), thresholdType(_thresholdType)
     {
     }
 

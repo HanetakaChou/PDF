@@ -17,6 +17,7 @@ ACameraRig_Rail::ACameraRig_Rail(const FObjectInitializer& ObjectInitializer)
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	CurrentPositionOnRail = 0.f;
+	bLockOrientationToRail = false;
 
 	// Create components
 	TransformComponent = CreateDefaultSubobject<USceneComponent>(TEXT("TransformComponent"));
@@ -41,7 +42,7 @@ ACameraRig_Rail::ACameraRig_Rail(const FObjectInitializer& ObjectInitializer)
 		if (PreviewMesh_Mount)
 		{
 			PreviewMesh_Mount->SetStaticMesh(MountMesh.Object);
-			PreviewMesh_Mount->bIsEditorOnly = true;
+			PreviewMesh_Mount->SetIsVisualizationComponent(true);
 			PreviewMesh_Mount->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			PreviewMesh_Mount->bHiddenInGame = true;
 			PreviewMesh_Mount->CastShadow = false;
@@ -61,7 +62,7 @@ USplineMeshComponent* ACameraRig_Rail::CreateSplinePreviewSegment()
 	{
 		Segment->SetStaticMesh(PreviewRailStaticMesh);
 		Segment->SetMobility(EComponentMobility::Movable);
-		Segment->bIsEditorOnly = true;
+		Segment->SetIsVisualizationComponent(true);
 		Segment->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 		Segment->bHiddenInGame = true;
 		Segment->CastShadow = false;
@@ -127,7 +128,7 @@ void ACameraRig_Rail::UpdatePreviewMeshes()
 			// Unregister any owned components that aren't in PreviewRailMeshSegments
 			TArray<USplineMeshComponent*> OwnedSplineMeshComponents;
 			GetComponents(OwnedSplineMeshComponents);
-			for (auto OwnedComponent : OwnedSplineMeshComponents)
+			for (USplineMeshComponent* OwnedComponent : OwnedSplineMeshComponents)
 			{
 				if (!PreviewRailMeshSegments.Contains(OwnedComponent) && OwnedComponent->IsRegistered())
 				{
@@ -154,6 +155,12 @@ void ACameraRig_Rail::UpdateRailComponents()
 		float const SplineLen = RailSplineComponent->GetSplineLength();
 		FVector const MountPos = RailSplineComponent->GetLocationAtDistanceAlongSpline(CurrentPositionOnRail*SplineLen, ESplineCoordinateSpace::World);
 		RailCameraMount->SetWorldLocation(MountPos);
+
+		if (bLockOrientationToRail)
+		{
+			FQuat const RailRot = RailSplineComponent->GetQuaternionAtDistanceAlongSpline(CurrentPositionOnRail*SplineLen, ESplineCoordinateSpace::World);
+			RailCameraMount->SetWorldRotation(RailRot);
+		}
 	}
 
 #if WITH_EDITOR

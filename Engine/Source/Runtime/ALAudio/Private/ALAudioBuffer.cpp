@@ -110,14 +110,14 @@ void FALSoundBuffer::CreateNativeBuffer(FALAudioDevice* AudioDevice, USoundWave*
 	{
 		SCOPE_CYCLE_COUNTER( STAT_AudioResourceCreationTime );
 
-		check(Wave->bIsPrecacheDone);
+		check(Wave->GetPrecacheState() == ESoundWavePrecacheState::Done);
 
 		// Create new buffer.
 		Buffer = new FALSoundBuffer(AudioDevice);
 
 		Buffer->InternalFormat = AudioDevice->GetInternalFormat(Wave->NumChannels);
 		Buffer->NumChannels = Wave->NumChannels;
-		Buffer->SampleRate = Wave->SampleRate;
+		Buffer->SampleRate = Wave->GetSampleRateForCurrentPlatform();
 
 		FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager();
 		check(AudioDeviceManager != nullptr);
@@ -145,7 +145,7 @@ void FALSoundBuffer::CreateNativeBuffer(FALAudioDevice* AudioDevice, USoundWave*
 	else
 	{
 		// get the raw data
-		uint8* SoundData = reinterpret_cast<uint8*>(Wave->RawData.Lock(LOCK_READ_ONLY));
+		const uint8* SoundData = reinterpret_cast<const uint8*>(Wave->RawData.Lock(LOCK_READ_ONLY));
 		// it's (possibly) a pointer to a wave file, so skip over the header
 		int SoundDataSize = Wave->RawData.GetBulkDataSize();
 

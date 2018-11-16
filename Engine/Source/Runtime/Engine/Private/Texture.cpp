@@ -19,6 +19,7 @@
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Engine/TextureLODSettings.h"
 
 #if WITH_EDITORONLY_DATA
 	#include "EditorFramework/AssetImportData.h"
@@ -112,6 +113,10 @@ void UTexture::UpdateResource()
 	}
 }
 
+bool UTexture::IsPostLoadThreadSafe() const
+{
+	return false;
+}
 
 int32 UTexture::GetCachedLODBias() const
 {
@@ -955,14 +960,13 @@ uint32 UTexture::GetMaximumDimension() const
 }
 #endif // #if WITH_EDITOR
 
-FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const UTexture* Texture, const FConfigFile& EngineSettings, bool bSupportDX11TextureFormats )
+FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const UTexture* Texture, const FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture, int32 BlockSize )
 {
 	FName TextureFormatName = NAME_None;
 
 	/**
 	 * IF you add a format to this function don't forget to update GetAllDefaultTextureFormatNames 
 	 */
-
 
 #if WITH_EDITOR
 	// Supported texture format names.
@@ -981,16 +985,29 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	static FName NameBC6H(TEXT("BC6H"));
 	static FName NameBC7(TEXT("BC7"));
 
+	check(TargetPlatform);
+
 	bool bNoCompression = Texture->CompressionNone				// Code wants the texture uncompressed.
 		|| (TargetPlatform->HasEditorOnlyData() && Texture->DeferCompression)	// The user wishes to defer compression, this is ok for the Editor only.
 		|| (Texture->CompressionSettings == TC_EditorIcon)
 		|| (Texture->LODGroup == TEXTUREGROUP_ColorLookupTable)	// Textures in certain LOD groups should remain uncompressed.
 		|| (Texture->LODGroup == TEXTUREGROUP_Bokeh)
 		|| (Texture->LODGroup == TEXTUREGROUP_IESLightProfile)
-		|| (Texture->Source.GetSizeX() < 4) // Don't compress textures smaller than the DXT block size.
-		|| (Texture->Source.GetSizeY() < 4)
-		|| (Texture->Source.GetSizeX() % 4 != 0)
-		|| (Texture->Source.GetSizeY() % 4 != 0);
+		|| (Texture->GetMaterialType() == MCT_VolumeTexture && !bSupportCompressedVolumeTexture);
+
+	if (!bNoCompression && Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
+	{
+		uint32 SizeX = Texture->Source.GetSizeX();
+		uint32 SizeY = Texture->Source.GetSizeY();
+#if WITH_EDITORONLY_DATA
+		const UTextureLODSettings& LODSettings = TargetPlatform->GetTextureLODSettings();
+ 		const uint32 LODBiasNoCinematics = FMath::Max<uint32>(LODSettings.CalculateLODBias(SizeX, SizeY, Texture->MaxTextureSize, Texture->LODGroup, Texture->LODBias, 0, Texture->MipGenSettings), 0);
+		SizeX = FMath::Max<uint32>(SizeX >> LODBiasNoCinematics, 1);
+		SizeY = FMath::Max<uint32>(SizeY >> LODBiasNoCinematics, 1);
+#endif
+		// Don't compress textures smaller than the DXT block size.
+		bNoCompression |= (SizeX < 4) || (SizeY < 4) || (SizeX % 4 != 0) || (SizeY % 4 != 0);
+	}
 
 	bool bUseDXT5NormalMap = false;
 
@@ -1088,7 +1105,7 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		}
 		else if (TextureFormatName == NameBC7)
 		{
-			TextureFormatName = NameAutoDXT;
+			TextureFormatName = NameBGRA8;
 		}
 	}
 
@@ -1140,8 +1157,6 @@ void GetAllDefaultTextureFormats(const class ITargetPlatform* TargetPlatform, TA
 
 void UTexture::NotifyMaterials()
 {
-	TArray<UMaterialInterface*> MaterialsThatUseThisTexture;
-
 	// Create a material update context to safely update materials.
 	{
 		FMaterialUpdateContext UpdateContext;
@@ -1153,8 +1168,7 @@ void UTexture::NotifyMaterials()
 			UMaterialInterface* MaterialInterface = *It;
 			if (DoesMaterialUseTexture(MaterialInterface, this))
 			{
-				MaterialsThatUseThisTexture.Add(MaterialInterface);
-
+				UpdateContext.AddMaterialInterface(MaterialInterface);
 				// This is a bit tricky. We want to make sure all materials using this texture are
 				// updated. Materials are always updated. Material instances may also have to be
 				// updated and if they have static permutations their children must be updated
@@ -1167,15 +1181,8 @@ void UTexture::NotifyMaterials()
 		// Go ahead and update any base materials that need to be.
 		for (TSet<UMaterial*>::TConstIterator It(BaseMaterialsThatUseThisTexture); It; ++It)
 		{
-			UpdateContext.AddMaterial(*It);
 			(*It)->PostEditChange();
 		}
-	}
-
-	// Now that all materials and instances have updated send necessary callbacks.
-	for (int32 i = 0; i < MaterialsThatUseThisTexture.Num(); ++i)
-	{
-		FEditorSupportDelegates::MaterialTextureSettingsChanged.Broadcast(MaterialsThatUseThisTexture[i]);
 	}
 }
 

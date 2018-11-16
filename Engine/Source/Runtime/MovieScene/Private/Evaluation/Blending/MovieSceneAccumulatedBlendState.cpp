@@ -1,10 +1,15 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "MovieSceneAccumulatedBlendState.h"
+#include "Evaluation/Blending/MovieSceneAccumulatedBlendState.h"
 #include "IMovieScenePlayer.h"
 
 void FMovieSceneAccumulatedBlendState::Consolidate(TMap<UObject*, TMap<FMovieSceneBlendingActuatorID, FActuatorTokenStackPtr>>& InOutBlendState, FMovieSceneEvaluationOperand InOperand, IMovieScenePlayer& Player)
 {
+	if (TokensToBlend.Num() == 0)
+	{
+		return;
+	}
+
 	if (InOperand.ObjectBindingID.IsValid())
 	{
 		for (TWeakObjectPtr<> WeakObj : Player.FindBoundObjects(InOperand))

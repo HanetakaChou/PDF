@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "GenericPlatformProperties.h"
+#include "GenericPlatform/GenericPlatformProperties.h"
 
 
 /**
@@ -43,6 +43,11 @@ struct FIOSPlatformProperties
 		return true;
 	}
 
+    static FORCEINLINE bool SupportsQuit()
+    {
+        return true;
+    }
+    
 	static FORCEINLINE bool SupportsBuildTarget( EBuildTargets::Type BuildTarget )
 	{
 		return (BuildTarget == EBuildTargets::Game);

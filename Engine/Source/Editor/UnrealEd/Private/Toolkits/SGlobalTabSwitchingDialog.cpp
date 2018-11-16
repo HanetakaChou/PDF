@@ -22,7 +22,7 @@
 #include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
 
 #if PLATFORM_MAC
-#include "MacApplication.h"
+#include "Mac/MacApplication.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SGlobalTabSwitchingDialog"
@@ -90,7 +90,7 @@ public:
 		const bool bDirtyState = MyAsset->GetOutermost()->IsDirty();
 		FFormatNamedArguments Args;
 		Args.Add(TEXT("AssetName"), FText::AsCultureInvariant(MyAsset->GetName()));
-		Args.Add(TEXT("DirtyState"), bDirtyState ? LOCTEXT("AssetModified", " [Modified]") : LOCTEXT("AssetNotModified", ""));
+		Args.Add(TEXT("DirtyState"), bDirtyState ? LOCTEXT("AssetModified", " [Modified]") : FText::GetEmpty());
 		FText AssetText = FText::Format(LOCTEXT("AssetEntryLabel", "{AssetName}{DirtyState}"), Args);
 
 		// Create a thumbnail to represent the asset type
@@ -392,7 +392,10 @@ void SGlobalTabSwitchingDialog::Construct(const FArguments& InArgs, FVector2D In
 	TArray<UObject*> OpenAssetList = FAssetEditorManager::Get().GetAllEditedAssets();
 	for (UObject* OpenAsset : OpenAssetList)
 	{
-		MainTabsListDataSource.Add(MakeShareable(new FTabSwitchingListItem_Asset(OpenAsset)));
+		if (OpenAsset->GetOuter() != GetTransientPackage())
+		{
+			MainTabsListDataSource.Add(MakeShareable(new FTabSwitchingListItem_Asset(OpenAsset)));
+		}
 	}
 
 	MainTabsListDataSource.Add(FTabSwitchingListItem_World::MakeWorldItem());

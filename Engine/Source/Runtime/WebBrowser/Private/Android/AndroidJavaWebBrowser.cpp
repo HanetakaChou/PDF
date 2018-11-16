@@ -1,7 +1,10 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "AndroidJavaWebBrowser.h"
-#include "AndroidApplication.h"
+
+#if USE_ANDROID_JNI
+
+#include "Android/AndroidApplication.h"
 
 #if UE_BUILD_SHIPPING
 // always clear any exceptions in SHipping
@@ -39,6 +42,7 @@ FJavaAndroidWebBrowser::FJavaAndroidWebBrowser(bool swizzlePixels, bool vulkanRe
 	, CloseMethod(GetClassMethod("Close", "()V"))
 	, GoBackOrForwardMethod(GetClassMethod("GoBackOrForward", "(I)V"))
 	, SetAndroid3DBrowserMethod(GetClassMethod("SetAndroid3DBrowser", "(Z)V"))
+	, SetVisibilityMethod(GetClassMethod("SetVisibility", "(Z)V"))
 {
 	VideoTexture = nullptr;
 	bVideoTextureValid = false;
@@ -217,4 +221,10 @@ void FJavaAndroidWebBrowser::SetAndroid3DBrowser(bool InIsAndroid3DBrowser)
 	CallMethod<void>(SetAndroid3DBrowserMethod, InIsAndroid3DBrowser);
 }
 
+void FJavaAndroidWebBrowser::SetVisibility(bool InIsVisible)
+{
+	CallMethod<void>(SetVisibilityMethod, InIsVisible);
+}
+
+#endif // USE_ANDROID_JNI
 

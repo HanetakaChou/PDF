@@ -3,10 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/CoreOnline.h"
 #include "Stats/Stats.h"
 #include "Modules/ModuleManager.h"
 #include "OnlineSubsystemModule.h"
-#include "UObject/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
 #include "OnlineSubsystemNames.h"
@@ -39,9 +39,8 @@ class IOnlineUser;
 class IOnlineUserCloud;
 class IOnlineVoice;
 
-ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnline, Display, All);
-ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineGame, Display, All);
-ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineChat, Display, All);
+ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnline, Log, All);
+ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineGame, Log, All);
 
 /** Online subsystem stats */
 DECLARE_STATS_GROUP(TEXT("Online"), STATGROUP_Online, STATCAT_Advanced);
@@ -54,13 +53,10 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("SessionInt"), STAT_Session_Interface, STATGROUP_
 /** Total time to process both local/remote voice */
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VoiceInt"), STAT_Voice_Interface, STATGROUP_Online, ONLINESUBSYSTEM_API);
 
-#if UE_BUILD_SHIPPING
-#define OSS_REDACT(x) TEXT("<Redacted>")
-#else
-#define OSS_REDACT(x) (x)
+#ifndef ONLINE_LOG_PREFIX
+#define ONLINE_LOG_PREFIX TEXT("OSS: ")
 #endif
 
-#define ONLINE_LOG_PREFIX TEXT("OSS: ")
 #define UE_LOG_ONLINE(Verbosity, Format, ...) \
 { \
 	UE_LOG(LogOnline, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
@@ -97,16 +93,18 @@ typedef TSharedPtr<class IOnlineMessage, ESPMode::ThreadSafe> IOnlineMessagePtr;
 typedef TSharedPtr<class IOnlinePresence, ESPMode::ThreadSafe> IOnlinePresencePtr;
 typedef TSharedPtr<class IOnlineChat, ESPMode::ThreadSafe> IOnlineChatPtr;
 typedef TSharedPtr<class IOnlineTurnBased, ESPMode::ThreadSafe> IOnlineTurnBasedPtr;
+typedef TSharedPtr<class IOnlineTournament, ESPMode::ThreadSafe> IOnlineTournamentPtr;
 typedef TSharedPtr<class FOnlineNotificationHandler, ESPMode::ThreadSafe> FOnlineNotificationHandlerPtr;
 typedef TSharedPtr<class FOnlineNotificationTransportManager, ESPMode::ThreadSafe> FOnlineNotificationTransportManagerPtr;
 
 /**
  * Called when the connection state as reported by the online platform changes
  *
+ * @param ServiceName the name of the service that is reporting (platform dependent)
  * @param LastConnectionState last state of the connection
  * @param ConnectionState current state of the connection
  */
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConnectionStatusChanged, EOnlineServerConnectionStatus::Type /*LastConnectionState*/, EOnlineServerConnectionStatus::Type /*ConnectionState*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnConnectionStatusChanged, const FString& /*ServiceName*/, EOnlineServerConnectionStatus::Type /*LastConnectionState*/, EOnlineServerConnectionStatus::Type /*ConnectionState*/);
 typedef FOnConnectionStatusChanged::FDelegate FOnConnectionStatusChangedDelegate;
 
 /**
@@ -156,7 +154,7 @@ public:
 	}
 
 	/** 
-	 * Get the online subsystem based on current platform
+	 * Get the online subsystem native to the current hardware
 	 *
 	 * @param bAutoLoad - load the module if not already loaded
 	 *
@@ -164,33 +162,30 @@ public:
 	 */
 	static IOnlineSubsystem* GetByPlatform(bool bAutoLoad=true)
 	{
-		if (PLATFORM_PS4)
+		static const FName OnlineSubsystemModuleName = TEXT("OnlineSubsystem");
+		if (bAutoLoad || FModuleManager::Get().IsModuleLoaded(OnlineSubsystemModuleName))
 		{
-			if (bAutoLoad || IOnlineSubsystem::IsLoaded(PS4_SUBSYSTEM))
-			{
-				return IOnlineSubsystem::Get(PS4_SUBSYSTEM);
-			}
+			FOnlineSubsystemModule& OSSModule = FModuleManager::GetModuleChecked<FOnlineSubsystemModule>(OnlineSubsystemModuleName);
+			return OSSModule.GetNativeSubsystem(bAutoLoad);
 		}
-		else if (PLATFORM_XBOXONE)
+		return nullptr;
+	}
+
+	/**
+	* Get the online subsystem associated with the given config string
+	*
+	* @param ConfigString - Key to query for
+	* @param bAutoLoad - load the module if not already loaded
+	*
+	* @return pointer to the appropriate online subsystem
+	*/
+	static IOnlineSubsystem* GetByConfig(const FString& ConfigString, bool bAutoLoad = true)
+	{
+		static const FName OnlineSubsystemModuleName = TEXT("OnlineSubsystem");
+		if (bAutoLoad || FModuleManager::Get().IsModuleLoaded(OnlineSubsystemModuleName))
 		{
-			if (bAutoLoad || IOnlineSubsystem::IsLoaded(LIVE_SUBSYSTEM))
-			{
-				return IOnlineSubsystem::Get(LIVE_SUBSYSTEM);
-			}
-		}
-		else if (PLATFORM_ANDROID)
-		{
-			if (bAutoLoad || IOnlineSubsystem::IsLoaded(GOOGLEPLAY_SUBSYSTEM))
-			{
-				return IOnlineSubsystem::Get(GOOGLEPLAY_SUBSYSTEM);
-			}
-		}
-		else if (PLATFORM_IOS)
-		{
-			if (bAutoLoad || IOnlineSubsystem::IsLoaded(IOS_SUBSYSTEM))
-			{
-				return IOnlineSubsystem::Get(IOS_SUBSYSTEM);
-			}
+			FOnlineSubsystemModule& OSSModule = FModuleManager::GetModuleChecked<FOnlineSubsystemModule>(OnlineSubsystemModuleName);
+			return OSSModule.GetSubsystemByConfig(ConfigString, bAutoLoad);
 		}
 		return nullptr;
 	}
@@ -272,6 +267,13 @@ public:
 	 * @return the instance name of this subsystem
 	 */
 	virtual FName GetInstanceName() const = 0;
+
+	/**
+	 * Get the local online platform based on compile time determination of hardware.
+	 * @see OnlineSubsystemNames.h OSS_PLATFORM_NAME_*
+	 * @return string representation of online platform name
+	 */
+	static FString GetLocalPlatformName();
 
 	/** @return true if the subsystem is enabled, false otherwise */
 	virtual bool IsEnabled() const = 0;
@@ -406,19 +408,19 @@ public:
 
 	/** 
 	 * Get the interface for accessing online messages
-	 * @return Interface pointer for the appropriate online user service
+	 * @return Interface pointer for the appropriate online message service
 	 */
 	virtual IOnlineMessagePtr GetMessageInterface() const = 0;
 
 	/** 
 	 * Get the interface for managing rich presence information
-	 * @return Interface pointer for the appropriate online user service
+	 * @return Interface pointer for the appropriate online presence service
 	 */
 	virtual IOnlinePresencePtr GetPresenceInterface() const = 0;
 
 	/** 
 	 * Get the interface for user-user and user-room chat functionality
-	 * @return Interface pointer for the appropriate online user service
+	 * @return Interface pointer for the appropriate online chat service
 	 */
 	virtual IOnlineChatPtr GetChatInterface() const = 0;
 
@@ -433,9 +435,15 @@ public:
 
 	/**
 	 * Get the interface for managing turn based multiplayer games
-	 * @return Interface pointer for the appropriate online user service
+	 * @return Interface pointer for the appropriate online turn-based service
 	 */
 	virtual IOnlineTurnBasedPtr GetTurnBasedInterface() const = 0;
+
+	/**
+	 * Get the interface for managing tournament information
+	 * @return Interface pointer for the appropriate online tournament service
+	 */
+	virtual IOnlineTournamentPtr GetTournamentInterface() const = 0;
 
 	/**
 	 * Get the transport manager instance for this subsystem
@@ -537,15 +545,21 @@ public:
 	/**
 	 * Called when the connection state as reported by the online platform changes
 	 *
+	 * @param ServiceName the name of the service that is reporting (platform dependent)
 	 * @param LastConnectionState last state of the connection
 	 * @param ConnectionState current state of the connection
 	 */
-	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnConnectionStatusChanged, EOnlineServerConnectionStatus::Type /*LastConnectionState*/, EOnlineServerConnectionStatus::Type /*ConnectionState*/);
+	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnConnectionStatusChanged, const FString& /*ServiceName*/, EOnlineServerConnectionStatus::Type /*LastConnectionState*/, EOnlineServerConnectionStatus::Type /*ConnectionState*/);
 
 	/**
 	 * @return the current environment being used for the online platform
 	 */
 	virtual EOnlineEnvironment::Type GetOnlineEnvironment() const = 0;
+
+	/**
+	 * @return the current environment being used for the online platform as defined by the platform (not necessarily EOnlineEnvironment::ToString)
+	 */
+	virtual FString GetOnlineEnvironmentName() const = 0;
 
 	/**
 	 * Delegate fired when the online environment changes
@@ -567,6 +581,13 @@ public:
 	 * @return The name of the online service this platform uses
 	 */
 	virtual FText GetOnlineServiceName() const = 0;
+
+	/**
+	 * Reload the configuration if it is relevant for this OSS instance
+	 *
+	 * @param ConfigSections list of ini sections that need to be reloaded
+	 */
+	virtual void ReloadConfigs(const TSet<FString>& ConfigSections) = 0;
 };
 
 /** Public references to the online subsystem pointer should use this */
@@ -609,6 +630,15 @@ ONLINESUBSYSTEM_API int32 GetBuildUniqueId();
  * @return true if unique id found in session, false otherwise
  */
 ONLINESUBSYSTEM_API bool IsPlayerInSessionImpl(class IOnlineSession* SessionInt, FName SessionName, const FUniqueNetId& UniqueId);
+
+/**
+ * Is the unique id local to this instance
+ *
+ * @param UniqueId unique to query
+ *
+ * @return true if unique id is found and logged in locally, false otherwise
+ */
+ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
 
 /**
  * Retrieve the beacon port from the specified session settings

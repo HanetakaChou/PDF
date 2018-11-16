@@ -9,16 +9,26 @@
 
 MTLPP_BEGIN
 
+namespace ue4
+{
+	template<>
+	inline ITable<MTLCaptureManager*, void>* CreateIMPTable(MTLCaptureManager* handle)
+	{
+		static ITable<MTLCaptureManager*, void> Table(object_getClass(handle));
+		return &Table;
+	}
+}
+
 namespace mtlpp
 {
-	class Device;
-	class CaptureScope;
-	class CommandQueue;
+	class MTLPP_EXPORT Device;
+	class MTLPP_EXPORT CaptureScope;
+	class MTLPP_EXPORT CommandQueue;
 	
-	class CaptureManager : public ns::Object<MTLCaptureManager*>
+	class MTLPP_EXPORT CaptureManager : public ns::Object<MTLCaptureManager*>
 	{
 		CaptureManager() { }
-		CaptureManager(MTLCaptureManager* handle) : ns::Object<MTLCaptureManager*>(handle) { }
+		CaptureManager(MTLCaptureManager* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLCaptureManager*>(handle, retain) { }
 	public:
 		static CaptureManager& SharedCaptureManager();
 		
@@ -31,7 +41,7 @@ namespace mtlpp
 		
 		void StopCapture();
 		
-		CaptureScope GetDefaultCaptureScope() const;
+		ns::AutoReleased<CaptureScope> GetDefaultCaptureScope() const;
 		void SetDefaultCaptureScope(CaptureScope scope);
 		
 		bool IsCapturing() const;

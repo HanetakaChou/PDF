@@ -13,8 +13,6 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePaths.AddRange(
 				new string[] {
-                    "MainFrame",
-					"Editor/SpeedTreeImporter/Private",
 				}
 				);
 
@@ -34,10 +32,10 @@ namespace UnrealBuildTool.Rules
 					"SlateCore",
                     "EditorStyle",
                     "InputCore",
-				    "RawMesh",
                     "UnrealEd",
-                    "MainFrame"
-				}
+                    "MainFrame",
+                    "MeshDescription",
+                }
 				);
 
 			DynamicallyLoadedModuleNames.AddRange(

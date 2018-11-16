@@ -4,6 +4,7 @@
 
 #include "Containers/UnrealString.h"
 #include "Internationalization/Text.h"
+#include "Math/Interval.h"
 #include "Misc/Paths.h"
 #include "Misc/Timespan.h"
 
@@ -17,7 +18,7 @@ class IMediaTracks;
 class IMediaView;
 
 struct FGuid;
-
+struct FMediaPlayerOptions;
 
 /**
  * Interface for media players.
@@ -170,6 +171,15 @@ public:
 	//~ The following methods are optional
 
 	/**
+	 * Open a media source from a URL with optional asset and player parameters.
+	 *
+	 */
+	virtual bool Open(const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions)
+	{
+		return Open(Url, Options);
+	}
+
+	/**
 	 * Get the human readable name of the currently loaded media source.
 	 *
 	 * Depending on the type of media source, this might be the name of a file,
@@ -200,6 +210,17 @@ public:
 	virtual void SetGuid(const FGuid& Guid)
 	{
 		// override in child classes if supported
+	}
+
+	/**
+	 * Set the player's native volume if supported.
+	 *
+	 * @param Volume The volume to set.
+	 * @return true on success, false otherwise.
+	 */
+	virtual bool SetNativeVolume(float Volume)
+	{
+		return false;
 	}
 
 	/**
@@ -243,6 +264,26 @@ public:
 	virtual void TickInput(FTimespan DeltaTime, FTimespan Timecode)
 	{
 		// override in child class if needed
+	}
+
+	/**
+	 * Flush sinks when seek begins
+	 *
+	 * @return true if sinks should be flushed when a seek starts
+	 */
+	virtual bool FlushOnSeekStarted() const
+	{
+		return false;
+	}
+
+	/**
+	 * Flush sinks when seek ends
+	 *
+	 * @return true if sinks should be flushed when a seek finishes
+	 */
+	virtual bool FlushOnSeekCompleted() const
+	{
+		return true;
 	}
 
 public:

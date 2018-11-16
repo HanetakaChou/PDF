@@ -1,8 +1,8 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "HTML5Application.h"
-#include "HTML5Cursor.h"
-#include "HTML5InputInterface.h"
+#include "HTML5/HTML5Application.h"
+#include "HTML5/HTML5Cursor.h"
+#include "HTML5/HTML5InputInterface.h"
 #include "HAL/OutputDevices.h"
 
 #include "SDL_opengl.h"
@@ -234,7 +234,7 @@ void FHTML5Application::PollGameDeviceState( const float TimeDelta )
 		emscripten_get_canvas_size(&canvas_w, &canvas_h, &canvas_fs);
 
 		FDisplayMetrics DisplayMetrics;
-		FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+		FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 
 		MessageHandler->OnSizeChanged(ApplicationWindow,canvas_w,canvas_h, false);
 		MessageHandler->OnResizingWindow(ApplicationWindow);
@@ -247,7 +247,7 @@ FPlatformRect FHTML5Application::GetWorkArea( const FPlatformRect& CurrentWindow
 	return FHTML5Window::GetScreenRect();
 }
 
-void FDisplayMetrics::GetDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
+void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 {
 	OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FHTML5Window::GetScreenRect();
 	OutDisplayMetrics.VirtualDisplayRect    =	OutDisplayMetrics.PrimaryDisplayWorkAreaRect;

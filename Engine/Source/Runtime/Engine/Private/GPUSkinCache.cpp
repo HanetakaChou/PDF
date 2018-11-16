@@ -107,14 +107,14 @@ FAutoConsoleVariableRef CVarGPUSkinCacheAllowDupedVertesForRecomputeTangents(
 
 static int32 GGPUSkinCacheFlushCounter = 0;
 
-bool IsGPUSkinCacheAvailable()
-{
-	return GEnableGPUSkinCacheShaders != 0 || GForceRecomputeTangents != 0;
-}
-
 static inline bool DoesPlatformSupportGPUSkinCache(EShaderPlatform Platform)
 {
-	return Platform == SP_PCD3D_SM5 || Platform == SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS || Platform == SP_METAL_MRT_MAC || Platform == SP_METAL_MRT || Platform == SP_VULKAN_SM5 || Platform == SP_OPENGL_SM5;
+	return Platform == SP_PCD3D_SM5 || IsMetalSM5Platform(Platform) || IsVulkanSM5Platform(Platform) || Platform == SP_OPENGL_SM5;
+}
+
+ENGINE_API bool IsGPUSkinCacheAvailable()
+{
+	return (GEnableGPUSkinCacheShaders != 0 || GForceRecomputeTangents != 0) && DoesPlatformSupportGPUSkinCache(GMaxRHIShaderPlatform);
 }
 
 // We don't have it always enabled as it's not clear if this has a performance cost
@@ -124,7 +124,7 @@ ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV()
 {
 	// currently only implemented and tested on Window SM5 (needs Compute, Atomics, SRV for index buffers, UAV for VertexBuffers)
 	//#todo-gpuskin: Enable on PS4 when SRVs for IB exist
-	return DoesPlatformSupportGPUSkinCache(GMaxRHIShaderPlatform) && IsGPUSkinCacheAvailable();
+	return IsGPUSkinCacheAvailable();
 }
 
 ENGINE_API bool DoRecomputeSkinTangentsOnGPU_RT()
@@ -169,76 +169,61 @@ public:
 	{
 		FGPUSkinCache::FRWBufferTracker PositionTracker;
 
-		FGPUBaseSkinVertexFactory* SourceVertexFactory;
-		FGPUSkinPassthroughVertexFactory* TargetVertexFactory;
+		FGPUBaseSkinVertexFactory* SourceVertexFactory = nullptr;
+		FGPUSkinPassthroughVertexFactory* TargetVertexFactory = nullptr;
 
 		// triangle index buffer (input for the RecomputeSkinTangents, might need special index buffer unique to position and normal, not considering UV/vertex color)
-		FShaderResourceViewRHIParamRef IndexBuffer;
+		FShaderResourceViewRHIParamRef IndexBuffer = nullptr;
 
-		const FSkelMeshRenderSection* Section;
+		const FSkelMeshRenderSection* Section = nullptr;
 
 		// for debugging / draw events, -1 if not set
-		uint32 SectionIndex;
+		uint32 SectionIndex = -1;
 
 		// 0:normal, 1:with morph target, 2:with APEX cloth (not yet implemented)
-		uint32 SkinType;
+		uint32 SkinType = 0;
 		//
-		bool bExtraBoneInfluences;
+		bool bExtraBoneInfluences = false;
 
 		// in floats (4 bytes)
-		uint32 OutputStreamStart;
-		uint32 NumVertices;
+		uint32 OutputStreamStart = 0;
+		uint32 NumVertices = 0;
 
 		// in vertices
-		uint32 InputStreamStart;
+		uint32 InputStreamStart = 0;
+		uint32 NumTexCoords = 1;
+		uint32 SelectedTexCoord = 0;
 
-		FShaderResourceViewRHIRef TangentBufferSRV;
-		FShaderResourceViewRHIRef UVsBufferSRV;
-		FShaderResourceViewRHIRef PositionBufferSRV;
+		FShaderResourceViewRHIRef TangentBufferSRV = nullptr;
+		FShaderResourceViewRHIRef UVsBufferSRV = nullptr;
+		FShaderResourceViewRHIRef PositionBufferSRV = nullptr;
 
 		// skin weight input
-		uint32 InputWeightStart;
+		uint32 InputWeightStart = 0;
 
 		// morph input
-		uint32 MorphBufferOffset;
+		uint32 MorphBufferOffset = 0;
 
         // cloth input
-        float ClothBlendWeight;
+		uint32 ClothBufferOffset = 0;
+        float ClothBlendWeight = 0.0f;
 
-        FMatrix ClothLocalToWorld;
-        FMatrix ClothWorldToLocal;
+        FMatrix ClothLocalToWorld = FMatrix::Identity;
+        FMatrix ClothWorldToLocal = FMatrix::Identity;
 
 		// triangle index buffer (input for the RecomputeSkinTangents, might need special index buffer unique to position and normal, not considering UV/vertex color)
-		uint32 IndexBufferOffsetValue;
-		uint32 NumTriangles;
+		uint32 IndexBufferOffsetValue = 0;
+		uint32 NumTriangles = 0;
 
-		FRWBuffer* TangentBuffer;
-		FRWBuffer* PositionBuffer;
-		FRWBuffer* PreviousPositionBuffer;
+		FRWBuffer* TangentBuffer = nullptr;
+		FRWBuffer* PositionBuffer = nullptr;
+		FRWBuffer* PreviousPositionBuffer = nullptr;
 
         // Handle duplicates
-        FShaderResourceViewRHIRef DuplicatedIndicesIndices;
-        FShaderResourceViewRHIRef DuplicatedIndices;
+        FShaderResourceViewRHIRef DuplicatedIndicesIndices = nullptr;
+        FShaderResourceViewRHIRef DuplicatedIndices = nullptr;
 
-		FSectionDispatchData()
-			: SourceVertexFactory(nullptr)
-			, TargetVertexFactory(nullptr)
-			, IndexBuffer(nullptr)
-			, Section(nullptr)
-			, SectionIndex(-1)
-			, SkinType(0)
-			, bExtraBoneInfluences(false)
-			, OutputStreamStart(0)
-			, NumVertices(0)
-			, InputStreamStart(0)
-			, MorphBufferOffset(0)
-			, IndexBufferOffsetValue(0)
-			, NumTriangles(0)
-			, TangentBuffer(nullptr)
-			, PositionBuffer(nullptr)
-			, PreviousPositionBuffer(nullptr)
-		{
-		}
+		FSectionDispatchData() = default;
 
 		inline FRWBuffer* GetPreviousPositionRWBuffer()
 		{
@@ -314,6 +299,10 @@ public:
 
 			Data.MorphBufferOffset = Section->BaseVertexIndex;
 		}
+		if (ClothVertexBuffer)
+		{
+			Data.ClothBufferOffset = (ClothVertexBuffer->GetClothIndexMapping()[SectionIndex] & 0xFFFFFFFF);
+		}
 
 		//INC_DWORD_STAT(STAT_GPUSkinCache_TotalNumChunks);
 
@@ -324,6 +313,7 @@ public:
 
 		Data.TangentBufferSRV = InSourceVertexFactory->GetTangentsSRV();
 		Data.UVsBufferSRV = InSourceVertexFactory->GetTextureCoordinatesSRV();
+		Data.NumTexCoords = InSourceVertexFactory->GetNumTexCoords();
 		Data.PositionBufferSRV = InSourceVertexFactory->GetPositionsSRV();
 
 		Data.bExtraBoneInfluences = InSourceVertexFactory->UsesExtraBoneInfluences();
@@ -333,6 +323,8 @@ public:
 		Data.InputWeightStart = (InputWeightStride * Section->BaseVertexIndex) / sizeof(float);
 		Data.SourceVertexFactory = InSourceVertexFactory;
 		Data.TargetVertexFactory = InTargetVertexFactory;
+
+		InTargetVertexFactory->InvalidateStreams();
 
 		int32 RecomputeTangentsMode = GForceRecomputeTangents > 0 ? 1 : GSkinCacheRecomputeTangents;
 		if (RecomputeTangentsMode > 0)
@@ -399,6 +391,7 @@ public:
 
 		ClothBuffer.Bind(Initializer.ParameterMap, TEXT("ClothBuffer"));
 		ClothPositionsAndNormalsBuffer.Bind(Initializer.ParameterMap, TEXT("ClothPositionsAndNormalsBuffer"));
+		ClothBufferOffset.Bind(Initializer.ParameterMap, TEXT("ClothBufferOffset"));
 		ClothBlendWeight.Bind(Initializer.ParameterMap, TEXT("ClothBlendWeight"));
 		ClothLocalToWorld.Bind(Initializer.ParameterMap, TEXT("ClothLocalToWorld"));
 		ClothWorldToLocal.Bind(Initializer.ParameterMap, TEXT("ClothWorldToLocal"));
@@ -441,6 +434,7 @@ public:
 		{
 			SetSRVParameter(RHICmdList, ShaderRHI, ClothBuffer, Entry->ClothBuffer);
 			SetSRVParameter(RHICmdList, ShaderRHI, ClothPositionsAndNormalsBuffer, Entry->ClothPositionsAndNormalsBuffer);
+			SetShaderValue(RHICmdList, ShaderRHI, ClothBufferOffset, DispatchData.ClothBufferOffset);
 			SetShaderValue(RHICmdList, ShaderRHI, ClothBlendWeight, DispatchData.ClothBlendWeight);
 			SetShaderValue(RHICmdList, ShaderRHI, ClothLocalToWorld, DispatchData.ClothLocalToWorld);
 			SetShaderValue(RHICmdList, ShaderRHI, ClothWorldToLocal, DispatchData.ClothWorldToLocal);
@@ -467,7 +461,7 @@ public:
 
 		Ar << InputWeightStart << InputWeightStride << InputWeightStream;
 
-        Ar << ClothBuffer << ClothPositionsAndNormalsBuffer << ClothBlendWeight << ClothLocalToWorld << ClothWorldToLocal;
+        Ar << ClothBuffer << ClothPositionsAndNormalsBuffer << ClothBufferOffset << ClothBlendWeight << ClothLocalToWorld << ClothWorldToLocal;
 
 		//Ar << DebugParameter;
 		return bShaderHasOutdatedParameters;
@@ -499,6 +493,7 @@ private:
 
 	FShaderResourceParameter ClothBuffer;
 	FShaderResourceParameter ClothPositionsAndNormalsBuffer;
+	FShaderParameter ClothBufferOffset;
 	FShaderParameter ClothBlendWeight;
 	FShaderParameter ClothLocalToWorld;
 	FShaderParameter ClothWorldToLocal;
@@ -632,6 +627,8 @@ public:
 	FShaderResourceParameter IndexBuffer;
 	FShaderParameter IndexBufferOffset;
 	FShaderParameter InputStreamStart;
+	FShaderParameter NumTexCoords;
+	FShaderParameter SelectedTexCoord;
 	FShaderResourceParameter TangentInputBuffer;
 	FShaderResourceParameter UVsInputBuffer;
 	FShaderResourceParameter DuplicatedIndices;
@@ -652,6 +649,8 @@ public:
 		IndexBufferOffset.Bind(Initializer.ParameterMap, TEXT("IndexBufferOffset"));
 
 		InputStreamStart.Bind(Initializer.ParameterMap, TEXT("InputStreamStart"));
+		NumTexCoords.Bind(Initializer.ParameterMap, TEXT("NumTexCoords"));
+		SelectedTexCoord.Bind(Initializer.ParameterMap, TEXT("SelectedTexCoord"));
 		TangentInputBuffer.Bind(Initializer.ParameterMap, TEXT("TangentInputBuffer"));
 		UVsInputBuffer.Bind(Initializer.ParameterMap, TEXT("UVsInputBuffer"));
 
@@ -677,6 +676,8 @@ public:
 		SetShaderValue(RHICmdList, ShaderRHI, IndexBufferOffset, DispatchData.IndexBufferOffsetValue);
 		
 		SetShaderValue(RHICmdList, ShaderRHI, InputStreamStart, DispatchData.InputStreamStart);
+		SetShaderValue(RHICmdList, ShaderRHI, NumTexCoords, DispatchData.NumTexCoords);
+		SetShaderValue(RHICmdList, ShaderRHI, SelectedTexCoord, DispatchData.SelectedTexCoord);
 		SetSRVParameter(RHICmdList, ShaderRHI, TangentInputBuffer, DispatchData.TangentBufferSRV);
 		SetSRVParameter(RHICmdList, ShaderRHI, TangentInputBuffer, DispatchData.UVsBufferSRV);
 
@@ -701,7 +702,7 @@ public:
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 		Ar << IntermediateAccumBufferUAV << NumTriangles << GPUPositionCacheBuffer << GPUTangentCacheBuffer << SkinCacheStart << IndexBuffer << IndexBufferOffset
-			<< InputStreamStart << TangentInputBuffer << UVsInputBuffer;
+			<< InputStreamStart << NumTexCoords << SelectedTexCoord << TangentInputBuffer << UVsInputBuffer;
         Ar << DuplicatedIndices << DuplicatedIndicesIndices;
 		return bShaderHasOutdatedParameters;
 	}
@@ -1086,6 +1087,8 @@ void FGPUSkinCache::ProcessEntry(FRHICommandListImmediate& RHICmdList, FGPUBaseS
         // Copy the vertices into the buffer.
         checkSlow(Stride*VertexAndNormalData.GetNumVertices() == sizeof(FClothSimulEntry) * SimData->Positions.Num());
         check(sizeof(FClothSimulEntry) == 6 * sizeof(float));
+		
+		InOutEntry->DispatchData[Section].ClothBufferOffset = (ClothVertexBuffer->GetClothIndexMapping()[Section] & 0xFFFFFFFF);
 
         for (int32 Index = 0;Index < SimData->Positions.Num();Index++)
         {

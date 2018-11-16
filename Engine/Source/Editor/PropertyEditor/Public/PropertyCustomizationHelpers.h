@@ -64,6 +64,9 @@ namespace PropertyCustomizationHelpers
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeBrowseButton( FSimpleDelegate OnClearClicked, TAttribute<FText> OptionalToolTipText = FText(), TAttribute<bool> IsEnabled = true );
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeAssetPickerAnchorButton( FOnGetAllowedClasses OnGetAllowedClasses, FOnAssetSelected OnAssetSelectedFromPicker );
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeAssetPickerWithMenu( const FAssetData& InitialObject, const bool AllowClear, const TArray<const UClass*>& AllowedClasses, const TArray<UFactory*>& NewAssetFactories, FOnShouldFilterAsset OnShouldFilterAsset, FOnAssetSelected OnSet, FSimpleDelegate OnClose );
+	PROPERTYEDITOR_API TSharedRef<SWidget> MakeAssetPickerWithMenu( const FAssetData& InitialObject, const bool AllowClear, const TArray<const UClass*>& AllowedClasses, const TArray<const UClass*>& DisallowedClasses, const TArray<UFactory*>& NewAssetFactories, FOnShouldFilterAsset OnShouldFilterAsset, FOnAssetSelected OnSet, FSimpleDelegate OnClose );
+	PROPERTYEDITOR_API TSharedRef<SWidget> MakeAssetPickerWithMenu( const FAssetData& InitialObject, const bool AllowClear, const bool AllowCopyPaste, const TArray<const UClass*>& AllowedClasses, const TArray<UFactory*>& NewAssetFactories, FOnShouldFilterAsset OnShouldFilterAsset, FOnAssetSelected OnSet, FSimpleDelegate OnClose );
+	PROPERTYEDITOR_API TSharedRef<SWidget> MakeAssetPickerWithMenu( const FAssetData& InitialObject, const bool AllowClear, const bool AllowCopyPaste, const TArray<const UClass*>& AllowedClasses, const TArray<const UClass*>& DisallowedClasses, const TArray<UFactory*>& NewAssetFactories, FOnShouldFilterAsset OnShouldFilterAsset, FOnAssetSelected OnSet, FSimpleDelegate OnClose );
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeActorPickerAnchorButton( FOnGetActorFilters OnGetActorFilters, FOnActorSelected OnActorSelectedFromPicker );
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeActorPickerWithMenu( AActor* const InitialActor, const bool AllowClear, FOnShouldFilterActor ActorFilter, FOnActorSelected OnSet, FSimpleDelegate OnClose, FSimpleDelegate OnUseSelected );
 	PROPERTYEDITOR_API TSharedRef<SWidget> MakeInteractiveActorPicker(FOnGetAllowedClasses OnGetAllowedClasses, FOnShouldFilterActor OnShouldFilterActor, FOnActorSelected OnActorSelectedFromPicker);
@@ -76,6 +79,9 @@ namespace PropertyCustomizationHelpers
 
 	/** Returns a list of factories which can be used to create new assets, based on the supplied class */
 	PROPERTYEDITOR_API TArray<UFactory*> GetNewAssetFactoriesForClasses(const TArray<const UClass*>& Classes);
+
+	/** Returns a list of factories which can be used to create new assets, based on the supplied classes and respecting the disallowed set */
+	PROPERTYEDITOR_API TArray<UFactory*> GetNewAssetFactoriesForClasses(const TArray<const UClass*>& Classes, const TArray<const UClass*>& DisallowedClasses);
 
 	/** 
 	 * Build a combo button that you bind to a Name or String property or use general delegates
@@ -189,6 +195,7 @@ public:
 		, _IsBlueprintBaseOnly(false)
 		, _AllowNone(true)
 		, _HideViewOptions(false)
+		, _ShowDisplayNames(false)
 		, _ShowTreeView(false)
 	{}
 		/** The meta class that the selected class must be a child-of (required) */
@@ -203,6 +210,8 @@ public:
 		SLATE_ARGUMENT(bool, AllowNone)
 		/** Show the View Options part of the class picker dialog*/
 		SLATE_ARGUMENT(bool, HideViewOptions)
+		/** true to show class display names rather than their native names, false otherwise */
+		SLATE_ARGUMENT(bool, ShowDisplayNames)
 		/** Show the class picker as a tree view rather than a list*/
 		SLATE_ARGUMENT(bool, ShowTreeView)
 		/** Attribute used to get the currently selected class (required) */
@@ -787,7 +796,7 @@ struct FSectionListItem
 class FSectionList : public IDetailCustomNodeBuilder, public TSharedFromThis<FSectionList>
 {
 public:
-	PROPERTYEDITOR_API FSectionList(IDetailLayoutBuilder& InDetailLayoutBuilder, FSectionListDelegates& SectionListDelegates, bool bInAllowCollapse, int32 InThumbnailSize, int32 InSectionsLodIndex);
+	PROPERTYEDITOR_API FSectionList(IDetailLayoutBuilder& InDetailLayoutBuilder, FSectionListDelegates& SectionListDelegates, bool bInInitiallyCollapsed, int32 InThumbnailSize, int32 InSectionsLodIndex, FName InSectionListName);
 
 	/**
 	* @return true if Sections are being displayed
@@ -810,8 +819,11 @@ private:
 	virtual void Tick(float DeltaTime) override;
 	virtual void GenerateHeaderRowContent(FDetailWidgetRow& NodeRow) override;
 	virtual void GenerateChildContent(IDetailChildrenBuilder& ChildrenBuilder) override;
-	virtual FName GetName() const override { return NAME_None; }
-	virtual bool InitiallyCollapsed() const override { return bAllowCollpase; }
+	virtual FName GetName() const override { return SectionListName; }
+	virtual bool InitiallyCollapsed() const override
+	{
+		return bInitiallyCollapsed;
+	}
 
 	/**
 	* Adds a new Section item to the list
@@ -847,8 +859,11 @@ private:
 	TSet<uint32> ExpandedSlots;
 	/** Section list builder used to generate Sections */
 	TSharedRef<class FSectionListBuilder> SectionListBuilder;
-	/** Allow Collapse of Section header row. Right now if you allow collapse, it will initially collapse. */
-	bool bAllowCollpase;
+
+	/** Set the initial state of the collapse. */
+	bool bInitiallyCollapsed;
+
+	FName SectionListName;
 
 	int32 ThumbnailSize;
 	int32 SectionsLodIndex;

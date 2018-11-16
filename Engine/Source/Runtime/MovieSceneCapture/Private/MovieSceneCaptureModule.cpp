@@ -4,24 +4,22 @@
 #include "Misc/CoreDelegates.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Class.h"
+#include "UObject/CoreRedirects.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "EngineGlobals.h"
 #include "Engine/GameEngine.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "IMovieSceneCaptureProtocol.h"
-#include "MovieSceneCaptureProtocolRegistry.h"
 #include "UObject/Package.h"
 #include "MovieSceneCapture.h"
 #include "JsonObjectConverter.h"
 #include "ActiveMovieSceneCaptures.h"
-
-#include "Protocols/ImageSequenceProtocol.h"
-#include "Protocols/CompositionGraphCaptureProtocol.h"
-#include "Protocols/VideoCaptureProtocol.h"
+#include "Slate/SceneViewport.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneCapture"
+
+DEFINE_LOG_CATEGORY(LogMovieSceneCapture);
 
 class FMovieSceneCaptureModule : public IMovieSceneCaptureModule
 {
@@ -29,62 +27,19 @@ private:
 
 	/** Handle to a movie capture implementation created from the command line, to be initialized once a world is loaded */
 	FMovieSceneCaptureHandle StartupMovieCaptureHandle;
-	FMovieSceneCaptureProtocolRegistry ProtocolRegistry;
+	bool bStereoAllowed;
 
-	virtual FMovieSceneCaptureProtocolRegistry& GetProtocolRegistry()
+	virtual bool IsStereoAllowed() override
 	{
-		return ProtocolRegistry;
+		return bStereoAllowed;
 	}
-
 	
 	virtual void StartupModule() override
 	{
+		bStereoAllowed = false;
+
 		FCoreDelegates::OnPreExit.AddRaw(this, &FMovieSceneCaptureModule::PreExit);
 		FCoreUObjectDelegates::PostLoadMapWithWorld.AddRaw(this, &FMovieSceneCaptureModule::OnPostLoadMap );
-
-		FMovieSceneCaptureProtocolInfo Info;
-		{
-			Info.DisplayName = LOCTEXT("CompositionGraphDescription", "Custom Render Passes");
-			Info.SettingsClassType = UCompositionGraphCaptureSettings::StaticClass();
-			Info.Factory = []() -> TSharedRef<IMovieSceneCaptureProtocol> {
-				return MakeShareable(new FCompositionGraphCaptureProtocol());
-			};
-			ProtocolRegistry.RegisterProtocol(TEXT("CustomRenderPasses"), Info);
-		}
-#if WITH_EDITOR
-		{
-			Info.DisplayName = LOCTEXT("VideoDescription", "Video Sequence");
-			Info.SettingsClassType = UVideoCaptureSettings::StaticClass();
-			Info.Factory = []() -> TSharedRef<IMovieSceneCaptureProtocol> {
-				return MakeShareable(new FVideoCaptureProtocol);
-			};
-			ProtocolRegistry.RegisterProtocol(TEXT("Video"), Info);
-		}
-		{
-			Info.DisplayName = LOCTEXT("PNGDescription", "Image Sequence (png)");
-			Info.SettingsClassType = UImageCaptureSettings::StaticClass();
-			Info.Factory = []() -> TSharedRef<IMovieSceneCaptureProtocol> {
-				return MakeShareable(new FImageSequenceProtocol(EImageFormat::PNG));
-			};
-			ProtocolRegistry.RegisterProtocol(TEXT("PNG"), Info);
-		}
-		{
-			Info.DisplayName = LOCTEXT("JPEGDescription", "Image Sequence (jpg)");
-			Info.SettingsClassType = UImageCaptureSettings::StaticClass();
-			Info.Factory = []() -> TSharedRef<IMovieSceneCaptureProtocol> {
-				return MakeShareable(new FImageSequenceProtocol(EImageFormat::JPEG));
-			};
-			ProtocolRegistry.RegisterProtocol(TEXT("JPG"), Info);
-		}
-		{
-			Info.DisplayName = LOCTEXT("BMPDescription", "Image Sequence (bmp)");
-			Info.SettingsClassType = UBmpImageCaptureSettings::StaticClass();
-			Info.Factory = []() -> TSharedRef<IMovieSceneCaptureProtocol> {
-				return MakeShareable(new FImageSequenceProtocol(EImageFormat::BMP));
-			};
-			ProtocolRegistry.RegisterProtocol(TEXT("BMP"), Info);
-		}
-#endif
 	}
 
 	void PreExit()
@@ -124,7 +79,12 @@ private:
 		{
 			return nullptr;
 		}
-
+		
+		if (FParse::Param(FCommandLine::Get(), TEXT("EmulateStereo")))
+		{
+			bStereoAllowed = true;
+		}
+		
 		FString TypeName;
 		if( FParse::Value( FCommandLine::Get(), TEXT( "-MovieSceneCaptureType=" ), TypeName ) )
 		{
@@ -161,7 +121,18 @@ private:
 					UClass* Class = FindObject<UClass>(nullptr, *TypeName);
 					if (!Class)
 					{
-						return nullptr;
+						const FCoreRedirect* ValueRedirect = nullptr;
+						FCoreRedirectObjectName NewRedirectName;
+
+						if (FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Class, TypeName, NewRedirectName, &ValueRedirect))
+						{
+							Class = FindObject<UClass>(nullptr, *NewRedirectName.ToString());
+						}
+
+						if (!Class)
+						{
+							return nullptr;
+						}
 					}
 
 					Capture = NewObject<UMovieSceneCapture>(GetTransientPackage(), Class);
@@ -194,7 +165,18 @@ private:
 			UClass* Class = FindObject<UClass>( nullptr, *TypeName );
 			if( !Class )
 			{
-				return nullptr;
+				const FCoreRedirect* ValueRedirect = nullptr;
+				FCoreRedirectObjectName NewRedirectName;
+
+				if (FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Class, TypeName, NewRedirectName, &ValueRedirect))
+				{
+					Class = FindObject<UClass>(nullptr, *NewRedirectName.ToString());
+				}
+
+				if (!Class)
+				{
+					return nullptr;
+				}
 			}
 
 			Capture = NewObject<UMovieSceneCapture>( GetTransientPackage(), Class );

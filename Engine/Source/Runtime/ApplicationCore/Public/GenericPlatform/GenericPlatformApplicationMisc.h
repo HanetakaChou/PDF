@@ -3,8 +3,8 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "GenericApplication.h"
-#include "IConsoleManager.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/IConsoleManager.h"
 
 /**
  * The accuracy when dealing with physical characteristics of the monitor/screen of the device we're running on.
@@ -97,6 +97,17 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 	};
 
 	/**
+	 * Returns state of screensaver (if platform supports it)
+	 *
+	 * @return	true if screensaver enabled (returns false if platform does not support it)
+	 *
+	 */
+	static bool IsScreensaverEnabled()
+	{
+		return false;
+	}
+
+	/**
 	 * Disables screensaver (if platform supports such an API)
 	 *
 	 * @param Action enable or disable
@@ -146,6 +157,7 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 	{
 		return 1.0f;
 	}
+
 
 	/** @return true if the application is high dpi aware */
 

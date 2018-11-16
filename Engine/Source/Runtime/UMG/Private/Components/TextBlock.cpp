@@ -21,12 +21,23 @@ UTextBlock::UTextBlock(const FObjectInitializer& ObjectInitializer)
 	ShadowOffset = FVector2D(1.0f, 1.0f);
 	ColorAndOpacity = FLinearColor::White;
 	ShadowColorAndOpacity = FLinearColor::Transparent;
-	bAutoWrapText = false;
+	bAutoWrapText_DEPRECATED = false;
 
 	if (!IsRunningDedicatedServer())
 	{
 		static ConstructorHelpers::FObjectFinder<UFont> RobotoFontObj(*UWidget::GetDefaultFontName());
 		Font = FSlateFontInfo(RobotoFontObj.Object, 24, FName("Bold"));
+	}
+}
+
+void UTextBlock::PostLoad()
+{
+	Super::PostLoad();
+
+	if (bAutoWrapText_DEPRECATED)
+	{
+		AutoWrapText = bAutoWrapText_DEPRECATED;
+		bAutoWrapText_DEPRECATED = false;
 	}
 }
 
@@ -78,7 +89,6 @@ void UTextBlock::SetFont(FSlateFontInfo InFontInfo)
 	if (MyTextBlock.IsValid())
 	{
 		MyTextBlock->SetFont(Font);
-		MyTextBlock->Invalidate(EInvalidateWidget::LayoutAndVolatility);
 	}
 }
 
@@ -102,7 +112,7 @@ void UTextBlock::SetMinDesiredWidth(float InMinDesiredWidth)
 
 void UTextBlock::SetAutoWrapText(bool InAutoWrapText)
 {
-	bAutoWrapText = InAutoWrapText;
+	AutoWrapText = InAutoWrapText;
 	if(MyTextBlock.IsValid())
 	{
 		MyTextBlock->SetAutoWrapText(InAutoWrapText);
@@ -214,7 +224,6 @@ void UTextBlock::SynchronizeProperties()
 		MyTextBlock->SetShadowOffset( ShadowOffset );
 		MyTextBlock->SetShadowColorAndOpacity( ShadowColorAndOpacityBinding );
 		MyTextBlock->SetMinDesiredWidth( MinDesiredWidth );
-		MyTextBlock->SetAutoWrapText(bAutoWrapText);
 
 		Super::SynchronizeTextLayoutProperties( *MyTextBlock );
 	}

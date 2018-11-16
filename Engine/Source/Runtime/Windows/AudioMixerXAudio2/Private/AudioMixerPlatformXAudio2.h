@@ -3,9 +3,9 @@
 #pragma once
 
 #include "AudioMixer.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include <xaudio2.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
 // Any platform defines
 namespace Audio
@@ -64,6 +64,7 @@ namespace Audio
 		virtual FName GetRuntimeFormat(USoundWave* InSoundWave) override;
 		virtual bool HasCompressedAudioInfoClass(USoundWave* InSoundWave) override;
 		virtual bool SupportsRealtimeDecompression() const override { return true; }
+		virtual bool DisablePCMAudioCaching() const override;
 		virtual ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* InSoundWave) override;
 		virtual FString GetDefaultDeviceName() override;
 		virtual FAudioPlatformSettings GetPlatformSettings() const override;
@@ -83,9 +84,13 @@ namespace Audio
 	private:
 
 		const TCHAR* GetErrorString(HRESULT Result);
+		bool AllowDeviceSwap();
 
 		typedef TArray<long> TChannelTypeMap;
 		
+		// Handle to XAudio2DLL
+		HMODULE XAudio2Dll;
+
 		// Bool indicating that the default audio device changed
 		// And that we need to restart the audio device.
 		FThreadSafeBool bDeviceChanged;
@@ -99,6 +104,8 @@ namespace Audio
 		FString OriginalAudioDeviceId;
 		FString NewAudioDeviceId;
 		FThreadSafeBool bMoveAudioStreamToNewAudioDevice;
+		double LastDeviceSwapTime;
+
 		uint32 bIsComInitialized : 1;
 		uint32 bIsInitialized : 1;
 		uint32 bIsDeviceOpen : 1;

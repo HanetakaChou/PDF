@@ -15,6 +15,7 @@
 #include "Misc/NetworkGuid.h"
 #include "UObject/CoreNet.h"
 #include "EngineLogs.h"
+#include "Containers/ArrayView.h"
 #include "NetSerialization.generated.h"
 
 class Error;
@@ -418,6 +419,27 @@ struct FFastArraySerializer
 	static bool FastArrayDeltaSerialize( TArray<Type> &Items, FNetDeltaSerializeInfo& Parms, SerializerType& ArraySerializer );
 
 	/**
+	 * Called before removing elements and after the elements themselves are notified.  The indices are valid for this function call only!
+	 *
+	 * NOTE: intentionally not virtual; invoked via templated code, @see FExampleItemEntry
+	 */
+	FORCEINLINE void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize) { }
+
+	/**
+	 * Called after adding all new elements and after the elements themselves are notified.  The indices are valid for this function call only!
+	 *
+	 * NOTE: intentionally not virtual; invoked via templated code, @see FExampleItemEntry
+	 */
+	FORCEINLINE void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize) { }
+
+	/**
+	 * Called after updating all existing elements with new data and after the elements themselves are notified. The indices are valid for this function call only!
+	 *
+	 * NOTE: intentionally not virtual; invoked via templated code, @see FExampleItemEntry
+	 */
+	FORCEINLINE void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize) { }
+
+	/**
 	* Helper function for FastArrayDeltaSerialize to consolidate the logic of whether to consider writing an item in a fast TArray during network serialization.
 	* For client replay recording, we don't want to write any items that have been added to the array predictively.
 	*/
@@ -623,13 +645,6 @@ bool FFastArraySerializer::FastArrayDeltaSerialize( TArray<Type> &Items, FNetDel
 		check(Parms.Struct);
 		FBitWriter& Writer = *Parms.Writer;
 
-		// Create a new map from the current state of the array		
-		FNetFastTArrayBaseState * NewState = new FNetFastTArrayBaseState();
-		check(Parms.NewState);
-		*Parms.NewState = TSharedPtr<INetDeltaBaseState>( NewState );
-		TMap<int32, int32> & NewMap = NewState->IDToCLMap;
-		NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
-
 		// Get the old map if its there
 		TMap<int32, int32> * OldMap = Parms.OldState ? &((FNetFastTArrayBaseState*)Parms.OldState)->IDToCLMap : NULL;
 		int32 BaseReplicationKey = Parms.OldState ? ((FNetFastTArrayBaseState*)Parms.OldState)->ArrayReplicationKey : -1;
@@ -668,8 +683,30 @@ bool FFastArraySerializer::FastArrayDeltaSerialize( TArray<Type> &Items, FNetDel
 				ensureMsgf((OldMap->Num() == ArraySerializer.CachedNumItemsToConsiderForWriting), TEXT("OldMap size (%d) does not match item count (%d)"), OldMap->Num(), ArraySerializer.CachedNumItemsToConsiderForWriting);
 			}
 
+			if (Parms.OldState)
+			{
+				// Nothing changed and we had a valid old state, so just use/share the existing state. No need to create a new one.
+				*Parms.NewState = Parms.OldState->AsShared();
+			}
+			else
+			{
+				// Nothing changed but we don't have an existing state of our own yet so we need to make one here.
+				FNetFastTArrayBaseState * NewState = new FNetFastTArrayBaseState();
+				*Parms.NewState = MakeShareable( NewState );
+				NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
+			}
 			return false;
 		}
+
+
+		// Create a new map from the current state of the array		
+		FNetFastTArrayBaseState * NewState = new FNetFastTArrayBaseState();
+
+		check(Parms.NewState);
+		*Parms.NewState = MakeShareable( NewState );
+		TMap<int32, int32> & NewMap = NewState->IDToCLMap;
+		NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
+
 
 		int32 NumConsideredItems = CalcNumItemsForConsideration();
 
@@ -869,8 +906,6 @@ bool FFastArraySerializer::FastArrayDeltaSerialize( TArray<Type> &Items, FNetDel
 				int32 ElementID;
 				Reader << ElementID;
 
-				ArraySerializer.GuidReferencesMap.Remove( ElementID );
-
 				int32* ElementIndexPtr = ArraySerializer.ItemMap.Find(ElementID);
 				if (ElementIndexPtr)
 				{
@@ -1020,14 +1055,23 @@ bool FFastArraySerializer::FastArrayDeltaSerialize( TArray<Type> &Items, FNetDel
 		// ---------------------------------------------------------
 
 		int32 PreRemoveSize = Items.Num();
+		int32 FinalSize = PreRemoveSize - DeleteIndices.Num();
 		for (int32 idx : DeleteIndices)
 		{
 			if (Items.IsValidIndex(idx))
 			{
+				// Remove the deleted element's tracked GUID references
+				if (ArraySerializer.GuidReferencesMap.Remove(Items[idx].ReplicationID) > 0)
+				{
+					Parms.bGuidListsChanged = true;
+				}
+
 				// Call the delete callbacks now, actually remove them at the end
 				Items[idx].PreReplicatedRemove(ArraySerializer);
 			}
 		}
+		ArraySerializer.PreReplicatedRemove(DeleteIndices, FinalSize);
+
 		if (PreRemoveSize != Items.Num())
 		{
 			UE_LOG( LogNetFastTArray, Error, TEXT( "Item size changed after PreReplicatedRemove! PremoveSize: %d  Item.Num: %d"), PreRemoveSize, Items.Num() );
@@ -1037,11 +1081,13 @@ bool FFastArraySerializer::FastArrayDeltaSerialize( TArray<Type> &Items, FNetDel
 		{
 			Items[idx].PostReplicatedAdd(ArraySerializer);
 		}
+		ArraySerializer.PostReplicatedAdd(AddedIndices, FinalSize);
 
 		for (int32 idx : ChangedIndices)
 		{
 			Items[idx].PostReplicatedChange(ArraySerializer);
 		}	
+		ArraySerializer.PostReplicatedChange(ChangedIndices, FinalSize);
 
 		if (PreRemoveSize != Items.Num())
 		{
@@ -1340,7 +1386,8 @@ struct TStructOpsTypeTraits< FVector_NetQuantize > : public TStructOpsTypeTraits
 {
 	enum 
 	{
-		WithNetSerializer = true
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 	};
 };
 
@@ -1385,7 +1432,8 @@ struct TStructOpsTypeTraits< FVector_NetQuantize10 > : public TStructOpsTypeTrai
 {
 	enum 
 	{
-		WithNetSerializer = true
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 	};
 };
 
@@ -1430,7 +1478,8 @@ struct TStructOpsTypeTraits< FVector_NetQuantize100 > : public TStructOpsTypeTra
 {
 	enum 
 	{
-		WithNetSerializer = true
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 	};
 };
 
@@ -1473,7 +1522,8 @@ struct TStructOpsTypeTraits< FVector_NetQuantizeNormal > : public TStructOpsType
 {
 	enum 
 	{
-		WithNetSerializer = true
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 	};
 };
 

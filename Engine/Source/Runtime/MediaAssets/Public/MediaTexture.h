@@ -24,7 +24,7 @@ class UMediaPlayer;
 /**
  * Implements a texture asset for rendering video tracks from UMediaPlayer assets.
  */
-UCLASS(hidecategories=(Adjustments, Compositing, LevelOfDetail, Object))
+UCLASS(hidecategories=(Adjustments, Compositing, LevelOfDetail, ImportSettings, Object))
 class MEDIAASSETS_API UMediaTexture
 	: public UTexture
 {
@@ -93,6 +93,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Media|MediaTexture")
 	void SetMediaPlayer(UMediaPlayer* NewMediaPlayer);
 
+	/**
+	 * Gets the next sample Time. Only valid if GetAvailableSampleCount is greater than 0
+	 * @return FTimespan of the next sample
+	 * @see GetAvailableSampleCount
+	 */
+	FTimespan GetNextSampleTime() const;
+
+	/**
+	 * Gets the number of samples that are available
+	 * @return The number of samples in the queue
+	 */
+	int32 GetAvailableSampleCount() const;
+
 #if WITH_EDITOR
 
 	/**
@@ -123,6 +136,7 @@ public:
 	virtual FString GetDesc() override;
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual void PostLoad() override;
+	virtual bool IsPostLoadThreadSafe() const override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

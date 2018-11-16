@@ -12,7 +12,8 @@
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
 #include "Serialization/CustomVersion.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
+#include "Misc/SecureHash.h"
 
 class Error;
 
@@ -37,6 +38,8 @@ enum class ESavePackageResult
 	GenerateStub,
 	/** [When cooking] When performing package diff, the package generated in memory was different to the one that existed on disk */
 	DifferentContent,
+	/** [When cooking] The file requested (when cooking on the fly) did not exist on disk */
+	MissingFile
 };
 
 /**
@@ -50,10 +53,14 @@ struct FSavePackageResultStruct
 	/** Total size of all files written out, including bulk data */
 	int64 TotalFileSize;
 
+	/** MD5 hash of the cooked data */
+	FMD5Hash CookedHash;
+
 	/** Constructors, it will implicitly construct from the result enum */
 	FSavePackageResultStruct() : Result(ESavePackageResult::Error), TotalFileSize(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult) : Result(InResult), TotalFileSize(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize) : Result(InResult), TotalFileSize(InTotalFileSize) {}
+	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, FMD5Hash InHash) : Result(InResult), TotalFileSize(InTotalFileSize), CookedHash(InHash) {}
 
 	bool operator==(const FSavePackageResultStruct& Other) const
 	{
@@ -154,6 +161,7 @@ public:
 	virtual bool IsNameStableForNetworking() const override { return true; }		// For now, assume all packages have stable net names
 	virtual bool NeedsLoadForClient() const override { return true; }				// To avoid calling the expensive generic version, which only makes sure that the UPackage static class isn't excluded
 	virtual bool NeedsLoadForServer() const override { return true; }
+	virtual bool IsPostLoadThreadSafe() const override;
 
 #if WITH_EDITORONLY_DATA
 																					/** Sets the bLoadedByEditorPropertiesOnly flag */
@@ -199,20 +207,6 @@ public:
 
 	// World browser information
 	TUniquePtr< FWorldTileInfo > WorldTileInfo;
-
-private:
-	mutable TUniquePtr<TMap<FName, int32>> ClassUniqueNameIndexMap;
-
-public:
-
-	TMap<FName, int32>& GetClassUniqueNameIndexMap() const
-	{
-		if (ClassUniqueNameIndexMap == nullptr)
-		{
-			ClassUniqueNameIndexMap.Reset(new TMap<FName, int32>());
-		}
-		return *ClassUniqueNameIndexMap;
-	}
 
 	/**
 	* Called after the C++ constructor and after the properties have been initialized, but before the config has been loaded, etc.
@@ -547,7 +541,7 @@ public:
 	* @param	InOuter							the outer to use for the new package
 	* @param	Linker							linker we're currently saving with
 	*/
-	static void SaveThumbnails( UPackage* InOuter, FLinkerSave* Linker );
+	static void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
 
 	/**
 	* Static: Saves asset registry data for the specified package outer and linker
@@ -555,7 +549,7 @@ public:
 	* @param	InOuter							the outer to use for the new package
 	* @param	Linker							linker we're currently saving with
 	*/
-	static void SaveAssetRegistryData( UPackage* InOuter, FLinkerSave* Linker );
+	static void SaveAssetRegistryData(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
 
 	/**
 	* Static: Saves the level information used by the World browser
@@ -563,7 +557,7 @@ public:
 	* @param	InOuter							the outer to use for the new package
 	* @param	Linker							linker we're currently saving with
 	*/
-	static void SaveWorldLevelInfo( UPackage* InOuter, FLinkerSave* Linker );
+	static void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
 
 	/**
 	* Determines if a package contains no more assets.

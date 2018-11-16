@@ -16,6 +16,7 @@
 
 #if WITH_EDITOR
 #include "MeshUtilities.h"
+#include "MeshUtilitiesCommon.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/App.h"
 #endif // #if WITH_EDITOR
@@ -74,6 +75,13 @@ void UStaticMesh::Build(bool bSilent, TArray<FText>* OutErrors)
 #if WITH_EDITOR
 	if (IsTemplate())
 		return;
+
+	// If we're controlled by an editable mesh do not build. The editable mesh will build us
+	if (EditableMesh)
+	{
+		return;
+	}
+
 
 	if (SourceModels.Num() <= 0)
 	{
@@ -293,11 +301,11 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 	TArray<FColor>& OutOverrideColors)
 {
 	// Find the extents formed by the cached vertex positions in order to optimize the octree used later
-	FVector MinExtents(EForceInit::ForceInitToZero);
-	FVector MaxExtents(EForceInit::ForceInitToZero);
+	FVector MinExtents(ForceInitToZero);
+	FVector MaxExtents(ForceInitToZero);
 	
 	TArray<FPaintedVertex> PaintedVertices;
-	FBox Bounds(EForceInit::ForceInitToZero);
+	FBox Bounds(ForceInitToZero);
 
 	// Retrieve currently painted vertices
 	if (InPaintedVertices.Num() > 0)

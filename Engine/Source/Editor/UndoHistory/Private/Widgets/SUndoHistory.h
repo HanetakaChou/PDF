@@ -40,6 +40,8 @@ public:
 
 public:
 
+	virtual ~SUndoHistory();
+
 	/**
 	 * Construct this widget
 	 *
@@ -61,8 +63,12 @@ protected:
 	 * Reloads the list of undo transactions.
 	 */
 	void ReloadUndoList( );
+	void OnUndoBufferChanged();
 
 private:
+
+	// Select the last transaction in the undo history.
+	void SelectLastTransaction();
 
 	// Callback for clicking the 'Discard History' button.
 	FReply HandleDiscardHistoryButtonClicked( );
@@ -83,12 +89,6 @@ private:
 
 	// Holds the index of the last active transaction.
 	int32 LastActiveTransactionIndex;
-
-	// Holds the number of transactions at the last undo list reload.
-	int32 LastQueueLength;
-
-	// Holds the number of undo actions at the last undo list reload.
-	int32 LastUndoCount;
 
 	// Holds the list of undo transaction indices.
 	TArray<TSharedPtr<FTransactionInfo> > UndoList;

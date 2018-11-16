@@ -37,7 +37,7 @@ static int GetIndexSuffix(const char* Prefix, int PrefixLength, const char* Sema
 			Index = (*Semantic) - '0';
 
 			++Semantic;
-			if (*Semantic == 0)
+			if (*Semantic == 0 || !isdigit((unsigned char)*Semantic))
 			{
 				return Index;
 			}
@@ -45,7 +45,7 @@ static int GetIndexSuffix(const char* Prefix, int PrefixLength, const char* Sema
 			{
 				Index = Index * 10 + (*Semantic) - '0';
 				++Semantic;
-				if (*Semantic == 0)
+				if (*Semantic == 0 || !isdigit((unsigned char)*Semantic))
 				{
 					return Index;
 				}
@@ -63,7 +63,12 @@ static int GetAttributeIndex(const char* Semantic)
 
 static int GetInAttributeIndex(const char* Semantic)
 {
-	return GetIndexSuffix("IN_ATTRIBUTE", 12, Semantic);
+	return GetIndexSuffix("[[ attribute(ATTRIBUTE", 22, Semantic);
+}
+
+static int GetVSHSInAttributeIndex(const char* Semantic)
+{
+	return GetIndexSuffix("[[ attribute(", 13, Semantic);
 }
 
 const glsl_type* PromoteHalfToFloatType(_mesa_glsl_parse_state* state, const glsl_type* type)
@@ -187,7 +192,7 @@ namespace MetalUtils
 	{
 		{"SV_VertexID", glsl_type::uint_type, "IN_VertexID", ir_var_in, "[[ vertex_id ]]"},
 		{"SV_InstanceID", glsl_type::uint_type, "IN_InstanceID", ir_var_in, "[[ instance_id ]]"},
-		{"SV_Position", glsl_type::vec4_type, "Position", ir_var_out, "[[ position ]]"},
+		{"SV_Position", glsl_type::vec4_type, "Position", ir_var_out, "[[ position POS_INVARIANT ]]"},
 		{"SV_RenderTargetArrayIndex", glsl_type::uint_type, "OUT_Layer", ir_var_out, "[[ render_target_array_index ]]"},
 		{"SV_ViewPortArrayIndex", glsl_type::uint_type, "OUT_Viewport", ir_var_out, "[[ viewport_array_index ]]"},
 		{NULL, NULL, NULL, ir_var_auto, nullptr}
@@ -349,7 +354,7 @@ namespace MetalUtils
 	static FSystemValue DomainSystemValueTable[] =
 	{
 		{"SV_Position", glsl_type::vec4_type, "IN_Position", ir_var_in, "[[ TODO ]]"},
-		{"SV_Position", glsl_type::vec4_type, "Position", ir_var_out, "[[ position ]]"},
+		{"SV_Position", glsl_type::vec4_type, "Position", ir_var_out, "[[ position POS_INVARIANT ]]"},
 		{"SV_DomainLocation", glsl_type::vec2_type, "PositionInPatch", ir_var_in, "[[ position_in_patch ]]"}, // @todo maybe add a NULL/void_type/error_type and set it using the passed in type for GenerateInputFromSemantic -- use it to simplify SV_Target as well
 		{"SV_DomainLocation", glsl_type::vec3_type, "PositionInPatch", ir_var_in, "[[ position_in_patch ]]"},
 		{"SV_RenderTargetArrayIndex", glsl_type::uint_type, "OUT_Layer", ir_var_out, "[[ render_target_array_index ]]"},
@@ -389,7 +394,7 @@ namespace MetalUtils
 	};
 
 	static ir_rvalue* GenerateInputFromSemantic(EHlslShaderFrequency Frequency, EMetalGPUSemantics bIsDesktop, _mesa_glsl_parse_state* ParseState,
-		const char* Semantic, const glsl_type* Type, exec_list* DeclInstructions, exec_list* PreCallInstructions)
+		const char* Semantic, const glsl_type* Type, char const* Name, exec_list* DeclInstructions, exec_list* PreCallInstructions)
 	{
 		if (!Semantic)
 		{
@@ -490,7 +495,7 @@ namespace MetalUtils
 		
 		ir_variable* Variable = new(ParseState)ir_variable(
 														   Type,
-														   ralloc_asprintf(ParseState, "IN_%s", Semantic),
+														   Name ? Name : ralloc_asprintf(ParseState, "IN_%s", Semantic),
 														   ir_var_in);
 		if (Frequency == HSF_VertexShader)
 		{
@@ -612,7 +617,25 @@ namespace MetalUtils
 			}
 			else
 			{
-				ir_rvalue* SrcValue = GenerateInputFromSemantic(Frequency, bIsDesktop, ParseState, InputSemantic, InputType, DeclInstructions, PreCallInstructions);
+				ir_dereference_variable* DerefVariable = InputVariableDeref->as_dereference_variable();
+				ir_dereference_array* DerefArray = InputVariableDeref->as_dereference_array();
+				ir_constant* DerefIndex = DerefArray ? DerefArray->array_index->as_constant() : nullptr;
+				ir_dereference_record* DerefStruct = DerefArray ? DerefArray->array->as_dereference_record() : InputVariableDeref->as_dereference_record();
+				char const* Name = nullptr;
+				if (DerefVariable)
+				{
+					Name = (DerefVariable->var && DerefVariable->var->name) ? ralloc_asprintf(ParseState, DerefVariable->var->name) : nullptr;
+				}
+				else if (DerefIndex && DerefStruct)
+				{
+					Name = ralloc_asprintf(ParseState, "%s%d", DerefStruct->field, DerefIndex->value.u[0]);
+				}
+				else if(DerefStruct)
+				{
+					Name = DerefStruct->field;
+				}
+				
+				ir_rvalue* SrcValue = GenerateInputFromSemantic(Frequency, bIsDesktop, ParseState, InputSemantic, InputType, Name, DeclInstructions, PreCallInstructions);
 				if (SrcValue)
 				{
 					YYLTYPE loc;
@@ -624,13 +647,13 @@ namespace MetalUtils
 		}
 	}
 
-	ir_dereference_variable* GenerateInput(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState, const char* InputSemantic, const glsl_type* InputType, exec_list* DeclInstructions, exec_list* PreCallInstructions)
+	ir_dereference_variable* GenerateInput(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState, const char* InputName, const char* InputSemantic, const glsl_type* InputType, exec_list* DeclInstructions, exec_list* PreCallInstructions)
 	{
 		if((InputType->is_inputpatch()))
 		{
-			return GenerateInputFromSemantic(Frequency, (EMetalGPUSemantics)bIsDesktop, ParseState, InputSemantic, InputType, DeclInstructions, PreCallInstructions)->as_dereference_variable();
+			return GenerateInputFromSemantic(Frequency, (EMetalGPUSemantics)bIsDesktop, ParseState, InputSemantic, InputType, nullptr, DeclInstructions, PreCallInstructions)->as_dereference_variable();
 		}
-		ir_variable* TempVariable = new(ParseState)ir_variable(InputType, nullptr, ir_var_temporary);
+		ir_variable* TempVariable = new(ParseState)ir_variable(InputType, InputName ? ralloc_strdup(ParseState, InputName) : nullptr, ir_var_temporary);
 		ir_dereference_variable* TempVariableDeref = new(ParseState)ir_dereference_variable(TempVariable);
 		PreCallInstructions->push_tail(TempVariable);
 		GenerateInputForVariable(Frequency, (EMetalGPUSemantics)bIsDesktop, ParseState, InputSemantic, TempVariableDeref, DeclInstructions, PreCallInstructions);
@@ -638,7 +661,7 @@ namespace MetalUtils
 	}
 
 	static ir_rvalue* GenerateOutputFromSemantic(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState,
-		const char* Semantic, FSemanticQualifier Qualifier, const glsl_type* Type, exec_list* DeclInstructions, const glsl_type** DestVariableType)
+		const char* Semantic, FSemanticQualifier Qualifier, const glsl_type* Type, char const* Name, exec_list* DeclInstructions, const glsl_type** DestVariableType)
 	{
 		ir_variable* Variable = NULL;
 
@@ -673,9 +696,9 @@ namespace MetalUtils
 		// Need to generate a single clip-distance for broken desktop drivers - done by simply dropping the higher clip-distances
 		// As it happens we already order them by importance (0: Global > 1: VR-instanced fallback > 2: vertex-shader-layer)
 		uint32 const ClipPrefixLen = 15;
-		if ((bIsDesktop == EMetalGPUSemanticsImmediateDesktop) && Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_ClipDistance", ClipPrefixLen) == 0 && !Variable)
+		FMetalLanguageSpec* Spec = (FMetalLanguageSpec*)ParseState->LanguageSpec;
+		if ((bIsDesktop == EMetalGPUSemanticsImmediateDesktop && Spec->Version < 3) && Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_ClipDistance", ClipPrefixLen) == 0 && !Variable)
 		{
-			FMetalLanguageSpec* Spec = (FMetalLanguageSpec*)ParseState->LanguageSpec;
 			uint32 const Count = Spec->GetClipDistanceCount();
 			uint32 const Used = Spec->ClipDistancesUsed;
 			check(Count > 0);
@@ -709,11 +732,10 @@ namespace MetalUtils
 		}
 		
 		// But for iOS/tvOS and future, non-broken desktop we can just remap the variable to the actual clip-distance-array
-		if ((bIsDesktop != EMetalGPUSemanticsImmediateDesktop) && Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_ClipDistance", ClipPrefixLen) == 0 && !Variable)
+		if ((bIsDesktop != EMetalGPUSemanticsImmediateDesktop || Spec->Version >= 3) && Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_ClipDistance", ClipPrefixLen) == 0 && !Variable)
 		{
 			Variable = ParseState->symbols->get_variable("clip_distance_array");
 			
-			FMetalLanguageSpec* Spec = (FMetalLanguageSpec*)ParseState->LanguageSpec;
 			uint32 const Count = Spec->GetClipDistanceCount();
 			check(Count > 0);
 			
@@ -769,7 +791,7 @@ namespace MetalUtils
 
 		if (!Variable)
 		{
-			Variable = new(ParseState)ir_variable(Type, ralloc_asprintf(ParseState, "OUT_%s", Semantic), ir_var_out);
+			Variable = new(ParseState)ir_variable(Type, Name ? Name : ralloc_asprintf(ParseState, "OUT_%s", Semantic), ir_var_out);
 			Variable->semantic = ralloc_asprintf(ParseState, "[[ user(%s) ]]", Semantic);
 			if (Qualifier.Fields.bIsPatchConstant)
 			{
@@ -870,9 +892,23 @@ namespace MetalUtils
 					YYLTYPE loc;
 					ir_rvalue* Src = OutputVariableDeref->clone(ParseState, NULL);
 					const glsl_type* DestVariableType = NULL;
+					
+					ir_dereference_array* DerefArray = OutputVariableDeref->as_dereference_array();
+					ir_constant* DerefIndex = DerefArray ? DerefArray->array_index->as_constant() : nullptr;
+					ir_dereference_record* DerefStruct = DerefArray ? DerefArray->array->as_dereference_record() : OutputVariableDeref->as_dereference_record();
+					char const* Name = nullptr;
+					if (DerefIndex && DerefStruct)
+					{
+						Name = ralloc_asprintf(ParseState, "%s%d", DerefStruct->field, DerefIndex->value.u[0]);
+					}
+					else if(DerefStruct)
+					{
+						Name = DerefStruct->field;
+					}
+					
 					ir_rvalue* DestVariableDeref = GenerateOutputFromSemantic(Frequency, bIsDesktop, ParseState, OutputSemantic,
 						Qualifier,
-						OutputType, DeclInstructions, &DestVariableType);
+						OutputType, Name, DeclInstructions, &DestVariableType);
 
 					apply_type_conversion(DestVariableType, Src, PostCallInstructions, ParseState, true, &loc);
 					PostCallInstructions->push_tail(new(ParseState)ir_assignment(DestVariableDeref, Src));
@@ -1058,6 +1094,19 @@ struct FConvertUBVisitor : public ir_rvalue_visitor
 		Map(InMap)
 	{
 	}
+	
+	virtual ir_visitor_status visit_leave(class ir_atomic * ir) override
+	{
+		if (ir->operands[0])
+		{
+			handle_rvalue(&ir->operands[0]);
+		}
+		if (ir->operands[1])
+		{
+			handle_rvalue(&ir->operands[1]);
+		}
+		return visit_continue;
+	}
 
 	virtual void handle_rvalue(ir_rvalue** RValuePtr) override
 	{
@@ -1191,6 +1240,7 @@ void FMetalCodeBackend::MovePackedUniformsToMain(exec_list* ir, _mesa_glsl_parse
 					break;
 				}
 				case EMetalTypeBufferModeUAV:
+				case EMetalTypeBufferModeTex:
 				{
 					bIsBuffer = (!Var->type->is_sampler() && !Var->type->is_image()) || (Var->type->sampler_buffer && (OutBuffers.AtomicVariables.find(Var) != OutBuffers.AtomicVariables.end() || bIsStructuredBuffer || bIsInvariant || bIsByteAddressBuffer)) || bIsVec3;
 					break;
@@ -1300,7 +1350,7 @@ void FMetalCodeBackend::PromoteInputsAndOutputsGlobalHalfToFloat(exec_list* Inst
 	}
 }
 
-static bool ProcessStageInVariables(_mesa_glsl_parse_state* ParseState, EMetalGPUSemantics bIsDesktop, EHlslShaderFrequency Frequency, ir_variable* Variable, TArray<glsl_struct_field>& OutStageInMembers, std::set<ir_variable*>& OutStageInVariables, unsigned int* OutVertexAttributesMask, TIRVarList& OutFunctionArguments)
+static bool ProcessStageInVariables(_mesa_glsl_parse_state* ParseState, EMetalGPUSemantics bIsDesktop, EHlslShaderFrequency Frequency, ir_variable* Variable, TArray<glsl_struct_field>& OutStageInMembers, TIRVarSet& OutStageInVariables, unsigned int* OutVertexAttributesMask, TIRVarList& OutFunctionArguments)
 {
 	// Don't move variables that are system values into the input structures
 	const auto* SystemValues = (bIsDesktop == EMetalGPUSemanticsMobile) ? MetalUtils::MobileSystemValueTable[Frequency] : MetalUtils::DesktopSystemValueTable[Frequency];
@@ -1325,7 +1375,7 @@ static bool ProcessStageInVariables(_mesa_glsl_parse_state* ParseState, EMetalGP
 		}
 		else
 		{
-			int AttributeIndex = GetInAttributeIndex(Variable->name);
+			int AttributeIndex = GetInAttributeIndex(Variable->semantic);
 			if (AttributeIndex >= 0)
 			{
 				if (Variable->type->is_array())
@@ -1336,7 +1386,7 @@ static bool ProcessStageInVariables(_mesa_glsl_parse_state* ParseState, EMetalGP
 						glsl_struct_field OutMember;
 						OutMember.type = Variable->type->element_type();
 						OutMember.semantic = ralloc_asprintf(ParseState, "ATTRIBUTE%d", AttributeIndex);
-						OutMember.name = ralloc_asprintf(ParseState, "ATTRIBUTE%d", AttributeIndex);
+						OutMember.name = ralloc_asprintf(ParseState, "ATTRIBUTE%d_%s", AttributeIndex, Variable->name);
 
 						if (OutVertexAttributesMask)
 						{
@@ -1351,7 +1401,7 @@ static bool ProcessStageInVariables(_mesa_glsl_parse_state* ParseState, EMetalGP
 					glsl_struct_field OutMember;
 					OutMember.type = Variable->type;
 					OutMember.semantic = ralloc_asprintf(ParseState, "ATTRIBUTE%d", AttributeIndex);
-					OutMember.name = ralloc_asprintf(ParseState, "IN_ATTRIBUTE%d", AttributeIndex);
+					OutMember.name = Variable->name;
 
 					if (OutVertexAttributesMask)
 					{
@@ -1476,7 +1526,7 @@ static ir_dereference_variable* GenerateShaderInput(
 	PreCallInstructions->push_tail(TempVariable);
 
 	check(!InputType->is_inputpatch() && !InputType->is_outputpatch());
-	ir_rvalue* SrcValue = MetalUtils::GenerateInputFromSemantic(Frequency, bIsDesktop, ParseState, InputSemantic, InputType, DeclInstructions, PreCallInstructions);
+	ir_rvalue* SrcValue = MetalUtils::GenerateInputFromSemantic(Frequency, bIsDesktop, ParseState, InputSemantic, InputType, nullptr, DeclInstructions, PreCallInstructions);
 	if(SrcValue)
 	{
 		YYLTYPE loc ={0};
@@ -1767,10 +1817,10 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 	ParseState->symbols->push_scope();
 
 	// Set of variables packed into a struct
-	std::set<ir_variable*> VSStageInVariables;
-	std::set<ir_variable*> PSStageInVariables;
-	std::set<ir_variable*> VSOutVariables;
-	std::set<ir_variable*> PSOutVariables;
+	TIRVarSet VSStageInVariables;
+	TIRVarSet PSStageInVariables;
+	TIRVarSet VSOutVariables;
+	TIRVarSet PSOutVariables;
 
 	// Return var/struct
 	ir_variable* VSOut = nullptr;
@@ -1786,15 +1836,15 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 	TIRVarList PSInputArguments;
 	TIRVarList CSInputArguments;
 
-	std::set<ir_variable*> DSStageInVariables;
-	std::set<ir_variable*> DSOutVariables;
+	TIRVarSet DSStageInVariables;
+	TIRVarSet DSOutVariables;
 	ir_variable* DSOut = nullptr;
 	ir_variable* DSStageIn = nullptr;
 	TIRVarList DSInputArguments;
 
 #if USE_DS_ATTRIBUTES
 #else // USE_DS_ATTRIBUTES
-	std::set<ir_variable*> DSPatchVariables;
+	TIRVarSet DSPatchVariables;
 	ir_variable* DSPatch = nullptr;
 #endif // USE_DS_ATTRIBUTES
 
@@ -1867,7 +1917,17 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 			{
 				for (unsigned j = 0; j < s->length; j++)
 				{
-					InputVars.push_tail(new(ParseState)extern_var(new(ParseState)ir_variable(s->fields.structure[j].type, ralloc_strdup(ParseState, s->fields.structure[j].name), ir_var_in)));
+					ir_variable* var = new(ParseState)ir_variable(s->fields.structure[j].type, ralloc_strdup(ParseState, s->fields.structure[j].name), ir_var_in);
+					int AttributeIndex = GetVSHSInAttributeIndex(s->fields.structure[j].semantic);
+					if (AttributeIndex >= 0)
+					{
+						var->semantic = ralloc_asprintf(ParseState, "IN_ATTRIBUTE%d", AttributeIndex);
+					}
+					else
+					{
+						var->semantic = ralloc_strdup(ParseState, s->fields.structure[j].semantic);
+					}
+					InputVars.push_tail(new(ParseState)extern_var(var));
 				}
 			}
 		}
@@ -1922,7 +1982,9 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 				{
 					AttributesUsedMask |= (1 << Index);
 				}
-				InputVars.push_tail(new(ParseState)extern_var(new(ParseState)ir_variable(Member.type, ralloc_strdup(ParseState, Member.name), ir_var_in)));
+				ir_variable* var = new(ParseState)ir_variable(Member.type, ralloc_strdup(ParseState, Member.name), ir_var_in);
+				var->semantic = ralloc_asprintf(ParseState, "IN_%s", Member.semantic);
+				InputVars.push_tail(new(ParseState)extern_var(var));
 			}
 
 			if (bGenerateVSInputDummies)
@@ -2277,12 +2339,12 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 					FSemanticQualifier Qualifier;
 
 					// @todo there has to be a better way to handle this vs looping over GenerateInput...
-					auto deref = MetalUtils::GenerateInput(Frequency, bIsDesktop, ParseState, Variable->semantic, Variable->type->inner_type, &MainDomainDeclInstructions, &PreMainDomainCallInstructions);
+					auto deref = MetalUtils::GenerateInput(Frequency, bIsDesktop, ParseState, Variable->name, Variable->semantic, Variable->type->inner_type, &MainDomainDeclInstructions, &PreMainDomainCallInstructions);
 
 					// make a flat perControlPoint struct
 					ir_dereference_variable* OutputControlPointDeref = NULL;
 					{
-						std::set<ir_variable*> DSInVariables;
+						TIRVarSet DSInVariables;
 
 						TArray<glsl_struct_field> DSInMembers;
 
@@ -2302,6 +2364,12 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 										InnerVariable->name = ralloc_asprintf(ParseState, "OUT_ATTRIBUTE%d_%s", InnerAttribute, InnerVariable->name);
 										Member.name = ralloc_strdup(ParseState, InnerVariable->name);
 										Member.semantic = ralloc_asprintf(ParseState, "[[ attribute(%d) ]]", InnerAttribute);
+
+										if (OutputVertex == 0)
+										{
+											PatchControlPointStructHash = HashCombine(HashCombine(GetTypeHash(InnerVariable->name), GetTypeHash(InnerVariable->type)), PatchControlPointStructHash);
+										}
+
 										InnerAttribute++;
 										DSInMembers.Add(Member);
 										DSInVariables.insert(InnerVariable);
@@ -2317,7 +2385,7 @@ void FMetalCodeBackend::PackInputsAndOutputs(exec_list* Instructions, _mesa_glsl
 						{
 							if(OutputVertex == 0)
 							{
-								Type = glsl_type::get_record_instance(&DSInMembers[0], (unsigned int)DSInMembers.Num(), "PatchControlPointOut");
+								Type = glsl_type::get_record_instance(&DSInMembers[0], (unsigned int)DSInMembers.Num(), ralloc_asprintf(ParseState, "PatchControlPointOut_%u", PatchControlPointStructHash));
 								ParseState->AddUserStruct(Type);
 								InType = glsl_type::get_array_instance(Type, 1000); // the size is meaningless
 							}
@@ -2677,7 +2745,7 @@ struct FConvertHalfToFloatUniformAndSamples final : public ir_rvalue_visitor
 		ir_rvalue** RValuePtr;
 		ir_instruction* InsertPoint;
 	};
-	typedef std::map<ir_rvalue*, std::list<FPair>> TReplacedVarMap;
+	typedef std::map<ir_rvalue*, std::list<FPair>, ir_type_compare<ir_rvalue>> TReplacedVarMap;
 	TReplacedVarMap ReplacedVars;
 
 	std::list<TReplacedVarMap> PendingReplacements;
@@ -2849,7 +2917,7 @@ struct FMetalBreakPrecisionChangesVisitor final : public ir_rvalue_visitor
 {
 	_mesa_glsl_parse_state* State;
 
-	std::map<ir_rvalue*, ir_variable*> ReplacedVars;
+	std::map<ir_rvalue*, ir_variable*, ir_type_compare<ir_rvalue>> ReplacedVars;
 
 	FMetalBreakPrecisionChangesVisitor(_mesa_glsl_parse_state* InState) : State(InState) {}
 
@@ -3030,7 +3098,7 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
 		}
 	}
 
-	std::map<ir_dereference_record*, ir_variable*> Replaced;
+	std::map<ir_dereference_record*, ir_variable*, ir_type_compare<ir_dereference_record>> Replaced;
 
 	ir_variable* GetVar(ir_dereference_record* ir)
 	{
@@ -3071,5 +3139,134 @@ void FMetalCodeBackend::RemovePackedVarReferences(exec_list* ir, _mesa_glsl_pars
 		auto* NewAssignment = new(State)ir_assignment(new(State)ir_dereference_variable(NewVar), DeRefRecord);
 		Main->body.push_head(NewAssignment);
 		Main->body.push_head(NewVar);
+	}
+}
+
+
+namespace MetalUtils
+{
+	struct FBaseIDSystemValueTable
+	{
+		const char* TargetMetalName;
+		const char* BaseMetalName;
+		const char* BaseMetalSemantic;
+		const char* MappedMetalName;
+		TArray<ir_rvalue**> FoundItems;
+	};
+
+	struct FVertexStreamIDVisitor final : public ir_rvalue_visitor
+	{
+		FBaseIDSystemValueTable* ReplaceLookupTable;
+
+		FVertexStreamIDVisitor(FBaseIDSystemValueTable* LookUpTable)
+		: ReplaceLookupTable(LookUpTable)
+		{}
+
+		virtual ~FVertexStreamIDVisitor()
+		{}
+		
+		virtual void handle_rvalue(ir_rvalue** RValuePtr) override
+		{
+			if (!RValuePtr || !*RValuePtr)
+			{
+				return;
+			}
+
+			ir_variable* Variable = (*RValuePtr)->variable_referenced();
+			
+			// Needs to be correct mode and and name
+			if(Variable && Variable->mode == ir_var_in)
+			{
+				for(FBaseIDSystemValueTable* BaseIDRow = ReplaceLookupTable; BaseIDRow->TargetMetalName != NULL; ++BaseIDRow)
+				{
+					if(FCStringAnsi::Stricmp(BaseIDRow->TargetMetalName, Variable->name) == 0)
+					{
+						BaseIDRow->FoundItems.Push(RValuePtr);
+						break;
+					}
+				}
+			}
+		}
+	};
+}
+
+void FMetalCodeBackend::FixupMetalBaseOffsets(exec_list* ir, _mesa_glsl_parse_state* ParseState, EHlslShaderFrequency Frequency)
+{
+	using namespace MetalUtils;
+	
+	if(bIsTessellationVSHS || Frequency != HSF_VertexShader)
+	{
+		return; // do nothing
+	}
+	
+	FBaseIDSystemValueTable BaseIDLUT[] =
+	{
+		{"IN_VertexID", "IN_BaseVertex", "[[ base_vertex ]]", "Mapped_VertexID"},
+		{"IN_InstanceID", "IN_BaseInstance", "[[ base_instance ]]", "Mapped_InstanceID"},
+		{NULL, NULL, NULL, NULL}
+	};
+	
+	ir_function_signature* EntryPointSig = GetMainFunction(ir);
+	check(EntryPointSig);
+	
+	// Find existing references - only remap these
+	FVertexStreamIDVisitor Visitor(BaseIDLUT);
+	Visitor.run(&EntryPointSig->body);
+
+	// Update references if any new variables added
+	for(FBaseIDSystemValueTable* BaseIDRow = BaseIDLUT; BaseIDRow->TargetMetalName != NULL; ++BaseIDRow)
+	{
+		for(int32 i = 0;i < BaseIDRow->FoundItems.Num();++i)
+		{
+			ir_rvalue** RValue = BaseIDRow->FoundItems[i];
+			
+			check(RValue);
+			check(*RValue);
+			ir_variable* Variable = (*RValue)->variable_referenced();
+			check(Variable);
+			
+			// double check this is correct - should be though since it's in array
+			if(FCStringAnsi::Stricmp(BaseIDRow->TargetMetalName, Variable->name) == 0)
+			{
+				// Add new recomputed ID variable - should only add first time for this row
+				ir_variable* MappedIDVariable = ParseState->symbols->get_variable(BaseIDRow->MappedMetalName);
+				if(!MappedIDVariable)
+				{
+					// No mapped name make ensure we have added the base ID type
+					ir_variable* NewInputVariable = ParseState->symbols->get_variable(BaseIDRow->BaseMetalName);
+					if(!NewInputVariable)
+					{
+						NewInputVariable = new(ParseState) ir_variable(Variable->type, BaseIDRow->BaseMetalName, Variable->mode);
+						NewInputVariable->semantic = BaseIDRow->BaseMetalSemantic;
+						NewInputVariable->read_only = Variable->read_only;
+						ParseState->symbols->add_variable(NewInputVariable);
+						EntryPointSig->parameters.push_tail(NewInputVariable);
+					}
+					
+					MappedIDVariable = new(ParseState) ir_variable(Variable->type, BaseIDRow->MappedMetalName, ir_var_auto);
+					MappedIDVariable->semantic = NULL;
+					MappedIDVariable->read_only = false;
+					ParseState->symbols->add_variable(MappedIDVariable);
+
+					// Update ID to take account of base ID
+					EntryPointSig->body.push_head(
+												  new(ParseState)ir_assignment(
+																			   new(ParseState) ir_dereference_variable(MappedIDVariable),
+																			   new(ParseState) ir_expression(
+																											 ir_binop_sub,
+																											 new(ParseState) ir_dereference_variable(Variable),
+																											 new(ParseState) ir_dereference_variable(NewInputVariable)
+																											 )
+																			   )
+												);
+					
+					// Add decl above computation
+					EntryPointSig->body.push_head(MappedIDVariable);
+				}
+				
+				// Remap use of this variable to the new mapped variable
+				*RValue = new(ParseState)ir_dereference_variable(MappedIDVariable);
+			}
+		}
 	}
 }

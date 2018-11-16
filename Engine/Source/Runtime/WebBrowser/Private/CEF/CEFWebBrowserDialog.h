@@ -9,14 +9,20 @@
 #if WITH_CEF3
 
 #if PLATFORM_WINDOWS
-#	include "AllowWindowsPlatformTypes.h"
+#	include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 #pragma push_macro("OVERRIDE")
 #	undef OVERRIDE // cef headers provide their own OVERRIDE macro
+#if PLATFORM_APPLE
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+#endif
 #	include "include/cef_jsdialog_handler.h"
+#if PLATFORM_APPLE
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
 #pragma pop_macro("OVERRIDE")
 #if PLATFORM_WINDOWS
-#	include "HideWindowsPlatformTypes.h"
+#	include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 #include "IWebBrowserDialog.h"
@@ -54,7 +60,7 @@ public:
 	virtual void Continue(bool Success = true, const FText& UserResponse = FText::GetEmpty()) override
 	{
 		check(Type == EWebBrowserDialogType::Prompt || UserResponse.IsEmpty());
-		Callback->Continue(Success, *UserResponse.ToString());
+		Callback->Continue(Success, TCHAR_TO_WCHAR(*UserResponse.ToString()));
 	}
 
 private:
@@ -70,8 +76,8 @@ private:
 	// Create a dialog from OnJSDialog arguments
 	FCEFWebBrowserDialog(CefJSDialogHandler::JSDialogType InDialogType, const CefString& InMessageText, const CefString& InDefaultPrompt, CefRefPtr<CefJSDialogCallback> InCallback)
 		: Type((EWebBrowserDialogType)InDialogType)
-		, MessageText(FText::FromString(InMessageText.ToWString().c_str()))
-		, DefaultPrompt(FText::FromString(InDefaultPrompt.ToWString().c_str()))
+		, MessageText(FText::FromString(WCHAR_TO_TCHAR(InMessageText.ToWString().c_str())))
+		, DefaultPrompt(FText::FromString(WCHAR_TO_TCHAR(InDefaultPrompt.ToWString().c_str())))
 		, bIsReload(false)
 		, Callback(InCallback)
 	{}
@@ -79,7 +85,7 @@ private:
 	// Create a dialog from OnBeforeUnloadDialog arguments
 	FCEFWebBrowserDialog(const CefString& InMessageText, bool InIsReload, CefRefPtr<CefJSDialogCallback> InCallback)
 		: Type(EWebBrowserDialogType::Unload)
-		, MessageText(FText::FromString(InMessageText.ToWString().c_str()))
+		, MessageText(FText::FromString(WCHAR_TO_TCHAR(InMessageText.ToWString().c_str())))
 		, DefaultPrompt(FText::GetEmpty())
 		, bIsReload(InIsReload)
 		, Callback(InCallback)

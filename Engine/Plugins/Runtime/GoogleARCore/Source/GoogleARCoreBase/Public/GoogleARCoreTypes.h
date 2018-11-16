@@ -30,14 +30,14 @@ UENUM(BlueprintType)
 enum class EGoogleARCoreAvailability : uint8
 {
 	/* An internal error occurred while determining ARCore availability. */
-	UnkownError = 0,
+	UnknownError = 0,
 	/* ARCore is not installed, and a query has been issued to check if ARCore is is supported. */
-	UnkownChecking = 1,
+	UnknownChecking = 1,
 	/*
 	 * ARCore is not installed, and the query to check if ARCore is supported
 	 * timed out. This may be due to the device being offline.
 	 */
-	UnkownTimedOut = 2,
+	UnknownTimedOut = 2,
 	/* ARCore is not supported on this device.*/
 	UnsupportedDeviceNotCapable = 100,
 	/* The device and Android version are supported, but the ARCore APK is not installed.*/
@@ -90,7 +90,7 @@ enum class EGoogleARCoreFunctionStatus : uint8
 	NotTracking,
 	/** Function failed due to the requested resource is exhausted. */
 	ResourceExhausted,
-	/** Function failed due to the requested resource isn't available yet. */
+	/** Function failed due to ARCore session hasn't started or the requested resource isn't available yet. */
 	NotAvailable,
 	/** Function failed due to the function augment has invalid type. */
 	InvalidType,
@@ -128,6 +128,12 @@ struct FGoogleARCoreLightEstimate
 	/** The average pixel intensity of the passthrough camera image. */
 	UPROPERTY(BlueprintReadOnly, Category = "GoogleARCore|LightEstimate")
 	float PixelIntensity;
+	
+	/**
+	 * The RGB scale to match the color of the light in the real environment.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "GoogleARCore|LightEstimate")
+	FVector RGBScaleFactor;
 };
 
 /**
@@ -151,8 +157,90 @@ enum class EGoogleARCoreLineTraceChannel : uint8
 	 * Surface normal estimation is most likely to succeed on textured surfaces and with camera motion.
 	 */
 	FeaturePointWithSurfaceNormal = 16,
+	/** Trace against augmented images. */
+	AugmentedImage = 32,
 };
 ENUM_CLASS_FLAGS(EGoogleARCoreLineTraceChannel);
+
+USTRUCT(BlueprintType)
+struct GOOGLEARCOREBASE_API FGoogleARCoreCameraConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "GoogleARCore|CameraConfig")
+	FIntPoint CameraImageResolution;
+	UPROPERTY(BlueprintReadOnly, Category = "GoogleARCore|CameraConfig")
+	FIntPoint CameraTextureResolution;
+
+	bool operator==(const FGoogleARCoreCameraConfig& OtherConfig) const
+	{
+		return CameraImageResolution == OtherConfig.CameraImageResolution && CameraTextureResolution == OtherConfig.CameraTextureResolution;
+	}
+};
+
+class GOOGLEARCOREBASE_API FGoogleARCoreDelegates
+{
+public:
+	DECLARE_MULTICAST_DELEGATE_OneParam(FGoogleARCoreOnConfigCameraDelegate, const TArray<FGoogleARCoreCameraConfig>&);
+
+	/**
+	 * A delegate can be bind through c++. Will be called before ARSession started and returns
+	 * a list of supported ARCore camera config. 
+	 * Bind this delegate if you want to choose a specific camera config in your app. Call 
+	 * UGoogleARCoreSessionFunctionLibrary::ConfigARCoreCamera after the delegate is triggered.
+	 */
+	static FGoogleARCoreOnConfigCameraDelegate OnCameraConfig;
+};
+
+UCLASS(BlueprintType, Category = "AR AugmentedReality")
+class GOOGLEARCOREBASE_API UGoogleARCoreEventManager : public UObject
+{
+	GENERATED_BODY()
+public:
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FGoogleARCoreOnConfigCameraDynamicDelegate, const TArray<FGoogleARCoreCameraConfig>&, SupportedCameraConfig);
+
+	UGoogleARCoreEventManager()
+	{
+		RegisterDelegates();
+	}
+
+	~UGoogleARCoreEventManager()
+	{
+		UnregisterDelegates();
+	}
+
+	/**
+	 * A dynamic delegate can be assigned through blueprint. Will be called before ARSession started and returns
+	 * an array of supported ARCore camera config.
+	 *
+	 * The array will always return 3 camera configs. The GPU texture resolutions
+	 * are the same in all three configs. Currently, most devices provide GPU
+	 * texture resolution of 1920 x 1080, but devices might provide higher or lower
+	 * resolution textures, depending on device capabilities. The CPU image
+	 * resolutions returned are VGA, 720p, and a resolution matching the GPU
+	 * texture.
+	 *
+	 * Bind this delegate if you want to choose a specific camera config in your app. Call 
+	 * UGoogleARCoreSessionFunctionLibrary::ConfigARCoreCamera after the delegate is triggered.
+	 */
+	UPROPERTY(BlueprintAssignable)
+	FGoogleARCoreOnConfigCameraDynamicDelegate OnConfigCamera;
+
+private:
+	void RegisterDelegates()
+	{
+		FGoogleARCoreDelegates::OnCameraConfig.AddUObject(this, &UGoogleARCoreEventManager::OnConfigCamera_Handler);
+	}
+	void UnregisterDelegates()
+	{
+		FGoogleARCoreDelegates::OnCameraConfig.RemoveAll(this);
+	}
+
+	void OnConfigCamera_Handler(const TArray<FGoogleARCoreCameraConfig>& SupportedCameraConfig)
+	{
+		OnConfigCamera.Broadcast(SupportedCameraConfig);
+	}
+};
 
 class FGoogleARCoreSession;
 /**
@@ -183,6 +271,10 @@ public:
 	/** Returns the point position in Unreal world space and it's confidence value from 0 ~ 1. */
 	UFUNCTION(BlueprintPure, Category = "GoogleARCore|PointCloud")
 	void GetPoint(int Index, FVector& OutWorldPosition, float& OutConfidence);
+
+	/** Returns the point position in Unreal AR Tracking space. */
+	UFUNCTION(BlueprintPure, Category = "GoogleARCore|PointCloud")
+	void GetPointInTrackingSpace(int Index, FVector& OutTrackingSpaceLocation, float& OutConfidence);
 
 	/** Release PointCloud's resources back to ArCore. Data will not be available after releasePointCloud is called. */
 	UFUNCTION(BlueprintCallable, Category = "GoogleARCore|PointCloud")

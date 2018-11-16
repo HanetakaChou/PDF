@@ -6,6 +6,9 @@
 #include "CoreMinimal.h"
 #include "RHI.h"
 #include "PackedNormal.h"
+#include "RenderResource.h"
+
+extern RENDERCORE_API void RenderUtilsInit();
 
 /**
 * Constructs a basis matrix for the axis vectors and returns the sign of the determinant
@@ -32,11 +35,27 @@ FORCEINLINE float GetBasisDeterminantSign( const FVector& XAxis, const FVector& 
 * @param XAxis - x axis (tangent)
 * @param YAxis - y axis (binormal)
 * @param ZAxis - z axis (normal)
-* @return sign of determinant either 0 (-1) or +1 (255)
+* @return sign of determinant either -127 (-1) or +1 (127)
 */
-FORCEINLINE uint8 GetBasisDeterminantSignByte( const FPackedNormal& XAxis, const FPackedNormal& YAxis, const FPackedNormal& ZAxis )
+FORCEINLINE int8 GetBasisDeterminantSignByte( const FPackedNormal& XAxis, const FPackedNormal& YAxis, const FPackedNormal& ZAxis )
 {
-	return FMath::TruncToInt(GetBasisDeterminantSign(XAxis,YAxis,ZAxis) * 127.5f + 127.5f);
+	return GetBasisDeterminantSign(XAxis.ToFVector(),YAxis.ToFVector(),ZAxis.ToFVector()) < 0 ? -127 : 127;
+}
+
+/**
+ * Given 2 axes of a basis stored as a packed type, regenerates the y-axis tangent vector and scales by z.W
+ * @param XAxis - x axis (tangent)
+ * @param ZAxis - z axis (normal), the sign of the determinant is stored in ZAxis.W
+ * @return y axis (binormal)
+ */
+template<typename VectorType>
+FORCEINLINE FVector GenerateYAxis(const VectorType& XAxis, const VectorType& ZAxis)
+{
+	static_assert(	ARE_TYPES_EQUAL(VectorType, FPackedNormal) ||
+					ARE_TYPES_EQUAL(VectorType, FPackedRGBA16N), "ERROR: Must be FPackedNormal or FPackedRGBA16N");
+	FVector  x = XAxis.ToFVector();
+	FVector4 z = ZAxis.ToFVector4();
+	return (FVector(z) ^ x) * z.W;
 }
 
 /** Information about a pixel format. */
@@ -136,8 +155,71 @@ extern RENDERCORE_API int32 GMipColorTextureMipLevels;
 // 4: 8x8 cubemap resolution, shader needs to use the same value as preprocessing
 extern RENDERCORE_API const uint32 GDiffuseConvolveMipLevel;
 
+#define NUM_CUBE_VERTICES 36
 /** The indices for drawing a cube. */
-extern RENDERCORE_API const uint16 GCubeIndices[12*3];
+extern RENDERCORE_API const uint16 GCubeIndices[36];
+
+class FCubeIndexBuffer : public FIndexBuffer
+{
+public:
+	/**
+	* Initialize the RHI for this rendering resource
+	*/
+	virtual void InitRHI() override
+	{
+		// create a static vertex buffer
+		FRHIResourceCreateInfo CreateInfo;
+		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * NUM_CUBE_VERTICES, BUF_Static, CreateInfo);
+		void* VoidPtr = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * NUM_CUBE_VERTICES, RLM_WriteOnly);
+		FMemory::Memcpy(VoidPtr, GCubeIndices, NUM_CUBE_VERTICES * sizeof(uint16));
+		RHIUnlockIndexBuffer(IndexBufferRHI);
+	}
+};
+extern RENDERCORE_API TGlobalResource<FCubeIndexBuffer> GCubeIndexBuffer;
+
+class FTwoTrianglesIndexBuffer : public FIndexBuffer
+{
+public:
+	/**
+	* Initialize the RHI for this rendering resource
+	*/
+	virtual void InitRHI() override
+	{
+		// create a static vertex buffer
+		FRHIResourceCreateInfo CreateInfo;
+		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * 6, BUF_Static, CreateInfo);
+		void* VoidPtr = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * 6, RLM_WriteOnly);
+		static const uint16 Indices[] = { 0, 1, 3, 0, 3, 2 };
+		FMemory::Memcpy(VoidPtr, Indices, 6 * sizeof(uint16));
+		RHIUnlockIndexBuffer(IndexBufferRHI);
+	}
+};
+extern RENDERCORE_API TGlobalResource<FTwoTrianglesIndexBuffer> GTwoTrianglesIndexBuffer;
+
+class FScreenSpaceVertexBuffer : public FVertexBuffer
+{
+public:
+	/**
+	* Initialize the RHI for this rendering resource
+	*/
+	virtual void InitRHI() override
+	{
+		// create a static vertex buffer
+		FRHIResourceCreateInfo CreateInfo;
+		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector2D) * 4, BUF_Static, CreateInfo);
+		void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FVector2D) * 4, RLM_WriteOnly);
+		static const FVector2D Vertices[4] =
+		{
+			FVector2D(-1,-1),
+			FVector2D(-1,+1),
+			FVector2D(+1,-1),
+			FVector2D(+1,+1),
+		};
+		FMemory::Memcpy(VoidPtr, Vertices, sizeof(FVector2D) * 4);
+		RHIUnlockVertexBuffer(VertexBufferRHI);
+	}
+};
+extern RENDERCORE_API TGlobalResource<FScreenSpaceVertexBuffer> GScreenSpaceVertexBuffer;
 
 /**
  * Maps from an X,Y,Z cube vertex coordinate to the corresponding vertex index.
@@ -213,6 +295,31 @@ enum EConstructTextureFlags
 	/** Default flags (maps to previous defaults to ConstructTexture2D) */
 	CTF_Default = CTF_Compress | CTF_SRGB,
 };
+
+/**
+ * Calculates the amount of memory used for a single mip-map of a texture 3D.
+ *
+ * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
+ * @param TextureSizeY		Number of vertical texels (for the base mip-level)
+ * @param TextureSizeZ		Number of slices (for the base mip-level)
+ * @param Format	Texture format
+ * @param MipIndex	The index of the mip-map to compute the size of.
+ */
+RENDERCORE_API SIZE_T CalcTextureMipMapSize3D( uint32 TextureSizeX, uint32 TextureSizeY, uint32 TextureSizeZ, EPixelFormat Format, uint32 MipIndex);
+
+/**
+ * Calculates the extent of a mip.
+ *
+ * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
+ * @param TextureSizeY		Number of vertical texels (for the base mip-level)
+ * @param TextureSizeZ		Number of depth texels (for the base mip-level)
+ * @param Format			Texture format
+ * @param MipIndex			The index of the mip-map to compute the size of.
+ * @param OutXExtent		The extent X of the mip
+ * @param OutYExtent		The extent Y of the mip
+ * @param OutZExtent		The extent Z of the mip
+ */
+RENDERCORE_API void CalcMipMapExtent3D( uint32 TextureSizeX, uint32 TextureSizeY, uint32 TextureSizeZ, EPixelFormat Format, uint32 MipIndex, uint32& OutXExtent, uint32& OutYExtent, uint32& OutZExtent );
 
 /**
  * Calculates the extent of a mip.
@@ -315,26 +422,51 @@ RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector4();
 
 RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector3();
 
+RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector2();
+
 RENDERCORE_API bool PlatformSupportsSimpleForwardShading(EShaderPlatform Platform);
 
 RENDERCORE_API bool IsSimpleForwardShadingEnabled(EShaderPlatform Platform);
 
-inline bool IsForwardShadingEnabled(ERHIFeatureLevel::Type FeatureLevel)
+/** Returns if ForwardShading is enabled. Only valid for the current platform (otherwise call ITargetPlatform::UsesForwardShading()). */
+inline bool IsForwardShadingEnabled(EShaderPlatform Platform)
 {
-	extern RENDERCORE_API int32 bUseForwardShading;
-	return bUseForwardShading
+	extern RENDERCORE_API uint32 GForwardShadingPlatformMask;
+	return !!(GForwardShadingPlatformMask & (1u << Platform))
 		// Culling uses compute shader
-		&& FeatureLevel >= ERHIFeatureLevel::SM5;
+		&& GetMaxSupportedFeatureLevel(Platform) >= ERHIFeatureLevel::SM5;
 }
 
+/** Returns if ForwardShading or SimpleForwardShading is enabled. Only valid for the current platform. */
 inline bool IsAnyForwardShadingEnabled(EShaderPlatform Platform)
 {
-	return IsForwardShadingEnabled(GetMaxSupportedFeatureLevel(Platform)) || IsSimpleForwardShadingEnabled(Platform);
+	return IsForwardShadingEnabled(Platform) || IsSimpleForwardShadingEnabled(Platform);
 }
 
+/** Returns if the GBuffer is used. Only valid for the current platform. */
 inline bool IsUsingGBuffers(EShaderPlatform Platform)
 {
 	return !IsAnyForwardShadingEnabled(Platform);
+}
+
+/** Returns whether DBuffer decals are enabled for a given shader platform */
+inline bool IsUsingDBuffers(EShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint32 GDBufferPlatformMask;
+	return !!(GDBufferPlatformMask & (1u << Platform));
+}
+
+inline bool IsUsingPerPixelDBufferMask(EShaderPlatform Platform)
+{
+	switch (Platform)
+	{
+	case SP_SWITCH:
+	case SP_SWITCH_FORWARD:
+		// Per-pixel DBufferMask optimization is currently only tested and supported on Switch.
+		return true;
+	default:
+		return false;
+	}
 }
 
 /** Unit cube vertex buffer (VertexDeclarationFVector4) */

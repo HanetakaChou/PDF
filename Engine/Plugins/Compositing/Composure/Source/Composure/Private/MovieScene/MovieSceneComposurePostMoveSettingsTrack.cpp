@@ -1,7 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "MovieSceneComposurePostMoveSettingsTrack.h"
-#include "MovieSceneComposurePostMoveSettingsSection.h"
+#include "MovieScene/MovieSceneComposurePostMoveSettingsTrack.h"
+#include "MovieScene/MovieSceneComposurePostMoveSettingsSection.h"
 #include "MovieSceneComposurePostMoveSettingsSectionTemplate.h"
 #include "Evaluation/MovieSceneEvalTemplate.h"
 
@@ -16,7 +16,7 @@ UMovieSceneComposurePostMoveSettingsTrack::UMovieSceneComposurePostMoveSettingsT
 
 UMovieSceneSection* UMovieSceneComposurePostMoveSettingsTrack::CreateNewSection()
 {
-	return NewObject<UMovieSceneSection>(this, UMovieSceneComposurePostMoveSettingsSection::StaticClass(), NAME_None, RF_Transactional);
+	return NewObject<UMovieSceneComposurePostMoveSettingsSection>(this, NAME_None, RF_Transactional);
 }
 
 

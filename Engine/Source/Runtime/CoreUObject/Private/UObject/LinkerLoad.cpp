@@ -33,6 +33,10 @@
 #include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Serialization/BulkData.h"
 #include "Serialization/AsyncLoadingPrivate.h"
+#include "Serialization/Formatters/BinaryArchiveFormatter.h"
+#include "Serialization/Formatters/JsonArchiveInputFormatter.h"
+#include "Serialization/ArchiveUObjectFromStructuredArchive.h"
+#include "HAL/FileManager.h"
 #include "UObject/CoreRedirects.h"
 
 class FTexture2DResourceMem;
@@ -48,6 +52,7 @@ DECLARE_CYCLE_STAT(TEXT("Linker Load Deferred"), STAT_LinkerLoadDeferred, STATGR
 
 DECLARE_STATS_GROUP( TEXT( "Linker Count" ), STATGROUP_LinkerCount, STATCAT_Advanced );
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Linker Count"), STAT_LinkerCount, STATGROUP_LinkerCount);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Linker Count (Text Assets)"), STAT_TextAssetLinkerCount, STATGROUP_LinkerCount);
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Live Linker Count"), STAT_LiveLinkerCount, STATGROUP_LinkerCount);
 DECLARE_FLOAT_ACCUMULATOR_STAT(TEXT("Fixup editor-only flags time"), STAT_EditorOnlyFixupTime, STATGROUP_LinkerCount);
 
@@ -69,6 +74,20 @@ FName FLinkerLoad::NAME_LoadErrors("LoadErrors");
 /*----------------------------------------------------------------------------
 Helpers
 ----------------------------------------------------------------------------*/
+
+// Helper struct for getting the value of [Core.System] AllowCookedDataInEditorBuilds from ini
+struct FInitCookedDatataInEditorBuildsSupport
+{
+	bool bAllowCookedData;
+	FInitCookedDatataInEditorBuildsSupport()
+	{
+		if (!GConfig->GetBool(TEXT("Core.System"), TEXT("AllowCookedDataInEditorBuilds"), bAllowCookedData, GEngineIni))
+		{
+			bAllowCookedData = true;
+		}
+	}
+	FORCEINLINE operator bool() const { return bAllowCookedData; }
+};
 
 /**
 * Test whether the given package index is a valid import or export in this package
@@ -403,7 +422,7 @@ void FLinkerLoad::StaticInit(UClass* InUTexture2DStaticClass)
  *
  * @return	new FLinkerLoad object for Parent/ Filename
  */
-FLinkerLoad* FLinkerLoad::CreateLinker(UPackage* Parent, const TCHAR* Filename, uint32 LoadFlags)
+FLinkerLoad* FLinkerLoad::CreateLinker(UPackage* Parent, const TCHAR* Filename, uint32 LoadFlags, FArchive* InLoader /*= nullptr*/)
 {
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	// we don't want the linker permanently created with the 
@@ -432,16 +451,39 @@ FLinkerLoad* FLinkerLoad::CreateLinker(UPackage* Parent, const TCHAR* Filename, 
 		// FinalizeCreation() could invoke further dependency loads
 		TGuardValue<uint32> LinkerLoadFlagGuard(Linker->LoadFlags, Linker->LoadFlags | DeferredLoadFlag);
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+		
+		if (InLoader)
+		{
+			// The linker can't have an associated loader here if we have a loader override
+			check(!Linker->Loader);
+			Linker->SetLoader(InLoader);
+			// Set the basic archive flags on the linker
+			Linker->ResetStatusInfo();
+		}
 
 		FSerializedPackageLinkerGuard Guard;
 		FUObjectThreadContext::Get().SerializedPackageLinker = Linker;
 		if (Linker->Tick(0.f, false, false) == LINKER_Failed)
 		{
-			return NULL;
+			return nullptr;
 		}
 	}
 	FCoreUObjectDelegates::PackageCreatedForLoad.Broadcast(Parent);
 	return Linker;
+}
+
+void FLinkerLoad::SetLoader(FArchive* InLoader)
+{
+	Loader = InLoader;
+
+	check(StructuredArchive == nullptr);
+	check(!StructuredArchiveRootRecord.IsSet());
+	check(StructuredArchiveFormatter == nullptr);
+	
+	// Create structured archive wrapper
+	StructuredArchiveFormatter = new FBinaryArchiveFormatter(*this);
+	StructuredArchive = new FStructuredArchive(*StructuredArchiveFormatter);
+	StructuredArchiveRootRecord.Emplace(StructuredArchive->Open().EnterRecord());
 }
 
 /**
@@ -583,11 +625,11 @@ FLinkerLoad* FLinkerLoad::CreateLinkerAsync( UPackage* Parent, const TCHAR* File
 	{
 		if (GEventDrivenLoaderEnabled)
 		{
-		UE_LOG(LogStreaming, Fatal, TEXT("FLinkerLoad::CreateLinkerAsync: Found existing linker for '%s'"), *Parent->GetName());
+			UE_LOG(LogStreaming, Fatal, TEXT("FLinkerLoad::CreateLinkerAsync: Found existing linker for '%s'"), *Parent->GetName());
 		}
 		else
 		{
-		UE_LOG(LogStreaming, Log, TEXT("FLinkerLoad::CreateLinkerAsync: Found existing linker for '%s'"), *Parent->GetName());
+			UE_LOG(LogStreaming, Log, TEXT("FLinkerLoad::CreateLinkerAsync: Found existing linker for '%s'"), *Parent->GetName());
 		}		
 	}
 
@@ -771,6 +813,8 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const TCHAR* InFilename, uint32 InL
 , bForceSimpleIndexToObject(false)
 , bLockoutLegacyOperations(false)
 , bLoaderIsFArchiveAsync2(false)
+, StructuredArchive(nullptr)
+, StructuredArchiveFormatter(nullptr)
 , Loader(nullptr)
 , AsyncRoot(nullptr)
 , NameMapIndex(0)
@@ -799,13 +843,12 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const TCHAR* InFilename, uint32 InL
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 ,	bForceBlueprintFinalization(false)
 ,	DeferredCDOIndex(INDEX_NONE)
-,	ResolvingDeferredPlaceholder(nullptr)
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 {
 	FMemory::Memset(ExportHash, INDEX_NONE, sizeof(ExportHash));
 	INC_DWORD_STAT(STAT_LinkerCount);
 	INC_DWORD_STAT(STAT_LiveLinkerCount);
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	FLinkerManager::Get().GetLiveLinkers().Add(this);
 #endif
 
@@ -814,7 +857,7 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const TCHAR* InFilename, uint32 InL
 
 FLinkerLoad::~FLinkerLoad()
 {
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	FLinkerManager::Get().GetLiveLinkers().Remove(this);
 #endif
 
@@ -829,7 +872,9 @@ FLinkerLoad::~FLinkerLoad()
 	// Make sure this is deleted if it's still allocated
 	delete LoadProgressScope;
 #endif
-	check(!Loader);
+	check(Loader == nullptr);
+	check(StructuredArchive == nullptr);
+	check(StructuredArchiveFormatter == nullptr);
 }
 
 /**
@@ -843,8 +888,9 @@ FLinkerLoad::~FLinkerLoad()
 bool FLinkerLoad::IsTimeLimitExceeded( const TCHAR* CurrentTask, int32 Granularity )
 {
 	IsTimeLimitExceededCallCount++;
-	if( !bTimeLimitExceeded 
-	&&	bUseTimeLimit 
+	if( !IsTextFormat()
+	&&  !bTimeLimitExceeded 
+	&&  bUseTimeLimit 
 	&&  (IsTimeLimitExceededCallCount % Granularity) == 0 )
 	{
 		double CurrentTime = FPlatformTime::Seconds();
@@ -861,6 +907,19 @@ bool FLinkerLoad::IsTimeLimitExceeded( const TCHAR* CurrentTask, int32 Granulari
 		}
 	}
 	return bTimeLimitExceeded;
+}
+
+void FLinkerLoad::ResetStatusInfo()
+{
+	// Set status info.
+	this->SetUE4Ver(GPackageFileUE4Version);
+	this->SetLicenseeUE4Ver(GPackageFileLicenseeUE4Version);
+	this->SetEngineVer(FEngineVersion::Current());
+	this->SetIsLoading(true);
+	this->SetIsPersistent(true);
+
+	// Reset all custom versions
+	ResetCustomVersions();
 }
 
 /**
@@ -906,53 +965,100 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::CreateLoader(
 		}
 		else
 		{
-			Loader = new FArchiveAsync2(*Filename
-					, GEventDrivenLoaderEnabled ? Forward<TFunction<void()>>(InSummaryReadyCallback) : TFunction<void()>([]() {})
-				);
-
-			if (!Loader)
+#if WITH_TEXT_ARCHIVE_SUPPORT
+			if (Filename.EndsWith(FPackageName::GetTextAssetPackageExtension()) || Filename.EndsWith(FPackageName::GetTextMapPackageExtension()))
 			{
-				UE_LOG(LogLinker, Warning, TEXT("Error opening file '%s'."), *Filename);
-				return LINKER_Failed;
-			}
-
-			if( Loader->IsError() )
-			{
-				delete Loader;
-				Loader = nullptr;
-				UE_LOG(LogLinker, Warning, TEXT("Error opening file '%s'."), *Filename);
-				return LINKER_Failed;
-			}
-#if DEVIRTUALIZE_FLinkerLoad_Serialize
-			ActiveFPLB = Loader->ActiveFPLB; // make sure my fast past loading is using the FAA2 fast path buffer
-#endif
-
-			bool bHasHashEntry = FSHA1::GetFileSHAHash(*Filename, NULL);
-			if ((LoadFlags & LOAD_MemoryReader) || bHasHashEntry)
-			{
-				// force preload into memory if file has an SHA entry
-				// Serialize data from memory instead of from disk.
-				uint32	BufferSize = Loader->TotalSize();
-				void*	Buffer = FMemory::Malloc(BufferSize);
-				Loader->Serialize(Buffer, BufferSize);
-				delete Loader;
-				Loader = nullptr;
-				if (bHasHashEntry)
+				INC_DWORD_STAT(STAT_TextAssetLinkerCount);
+				Loader = IFileManager::Get().CreateFileReader(*Filename);
+				StructuredArchiveFormatter = new FJsonArchiveInputFormatter(*this, [this](const FString& InName)
 				{
-					// create buffer reader and spawn SHA verify when it gets closed
-					Loader = new FBufferReaderWithSHA(Buffer, BufferSize, true, *Filename, true);
+					int32 EndOfClassNameIndex = INDEX_NONE;
+					InName.FindChar(' ', EndOfClassNameIndex);
+					
+					FName FullObjectPath = *InName.Right(InName.Len() - EndOfClassNameIndex - 1);
+					UObject* Result = nullptr;
+					const FPackageIndex* ExportIndex = ObjectNameToPackageExportIndex.Find(FullObjectPath);
+					if (ExportIndex)
+					{
+						Result = CreateExport(ExportIndex->ToExport());
+					}
+					else
+					{
+						const FPackageIndex* ImportIndex = ObjectNameToPackageImportIndex.Find(FullObjectPath);
+
+						if (ImportIndex)
+						{
+							Result = CreateImport(ImportIndex->ToImport());
+						}
+					}
+
+					return Result;
+				});
+			}
+			else
+#endif
+			{
+				// If want to be able to load cooked data in the editor we need to use FArchiveAsync2 which supports EDL cooked packages,
+				// otherwise the generic file reader is faster in the editor so use that
+				static FInitCookedDatataInEditorBuildsSupport AllowCookedDataInEditorBuilds;
+				bool bCanUseFArchiveAsync2 = FPlatformProperties::RequiresCookedData() || AllowCookedDataInEditorBuilds;
+				if (bCanUseFArchiveAsync2)
+				{
+					Loader = new FArchiveAsync2(*Filename
+							, GEventDrivenLoaderEnabled ? Forward<TFunction<void()>>(InSummaryReadyCallback) : TFunction<void()>([]() {})
+						);
 				}
 				else
 				{
-					// create a buffer reader
-					Loader = new FBufferReader(Buffer, BufferSize, true, true);
+					Loader = IFileManager::Get().CreateFileReader(*Filename);
+				}
+
+				if (!Loader)
+				{
+					UE_LOG(LogLinker, Warning, TEXT("Error opening file '%s'."), *Filename);
+					return LINKER_Failed;
+				}
+
+				if (Loader->IsError())
+				{
+					delete Loader;
+					Loader = nullptr;
+					UE_LOG(LogLinker, Warning, TEXT("Error opening file '%s'."), *Filename);
+					return LINKER_Failed;
+				}
+#if DEVIRTUALIZE_FLinkerLoad_Serialize
+				ActiveFPLB = Loader->ActiveFPLB; // make sure my fast past loading is using the FAA2 fast path buffer
+#endif
+
+				bool bHasHashEntry = FSHA1::GetFileSHAHash(*Filename, NULL);
+				if ((LoadFlags & LOAD_MemoryReader) || bHasHashEntry)
+				{
+					// force preload into memory if file has an SHA entry
+					// Serialize data from memory instead of from disk.
+					uint32	BufferSize = Loader->TotalSize();
+					void*	Buffer = FMemory::Malloc(BufferSize);
+					Loader->Serialize(Buffer, BufferSize);
+					delete Loader;
+					Loader = nullptr;
+					if (bHasHashEntry)
+					{
+						// create buffer reader and spawn SHA verify when it gets closed
+						Loader = new FBufferReaderWithSHA(Buffer, BufferSize, true, *Filename, true);
+					}
+					else
+					{
+						// create a buffer reader
+						Loader = new FBufferReader(Buffer, BufferSize, true, true);
+					}
+				}
+				else
+				{
+					bLoaderIsFArchiveAsync2 = bCanUseFArchiveAsync2;
 				}
 			}
-			else
-			{
-				bLoaderIsFArchiveAsync2 = true;
-			}
 		} 
+
+		SetLoader(Loader);
 
 		check(bDynamicClassLinker || Loader);
 		check(bDynamicClassLinker || !Loader->IsError());
@@ -962,16 +1068,8 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::CreateLoader(
 		//	UE_LOG(LogLinker, Warning, TEXT("Linker for '%s' already exists"), *LinkerRoot->GetName() );
 		//	return LINKER_Failed;
 		//}
-
-		// Set status info.
-		ArUE4Ver = GPackageFileUE4Version;
-		ArLicenseeUE4Ver = GPackageFileLicenseeUE4Version;
-		ArEngineVer = FEngineVersion::Current();
-		ArIsLoading = true;
-		ArIsPersistent = true;
-
-		// Reset all custom versions
-		ResetCustomVersions();
+		
+		ResetStatusInfo();
 	}
 	else if (GEventDrivenLoaderEnabled)
 	{
@@ -1040,7 +1138,7 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 		LoadProgressScope->EnterProgressFrame(1);
 #endif
 		// Read summary from file.
-		*this << Summary;
+		StructuredArchiveRootRecord.GetValue() << NAMED_FIELD(Summary);
 
 		// Check tag.
 		if( Summary.Tag != PACKAGE_FILE_TAG )
@@ -1055,14 +1153,13 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 			UE_LOG(LogLinker, Warning, TEXT("The file %s was saved by a previous version which is not backwards compatible with this one. Min Required Version: %i  Package Version: %i"), *Filename, (int32)VER_UE4_OLDEST_LOADABLE_PACKAGE, Summary.GetFileVersionUE4() );
 			return LINKER_Failed;
 		}
-
 		// Don't load packages that are only compatible with an engine version newer than the current one.
-		if( !FEngineVersion::Current().IsCompatibleWith(Summary.CompatibleWithEngineVersion) )
+		if (!FEngineVersion::Current().IsCompatibleWith(Summary.CompatibleWithEngineVersion))
 		{
-			UE_LOG(LogLinker, Warning, TEXT("Asset '%s' has been saved with engine version newer than current and therefore can't be loaded. CurrEngineVersion: %s AssetEngineVersion: %s"), *Filename, *FEngineVersion::Current().ToString(), *Summary.CompatibleWithEngineVersion.ToString() );
+			UE_LOG(LogLinker, Warning, TEXT("Asset '%s' has been saved with engine version newer than current and therefore can't be loaded. CurrEngineVersion: %s AssetEngineVersion: %s"), *Filename, *FEngineVersion::Current().ToString(), *Summary.CompatibleWithEngineVersion.ToString());
 			return LINKER_Failed;
 		}
-		else if( !FPlatformProperties::RequiresCookedData() && !Summary.SavedByEngineVersion.HasChangelist() && FEngineVersion::Current().HasChangelist() )
+		else if (!FPlatformProperties::RequiresCookedData() && !Summary.SavedByEngineVersion.HasChangelist() && FEngineVersion::Current().HasChangelist())
 		{
 			// This warning can be disabled in ini with [Core.System] ZeroEngineVersionWarning=False
 			static struct FInitZeroEngineVersionWarning
@@ -1098,18 +1195,7 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 		if (FPlatformProperties::HasEditorOnlyData() && !!(Summary.PackageFlags & PKG_FilterEditorOnly))
 		{
 			// This warning can be disabled in ini with [Core.System] AllowCookedDataInEditorBuilds=False
-			static struct FInitCookedDatataInEditorBuildsSupport
-			{
-				bool bAllowCookedData;
-				FInitCookedDatataInEditorBuildsSupport()
-				{
-					if (!GConfig->GetBool(TEXT("Core.System"), TEXT("AllowCookedDataInEditorBuilds"), bAllowCookedData, GEngineIni))
-					{
-						bAllowCookedData = true;
-					}
-				}
-				FORCEINLINE operator bool() const { return bAllowCookedData; }
-			} AllowCookedDataInEditorBuilds;
+			static FInitCookedDatataInEditorBuildsSupport AllowCookedDataInEditorBuilds;
 			if (!AllowCookedDataInEditorBuilds)
 			{
 				UE_LOG(LogLinker, Warning, 
@@ -1130,7 +1216,8 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 #if PLATFORM_WINDOWS
 		if (!FPlatformProperties::RequiresCookedData() && 
 			// We can't check the post tag if the file is an EDL cooked package
-			!((Summary.PackageFlags & PKG_FilterEditorOnly) && Summary.PreloadDependencyCount > 0 && Summary.PreloadDependencyOffset > 0))
+			!((Summary.PackageFlags & PKG_FilterEditorOnly) && Summary.PreloadDependencyCount > 0 && Summary.PreloadDependencyOffset > 0)
+			&& !IsTextFormat())
 		{
 			// check if this package version stored the 4-byte magic post tag
 			// get the offset of the post tag
@@ -1182,7 +1269,7 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 				else if (SerializedCustomVersion.Version > LatestVersion->Version)
 				{
 					// Loading a package with a newer custom version than the current one.
-					UE_LOG(LogLinker, Error, TEXT("Package %s was saved with a newer custom version than the current. Tag %s  PackageVersion %d  MaxExpected %d"), *Filename, *SerializedCustomVersion.Key.ToString(), SerializedCustomVersion.Version, LatestVersion->Version);
+					UE_LOG(LogLinker, Error, TEXT("Package %s was saved with a newer custom version than the current. Tag %s Name '%s' PackageVersion %d  MaxExpected %d"), *Filename, *SerializedCustomVersion.Key.ToString(), *LatestVersion->GetFriendlyName().ToString(), SerializedCustomVersion.Version, LatestVersion->Version);
 					return LINKER_Failed;
 				}
 				else if (SerializedCustomVersion.Version != LatestVersion->Version)
@@ -1200,9 +1287,9 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 		Loader->SetLicenseeUE4Ver(Summary.GetFileVersionLicenseeUE4());
 		Loader->SetEngineVer(Summary.SavedByEngineVersion);
 
-		ArUE4Ver = Summary.GetFileVersionUE4();
-		ArLicenseeUE4Ver = Summary.GetFileVersionLicenseeUE4();
-		ArEngineVer = Summary.SavedByEngineVersion;
+		this->SetUE4Ver(Summary.GetFileVersionUE4());
+		this->SetLicenseeUE4Ver(Summary.GetFileVersionLicenseeUE4());
+		this->SetEngineVer(Summary.SavedByEngineVersion);
 
 		const FCustomVersionContainer& SummaryVersions = Summary.GetCustomVersionContainer();
 		Loader->SetCustomVersions(SummaryVersions);
@@ -1238,8 +1325,8 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 			LinkerRootPackage->SetGuid( Summary.Guid );
 
 			// Remember the linker versions
-			LinkerRootPackage->LinkerPackageVersion = ArUE4Ver;
-			LinkerRootPackage->LinkerLicenseeVersion = ArLicenseeUE4Ver;
+			LinkerRootPackage->LinkerPackageVersion = this->UE4Ver();
+			LinkerRootPackage->LinkerLicenseeVersion = this->LicenseeUE4Ver();
 
 			// Only set the custom version if it is not already latest.
 			// If it is latest, we will compare against latest in GetLinkerCustomVersion
@@ -1254,7 +1341,7 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePackageFileSummary()
 		}
 		
 		// Propagate fact that package cannot use lazy loading to archive (aka this).
-		if( (Summary.PackageFlags & PKG_DisallowLazyLoading) )
+		if( (Summary.PackageFlags & PKG_DisallowLazyLoading) || IsTextFormat() )
 		{
 			ArAllowLazyLoading = false;
 		}
@@ -1292,7 +1379,11 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeNameMap()
 
 	if( NameMapIndex == 0 && Summary.NameCount > 0 )
 	{
-		Seek( Summary.NameOffset );
+		if (!IsTextFormat())
+		{
+			Seek(Summary.NameOffset);
+		}
+
 		// Make sure there is something to precache first.
 		if( Summary.TotalHeaderSize > 0 )
 		{
@@ -1314,13 +1405,15 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeNameMap()
 		}
 	}
 
-	while( bFinishedPrecaching && NameMapIndex < Summary.NameCount && !IsTimeLimitExceeded(TEXT("serializing name map"),100) )
+	FStructuredArchive::FStream NameStream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("Names"));
+
+	while( bFinishedPrecaching && NameMapIndex < Summary.NameCount && !IsTimeLimitExceeded(TEXT("serializing name map"),100))
 	{
 		SCOPED_LOADTIMER(LinkerLoad_SerializeNameMap_ProcessingEntries);
 
 		// Read the name entry from the file.
 		FNameEntrySerialized NameEntry(ENAME_LinkerConstructor);
-		*this << NameEntry;
+		NameStream.EnterElement() << NameEntry;
 
 		// Add it to the name table with no splitting and no hash calculations
 		NameMap.Add(FName(NameEntry));
@@ -1346,15 +1439,16 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeGatherableTextDataMap(bool bFor
 		return LINKER_Loaded;
 	}
 
-	if( GatherableTextDataMapIndex == 0 && Summary.GatherableTextDataCount > 0 )
+	if( !IsTextFormat() && GatherableTextDataMapIndex == 0 && Summary.GatherableTextDataCount > 0 )
 	{
 		Seek( Summary.GatherableTextDataOffset );
 	}
 
-	while( GatherableTextDataMapIndex < Summary.GatherableTextDataCount && !IsTimeLimitExceeded(TEXT("serializing gatherable text data map"),100) )
+	FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("GatherableTextData"));
+	while (GatherableTextDataMapIndex < Summary.GatherableTextDataCount && !IsTimeLimitExceeded(TEXT("serializing gatherable text data map"), 100))
 	{
 		FGatherableTextData* GatherableTextData = new(GatherableTextDataMap)FGatherableTextData;
-		*this << *GatherableTextData;
+		Stream.EnterElement() << *GatherableTextData;
 		GatherableTextDataMapIndex++;
 	}
 
@@ -1371,15 +1465,17 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeImportMap()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FLinkerLoad::SerializeImportMap" ), STAT_LinkerLoad_SerializeImportMap, STATGROUP_LinkerLoad );
 
-	if( ImportMapIndex == 0 && Summary.ImportCount > 0 )
+	if( !IsTextFormat() && ImportMapIndex == 0 && Summary.ImportCount > 0 )
 	{
 		Seek( Summary.ImportOffset );
 	}
 
+	FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("ImportTable"));
+
 	while( ImportMapIndex < Summary.ImportCount && !IsTimeLimitExceeded(TEXT("serializing import map"),100) )
 	{
 		FObjectImport* Import = new(ImportMap)FObjectImport;
-		*this << *Import;
+		Stream.EnterElement() << *Import;
 		ImportMapIndex++;
 	}
 	
@@ -1572,15 +1668,18 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeExportMap()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FLinkerLoad::SerializeExportMap" ), STAT_LinkerLoad_SerializeExportMap, STATGROUP_LinkerLoad );
 
-	if( ExportMapIndex == 0 && Summary.ExportCount > 0 )
+	if( !IsTextFormat() && ExportMapIndex == 0 && Summary.ExportCount > 0 )
 	{
 		Seek( Summary.ExportOffset );
 	}
 
+
+	FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("ExportTable"));
+
 	while( ExportMapIndex < Summary.ExportCount && !IsTimeLimitExceeded(TEXT("serializing export map"),100) )
 	{
 		FObjectExport* Export = new(ExportMap)FObjectExport;
-		*this << *Export;
+		Stream.EnterElement() << *Export;
 		Export->ThisIndex = FPackageIndex::FromExport(ExportMapIndex);
 		Export->bWasFiltered = FilterExport(*Export);
 		ExportMapIndex++;
@@ -1614,16 +1713,20 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeDependsMap()
 	// depends map size is same as export map size
 	if (DependsMapIndex == 0 && Summary.ExportCount > 0)
 	{
-		Seek(Summary.DependsOffset);
+		if (!IsTextFormat())
+		{
+			Seek(Summary.DependsOffset);
+		}
 
 		// Pre-size array to avoid re-allocation of array of arrays!
 		DependsMap.AddZeroed(Summary.ExportCount);
 	}
 
+	FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("DependsMap"));
 	while (DependsMapIndex < Summary.ExportCount && !IsTimeLimitExceeded(TEXT("serializing depends map"), 100))
 	{
 		TArray<FPackageIndex>& Depends = DependsMap[DependsMapIndex];
-		*this << Depends;
+		Stream.EnterElement() << Depends;
 		DependsMapIndex++;
 	}
 
@@ -1644,15 +1747,33 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializePreloadDependencies()
 		return LINKER_Loaded;
 	}
 
-	Seek(Summary.PreloadDependencyOffset);
-
-	PreloadDependencies.Reserve(Summary.PreloadDependencyCount);
-	//@todoio check endiness and fastpath this as a single serialize
-	for (int32 Index = 0; Index < Summary.PreloadDependencyCount; Index++)
+	if (!IsTextFormat())
 	{
-		FPackageIndex Idx;
-		*this << Idx;
-		PreloadDependencies.Add(Idx);
+		Seek(Summary.PreloadDependencyOffset);
+	}
+
+	PreloadDependencies.AddUninitialized(Summary.PreloadDependencyCount);
+
+	if ((IsSaving()            // if we are saving, we always do the ordinary serialize as a way to make sure it matches up with bulk serialization
+		&& !IsCooking()            // but cooking and transacting is performance critical, so we skip that
+		&& !IsTransacting())
+		|| IsByteSwapping()        // if we are byteswapping, we need to do that per-element
+		)
+	{
+		//@todoio check endiness and fastpath this as a single serialize
+		FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(FIELD_NAME_TEXT("PreloadDependencies"));
+		for (int32 Index = 0; Index < Summary.PreloadDependencyCount; Index++)
+		{
+			FPackageIndex Idx;
+			Stream.EnterElement() << Idx;
+
+			PreloadDependencies[Index] = Idx;
+		}
+	}
+	else
+	{
+		check(!IsTextFormat());
+		Serialize(PreloadDependencies.GetData(), Summary.PreloadDependencyCount * sizeof(FPackageIndex));
 	}
 
 	bHasSerializedPreloadDependencies = true;
@@ -1673,74 +1794,91 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeThumbnails( bool bForceEnableIn
 		return LINKER_Loaded;
 	}
 
-	if( Summary.ThumbnailTableOffset > 0 )
+	FStructuredArchive::FRecord Record = StructuredArchiveRootRecord->EnterRecord(FIELD_NAME_TEXT("Thumbnails"));
+
+	if((Summary.ThumbnailTableOffset > 0) || IsTextFormat())
 	{
-		// Seek to the thumbnail table of contents
-		Seek( Summary.ThumbnailTableOffset );
+		TOptional<FStructuredArchive::FSlot> IndexSlot;
 
-
-		// Load number of thumbnails
-		int32 ThumbnailCount = 0;
-		*this << ThumbnailCount;
-
-
-		// Allocate a new thumbnail map if we need one
-		if( !LinkerRoot->ThumbnailMap )
+		if (IsTextFormat())
 		{
-			LinkerRoot->ThumbnailMap = MakeUnique<FThumbnailMap>();
+			IndexSlot = Record.TryEnterField(FIELD_NAME_TEXT("Index"), false);
+		}
+		else
+		{
+			// Seek to the thumbnail table of contents
+			Seek(Summary.ThumbnailTableOffset);
+			IndexSlot.Emplace(Record.EnterField(FIELD_NAME_TEXT("Index")));
 		}
 
-
-		// Load thumbnail names and file offsets
-		TArray< FObjectFullNameAndThumbnail > ThumbnailInfoArray;
-		for( int32 CurObjectIndex = 0; CurObjectIndex < ThumbnailCount; ++CurObjectIndex )
+		if (IndexSlot.IsSet())
 		{
-			FObjectFullNameAndThumbnail ThumbnailInfo;
+			// Load number of thumbnails
+			int32 ThumbnailCount = 0;
 
-			FString ObjectClassName;
-				// Newer packages always store the class name for each asset
-				*this << ObjectClassName;
+			FStructuredArchive::FArray IndexArray = IndexSlot->EnterArray(ThumbnailCount);
 
-			// Object path
-			FString ObjectPathWithoutPackageName;
-			*this << ObjectPathWithoutPackageName;
-			const FString ObjectPath( LinkerRoot->GetName() + TEXT( "." ) + ObjectPathWithoutPackageName );
-
-
-			// Create a full name string with the object's class and fully qualified path
-			const FString ObjectFullName( ObjectClassName + TEXT( " " ) + ObjectPath );
-			ThumbnailInfo.ObjectFullName = FName( *ObjectFullName );
-
-			// File offset for the thumbnail (already saved out.)
-			*this << ThumbnailInfo.FileOffset;
-
-			// Only bother loading thumbnails that don't already exist in memory yet.  This is because when we
-			// go to load thumbnails that aren't in memory yet when saving packages we don't want to clobber
-			// thumbnails that were freshly-generated during that editor session
-			if( !LinkerRoot->ThumbnailMap->Contains( ThumbnailInfo.ObjectFullName ) )
+			// Allocate a new thumbnail map if we need one
+			if (!LinkerRoot->ThumbnailMap)
 			{
-				// Add to list of thumbnails to load
-				ThumbnailInfoArray.Add( ThumbnailInfo );
+				LinkerRoot->ThumbnailMap = MakeUnique<FThumbnailMap>();
 			}
-		}
+
+			// Load thumbnail names and file offsets
+			TArray< FObjectFullNameAndThumbnail > ThumbnailInfoArray;
+			for (int32 CurObjectIndex = 0; CurObjectIndex < ThumbnailCount; ++CurObjectIndex)
+			{
+				FStructuredArchive::FRecord IndexRecord = IndexArray.EnterElement().EnterRecord();
+				FObjectFullNameAndThumbnail ThumbnailInfo;
+
+				FString ObjectClassName;
+				// Newer packages always store the class name for each asset
+				IndexRecord << NAMED_FIELD(ObjectClassName);
+
+				// Object path
+				FString ObjectPathWithoutPackageName;
+				IndexRecord << NAMED_FIELD(ObjectPathWithoutPackageName);
+				const FString ObjectPath(LinkerRoot->GetName() + TEXT(".") + ObjectPathWithoutPackageName);
 
 
+				// Create a full name string with the object's class and fully qualified path
+				const FString ObjectFullName(ObjectClassName + TEXT(" ") + ObjectPath);
+				ThumbnailInfo.ObjectFullName = FName(*ObjectFullName);
 
-		// Now go and load and cache all of the thumbnails
-		for( int32 CurObjectIndex = 0; CurObjectIndex < ThumbnailInfoArray.Num(); ++CurObjectIndex )
-		{
-			const FObjectFullNameAndThumbnail& CurThumbnailInfo = ThumbnailInfoArray[ CurObjectIndex ];
+				// File offset for the thumbnail (already saved out.)
+				IndexRecord << NAMED_ITEM("FileOffset", ThumbnailInfo.FileOffset);
+
+				// Only bother loading thumbnails that don't already exist in memory yet.  This is because when we
+				// go to load thumbnails that aren't in memory yet when saving packages we don't want to clobber
+				// thumbnails that were freshly-generated during that editor session
+				if (!LinkerRoot->ThumbnailMap->Contains(ThumbnailInfo.ObjectFullName))
+				{
+					// Add to list of thumbnails to load
+					ThumbnailInfoArray.Add(ThumbnailInfo);
+				}
+			}
 
 
-			// Seek to the location in the file with the image data
-			Seek( CurThumbnailInfo.FileOffset );
+			FStructuredArchive::FArray DataArray = Record.EnterArray(FIELD_NAME_TEXT("Thumbnails"), ThumbnailCount);
 
-			// Load the image data
-			FObjectThumbnail LoadedThumbnail;
-			LoadedThumbnail.Serialize( *this );
+			// Now go and load and cache all of the thumbnails
+			for (int32 CurObjectIndex = 0; CurObjectIndex < ThumbnailInfoArray.Num(); ++CurObjectIndex)
+			{
+				const FObjectFullNameAndThumbnail& CurThumbnailInfo = ThumbnailInfoArray[CurObjectIndex];
 
-			// Store the data!
-			LinkerRoot->ThumbnailMap->Add( CurThumbnailInfo.ObjectFullName, LoadedThumbnail );
+				// Seek to the location in the file with the image data
+				if (!IsTextFormat())
+				{
+					Seek(CurThumbnailInfo.FileOffset);
+				}
+
+				// Load the image data
+				FObjectThumbnail LoadedThumbnail;
+				LoadedThumbnail.Serialize(DataArray.EnterElement());
+
+				// Store the data!
+				LinkerRoot->ThumbnailMap->Add(CurThumbnailInfo.ObjectFullName, LoadedThumbnail);
+			}
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -1833,6 +1971,69 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::FinalizeCreation()
 #if WITH_EDITOR
 		LoadProgressScope->EnterProgressFrame(1);
 #endif
+
+		if (IsTextFormat())
+		{
+			ObjectNameToPackageExportIndex.Empty(ExportMap.Num());
+			ObjectNameToPackageImportIndex.Empty(ImportMap.Num());
+
+			// Build full export map name lookup
+			for (int32 ExportIndex = 0; ExportIndex < ExportMap.Num(); ++ExportIndex)
+			{
+				FString FullName;
+				FPackageIndex CurIndex = FPackageIndex::FromExport(ExportIndex);
+				int32 PartCount = 0;
+				do
+				{
+					FObjectExport& Export = ExportMap[CurIndex.ToExport()];
+					if (FullName.Len() > 0)
+					{
+						FullName = TEXT(".") + FullName;
+					}
+					FullName = Export.ObjectName.ToString() + FullName;
+					CurIndex = Export.OuterIndex;
+				} while (!CurIndex.IsNull());
+				
+				// In some cases, the export in this package can be pathed into a different package (map BuiltInData stuff mainly) so we only want to attach
+				// this package path to the name if it doesn't look like a long package name
+				if (FullName[0] != '/')
+				{
+					int32 DotIndex = INDEX_NONE;
+					if (FullName.FindChar('.', DotIndex))
+					{
+						FullName[DotIndex] = ':';
+					}
+
+					FullName = LinkerRoot->GetName() + TEXT(".") + FullName;
+				}
+
+				check(ObjectNameToPackageExportIndex.Find(*FullName) == nullptr);
+				ObjectNameToPackageExportIndex.Add(*FullName, FPackageIndex::FromExport(ExportIndex));
+			}
+
+			// Same for import map
+			ObjectNameToPackageImportIndex.Reserve(ImportMap.Num());
+			for (int32 ImportIndex = 0; ImportIndex < ImportMap.Num(); ++ImportIndex)
+			{
+				FPackageIndex CurIndex = FPackageIndex::FromImport(ImportIndex);
+				FString FullName;
+				do 
+				{
+					FObjectImport& Import = ImportMap[CurIndex.ToImport()];
+					if (FullName.Len() > 0)
+					{
+						FullName = TEXT(".") + FullName;
+					}
+					FullName = Import.ObjectName.ToString() + FullName;
+					CurIndex = Import.OuterIndex;
+				}
+				while (!CurIndex.IsNull());
+
+				FName FullFName(*FullName);
+				check(!ObjectNameToPackageImportIndex.Contains(FullFName));
+				ObjectNameToPackageImportIndex.Add(FullFName, FPackageIndex::FromImport(ImportIndex));
+			}
+		}
 
 		// Add this linker to the object manager's linker array.
 		FLinkerManager::Get().AddLoader(this);
@@ -2197,7 +2398,7 @@ FLinkerLoad::EVerifyResult FLinkerLoad::VerifyImport(int32 ImportIndex)
 		VerifyImportInner(ImportIndex, WarningAppend);
 
 		// if the redirector wasn't found, then it truly doesn't exist
-		if (Import.SourceIndex == INDEX_NONE)
+		if (Import.SourceIndex == INDEX_NONE) //-V547
 		{
 			Result = VERIFY_Failed;
 		}
@@ -2227,31 +2428,44 @@ FLinkerLoad::EVerifyResult FLinkerLoad::VerifyImport(int32 ImportIndex)
 				UObject* DestObject = Redir->DestinationObject;
 
 				// check to make sure the destination obj was loaded,
-				if ( DestObject == NULL )
+				if (DestObject == nullptr)
 				{
 					Result = VERIFY_Failed;
-				}
-				// check that in fact it was the type we thought it should be
-				else if ( DestObject->GetClass()->GetFName() != OriginalImport.ClassName
-
-					// if the destination object is a CDO, allow class changes
-					&&	!DestObject->HasAnyFlags(RF_ClassDefaultObject) )
-				{
-					Result = VERIFY_Failed;
-					// if the destination is a ObjectRedirector you've most likely made a nasty circular loop
-					if( Redir->DestinationObject->GetClass() == UObjectRedirector::StaticClass() )
-					{
-						WarningAppend += LOCTEXT("LoadWarningSuffix_circularredirection", " [circular redirection]").ToString();
-					}
 				}
 				else
 				{
-					Result = VERIFY_Redirected;
+					// Blueprint CDOs are always allowed to change class, otherwise we need to do a name check for all parent classes
+					bool bIsValidClass = DestObject->HasAnyFlags(RF_ClassDefaultObject);
+					UClass* CheckClass = DestObject->GetClass();
 
-					// now, fake our Import to be what the redirector pointed to
-					Import.XObject = Redir->DestinationObject;
-					FUObjectThreadContext::Get().ImportCount++;
-					FLinkerManager::Get().AddLoaderWithNewImports(this);
+					while (!bIsValidClass && CheckClass)
+					{
+						if (CheckClass->GetFName() == OriginalImport.ClassName)
+						{
+							bIsValidClass = true;
+							break;
+						}
+						CheckClass = CheckClass->GetSuperClass();
+					}
+
+					if (!bIsValidClass)
+					{
+						Result = VERIFY_Failed;
+						// if the destination is a ObjectRedirector you've most likely made a nasty circular loop
+						if (Redir->DestinationObject->GetClass() == UObjectRedirector::StaticClass())
+						{
+							WarningAppend += LOCTEXT("LoadWarningSuffix_circularredirection", " [circular redirection]").ToString();
+						}
+					}
+					else
+					{
+						Result = VERIFY_Redirected;
+
+						// now, fake our Import to be what the redirector pointed to
+						Import.XObject = Redir->DestinationObject;
+						FUObjectThreadContext::Get().ImportCount++;
+						FLinkerManager::Get().AddLoaderWithNewImports(this);
+					}
 				}
 			}
 		}
@@ -2262,7 +2476,7 @@ FLinkerLoad::EVerifyResult FLinkerLoad::VerifyImport(int32 ImportIndex)
 		Import.ClassPackage = OriginalImport.ClassPackage;
 
 		// if nothing above failed, then we are good to go
-		if (Result != VERIFY_Failed)
+		if (Result != VERIFY_Failed) //-V547
 		{
 			// we update the runtime information (SourceIndex, SourceLinker) to point to the object the redirector pointed to
 			Import.SourceIndex = Import.XObject->GetLinkerIndex();
@@ -2339,7 +2553,7 @@ FLinkerLoad::EVerifyResult FLinkerLoad::VerifyImport(int32 ImportIndex)
 }
 
 // Internal Load package call so that we can pass the linker that requested this package as an import dependency
-UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageName, uint32 LoadFlags, FLinkerLoad* ImportLinker);
+UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageName, uint32 LoadFlags, FLinkerLoad* ImportLinker, FArchive* InReaderOverride);
 
 /**
  * Safely verify that an import in the ImportMap points to a good object. This decides whether or not
@@ -2420,7 +2634,7 @@ bool FLinkerLoad::VerifyImportInner(const int32 ImportIndex, FString& WarningSuf
 
 			// we now fully load the package that we need a single export from - however, we still use CreatePackage below as it handles all cases when the package
 			// didn't exist (native only), etc		
-			TmpPkg = LoadPackageInternal(NULL, *Import.ObjectName.ToString(), InternalLoadFlags | LOAD_IsVerifying, this);
+			TmpPkg = LoadPackageInternal(NULL, *Import.ObjectName.ToString(), InternalLoadFlags | LOAD_IsVerifying, this, nullptr);
 		}
 
 #if WITH_EDITOR
@@ -2771,13 +2985,7 @@ UClass* FLinkerLoad::GetExportLoadClass(int32 Index)
 		VerifyImport(Export.ClassIndex.ToImport());
 	}
 
-	UClass* ExportClass = (UClass*)IndexToObject(Export.ClassIndex);
-#if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-	check(!Export.ClassIndex.IsImport() || !(LoadFlags & LOAD_DeferDependencyLoads) || 
-		(ExportClass && ExportClass->HasAnyClassFlags(CLASS_Native)) || (Cast<ULinkerPlaceholderClass>(ExportClass) != nullptr));
-#endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-
-	return ExportClass;
+	return (UClass*)IndexToObject(Export.ClassIndex);
 }
 
 #if WITH_EDITORONLY_DATA
@@ -3155,38 +3363,16 @@ void FLinkerLoad::Preload( UObject* Object )
 			// right now there are no known scenarios where someone requests a Preloa() 
 			// on a temporary ULinkerPlaceholderExportObject
 			check(!Object->IsA<ULinkerPlaceholderExportObject>());
+			ensure(Object->HasAnyFlags(RF_WasLoaded));
 #endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-			// Because of delta serialization, we require that a parent's CDO be 
-			// fully serialized before its children's CDOs are created. However, 
-			// due to cyclic parent/child dependencies, we have some cases where 
-			// the linker breaks that expected behavior. In those cases, we 
-			// defer the child's initialization (i.e. defer copying of parent  
-			// property values, etc.), and wait until we can guarantee that the 
-			// parent CDO has been fully loaded.
-			//
-			// In a normal scenario, the order of property initialization is:
-			// Creation (zeroed) -> Initialization (copied super's values) -> Serialization (overridden values loaded)
-			// When the initialization has been deferred we have to make sure to
-			// defer serialization here as well (don't worry, it will be invoked 
-			// again from FinalizeBlueprint()->ResolveDeferredExports())
-			if (Object->HasAnyFlags(RF_ClassDefaultObject) && FDeferredObjInitializerTracker::IsCdoDeferred(Object->GetClass()))
+			// In certain situations, a constructed object has its initializer deferred (when its archetype hasn't been serialized).
+			// In those cases, we shouldn't serialize the object yet (initialization needs to run first).
+			// See the comment on DeferObjectPreload() for more info on the issue.
+			if (FDeferredObjInitializationHelper::DeferObjectPreload(Object))
 			{
-				return;
-			}
-			// if this is an inherited sub-object on a CDO, and that CDO has had
-			// its initialization deferred (for reasons explained above), then 
-			// we shouldn't serialize in data for this quite yet... not until 
-			// its owner has had a chaTnce to initialize itself (because, as part
-			// of CDO initialization, inherited sub-objects get filled in with 
-			// values inherited from the super)
-			else if (Object->HasAnyFlags(RF_DefaultSubObject|RF_InheritableComponentTemplate) && FDeferredObjInitializerTracker::DeferSubObjectPreload(Object))
-			{
-				// don't worry, FDeferredObjInitializerTracker::DeferSubObjectPreload() 
-				// should have cached this object, and it will run Preload() on 
-				// this later (once the super CDO has been initialized)
 				return;
 			}
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
@@ -3225,7 +3411,7 @@ void FLinkerLoad::Preload( UObject* Object )
 
 				// move to the position in the file where this object's data
 				// is stored
-				Loader->Seek(Export.SerialOffset);
+				Seek(Export.SerialOffset);
 
 				FArchiveAsync2* FAA2 = GetFArchiveAsync2Loader();
 
@@ -3252,6 +3438,10 @@ void FLinkerLoad::Preload( UObject* Object )
 					// communicate with FLinkerPlaceholderBase, what object is currently serializing in
 					FScopedPlaceholderContainerTracker SerializingObjTracker(Object);
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+
+#if WITH_EDITOR && WITH_TEXT_ARCHIVE_SUPPORT
+					bool bClassSupportsTextFormat = UClass::IsSafeToSerializeToStructuredArchives(Object->GetClass());
+#endif
 
 					if (Object->HasAnyFlags(RF_ClassDefaultObject))
 					{
@@ -3283,9 +3473,30 @@ void FLinkerLoad::Preload( UObject* Object )
 						UObject* PrevSerializedObject = ThreadContext.SerializedObject;
 						ThreadContext.SerializedObject = Object;
 
-						Object->GetClass()->SerializeDefaultObject(Object, *this);
-						Object->SetFlags(RF_LoadCompleted);
+#if WITH_EDITOR && WITH_TEXT_ARCHIVE_SUPPORT
+						if (IsTextFormat())
+						{
+							FString ObjectName = Object->GetPathName(Object->GetOutermost());
+							FStructuredArchive::FSlot ExportSlot = StructuredArchiveRootRecord->EnterField(FIELD_NAME(*ObjectName));
 
+							if (bClassSupportsTextFormat)
+							{
+								Object->GetClass()->SerializeDefaultObject(Object, ExportSlot);
+							}
+							else
+							{
+								FStructuredArchiveChildReader ChildReader(ExportSlot);
+								FArchiveUObjectFromStructuredArchive Adapter(ChildReader.GetRoot());
+								Object->GetClass()->SerializeDefaultObject(Object, Adapter);
+							}
+						}
+						else
+#endif
+						{
+							Object->GetClass()->SerializeDefaultObject(Object, *this);
+						}
+
+						Object->SetFlags(RF_LoadCompleted);
 						ThreadContext.SerializedObject = PrevSerializedObject;
 					}
 					else
@@ -3302,14 +3513,46 @@ void FLinkerLoad::Preload( UObject* Object )
 						// Maintain the current SerializedObjects.
 						UObject* PrevSerializedObject = ThreadContext.SerializedObject;
 						ThreadContext.SerializedObject = Object;
-						Object->Serialize( *this );
+
+#if WITH_EDITOR && WITH_TEXT_ARCHIVE_SUPPORT
+						if (IsTextFormat())
+						{
+							const FName* FullObjectPath = ObjectNameToPackageExportIndex.FindKey(Export.ThisIndex);
+							check(FullObjectPath);
+							FString ObjectPath = FullObjectPath->ToString();
+							FString PackagePath = LinkerRoot->GetPathName(nullptr);
+							FString ObjectName = ObjectPath;
+							if (ObjectPath.StartsWith(PackagePath + TEXT(".")))
+							{
+								ObjectName = ObjectPath.Right(ObjectPath.Len() - PackagePath.Len() - 1);
+							}
+
+							FStructuredArchive::FSlot ExportSlot = StructuredArchiveRootRecord->EnterField(FIELD_NAME(*ObjectName));
+
+							if (bClassSupportsTextFormat)
+							{
+								Object->Serialize(ExportSlot.EnterRecord());
+							}
+							else
+							{
+								FStructuredArchiveChildReader ChildReader(ExportSlot);
+								FArchiveUObjectFromStructuredArchive Adapter(ChildReader.GetRoot());
+								Object->Serialize(Adapter);
+							}
+						}
+						else
+#endif
+						{
+							Object->Serialize(*this);
+						}
+
 						Object->SetFlags(RF_LoadCompleted);
 						ThreadContext.SerializedObject = PrevSerializedObject;
 					}
 				}
 
-				{
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+				{
 					SCOPE_CYCLE_COUNTER(STAT_LinkerLoadDeferred);
 					if ((LoadFlags & LOAD_DeferDependencyLoads) != (*LoadFlagsGuard & LOAD_DeferDependencyLoads))
 					{
@@ -3353,8 +3596,23 @@ void FLinkerLoad::Preload( UObject* Object )
 							FinalizeBlueprint(ObjectAsClass);
 						}
 					}
-#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 				}
+
+				// Conceptually, we could run this here for CDOs and it shouldn't be a problem.
+				// 
+				// We don't do it here for CDOs because we were already doing it for them in 
+				// ResolveDeferredExports(), and we don't want to destabalize the functional 
+				// load order of things (doing it here could cause subsequent loads which would 
+				// happen from a point in ResolveDeferredExports() where they didn't happen before - again, this 
+				// should be fine; we're just keeping the surface area of this to a minimum at this time)
+				if (!Object->HasAnyFlags(RF_ClassDefaultObject))
+				{
+					// If this was an archetype object, there may be some initializers/preloads that
+					// were waiting for it to be fully serialized
+					FDeferredObjInitializationHelper::ResolveDeferredInitsFromArchetype(Object);
+				}
+#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+				
 
 				// Make sure we serialized the right amount of stuff.
 				int64 Pos = Tell();
@@ -3371,7 +3629,7 @@ void FLinkerLoad::Preload( UObject* Object )
 					}
 				}
 
-				Loader->Seek( SavedPos );
+				Seek(SavedPos);
 
 				// if this is a UClass object and it already has a class default object
 				if ( Cls != NULL && Cls->GetDefaultsCount() )
@@ -3427,10 +3685,14 @@ void FLinkerLoad::Preload( UObject* Object )
 				}
 			}
 		}
-		else if( Object->GetLinker() )
+		else if (FLinkerLoad* Linker = Object->GetLinker())
 		{
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+			uint32 const DeferredLoadFlag = (LoadFlags & LOAD_DeferDependencyLoads);
+			TGuardValue<uint32> LoadFlagsGuard(Linker->LoadFlags, Linker->LoadFlags | DeferredLoadFlag);
+#endif
 			// Send to the object's linker.
-			Object->GetLinker()->Preload( Object );
+			Linker->Preload(Object);
 		}
 	}
 }
@@ -3890,7 +4152,8 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 				for (UObject* SubObject : SuperSubObjects)
 				{
 					// Matching behavior in UBlueprint::ForceLoad to ensure that the subobject is actually loaded:
-					if (SubObject->HasAnyFlags(RF_NeedLoad) || !SubObject->HasAnyFlags(RF_LoadCompleted))
+					if (SubObject->HasAnyFlags(RF_WasLoaded) &&
+						(SubObject->HasAnyFlags(RF_NeedLoad) || !SubObject->HasAnyFlags(RF_LoadCompleted)))
 					{
 						SubObject->SetFlags(RF_NeedLoad);
 						Preload(SubObject);
@@ -3955,7 +4218,7 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 			// to be refreshed and regenerated.  If so, regenerate and patch it 
 			// back into the export table
 			if( !LoadClass->bCooked && bIsBlueprintCDO && (LoadClass->GetOutermost() != GetTransientPackage()) )
-			{			
+			{
 				{
 					// For classes that are about to be regenerated, make sure we register them with the linker, so future references to this linker index will be valid
 					const EObjectFlags OldFlags = Export.Object->GetFlags();
@@ -4078,6 +4341,13 @@ UObject* FLinkerLoad::CreateImport( int32 Index )
 	// later on (this will return true if the import was actually deferred)
 	DeferPotentialCircularImport(Index); 
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+
+	if (Import.XObject != nullptr && Import.XObject->HasAnyInternalFlags(EInternalObjectFlags::Unreachable))
+	{
+		// This is just a safeguard to catch potential bugs that should have been fixed by calling UnhashUnreachableObjects in Async Loading code
+		UE_LOG(LogLinker, Warning, TEXT("Unreachable object found when creating import %s from linker %s"), *Import.XObject->GetFullName(), *GetArchiveName());
+		Import.XObject = nullptr;
+	}
 
 	// Imports can have no name if they were filtered out due to package redirects, skip in that case
 	if (Import.XObject == nullptr && Import.ObjectName != NAME_None)
@@ -4357,18 +4627,22 @@ void FLinkerLoad::Detach()
 	}
 
 	// Remove from object manager, if it has been added.
-	FLinkerManager::Get().RemoveLoader(this);
-	FLinkerManager::Get().RemoveLoaderWithNewImports(this);
+	FLinkerManager::Get().RemoveLoaderFromObjectLoadersAndLoadersWithNewImports(this);
 	if (!FPlatformProperties::HasEditorOnlyData())
 	{
 		FUObjectThreadContext::Get().DelayedLinkerClosePackages.Remove(this);
 	}
 
+	delete StructuredArchive;
+	StructuredArchive = nullptr;
+	delete StructuredArchiveFormatter;
+	StructuredArchiveFormatter = nullptr;
+
 	if (Loader)
 	{
 		delete Loader;
 		Loader = nullptr;
-	}	
+	}
 
 	// Empty out no longer used arrays.
 	NameMap.Empty();
@@ -4564,9 +4838,9 @@ UObject* FLinkerLoad::GetArchetypeFromLoader(const UObject* Obj)
 {
 	if (GEventDrivenLoaderEnabled)
 	{
-	check(!TemplateForGetArchetypeFromLoader || FUObjectThreadContext::Get().SerializedObject == Obj);
-	return TemplateForGetArchetypeFromLoader;
-}
+		check(!TemplateForGetArchetypeFromLoader || FUObjectThreadContext::Get().SerializedObject == Obj);
+		return TemplateForGetArchetypeFromLoader;
+	}
 	else
 	{
 		return FArchiveUObject::GetArchetypeFromLoader(Obj);
@@ -4991,6 +5265,7 @@ bool FLinkerLoad::FinishExternalReadDependencies(double InTimeLimit)
 {
 	double LocalStartTime = FPlatformTime::Seconds();
 	double RemainingTime = InTimeLimit;
+	const int32 Granularity = 5;
 	
 	while (ExternalReadDependencies.Num())
 	{
@@ -5006,16 +5281,17 @@ bool FLinkerLoad::FinishExternalReadDependencies(double InTimeLimit)
 		}
 
 		// Update remaining time
-		if (RemainingTime > 0.0)
+		if (InTimeLimit > 0.0 && (ExternalReadDependencies.Num() % Granularity) == 0)
 		{
-			RemainingTime-= (FPlatformTime::Seconds() - LocalStartTime);
+			RemainingTime = InTimeLimit - (FPlatformTime::Seconds() - LocalStartTime);
 			if (RemainingTime <= 0.0)
 			{
 				return false;
 			}
 		}
 	}
-	return true;
+
+	return (ExternalReadDependencies.Num() == 0);
 }
 
 #if WITH_EDITORONLY_DATA

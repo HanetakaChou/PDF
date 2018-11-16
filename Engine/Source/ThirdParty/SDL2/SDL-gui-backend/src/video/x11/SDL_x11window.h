@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2017 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2018 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -74,6 +74,9 @@ typedef struct
 /* EG BEGIN */
 #ifdef SDL_WITH_EPIC_EXTENSIONS
     SDL_bool initiate_maximize;
+    SDL_bool pointer_barrier_active;
+    PointerBarrier barrier[4];
+    SDL_Rect barrier_rect;
 #endif // SDL_WITH_EPIC_EXTENSIONS
 /* EG END */
 } SDL_WindowData;
@@ -109,12 +112,21 @@ extern void X11_DestroyWindow(_THIS, SDL_Window * window);
 extern SDL_bool X11_GetWindowWMInfo(_THIS, SDL_Window * window,
                                     struct SDL_SysWMinfo *info);
 extern int X11_SetWindowHitTest(SDL_Window *window, SDL_bool enabled);
+extern void X11_AcceptDragAndDrop(SDL_Window * window, SDL_bool accept);
 
 /* EG BEGIN */
 #ifdef SDL_WITH_EPIC_EXTENSIONS
 extern int X11_SetKeyboardGrab(_THIS, SDL_Window * window, SDL_bool enable);
+
+#if SDL_VIDEO_DRIVER_X11_XFIXES
+extern SDL_bool X11_ConfineCursor(_THIS, SDL_Window * window, const SDL_Rect * rect, int flags);
+extern void X11_DestroyPointerBarrier(_THIS, SDL_Window * window);
+extern void X11_DestroyAllPointerBarrier(_THIS);
+#endif
+
 #endif /* SDL_WITH_EPIC_EXTENSIONS */
 /* EG END */
+
 
 #endif /* SDL_x11window_h_ */
 

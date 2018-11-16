@@ -86,14 +86,27 @@ namespace DerivedDataCacheCookStats
 						SharedDDCStats.GetStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter, true) +
 						SharedDDCStats.GetStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter, false);
 				}
+
+				int64 TotalPutHits =
+					RootStats.PutStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter, true) +
+					RootStats.PutStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter, false);
+				int64 TotalPutMisses =
+					RootStats.PutStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter, true) +
+					RootStats.PutStats.GetAccumulatedValue(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter, false);
+				int64 TotalPuts = TotalPutHits + TotalPutMisses;
+
 				AddStat(TEXT("DDC.Summary"), FCookStatsManager::CreateKeyValueArray(
 					TEXT("TotalGetHits"), TotalGetHits,
 					TEXT("TotalGets"), TotalGets,
-					TEXT("TotalHitPct"), (double)TotalGetHits / TotalGets,
-					TEXT("LocalHitPct"), (double)LocalHits / TotalGets,
-					TEXT("SharedHitPct"), (double)SharedHits / TotalGets,
-					TEXT("OtherHitPct"), double(TotalGetHits - LocalHits - SharedHits) / TotalGets,
-					TEXT("MissPct"), (double)TotalGetMisses / TotalGets
+					TEXT("TotalGetHitPct"), (double)TotalGetHits / TotalGets,
+					TEXT("LocalGetHitPct"), (double)LocalHits / TotalGets,
+					TEXT("SharedGetHitPct"), (double)SharedHits / TotalGets,
+					TEXT("OtherGetHitPct"), double(TotalGetHits - LocalHits - SharedHits) / TotalGets,
+					TEXT("GetMissPct"), (double)TotalGetMisses / TotalGets,
+					TEXT("TotalPutHits"), TotalPutHits,
+					TEXT("TotalPuts"), TotalPuts,
+					TEXT("TotalPutHitPct"), (double)TotalPutHits / TotalPuts,
+					TEXT("PutMissPct"), (double)TotalPutMisses / TotalPuts
 					));
 			}
 		}
@@ -158,15 +171,25 @@ class FDerivedDataCache : public FDerivedDataCacheInterface
 					
 					bool bMatchesInSize = NumGenerated == NumInDDC;
 					bool bDifferentMemory = true;
+					int32 DifferentOffset = 0;
 					if (bMatchesInSize)
 					{
-						bDifferentMemory = 0 != FMemory::Memcmp(CmpData.GetData(), &Data[NumBeforeDDC], NumGenerated);
+						bDifferentMemory = false;
+						for (int32 i = 0; i < NumGenerated; i++)
+						{
+							if (CmpData[i] != Data[i])
+							{
+								bDifferentMemory = true;
+								DifferentOffset = i;
+								break;
+							}
+						}
 					}
 
 					if(!bMatchesInSize || bDifferentMemory)
 					{
-						FString ErrMsg = FString::Printf(TEXT("There is a mismatch between the DDC data and the generated data for plugin (%s) for asset (%s). BytesInDDC:%d, BytesGenerated:%d, bDifferentMemory:%d"), DataDeriver->GetPluginName(), *DataDeriver->GetDebugContextString(), NumInDDC, NumGenerated, bDifferentMemory);
-						ensureMsgf(false, *ErrMsg);
+						FString ErrMsg = FString::Printf(TEXT("There is a mismatch between the DDC data and the generated data for plugin (%s) for asset (%s). BytesInDDC:%d, BytesGenerated:%d, bDifferentMemory:%d, offset:%d"), DataDeriver->GetPluginName(), *DataDeriver->GetDebugContextString(), NumInDDC, NumGenerated, bDifferentMemory, DifferentOffset);
+						ensureMsgf(false, TEXT("%s"), *ErrMsg);
 						UE_LOG(LogDerivedDataCache, Error, TEXT("%s"), *ErrMsg );
 					}
 					

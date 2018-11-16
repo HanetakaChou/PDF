@@ -12,11 +12,12 @@ public class ApexDestruction : ModuleRules
 				"Core",
 				"CoreUObject", // @todo Mac: for some reason it's needed to link in debug on Mac
 				"Engine",
-                "PhysX",
-                "APEX",
-                "RHI",
-                "RenderCore",
-                "ApexDestructionLib"
+				"PhysX",
+				"APEX",
+				"RHI",
+				"RenderCore",
+				"ApexDestructionLib",
+				"NavigationSystem",
             }
 		);
 
@@ -29,6 +30,6 @@ public class ApexDestruction : ModuleRules
             );
         }
         
-        SetupModulePhysXAPEXSupport(Target);
+        SetupModulePhysicsSupport(Target);
 	}
 }

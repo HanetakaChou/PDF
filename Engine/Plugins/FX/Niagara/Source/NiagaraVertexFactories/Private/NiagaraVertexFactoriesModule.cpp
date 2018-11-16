@@ -6,4 +6,5 @@
 
 IMPLEMENT_MODULE(INiagaraVertexFactoriesModule, NiagaraVertexFactories);
 
-FRWBuffer FNiagaraVertexFactoryBase::DummyBuffer;
+
+TGlobalResource<FNiagaraNullSortedIndicesVertexBuffer> GFNiagaraNullSortedIndicesVertexBuffer;

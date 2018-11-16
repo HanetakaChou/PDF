@@ -5,12 +5,14 @@
 =============================================================================*/
 #pragma once
 
-#include "AndroidApplication.h"
+#include "Android/AndroidApplication.h"
 
 bool GAndroidGPUInfoReady = false;
 
 // call out to JNI to see if the application was packaged for Gear VR
 extern bool AndroidThunkCpp_IsGearVRApplication();
+extern bool ShouldUseGPUFencesToLimitLatency();
+
 
 class FAndroidGPUInfo
 {
@@ -25,9 +27,13 @@ public:
 	FString GLVersion;
 	bool bSupportsFloatingPointRenderTargets;
 	bool bSupportsFrameBufferFetch;
-	bool bSupportsShaderIOBlocks;
 	bool bES30Support;
 	TArray<FString> TargetPlatformNames;
+
+	void RemoveTargetPlatform(FString PlatformName)
+	{
+		TargetPlatformNames.Remove(PlatformName);
+	}
 
 private:
 	FAndroidGPUInfo()
@@ -90,10 +96,6 @@ private:
 		{
 			TargetPlatformNames.Add(TEXT("Android_ETC2"));
 		}
-		if (ExtensionsString.Contains(TEXT("GL_KHR_texture_compression_astc_ldr")))
-		{
-			TargetPlatformNames.Add(TEXT("Android_ASTC"));
-		}
 
 		// all devices support ETC
 		TargetPlatformNames.Add(TEXT("Android_ETC1a"));
@@ -110,7 +112,6 @@ private:
 
 		bSupportsFrameBufferFetch = ExtensionsString.Contains(TEXT("GL_EXT_shader_framebuffer_fetch")) || ExtensionsString.Contains(TEXT("GL_NV_shader_framebuffer_fetch")) 
 			|| ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch ")); // has space at the end to exclude GL_ARM_shader_framebuffer_fetch_depth_stencil match
-		bSupportsShaderIOBlocks = ExtensionsString.Contains(TEXT("GL_EXT_shader_io_blocks"));
 
 		GAndroidGPUInfoReady = true;
 	}

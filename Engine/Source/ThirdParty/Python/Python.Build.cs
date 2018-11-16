@@ -44,6 +44,8 @@ public class Python : ModuleRules
 			{
 				KnownPaths.AddRange(
 					new string[] {
+						Path.Combine(PythonTPSDir, "Mac"),
+						//"/Library/Frameworks/Python.framework/Versions/3.6",
 						"/Library/Frameworks/Python.framework/Versions/2.7",
 						//"/System/Library/Frameworks/Python.framework/Versions/2.7",
 					}
@@ -63,7 +65,19 @@ public class Python : ModuleRules
 		// Work out the include path
 		if (PythonRoot != null)
 		{
-			PythonIncludePath = Path.Combine(PythonRoot, (Target.Platform == UnrealTargetPlatform.Mac) ? "Headers" : "include");
+			PythonIncludePath = Path.Combine(PythonRoot, "include");
+			if (Target.Platform == UnrealTargetPlatform.Mac)
+			{
+				// On Mac the actual headers are inside a "pythonxy" directory, where x and y are the version number
+				if (Directory.Exists(PythonIncludePath))
+				{
+					string[] MatchingIncludePaths = Directory.GetDirectories(PythonIncludePath, "python*");
+					if (MatchingIncludePaths.Length > 0)
+					{
+						PythonIncludePath = Path.Combine(PythonIncludePath, Path.GetFileName(MatchingIncludePaths[0]));
+					}
+				}
+			}
 			if (!Directory.Exists(PythonIncludePath))
 			{
 				PythonRoot = null;
@@ -147,7 +161,13 @@ public class Python : ModuleRules
 			{
 				// Strip the Engine directory and then combine the path with the placeholder to ensure the path is delimited correctly
 				EngineRelativePythonRoot = EngineRelativePythonRoot.Remove(0, EngineDir.Length);
-				RuntimeDependencies.Add(Path.Combine("$(EngineDir)", EngineRelativePythonRoot, "...")); // Stage the Python SDK for use at runtime
+				foreach(string FileName in Directory.EnumerateFiles(PythonRoot, "*", SearchOption.AllDirectories))
+				{
+					if(!FileName.EndsWith(".pyc", System.StringComparison.OrdinalIgnoreCase))
+					{
+						RuntimeDependencies.Add(FileName);
+					}
+				}
 				EngineRelativePythonRoot = Path.Combine("{ENGINE_DIR}", EngineRelativePythonRoot); // Can't use $(EngineDir) as the placeholder here as UBT is eating it
 			}
 

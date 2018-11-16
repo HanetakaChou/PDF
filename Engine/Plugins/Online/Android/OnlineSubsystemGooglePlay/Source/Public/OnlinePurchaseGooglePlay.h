@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "OnlinePurchaseInterface.h"
+#include "Interfaces/OnlinePurchaseInterface.h"
 #include "Serialization/JsonSerializerMacros.h"
+#include "OnlineIdentityInterfaceGooglePlay.h"
 
 enum class EGooglePlayBillingResponseCode : uint8;
 
@@ -108,7 +109,7 @@ public:
 	/** Checkout info for the pending order */
 	const FPurchaseCheckoutRequest CheckoutRequest;
 	/** User for the pending order */
-	const FUniqueNetIdString UserId;
+	const FUniqueNetIdGooglePlay UserId;
 	/** Delegate to call on completion */
 	const FOnPurchaseCheckoutComplete CheckoutCompleteDelegate;
 	/** Tracks the current state of the order */
@@ -133,6 +134,7 @@ public:
 	virtual void RedeemCode(const FUniqueNetId& UserId, const FRedeemCodeRequest& RedeemCodeRequest, const FOnPurchaseRedeemCodeComplete& Delegate) override;
 	virtual void QueryReceipts(const FUniqueNetId& UserId, bool bRestoreReceipts, const FOnQueryReceiptsComplete& Delegate) override;
 	virtual void GetReceipts(const FUniqueNetId& UserId, TArray<FPurchaseReceipt>& OutReceipts) const override;
+	virtual void FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, FString& InReceiptValidationInfo, const FOnFinalizeReceiptValidationInfoComplete& Delegate) override;
 	
 	// FOnlinePurchaseGooglePlay
 

@@ -8,9 +8,11 @@
 
 #include "GPUProfiler.h"
 
+#include "Serialization/MemoryWriter.h"
+
 class FVulkanCmdBuffer;
 class FVulkanRenderQuery;
-class FOLDVulkanRenderQuery;
+class FVulkanRenderQuery;
 class FVulkanCommandListContext;
 
 class FVulkanGPUTiming : public FGPUTiming
@@ -61,6 +63,8 @@ public:
 		return true;
 	}
 
+	static void CalibrateTimers(FVulkanCommandListContext& InCmdContext);
+
 private:
 	/**
 	 * Initializes the static variables, if necessary.
@@ -82,8 +86,12 @@ private:
 	int32 NumActiveTimers = 0;
 	struct FBeginEndPair
 	{
-		FOLDVulkanRenderQuery* Begin;
-		FOLDVulkanRenderQuery* End;
+		FVulkanCmdBuffer* BeginCmdBuffer = nullptr;
+		uint64 BeginFenceCounter = 0;
+		FVulkanCmdBuffer* EndCmdBuffer = nullptr;
+		uint64 EndFenceCounter = 0;
+		FVulkanRenderQuery* Begin;
+		FVulkanRenderQuery* End;
 	};
 	FBeginEndPair Timers[MaxTimers];
 };
@@ -186,6 +194,16 @@ struct FVulkanGPUProfiler : public FGPUProfiler
 	bool bCommandlistSubmitted;
 	FVulkanDevice* Device;
 	FVulkanCommandListContext* CmdContext;
+
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+	void PushMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TCHAR* Name);
+	void PopMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer);
+	void DumpCrashMarkers(void* BufferData);
+#endif
+
+	// For crash/marker tracking
+	TMap<uint32, FString> CachedStrings;
+	TArray<uint32> PushPopStack;
 };
 
 namespace VulkanRHI
@@ -198,10 +216,146 @@ namespace VulkanRHI
 	 * @param	Filename - The filename of the source file containing Code.
 	 * @param	Line - The line number of Code within Filename.
 	 */
-	void VerifyVulkanResult(VkResult Result, const ANSICHAR* VkFuntion, const ANSICHAR* Filename, uint32 Line);
+	extern VULKANRHI_API void VerifyVulkanResult(VkResult Result, const ANSICHAR* VkFuntion, const ANSICHAR* Filename, uint32 Line);
 
 	VkBuffer CreateBuffer(FVulkanDevice* InDevice, VkDeviceSize Size, VkBufferUsageFlags BufferUsageFlags, VkMemoryRequirements& OutMemoryRequirements);
 }
 
 #define VERIFYVULKANRESULT(VkFunction)				{ const VkResult ScopedResult = VkFunction; if (ScopedResult != VK_SUCCESS) { VulkanRHI::VerifyVulkanResult(ScopedResult, #VkFunction, __FILE__, __LINE__); }}
 #define VERIFYVULKANRESULT_EXPANDED(VkFunction)		{ const VkResult ScopedResult = VkFunction; if (ScopedResult < VK_SUCCESS) { VulkanRHI::VerifyVulkanResult(ScopedResult, #VkFunction, __FILE__, __LINE__); }}
+
+
+template<typename T>
+inline bool CopyAndReturnNotEqual(T& A, T B)
+{
+	const bool bOut = A != B;
+	A = B;
+	return bOut;
+}
+
+template <int Version>
+class TDataKeyBase;
+
+template <>
+class TDataKeyBase<0>
+{
+protected:
+	template <class TDataWriter>
+	void UpdateData(TDataWriter&& WriteToData)
+	{
+		TArray<uint8> TempData;
+		WriteToData(TempData);
+	}
+
+	void CopyDataDeep(TDataKeyBase& Result) const {}
+	void CopyDataShallow(TDataKeyBase& Result) const {}
+	bool IsDataEquals(const TDataKeyBase& Other) const { return true; }
+
+protected:
+	uint32 Hash = 0;
+};
+
+template <>
+class TDataKeyBase<1>
+{
+protected:
+	template <class TDataWriter>
+	void UpdateData(TDataWriter&& WriteToData)
+	{
+		if (!DataStorage)
+		{
+			DataStorage = MakeUnique<TArray<uint8>>();
+			Data = DataStorage.Get();
+		}
+		WriteToData(*Data);
+	}
+
+	void CopyDataDeep(TDataKeyBase& Result) const
+	{
+		check(Data);
+		Result.DataStorage = MakeUnique<TArray<uint8>>(*Data);
+		Result.Data = Result.DataStorage.Get();
+	}
+
+	void CopyDataShallow(TDataKeyBase& Result) const
+	{
+		check(Data);
+		Result.Data = Data;
+	}
+
+	bool IsDataEquals(const TDataKeyBase& Other) const
+	{
+		check(Data && Other.Data);
+		check(Data->Num() == Other.Data->Num());
+		check(FMemory::Memcmp(Data->GetData(), Other.Data->GetData(), Data->Num()) == 0);
+		return true;
+	}
+
+protected:
+	uint32 Hash = 0;
+	TArray<uint8> *Data = nullptr;
+private:
+	TUniquePtr<TArray<uint8>> DataStorage;
+};
+
+template <>
+class TDataKeyBase<2> : public TDataKeyBase<1>
+{
+protected:
+	bool IsDataEquals(const TDataKeyBase& Other) const
+	{
+		check(Data && Other.Data);
+		return ((Data->Num() == Other.Data->Num()) &&
+			(FMemory::Memcmp(Data->GetData(), Other.Data->GetData(), Data->Num()) == 0));
+	}
+};
+
+template <class TDerived, bool AlwaysCompareData = false>
+class TDataKey : private TDataKeyBase<AlwaysCompareData ? 2 : (DO_CHECK != 0)>
+{
+public:
+	template <class TArchiveWriter>
+	void Generate(TArchiveWriter&& WriteToArchive, int32 DataReserve = 0)
+	{
+		this->UpdateData([&](TArray<uint8>& InData)
+		{
+			FMemoryWriter Ar(InData);
+
+			InData.Reset(DataReserve);
+			WriteToArchive(Ar);
+
+			this->Hash = FCrc::MemCrc32(InData.GetData(), InData.Num());
+		});
+	}
+
+	uint32 GetHash() const
+	{
+		return this->Hash;
+	}
+
+	TDerived CopyDeep() const
+	{
+		TDerived Result;
+		Result.Hash = this->Hash;
+		this->CopyDataDeep(Result);
+		return Result;
+	}
+
+	TDerived CopyShallow() const
+	{
+		TDerived Result;
+		Result.Hash = this->Hash;
+		this->CopyDataShallow(Result);
+		return Result;
+	}
+
+	friend uint32 GetTypeHash(const TDerived& Key)
+	{
+		return Key.Hash;
+	}
+
+	friend bool operator==(const TDerived& A, const TDerived& B)
+	{
+		return ((A.Hash == B.Hash) && A.IsDataEquals(B));
+	}
+};

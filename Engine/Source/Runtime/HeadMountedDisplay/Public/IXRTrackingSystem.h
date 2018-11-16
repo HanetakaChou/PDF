@@ -162,6 +162,16 @@ public:
 	 */
 	virtual FTransform GetTrackingToWorldTransform() const = 0;
 
+	/** 
+	 * Computes a transform to convert from 'Floor' origin space to 'Eye' origin space.
+	 * Useful when changing between the two different TrackingOrigin spaces.
+	 * Invert the transform to get the opposite.
+	 *
+	 * @param  OutFloorToEye	[out] The returned floor-to-eye transform.
+	 * @return True if the transform was successfully constructed.
+	 */
+	virtual bool GetFloorToEyeTrackingTransform(FTransform& OutFloorToEye) const = 0;
+
 	/**
 	 * Refreshes the system's known tracking-to-world transform.
 	 * Helpful for clients if they change the world's representation of the XR origin, or if they want to override the system calculated 
@@ -221,6 +231,39 @@ public:
 	* Returns current base orientation of HMD as a quaternion.
 	*/
 	virtual FQuat GetBaseOrientation() const { return FQuat::Identity; }
+
+	/**
+	* Sets base position of the HMD.
+	*
+	* @param BasePosition		(in) the desired offset to be treated as a base position.
+	*/
+	virtual void SetBasePosition(const FVector& BasePosition) {};
+
+	/**
+	* Returns current base position of HMD.
+	*/
+	virtual FVector GetBasePosition() const { return FVector::ZeroVector; }
+
+	/**
+	* Called to calibrate the offset transform between an external tracking source and the internal tracking source
+	* (e.g. mocap tracker to and HMD tracker).  This should be called once per session, or when the physical relationship
+	* between the external tracker and internal tracker changes (e.g. it was bumped or reattached).  After calibration,
+	* calling UpdateExternalTrackingPosition will try to correct the internal tracker to the calibrated offset to prevent
+	* drift between the two systems
+	*
+	* @param ExternalTrackingTransform		(in) The transform in world-coordinates, of the reference marker of the external tracking system
+	*/
+	virtual void CalibrateExternalTrackingSource(const FTransform& ExternalTrackingTransform) {}
+
+	/**
+	* Called after calibration to attempt to pull the internal tracker (e.g. HMD tracking) in line with the external tracker
+	* (e.g. mocap tracker).  This will set the internal tracker's base offset and rotation to match and realign the two systems.
+	* This can be called every tick, or whenever realignment is desired.  Note that this may cause choppy movement if the two
+	* systems diverge relative to each other, or a big jump if called infrequently when there has been significant drift
+	*
+	* @param ExternalTrackingTransform		(in) The transform in world-coordinates, of the reference marker of the external tracking system
+	*/
+	virtual void UpdateExternalTrackingPosition(const FTransform& ExternalTrackingTransform) {}
 
 	/** 
 	 * Get the IXCamera instance for the given device.

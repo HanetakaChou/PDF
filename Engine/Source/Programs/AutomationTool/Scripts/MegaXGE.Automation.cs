@@ -5,6 +5,7 @@ using System.Text;
 using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
+using Tools.DotNETCommon;
 
 [Help("Compiles a bunch of stuff together with megaxge: Example arguments: -Target1=\"PlatformerGame win32|ios debug|development\"")]
 [Help(typeof(UE4Build))]
@@ -26,7 +27,7 @@ class MegaXGE : BuildCommand
 			WorkingCL = P4.CreateChange(P4Env.Client, String.Format("MegaXGE build from changelist {0} - Params: {1}", P4Env.Changelist, CmdLine));
 		}
 
-		Log("************************* MegaXGE");
+		LogInformation("************************* MegaXGE");
 
 		bool Clean = ParseParam("Clean");
 		string CleanToolLocation = CombinePaths(CmdEnv.LocalRoot, "Engine", "Build", "Batchfiles", "Clean.bat");
@@ -53,7 +54,7 @@ class MegaXGE : BuildCommand
 			}
 		}
 
-		Log("*************************");
+		LogInformation("*************************");
 		for (int Arg = 1; Arg < 100; Arg++)
 		{
 			string Parm = String.Format("Target{0}", Arg);
@@ -62,6 +63,19 @@ class MegaXGE : BuildCommand
 			{
 				break;
 			}
+
+			FileReference ProjectFile = null;
+
+			string ProjectFileParam = ParseParamValue(String.Format("Project{0}", Arg), null);
+			if(ProjectFileParam != null)
+			{
+				ProjectFile = new FileReference(ProjectFileParam);
+				if(!FileReference.Exists(ProjectFile))
+				{
+					throw new AutomationException("Project file '{0}' could not be found");
+				}
+			}
+
 			var Parts = Target.Split(' ');
 
 			string JustTarget = Parts[0];
@@ -132,8 +146,8 @@ class MegaXGE : BuildCommand
 				{
 					foreach (var Configuration in Configurations)
 					{
-						Agenda.AddTargets(new string[] { CurTarget }, Platform, Configuration);
-						Log("Target {0} {1} {2}", CurTarget, Platform.ToString(), Configuration.ToString());
+						Agenda.AddTargets(new string[] { CurTarget }, Platform, Configuration, ProjectFile);
+						LogInformation("Target {0} {1} {2}", CurTarget, Platform.ToString(), Configuration.ToString());
 						if (Clean)
 						{
 							string Args = String.Format("{0} {1} {2}", CurTarget, Platform.ToString(), Configuration.ToString());
@@ -143,9 +157,8 @@ class MegaXGE : BuildCommand
 				}
 			}
 		}
-		Log("*************************");
+		LogInformation("*************************");
 
-		Agenda.DoRetries = ParseParam("Retry");
 		UE4Build.Build(Agenda, InUpdateVersionFiles: IsBuildMachine, InUseParallelExecutor: ParseParam("useparallelexecutor"), InShowProgress: ShowProgress);
 
 		// 		if (WorkingCL > 0) // only move UAT files if we intend to check in some build products

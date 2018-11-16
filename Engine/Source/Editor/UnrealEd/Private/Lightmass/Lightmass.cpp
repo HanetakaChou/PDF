@@ -24,6 +24,7 @@
 #include "Camera/CameraActor.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
+#include "Components/RectLightComponent.h"
 #include "Engine/GeneratedMeshAreaLight.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyLightComponent.h"
@@ -51,7 +52,7 @@
 #include "UnrealEngine.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "EditorLevelUtils.h"
-#include "MessageDialog.h"
+#include "Misc/MessageDialog.h"
 
 extern FSwarmDebugOptions GSwarmDebugOptions;
 
@@ -192,8 +193,11 @@ void Copy( const ULightComponent* In, Lightmass::FLightData& Out )
 {	
 	Copy((const ULightComponentBase*)In, Out);
 
+	const ULocalLightComponent* LocalLight = Cast<const ULocalLightComponent>(In);
 	const UPointLightComponent* PointLight = Cast<const UPointLightComponent>(In);
-	if( PointLight && PointLight->bUseInverseSquaredFalloff )
+
+	if( ( LocalLight && LocalLight->GetLightType() == LightType_Rect ) ||
+		( PointLight && PointLight->bUseInverseSquaredFalloff ) )
 	{
 		Out.LightFlags |= Lightmass::GI_LIGHT_INVERSE_SQUARED;
 	}
@@ -595,7 +599,7 @@ void FLightmassExporter::WriteToChannel( FLightmassStatistics& Stats, FGuid& Deb
 			AddMaterial(UMaterial::GetDefaultMaterial(MD_Surface));
 
 			TotalProgress = 
-				DirectionalLights.Num() + PointLights.Num() + SpotLights.Num() + SkyLights.Num() + 
+				DirectionalLights.Num() + PointLights.Num() + SpotLights.Num() + RectLights.Num() + SkyLights.Num() + 
 				StaticMeshes.Num() + StaticMeshLightingMeshes.Num() + StaticMeshTextureMappings.Num() + 
 				BSPSurfaceMappings.Num() + VolumeMappings.Num() + Materials.Num() + 
 				+ LandscapeLightingMeshes.Num() + LandscapeTextureMappings.Num();
@@ -627,6 +631,7 @@ void FLightmassExporter::WriteToChannel( FLightmassStatistics& Stats, FGuid& Deb
 			Scene.NumDirectionalLights = DirectionalLights.Num();
 			Scene.NumPointLights = PointLights.Num();
 			Scene.NumSpotLights = SpotLights.Num();
+			Scene.NumRectLights = RectLights.Num();
 			Scene.NumSkyLights = SkyLights.Num();
 			Scene.NumStaticMeshes = StaticMeshes.Num();
 			Scene.NumStaticMeshInstances = StaticMeshLightingMeshes.Num();
@@ -859,13 +864,10 @@ void FLightmassExporter::WriteVisibilityData( int32 Channel )
 				AActor* CurrentActor = Volume->OverrideVisibleActors[ActorIndex];
 				if (CurrentActor)
 				{
-					TInlineComponentArray<UPrimitiveComponent*> Components;
-					CurrentActor->GetComponents(Components);
-
-					for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ComponentIndex++)
+					for (UActorComponent* Component : CurrentActor->GetComponents())
 					{
-						UPrimitiveComponent* CurrentComponent = Components[ComponentIndex];
-						if ((CurrentComponent->Mobility == EComponentMobility::Static) && CurrentComponent->VisibilityId != INDEX_NONE)
+						UPrimitiveComponent* CurrentComponent = Cast<UPrimitiveComponent>(Component);
+						if (CurrentComponent && (CurrentComponent->Mobility == EComponentMobility::Static) && CurrentComponent->VisibilityId != INDEX_NONE)
 						{
 							VisibilityIds.AddUnique(CurrentComponent->VisibilityId);
 						}
@@ -878,13 +880,10 @@ void FLightmassExporter::WriteVisibilityData( int32 Channel )
 				AActor* RemoveActor = Volume->OverrideInvisibleActors[RemoveActorIndex];
 				if (RemoveActor)
 				{
-					TInlineComponentArray<UPrimitiveComponent*> Components;
-					RemoveActor->GetComponents(Components);
-
-					for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ComponentIndex++)
+					for (UActorComponent* Component : RemoveActor->GetComponents())
 					{
-						UPrimitiveComponent* RemoveComponent = Components[ComponentIndex];
-						if ((RemoveComponent->Mobility == EComponentMobility::Static) && RemoveComponent->VisibilityId != INDEX_NONE)
+						UPrimitiveComponent* RemoveComponent = Cast<UPrimitiveComponent>(Component);
+						if (RemoveComponent && (RemoveComponent->Mobility == EComponentMobility::Static) && RemoveComponent->VisibilityId != INDEX_NONE)
 						{
 							InvisibilityIds.AddUnique(RemoveComponent->VisibilityId);
 						}
@@ -902,13 +901,10 @@ void FLightmassExporter::WriteVisibilityData( int32 Channel )
 						AActor* RemoveActor = Level->Actors[RemoveActorIndex];
 						if (RemoveActor)
 						{
-							TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-							RemoveActor->GetComponents(PrimitiveComponents);
-
-							for (int32 ComponentIndex = 0; ComponentIndex < PrimitiveComponents.Num(); ComponentIndex++)
+							for (UActorComponent* Component : RemoveActor->GetComponents())
 							{
-								UPrimitiveComponent* RemoveComponent = PrimitiveComponents[ComponentIndex];
-								if ((RemoveComponent->Mobility == EComponentMobility::Static) && RemoveComponent->VisibilityId != INDEX_NONE)
+								UPrimitiveComponent* RemoveComponent = Cast<UPrimitiveComponent>(Component);
+								if (RemoveComponent && (RemoveComponent->Mobility == EComponentMobility::Static) && RemoveComponent->VisibilityId != INDEX_NONE)
 								{
 									InvisibilityIds.AddUnique(RemoveComponent->VisibilityId);
 								}
@@ -1058,7 +1054,7 @@ void FLightmassExporter::WriteLights( int32 Channel )
 		LightData.IndirectLightingSaturation = Light->LightmassSettings.IndirectLightingSaturation;
 		LightData.ShadowExponent = Light->LightmassSettings.ShadowExponent;
 		LightData.ShadowResolutionScale = Light->ShadowResolutionScale;
-		LightData.LightSourceRadius = Light->SourceRadius;
+		LightData.LightSourceRadius = FMath::Max( 1.0f, Light->SourceRadius );
 		LightData.LightSourceLength = Light->SourceLength;
 
 		TArray< uint8 > LightProfileTextureData;
@@ -1084,7 +1080,7 @@ void FLightmassExporter::WriteLights( int32 Channel )
 		LightData.IndirectLightingSaturation = Light->LightmassSettings.IndirectLightingSaturation;
 		LightData.ShadowExponent = Light->LightmassSettings.ShadowExponent;
 		LightData.ShadowResolutionScale = Light->ShadowResolutionScale;
-		LightData.LightSourceRadius = Light->SourceRadius;
+		LightData.LightSourceRadius = FMath::Max( 1.0f, Light->SourceRadius );
 		LightData.LightSourceLength = Light->SourceLength;
 
 		TArray< uint8 > LightProfileTextureData;
@@ -1099,6 +1095,110 @@ void FLightmassExporter::WriteLights( int32 Channel )
 		Swarm.WriteChannel( Channel, LightProfileTextureData.GetData(), LightProfileTextureData.Num() * LightProfileTextureData.GetTypeSize() );
 		Swarm.WriteChannel( Channel, &PointData, sizeof(PointData) );
 		Swarm.WriteChannel( Channel, &SpotData, sizeof(SpotData) );
+		UpdateExportProgress();
+	}
+
+	// Export rect lights.
+	for ( int32 LightIndex = 0; LightIndex < RectLights.Num(); ++LightIndex )
+	{
+		const URectLightComponent* Light = RectLights[LightIndex];
+		Lightmass::FLightData LightData;
+		Copy( Light, LightData );
+		LightData.IndirectLightingSaturation = Light->LightmassSettings.IndirectLightingSaturation;
+		LightData.ShadowExponent = Light->LightmassSettings.ShadowExponent;
+		LightData.ShadowResolutionScale = Light->ShadowResolutionScale;
+		LightData.LightSourceRadius = 0.5f * Light->SourceWidth;
+		LightData.LightSourceLength = 0.5f * Light->SourceHeight;
+
+		TArray< uint8 > LightProfileTextureData;
+		CopyLightProfile( Light, LightData, LightProfileTextureData );
+
+		Lightmass::FPointLightData PointData;
+		PointData.Radius = Light->AttenuationRadius;
+		PointData.FalloffExponent = 0.0f;
+		PointData.LightTangent = Light->GetComponentTransform().GetUnitAxis(EAxis::Z);
+
+		Lightmass::FRectLightData RectData = { 0, 0, FLinearColor::White };
+		// TODO export texture data. Below code is written for that in mind but source data doesn't contain mips.
+		//TArray< FFloat16Color > SourceTexture;
+		if( Light->SourceTexture )
+		{
+			FTextureSource& Source = Light->SourceTexture->Source;
+
+			if( Source.IsValid() )
+			{
+				ETextureSourceFormat Format = Source.GetFormat();
+				int32 BytesPerPixel = Source.GetBytesPerPixel();
+				bool SRGB = Light->SourceTexture->SRGB;
+
+				uint32 NumMips = Source.GetNumMips();
+				uint32 MipLevel = NumMips - FMath::Min( NumMips, 8u );
+
+				uint32 SizeX = FMath::Max( Source.GetSizeX() >> MipLevel, 1 );
+				uint32 SizeY = FMath::Max( Source.GetSizeY() >> MipLevel, 1 );
+
+				RectData.SourceTextureSizeX = SizeX;
+				RectData.SourceTextureSizeY = SizeY;
+
+				while( SizeX > 1 || SizeY > 1 )
+				{
+					//int32 i = SourceTexture.AddUninitialized( SizeX * SizeY );
+					
+					TArray< uint8 > MipData;
+					Source.GetMipData( MipData, MipLevel );
+
+					uint8* Pixel = MipData.GetData();
+					uint8* PixelEnd = Pixel + MipData.Num();
+					while( Pixel < PixelEnd )
+					{
+						if( Format == TSF_RGBA16 || Format == TSF_RGBA16F )
+						{
+							//SourceTexture[ i++ ] = *(FFloat16Color*)Pixel;
+							RectData.SourceTextureAvgColor += FLinearColor( *(FFloat16Color*)Pixel );
+						}
+						else
+						{
+							FColor Color = FColor( Pixel[0], Pixel[0], Pixel[0] );
+							if( Format == TSF_BGRA8 || Format == TSF_BGRE8 )
+							{
+								Color = *(FColor*)Pixel;
+							}
+
+							FLinearColor LinearColor;
+							if( SRGB )
+							{
+								LinearColor = FLinearColor( Color );
+							}
+							else
+							{
+								LinearColor.R = float( Color.R ) / 255.0f;
+								LinearColor.G = float( Color.G ) / 255.0f;
+								LinearColor.B = float( Color.B ) / 255.0f;
+							}
+							
+							//SourceTexture[ i++ ] = FFloat16Color( LinearColor );
+							RectData.SourceTextureAvgColor += LinearColor;
+						}
+
+						Pixel += BytesPerPixel;
+					}
+
+					// Source doesn't often have mips just average color for now.
+					RectData.SourceTextureAvgColor *= 1.0f / ( SizeX * SizeY );
+					break;
+					
+					SizeX = SizeX > 1 ? SizeX >> 1 : 1;
+					SizeY = SizeY > 1 ? SizeY >> 1 : 1;
+					MipLevel++;
+				}
+			}
+		}
+
+		Swarm.WriteChannel( Channel, &LightData, sizeof(LightData) );
+		Swarm.WriteChannel( Channel, LightProfileTextureData.GetData(), LightProfileTextureData.Num() * LightProfileTextureData.GetTypeSize() );
+		Swarm.WriteChannel( Channel, &PointData, sizeof(PointData) );
+		Swarm.WriteChannel( Channel, &RectData, sizeof(RectData) );
+		//Swarm.WriteChannel( Channel, SourceTexture.GetData(), SourceTexture.Num() * SourceTexture.GetTypeSize() );
 		UpdateExportProgress();
 	}
 
@@ -2422,20 +2522,19 @@ void FLightmassExporter::WriteDebugInput( Lightmass::FDebugLightingInputData& In
 	{
 		for (FSelectedActorIterator It(World); It; ++It)
 		{
-			TInlineComponentArray<UPrimitiveComponent*> Components;
-			It->GetComponents(Components);
-
-			for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ComponentIndex++)
+			for (UActorComponent* Comp : It->GetComponents())
 			{
-				UPrimitiveComponent* Component = Components[ComponentIndex];
-				if (DebugVisibilityId == INDEX_NONE)
+				if (UPrimitiveComponent* Component = Cast<UPrimitiveComponent>(Comp))
 				{
-					DebugVisibilityId = Component->VisibilityId;
-				}
-				else if (DebugVisibilityId != Component->VisibilityId)
-				{
-					UE_LOG(LogLightmassSolver, Warning, TEXT("Not debugging visibility for component %s with vis id %u, as it was not the first component on the selected actor."),
-						*Component->GetPathName(), Component->VisibilityId);
+					if (DebugVisibilityId == INDEX_NONE)
+					{
+						DebugVisibilityId = Component->VisibilityId;
+					}
+					else if (DebugVisibilityId != Component->VisibilityId)
+					{
+						UE_LOG(LogLightmassSolver, Warning, TEXT("Not debugging visibility for component %s with vis id %u, as it was not the first component on the selected actor."),
+							*Component->GetPathName(), Component->VisibilityId);
+					}
 				}
 			}
 		}
@@ -2489,6 +2588,7 @@ void FLightmassExporter::AddLight(ULightComponentBase* Light)
 	UDirectionalLightComponent* DirectionalLight = Cast<UDirectionalLightComponent>(Light);
 	UPointLightComponent* PointLight = Cast<UPointLightComponent>(Light);
 	USpotLightComponent* SpotLight = Cast<USpotLightComponent>(Light);
+	URectLightComponent* RectLight = Cast<URectLightComponent>(Light);
 	USkyLightComponent* SkyLight = Cast<USkyLightComponent>(Light);
 
 	if( DirectionalLight )
@@ -2502,6 +2602,10 @@ void FLightmassExporter::AddLight(ULightComponentBase* Light)
 	else if( PointLight )
 	{
 		PointLights.AddUnique(PointLight);
+	}
+	else if( RectLight )
+	{
+		RectLights.AddUnique(RectLight);
 	}
 	else if( SkyLight )
 	{
@@ -2533,7 +2637,6 @@ FLightmassProcessor::FLightmassProcessor(const FStaticLightingSystem& InSystem, 
 ,	bImportCompletedMappingsImmediately(false)
 ,	MappingToProcessIndex(0)
 {
-	check(&Swarm != NULL);
 	// Since these can be set by the commandline, we need to update them here...
 	GLightmassDebugOptions.bDebugMode = GLightmassDebugMode;
 	GLightmassDebugOptions.bStatsEnabled = GLightmassStatsMode;
@@ -2778,7 +2881,8 @@ bool FLightmassProcessor::BeginRun()
 		TEXT("../Win32/UnrealLightmass-Core.dll"),
 		TEXT("../Win32/UnrealLightmass-CoreUObject.dll"),
 		TEXT("../Win32/UnrealLightmass-Projects.dll"),
-		TEXT("../Win32/UnrealLightmass-Json.dll")
+		TEXT("../Win32/UnrealLightmass-Json.dll"),
+		TEXT("../Win32/UnrealLightmass-BuildSettings.dll")
 	};
 	const int32 RequiredDependencyPaths32Count = ARRAY_COUNT(RequiredDependencyPaths32);
 
@@ -2795,6 +2899,7 @@ bool FLightmassProcessor::BeginRun()
 		TEXT("../Win64/UnrealLightmass-CoreUObject.dll"),
 		TEXT("../Win64/UnrealLightmass-Projects.dll"),
 		TEXT("../Win64/UnrealLightmass-Json.dll"),
+		TEXT("../Win64/UnrealLightmass-BuildSettings.dll"),
 		TEXT("../Win64/embree.dll"),
 		TEXT("../Win64/tbb.dll"),
 		TEXT("../Win64/tbbmalloc.dll")
@@ -2809,7 +2914,8 @@ bool FLightmassProcessor::BeginRun()
 		TEXT("../Mac/UnrealLightmass-CoreUObject.dylib"),
 		TEXT("../Mac/UnrealLightmass-Json.dylib"),
 		TEXT("../Mac/UnrealLightmass-Projects.dylib"),
-		TEXT("../Mac/UnrealLightmass-SwarmInterface.dylib")
+		TEXT("../Mac/UnrealLightmass-SwarmInterface.dylib"),
+		TEXT("../Mac/UnrealLightmass-BuildSettings.dylib"),
 		TEXT("../Mac/libembree.2.dylib"),
 		TEXT("../Mac/libtbb.dylib"),
 		TEXT("../Mac/libtbbmalloc.dylib")
@@ -2827,6 +2933,7 @@ bool FLightmassProcessor::BeginRun()
 		TEXT("../Linux/libUnrealLightmass-SwarmInterface.so"),
 		TEXT("../Linux/libUnrealLightmass-Networking.so"),
 		TEXT("../Linux/libUnrealLightmass-Messaging.so"),
+		TEXT("../Linux/libUnrealLightmass-BuildSettings.so"),
 		TEXT("../../Plugins/Messaging/UdpMessaging/Binaries/Linux/libUnrealLightmass-UdpMessaging.so")
 	};
 #else // PLATFORM_LINUX
@@ -3043,6 +3150,12 @@ bool FLightmassProcessor::BeginRun()
 			for (int32 LightIndex = 0; LightIndex < Exporter->PointLights.Num(); LightIndex++)
 			{
 				const ULightComponent* Light = Exporter->PointLights[LightIndex];
+				IssueStaticShadowDepthMapTask(Light, 10000);
+			}
+
+			for (int32 LightIndex = 0; LightIndex < Exporter->RectLights.Num(); LightIndex++)
+			{
+				const ULightComponent* Light = Exporter->RectLights[LightIndex];
 				IssueStaticShadowDepthMapTask(Light, 10000);
 			}
 		}
@@ -3315,7 +3428,7 @@ void FLightmassProcessor::ImportVolumeSamples()
 			FVector4 UnusedVolumeExtent;
 			Swarm.ReadChannel(Channel, &UnusedVolumeExtent, sizeof(UnusedVolumeExtent));
 
-			int32 NumStreamLevels = System.GetWorld()->StreamingLevels.Num();
+			int32 NumStreamLevels = System.GetWorld()->GetStreamingLevels().Num();
 			int32 NumVolumeSampleArrays;
 			Swarm.ReadChannel(Channel, &NumVolumeSampleArrays, sizeof(NumVolumeSampleArrays));
 			for (int32 ArrayIndex = 0; ArrayIndex < NumVolumeSampleArrays; ArrayIndex++)
@@ -4242,6 +4355,17 @@ ULightComponent* FLightmassProcessor::FindLight(const FGuid& LightGuid)
 		for (LightIndex = 0; LightIndex < Exporter->SpotLights.Num(); LightIndex++)
 		{
 			const USpotLightComponent* Light = Exporter->SpotLights[LightIndex];
+			if (Light)
+			{
+				if (Light->LightGuid == LightGuid)
+				{
+					return (ULightComponent*)Light;
+				}
+			}
+		}
+		for (LightIndex = 0; LightIndex < Exporter->RectLights.Num(); LightIndex++)
+		{
+			const URectLightComponent* Light = Exporter->RectLights[LightIndex];
 			if (Light)
 			{
 				if (Light->LightGuid == LightGuid)

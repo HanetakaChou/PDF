@@ -18,6 +18,10 @@ class FImaginaryFiBData;
 class FSpawnTabArgs;
 class SFindInBlueprints;
 
+// Shared pointers to cached imaginary data (must be declared as thread-safe).
+typedef TWeakPtr<FImaginaryFiBData, ESPMode::ThreadSafe> FImaginaryFiBDataWeakPtr;
+typedef TSharedPtr<FImaginaryFiBData, ESPMode::ThreadSafe> FImaginaryFiBDataSharedPtr;
+
 #define MAX_GLOBAL_FIND_RESULTS 4
 
 /**
@@ -103,8 +107,8 @@ struct FSearchData
 	/** The Blueprint this search data points to, if available */
 	TWeakObjectPtr<UBlueprint> Blueprint;
 
-	/** The full Blueprint path this search data is associated with */
-	FName BlueprintPath;
+	/** The full asset path this search data is associated with of the form /Game/Path/To/Package.Package */
+	FName AssetPath;
 
 	/** Search data block for the Blueprint */
 	FString Value;
@@ -119,7 +123,7 @@ struct FSearchData
 	bool bMarkedForDeletion;
 
 	/** Cached ImaginaryBlueprint data for the searchable content, prevents having to re-parse every search */
-	TSharedPtr< class FImaginaryBlueprint > ImaginaryBlueprint;
+	FImaginaryFiBDataSharedPtr ImaginaryBlueprint;
 
 	/** Version of the data */
 	int32 Version;
@@ -299,7 +303,7 @@ public:
 	}
 
 	/** Returns the FilteredImaginaryResults from the search query, these results have been filtered by the ImaginaryDataFilter. */
-	void GetFilteredImaginaryResults(TArray<TSharedPtr<class FImaginaryFiBData>>& OutFilteredImaginaryResults);
+	void GetFilteredImaginaryResults(TArray<FImaginaryFiBDataSharedPtr>& OutFilteredImaginaryResults);
 
 public:
 	/** Thread to run the cleanup FRunnable on */
@@ -326,8 +330,8 @@ public:
 	/** A going count of all Blueprints below the MinimiumVersionRequirement */
 	int32 BlueprintCountBelowVersion;
 
-	/** Filtered (ImaginaryDataFilter) list of imaginary data results that met the search requirements */
-	TArray<TSharedPtr<class FImaginaryFiBData>> FilteredImaginaryResults;
+	/** Filtered (ImaginaryDataFilter) list of imaginary data results that met the search requirements. Must be declared as thread-safe since imaginary data is a shared resource. */
+	TArray<FImaginaryFiBDataSharedPtr> FilteredImaginaryResults;
 
 	/** Filter to limit the FilteredImaginaryResults to */
 	enum ESearchQueryFilter ImaginaryDataFilter;
@@ -402,7 +406,7 @@ public:
 	static FString ConvertFTextToHexString(FText InValue);
 
 	/** Returns the number of uncached Blueprints */
-	int32 GetNumberUncachedBlueprints() const;
+	int32 GetNumberUncachedAssets() const;
 
 	/**
 	 * Starts caching all uncached Blueprints at a rate of 1 per tick
@@ -412,7 +416,7 @@ public:
 	 * @param InOnFinished					Callback when caching is finished
 	 * @param InMinimiumVersionRequirement	Minimum version requirement for caching, any Blueprints below this version will be re-indexed
 	 */
-	void CacheAllUncachedBlueprints(TWeakPtr< class SFindInBlueprints > InSourceWidget, FWidgetActiveTimerDelegate& InOutActiveTimerDelegate, FSimpleDelegate InOnFinished = FSimpleDelegate(), EFiBVersion InMinimiumVersionRequirement = EFiBVersion::FIB_VER_LATEST);
+	void CacheAllUncachedAssets(TWeakPtr< class SFindInBlueprints > InSourceWidget, FWidgetActiveTimerDelegate& InOutActiveTimerDelegate, FSimpleDelegate InOnFinished = FSimpleDelegate(), EFiBVersion InMinimiumVersionRequirement = EFiBVersion::FIB_VER_LATEST);
 	
 	/**
 	 * Starts the actual caching process
@@ -420,7 +424,7 @@ public:
 	 * @param bInSourceControlActive		TRUE if source control is active
 	 * @param bInCheckoutAndSave			TRUE if the system should checkout and save all assets that need to be reindexed
 	 */
-	void OnCacheAllUncachedBlueprints(bool bInSourceControlActive, bool bInCheckoutAndSave);
+	void OnCacheAllUncachedAssets(bool bInSourceControlActive, bool bInCheckoutAndSave);
 
 	/** Stops the caching process where it currently is at, the rest can be continued later */
 	void CancelCacheAll(SFindInBlueprints* InFindInBlueprintWidget);
@@ -567,8 +571,8 @@ protected:
 	/** FindInBlueprints widget that started the cache process */
 	TWeakPtr<SFindInBlueprints> SourceCachingWidget;
 
-	/** Blueprint paths that have not been cached for searching due to lack of data, this means that they are either older Blueprints, or the DDC cannot find the data */
-	TSet<FName> UncachedBlueprints;
+	/** Asset paths that have not been cached for searching due to lack of FiB data, this means that they are either older Blueprints, or the DDC cannot find the data */
+	TSet<FName> UncachedAssets;
 
 	/** List of paths for Blueprints that failed to cache */
 	TSet<FName> FailedToCachePaths;

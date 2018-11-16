@@ -306,7 +306,7 @@ void UVREditorMotionControllerInteractor::SetupComponent( AActor* OwningActor )
 			{
 				StaticMesh = StartSplineMesh;
 			}
-			else if (i == NumLaserSplinePoints)
+			else if (i == NumLaserSplinePoints - 1)
 			{
 				StaticMesh = EndSplineMesh;
 			}
@@ -1310,6 +1310,10 @@ void UVREditorMotionControllerInteractor::UpdateSplineLaser(const FVector& InSta
 {
 	if (LaserSplineComponent)
 	{
+
+		LaserStart = InStartLocation;
+		LaserEnd = InEndLocation;
+
 		// Clear the segments before updating it
 		LaserSplineComponent->ClearSplinePoints(true);
 
@@ -1432,9 +1436,14 @@ void UVREditorMotionControllerInteractor::UpdateRadialMenuInput( const float Del
 				}
 			}
 		}
-		// If we are not currently touching the Vive touchpad, reset the highlighted button
+		// If we are not currently touching the Vive touchpad, reset the highlighted button and pause sequencer playback if scrubbing
 		else if (HMDDeviceType == SteamVRDeviceType && !bIsTouchingTrackpad)
 		{
+			if (bIsScrubbingSequence)
+			{
+				FVREditorActionCallbacks::PauseSequencePlayback(VRMode);
+			}
+
 			if (UISystem.IsShowingRadialMenu(this))
 			{
 				const FVector2D ReturnToCenter = FVector2D::ZeroVector;

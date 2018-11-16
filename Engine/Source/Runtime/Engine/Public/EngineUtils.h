@@ -470,6 +470,18 @@ public:
 	}
 
 	/**
+	 * Constructor
+	 *
+	 * @param  InWorld  The world whose actors are to be iterated over.
+	 * @param  InClass  The type of actors to be iterated over.
+	 */
+	explicit FActorIterator(UWorld* InWorld, TSubclassOf<AActor> InClass, EActorIteratorFlags InFlags = EActorIteratorFlags::OnlyActiveLevels | EActorIteratorFlags::SkipPendingKill)
+		: Super(InWorld, InClass, InFlags)
+	{
+		++(*this);
+	}
+
+	/**
 	 * Constructor for creating an end iterator
 	 */
 	explicit FActorIterator(EActorIteratorType)
@@ -605,6 +617,18 @@ public:
 	}
 
 	/**
+	 * Constructor
+	 *
+	 * @param  InWorld  The world whose actors are to be iterated over.
+	 * @param  InClass  The type of actors to be iterated over.
+	 */
+	explicit FSelectedActorIterator(UWorld* InWorld, TSubclassOf<AActor> InClass)
+		: Super(InWorld, InClass, EActorIteratorFlags::SkipPendingKill | EActorIteratorFlags::OnlySelectedActors)
+	{
+		++(*this);
+	}
+
+	/**
 	 * Constructor for creating an end iterator
 	 */
 	explicit FSelectedActorIterator(EActorIteratorType)
@@ -680,6 +704,7 @@ struct FSubLevelStatus
 	FName				PackageName;
 	EStreamingStatus	StreamingStatus;
 	int32				LODIndex;
+	bool				bInConsiderList;
 	bool				bPlayerInside;
 };
 
@@ -826,6 +851,28 @@ public:
 	 * @param InVersion - Minimal version required to serialize strip flags
 	 */
 	FStripDataFlags( FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion = VER_UE4_OLDEST_LOADABLE_PACKAGE );
+
+	/**
+	* Constructor.
+	* Serializes strip data flags. Global (engine) flags are automatically generated from target platform
+	* when saving. Class flags need to be defined by the user.
+	*
+	* @param Ar - Archive to serialize with.
+	* @param InClassFlags - User defined per class flags .
+	* @param InVersion - Minimal strip version required to serialize strip flags
+	*/
+	FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags = 0, int32 InVersion = VER_UE4_OLDEST_LOADABLE_PACKAGE);
+
+	/**
+	* Constructor.
+	* Serializes strip data flags. Global (engine) flags are user defined and will not be automatically generated
+	* when saving. Class flags also need to be defined by the user.
+	*
+	* @param Ar - Archive to serialize with.
+	* @param InClassFlags - User defined per class flags.
+	* @param InVersion - Minimal version required to serialize strip flags
+	*/
+	FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion = VER_UE4_OLDEST_LOADABLE_PACKAGE);
 
 	/**
 	 * Checks if FStripDataFlags::Editor flag is set or not

@@ -143,8 +143,10 @@ namespace UnrealBuildTool
             Text.AppendLine("\t<key>TVTopShelfImage</key>");
             Text.AppendLine("\t<dict>");
             Text.AppendLine("\t\t<key>TVTopShelfPrimaryImage</key>");
-            Text.AppendLine("\t\t<string>TopShelf</string>");
-            Text.AppendLine("\t</dict>");
+            Text.AppendLine("\t\t<string>Top Shelf Image</string>");
+			Text.AppendLine("\t\t<key>TVTopShelfPrimaryImageWide</key>");
+			Text.AppendLine("\t\t<string>Top Shelf Image Wide</string>");
+			Text.AppendLine("\t</dict>");
             Text.AppendLine("\t<key>UILaunchImages</key>");
             Text.AppendLine("\t<array>");
             Text.AppendLine("\t\t<dict>");
@@ -161,7 +163,7 @@ namespace UnrealBuildTool
             Text.AppendLine("\t<key>CFBundleIcons</key>");
             Text.AppendLine("\t<dict>");
             Text.AppendLine("\t\t<key>CFBundlePrimaryIcon</key>");
-            Text.AppendLine("\t\t<string>AppIconSmall</string>");
+            Text.AppendLine("\t\t<string>App Icon - Small</string>");
             Text.AppendLine("\t</dict>");
 
             /*			Text.AppendLine("\t<key>CFBundleIcons</key>");
@@ -329,9 +331,9 @@ namespace UnrealBuildTool
 			return bSkipDefaultPNGs;
 		}
 
-		public override bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUE4Game, string GameName, string ProjectName, string InEngineDir, string AppDirectory, out bool bSupportsPortrait, out bool bSupportsLandscape, out bool bSkipIcons)
+		public override bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUE4Game, string GameName, string ProjectName, string InEngineDir, string AppDirectory, FileReference BuildRecieptFileName, out bool bSupportsPortrait, out bool bSupportsLandscape, out bool bSkipIcons)
 		{
-            bSupportsLandscape = bSupportsPortrait = true;
+			bSupportsLandscape = bSupportsPortrait = true;
             bSkipIcons = true;
 			return GenerateTVOSPList(ProjectDirectory, bIsUE4Game, GameName, ProjectName, InEngineDir, AppDirectory, this);
 		}

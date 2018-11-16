@@ -8,7 +8,7 @@
 #endif
 
 #include "ClothingSimulationInteractorNv.h"
-#include "Package.h"
+#include "UObject/Package.h"
 
 IClothingSimulation* UClothingSimulationFactoryNv::CreateSimulation()
 {
@@ -41,5 +41,5 @@ bool UClothingSimulationFactoryNv::SupportsRuntimeInteraction()
 
 UClothingSimulationInteractor* UClothingSimulationFactoryNv::CreateInteractor()
 {
-	return CastChecked<UClothingSimulationInteractor>(NewObject<UClothingSimulationInteractorNv>(GetTransientPackage()));
+	return NewObject<UClothingSimulationInteractorNv>(GetTransientPackage());
 }

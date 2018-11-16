@@ -1,17 +1,17 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "IOSView.h"
-#include "IOSAppDelegate.h"
-#include "IOSApplication.h"
+#include "IOS/IOSView.h"
+#include "IOS/IOSAppDelegate.h"
+#include "IOS/IOSApplication.h"
 #include "IOS/IOSInputInterface.h"
 #include "Delegates/Delegate.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
-#include "IOSPlatformProcess.h"
+#include "IOS/IOSPlatformProcess.h"
 
 #include <OpenGLES/ES2/gl.h>
-#import "IOSAsyncTask.h"
+#import "IOS/IOSAsyncTask.h"
 #import <QuartzCore/QuartzCore.h>
 #import <OpenGLES/EAGLDrawable.h>
 #import <UIKit/UIGeometry.h>
@@ -216,6 +216,12 @@ id<MTLDevice> GMetalDevice = nil;
 		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MobileContentScaleFactor"));
 		float RequestedContentScaleFactor = CVar->GetFloat();
 
+		FString CmdLineCSF;
+		if (FParse::Value(FCommandLine::Get(), TEXT("mcsf="), CmdLineCSF, false))
+		{
+			RequestedContentScaleFactor = FCString::Atof(*CmdLineCSF);
+		}
+
 		// 0 means to leave the scale alone, use native
 		if (RequestedContentScaleFactor == 0.0f)
 		{
@@ -347,7 +353,7 @@ id<MTLDevice> GMetalDevice = nil;
 #if HAS_METAL
 - (id<CAMetalDrawable>)MakeDrawable
 {
-	return[(CAMetalLayer*)self.layer nextDrawable];
+    return [(CAMetalLayer*)self.layer nextDrawable];
 }
 #endif
 
@@ -486,7 +492,7 @@ id<MTLDevice> GMetalDevice = nil;
 		// get info from the touch
 		CGPoint Loc = [Touch locationInView:self];
 		CGPoint PrevLoc = [Touch previousLocationInView:self];
-
+	
 		// convert TOuch pointer to a unique 0 based index
 		int32 TouchIndex = [self GetTouchIndex:Touch];
 		if (TouchIndex < 0)
@@ -494,22 +500,63 @@ id<MTLDevice> GMetalDevice = nil;
 			continue;
 		}
 
+		// init some things on begin
+		if (Type == TouchBegan)
+		{
+			PreviousForces[TouchIndex] = -1.0;
+			HasMoved[TouchIndex] = 0;
+		}
+
+
+		float Force = Touch.force;
+		float PreviousForce = PreviousForces[TouchIndex];
+
+		// map larger values to 1..10, so 10 is a max across platforms
+		if (Force > 1.0f)
+		{
+			Force = 10.0f * Force / Touch.maximumPossibleForce;
+		}
+
+		// Handle devices without force touch 
+		if ((Type == TouchBegan || Type == TouchMoved) && Force == 0.f)
+		{
+			Force = 1.f;
+		}
+		
 		// make a new touch event struct
 		TouchInput TouchMessage;
 		TouchMessage.Handle = TouchIndex;
 		TouchMessage.Type = Type;
 		TouchMessage.Position = FVector2D(FMath::Min<float>(self.frame.size.width - 1, Loc.x), FMath::Min<float>(self.frame.size.height - 1, Loc.y)) * Scale;
 		TouchMessage.LastPosition = FVector2D(FMath::Min<float>(self.frame.size.width - 1, PrevLoc.x), FMath::Min<float>(self.frame.size.height - 1, PrevLoc.y)) * Scale;
-		TouchesArray.Add(TouchMessage);
+        TouchMessage.Force = Type != TouchEnded ? Force : 0.0f;
 
-		if (Type == TouchBegan)
+		// skip moves that didn't actually move - this will help input handling to skip over the first
+		// move since it is likely a big pop from the TouchBegan location (iOS filters out small movements
+		// on first press)
+		if (Type != TouchMoved || (PrevLoc.x != Loc.x || PrevLoc.y != Loc.y))
 		{
-			TouchInput EmulatedMessage;
-			EmulatedMessage.Handle = TouchMessage.Handle;
-			EmulatedMessage.Type = TouchMoved;
-			EmulatedMessage.Position = TouchMessage.Position;
-			EmulatedMessage.LastPosition = TouchMessage.Position;
-			TouchesArray.Add(EmulatedMessage);
+			// track first move event, for helping with "pop" on the filtered small movements
+			if (HasMoved[TouchIndex] == 0 && Type == TouchMoved)
+			{
+				TouchInput FirstMoveMessage = TouchMessage;
+				FirstMoveMessage.Type = FirstMove;
+				HasMoved[TouchIndex] = 1;
+
+				TouchesArray.Add(FirstMoveMessage);
+			}
+            
+            TouchesArray.Add(TouchMessage);
+		}
+
+		// if the force changed, send an event!
+		if (PreviousForce != Force)
+		{
+			TouchInput ForceMessage = TouchMessage;
+			ForceMessage.Type = ForceChanged;
+			PreviousForces[TouchIndex] = Force;
+
+			TouchesArray.Add(ForceMessage);
 		}
 		
 		// clear out the touch when it ends
@@ -1052,7 +1099,35 @@ id<MTLDevice> GMetalDevice = nil;
 	return YES;
 }
 
+/*
+* Set the preferred landscape orientation 
+*/
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+	FString PreferredLandscapeOrientation = "";
+	bool bSupportsLandscapeLeft = false;
+	bool bSupportsLandscapeRight = false;
 
+	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsLandscapeLeftOrientation"), bSupportsLandscapeLeft, GEngineIni);
+	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsLandscapeRightOrientation"), bSupportsLandscapeRight, GEngineIni);
+	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("PreferredLandscapeOrientation"), PreferredLandscapeOrientation, GEngineIni);
+
+	if(bSupportsLandscapeLeft && bSupportsLandscapeRight)
+	{
+		if (PreferredLandscapeOrientation.Equals("LandscapeRight"))
+		{
+			return UIInterfaceOrientationLandscapeRight;
+		}
+		return UIInterfaceOrientationLandscapeLeft;
+	}
+
+	return UIInterfaceOrientationPortrait;
+}
+
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures
+{
+	return UIRectEdgeBottom;
+}
 
 
 

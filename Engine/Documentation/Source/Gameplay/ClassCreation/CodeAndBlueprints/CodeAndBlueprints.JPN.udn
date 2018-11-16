@@ -35,8 +35,8 @@ LightSwitchBoth クラスの大部分のコード設定は、[C++ Only LightSwit
 [REGION:codetitlebar]
 LightSwitchBoth.h
 [/REGION:codetitlebar]
-		// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
+		// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 		#pragma once
 
@@ -61,27 +61,27 @@ LightSwitchBoth.h
 
 			ALightSwitchBoth();
 
-			/** called when something enters the sphere component (何かが sphere コンポーネントに入ると呼び出されます。)*/
+			/** called when something enters the sphere component */
 			UFUNCTION(BlueprintNativeEvent, Category="Switch Functions")
 			void OnOverlapBegin(class UPrimitiveComponent* OverlappedComp, class AActor* OtherActor, class UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+			
 			void OnOverlapBegin_Implementation(class UPrimitiveComponent* OverlappedComp, class AActor* OtherActor, class UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
 
-
-			/** called when something leaves the sphere component (何かが sphere コンポーネントを離れると呼び出されます。) */
+			/** called when something leaves the sphere component */
 			UFUNCTION(BlueprintNativeEvent, Category="Switch Functions")
 			void OnOverlapEnd(class UPrimitiveComponent* OverlappedComp, class AActor* OtherActor, class UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
 			void OnOverlapEnd_Implementation(class UPrimitiveComponent* OverlappedComp, class AActor* OtherActor, class UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
-			/** Toggles the light component's visibility (light コンポーネントの可視性を切り替えます)*/
+			/** Toggles the light component's visibility*/
 			UFUNCTION()
 			void ToggleLight();
-	/** the desired intensity for the light (ライトの望ましい明るさ) */
-
+	
+			/** the desired intensity for the light */
 			UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Switch Variables")
 			float DesiredIntensity;
-	};
-
+	
+		};
 
 
 LightSwitchBoth のソース ファイルでは、コンストラクタに変更はありません。しかし、`OnOverlapBegin` 関数と `OnOverlapEnd` 関数に変更を加える必要があります。こうした関数は BlueprintNativeEvent となりました。つまり、
@@ -189,13 +189,13 @@ Construction Script は実行されます。Construction Script を使用する�
 LightSwitch_BPOnly クラスでセットアップされたもうひとつのグラフは、[](Engine/Blueprints\UserGuide\EventGraph) です。イベントグラフの実行は、イベントから開始します。この場合、C++ 関数 `OnOverlap` が呼ばれると常に
 OnOverlap event が実行されます。LightSwitchBoth ソース ファイルでは、デリゲートはアクタが Sphere コンポーネントへ入った時またはそこから離れた時に OnOverlap が実行するように設定されています。
 
-		Sphere1->OnComponentBeginOverlap.AddDynamic(this, &ALightSwitchBoth::OnOverlapBegin);		// set up a notification for when this component overlaps something (このコンポーネントが何かとオーバーラップした場合の通知をセットアップします) 
-		Sphere1->OnComponentEndOverlap.AddDynamic(this, &ALightSwitchBoth::OnOverlapEnd);		// set up a notification for when this component overlaps something (このコンポーネントが何かとオーバーラップした場合の通知をセットアップします) 
+		Sphere1->OnComponentBeginOverlap.AddDynamic(this, &ALightSwitchBoth::OnOverlapBegin);		// set up a notification for when this component overlaps something
+		Sphere1->OnComponentEndOverlap.AddDynamic(this, &ALightSwitchBoth::OnOverlapEnd);		// set up a notification for when this component overlaps something
 
 **OnOverlap** event ノードは、**Set Light Color** ノードと接続されています。イベントが実行されると、常に PointLight コンポーネントのライト色をランダムな色にするように設定されています。これは、PointLight コンポーネントの可視性を切り替える、
 ソースファイルの `OnOverlap_Implementation` 関数をオーバーライドします。
 
-イベントおよびグラフでの作業に関する詳しい情報は、[](Engine/Blueprints\UserGuide\Events)、[](Engine/Blueprints\UserGuide\EventGraph)、および [グラフ パネル](Engine/Blueprints\Editor\Modes\GraphPanel) のドキュメントをご覧ください。
+イベントおよびグラフでの作業に関する詳しい情報は、[](Engine/Blueprints\UserGuide\Events)、[](Engine/Blueprints\UserGuide\EventGraph)、および [グラフ パネル](Engine/Blueprints/Editor/UIBreakdowns/ClassBPUI) のドキュメントをご覧ください。
 
 ![](Both_EventGraph_2.png)
 

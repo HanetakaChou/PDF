@@ -13,6 +13,8 @@
 #include "GameFramework/WorldSettings.h"
 #include "PacketHandler.h"
 #include "Channel.h"
+#include "DDoSDetection.h"
+#include "IPAddress.h"
 
 #include "NetDriver.generated.h"
 
@@ -27,9 +29,27 @@ class FReplicationChangelistMgr;
 class FVoicePacket;
 class StatelessConnectHandlerComponent;
 class UNetConnection;
+class UReplicationDriver;
 struct FNetworkObjectInfo;
+class UChannel;
+class IAnalyticsProvider;
+class FNetAnalyticsAggregator;
+
+using FConnectionMap = TMap<TSharedRef<FInternetAddr>, UNetConnection*, FDefaultSetAllocator, FInternetAddrKeyMapFuncs<UNetConnection*>>;
 
 extern ENGINE_API TAutoConsoleVariable<int32> CVarNetAllowEncryption;
+extern ENGINE_API int32 GNumSaturatedConnections;
+extern ENGINE_API int32 GNumSharedSerializationHit;
+extern ENGINE_API int32 GNumSharedSerializationMiss;
+extern ENGINE_API int32 GNumReplicateActorCalls;
+extern ENGINE_API bool GReplicateActorTimingEnabled;
+extern ENGINE_API bool GReceiveRPCTimingEnabled;
+extern ENGINE_API double GReplicateActorTimeSeconds;
+extern ENGINE_API uint32 GNetOutBytes;
+extern ENGINE_API double GReplicationGatherPrioritizeTimeSeconds;
+extern ENGINE_API double GServerReplicateActorTimeSeconds;
+extern ENGINE_API int32 GNumClientConnections;
+extern ENGINE_API int32 GNumClientUpdateLevelVisibility;
 
 // Delegates
 
@@ -206,6 +226,9 @@ public:
 	UPROPERTY(Config)
 	FString NetConnectionClassName;
 
+	UPROPERTY(Config)
+	FString ReplicationDriverClassName;
+
 	/** @todo document */
 	UPROPERTY(Config)
 	int32 MaxDownloadSize;
@@ -272,9 +295,12 @@ public:
 	UPROPERTY()
 	class UNetConnection* ServerConnection;
 
-	/** Array of connections to clients (this net driver is a host) */
+	/** Array of connections to clients (this net driver is a host) - unsorted, and ordering changes depending on actor replication */
 	UPROPERTY()
-	TArray<class UNetConnection*> ClientConnections;
+	TArray<UNetConnection*> ClientConnections;
+
+	/** Map of IP's to NetConnection's - for fast lookup, particularly under DDoS - only valid IP's mapped (e.g. excludes DemoNetConnection) */
+	FConnectionMap MappedClientConnections;
 
 
 	/** Serverside PacketHandler for managing connectionless packets */
@@ -284,7 +310,10 @@ public:
 	TWeakPtr<StatelessConnectHandlerComponent> StatelessConnectComponent;
 
 	/** The analytics provider used by the packet handler */
-	TSharedPtr<class IAnalyticsProvider> AnalyticsProvider;
+	TSharedPtr<IAnalyticsProvider> AnalyticsProvider;
+
+	/** Special analytics aggregator tied to AnalyticsProvider - combines analytics from all NetConnections/PacketHandlers, in one event */
+	TSharedPtr<FNetAnalyticsAggregator> AnalyticsAggregator;
 
 	/** World this net driver is associated with */
 	UPROPERTY()
@@ -301,6 +330,9 @@ public:
 	/** The loaded UClass of the net connection type to use */
 	UPROPERTY()
 	UClass* NetConnectionClass;
+
+	UPROPERTY()
+	UClass* ReplicationDriverClass;
 
 	/** @todo document */
 	UPROPERTY()
@@ -323,10 +355,27 @@ public:
 		return Type >= 0 && Type < CHTYPE_MAX && ChannelClasses[Type] != nullptr;
 	}
 
+private:
+
+	/** List of channels that were previously used and can be used again */
+	UPROPERTY()
+	TArray<UChannel*> ActorChannelPool;
+
+public:
+
+	/** Creates a new channel of the specified type. If the type is pooled, it will return a pre-created channel */
+	UChannel* GetOrCreateChannel(EChannelType ChType);
+
+	/** If the channel's type is pooled, this will add the channel to the pool. Otherwise, nothing will happen. */
+	void ReleaseToChannelPool(UChannel* Channel);
+
 	/** Change the NetDriver's NetDriverName. This will also reinit packet simulation settings so that settings can be qualified to a specific driver. */
 	void SetNetDriverName(FName NewNetDriverNamed);
 
 	void InitPacketSimulationSettings();
+
+	/** Returns true during the duration of a packet loss burst triggered by the net.pktlossburst command. */
+	bool IsSimulatingPacketLossBurst() const;
 
 	/** Interface for communication network state to others (ie World usually, but anything that implements FNetworkNotify) */
 	class FNetworkNotify*		Notify;
@@ -352,24 +401,40 @@ public:
 	uint32						OutBytesPerSecond;
 	/** todo document */
 	uint32						InBytes;
+	/** Total bytes in packets received since the net driver's creation */
+	uint32						InTotalBytes;
 	/** todo document */
 	uint32						OutBytes;
+	/** Total bytes in packets sent since the net driver's creation */
+	uint32						OutTotalBytes;
 	/** Outgoing rate of NetGUID Bunches */
 	uint32						NetGUIDOutBytes;
 	/** Incoming rate of NetGUID Bunches */
 	uint32						NetGUIDInBytes;
 	/** todo document */
 	uint32						InPackets;
+	/** Total packets received since the net driver's creation  */
+	uint32						InTotalPackets;
 	/** todo document */
 	uint32						OutPackets;
+	/** Total packets sent since the net driver's creation  */
+	uint32						OutTotalPackets;
 	/** todo document */
 	uint32						InBunches;
 	/** todo document */
 	uint32						OutBunches;
+	/** Total bunches received since the net driver's creation  */
+	uint32						InTotalBunches;
+	/** Total bunches sent since the net driver's creation  */
+	uint32						OutTotalBunches;
 	/** todo document */
 	uint32						InPacketsLost;
+	/** Total packets lost that have been sent by clients since the net driver's creation  */
+	uint32						InTotalPacketsLost;
 	/** todo document */
 	uint32						OutPacketsLost;
+	/** Total packets lost that have been sent by the server since the net driver's creation  */
+	uint32						OutTotalPacketsLost;
 	/** todo document */
 	uint32						InOutOfOrderPackets;
 	/** todo document */
@@ -430,7 +495,7 @@ public:
 	 *  to startup actors (because they won't have an associated channel), and this map stores those
 	 *  FActorDestructionInfos also.
 	 */
-	TMap<FNetworkGUID, FActorDestructionInfo>	DestroyedStartupOrDormantActors;
+	TMap<FNetworkGUID, TUniquePtr<FActorDestructionInfo>>	DestroyedStartupOrDormantActors;
 
 	/** The server adds an entry into this map for every startup actor that has been renamed, and will
 	 *  always map from current name to original name
@@ -452,7 +517,7 @@ public:
 	TSharedPtr< FRepLayout >	GetObjectClassRepLayout( UClass * InClass );
 
 	/** Creates if necessary, and returns a FRepLayout that maps to the passed in UFunction */
-	TSharedPtr<FRepLayout>		GetFunctionRepLayout( UFunction * Function );
+	ENGINE_API TSharedPtr<FRepLayout> GetFunctionRepLayout( UFunction * Function );
 
 	/** Creates if necessary, and returns a FRepLayout that maps to the passed in UStruct */
 	TSharedPtr<FRepLayout>		GetStructRepLayout( UStruct * Struct );
@@ -467,6 +532,7 @@ public:
 
 	/** Handles to various registered delegates */
 	FDelegateHandle TickDispatchDelegateHandle;
+	FDelegateHandle PostTickDispatchDelegateHandle;
 	FDelegateHandle TickFlushDelegateHandle;
 	FDelegateHandle PostTickFlushDelegateHandle;
 
@@ -478,6 +544,11 @@ public:
 	/** Tracks the amount of time spent during the current frame processing queued bunches. */
 	float ProcessQueuedBunchesCurrentFrameMilliseconds;
 
+	/** DDoS detection management */
+	FDDoSDetection DDoS;
+
+
+
 	/**
 	* Updates the standby cheat information and
 	 * causes the dialog to be shown/hidden as needed
@@ -485,7 +556,7 @@ public:
 	void UpdateStandbyCheatStatus(void);
 
 	/** Sets the analytics provider */
-	void SetAnalyticsProvider(TSharedPtr<class IAnalyticsProvider> InProvider) { AnalyticsProvider = InProvider; }
+	void ENGINE_API SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider);
 
 #if DO_ENABLE_NET_TEST
 	FPacketSimulationSettings	PacketSimulationSettings;
@@ -565,6 +636,9 @@ public:
 	 */
 	ENGINE_API virtual bool InitListen(class FNetworkNotify* InNotify, FURL& ListenURL, bool bReuseAddressAndPort, FString& Error) PURE_VIRTUAL( UNetDriver::InitListen, return true;);
 
+	/** Initialize the list of destroyed net startup actors from the current World */
+	ENGINE_API virtual void InitDestroyedStartupActors();
+
 	/**
 	 * Initialize a PacketHandler for serverside net drivers, for handling connectionless packets
 	 * NOTE: Only triggered by net driver subclasses that support it - from within InitListen.
@@ -580,6 +654,9 @@ public:
 
 	/** Initializes the net connection class to use for new connections */
 	ENGINE_API virtual bool InitConnectionClass(void);
+
+	/** Initialized the replication driver class to use for this driver */
+	ENGINE_API virtual bool InitReplicationDriverClass();
 
 	/** Shutdown all connections managed by this net driver */
 	ENGINE_API virtual void Shutdown();
@@ -619,10 +696,29 @@ public:
 	 * @param Stack stack frame the UFunction is called in
 	 * @param SubObject optional: sub object to actually call function on
 	 */
-	ENGINE_API virtual void ProcessRemoteFunction(class AActor* Actor, class UFunction* Function, void* Parameters, struct FOutParmRec* OutParms, struct FFrame* Stack, class UObject* SubObject = NULL ) PURE_VIRTUAL(UNetDriver::ProcessRemoteFunction,);
+	ENGINE_API virtual void ProcessRemoteFunction(class AActor* Actor, class UFunction* Function, void* Parameters, struct FOutParmRec* OutParms, struct FFrame* Stack, class UObject* SubObject = nullptr );
 
-	/** handle time update */
+
+	enum ENGINE_API ERemoteFunctionSendPolicy
+	{		
+		/** Unreliable multicast are queued. Everything else is send immediately */
+		Default, 
+
+		/** Bunch is send immediately no matter what */
+		ForceSend,
+
+		/** Bunch is queued until next actor replication, no matter what */
+		ForceQueue,
+	};	
+
+	/** Process a remote function on given actor channel. This is called by ::ProcessRemoteFunction.*/
+	ENGINE_API void ProcessRemoteFunctionForChannel(UActorChannel* Ch, const class FClassNetCache* ClassCache, const FFieldNetCache* FieldCache, UObject* TargetObj, UNetConnection* Connection,  UFunction* Function, void* Parms, FOutParmRec* OutParms, FFrame* Stack, const bool IsServer, const ERemoteFunctionSendPolicy SendPolicy = ERemoteFunctionSendPolicy::Default);
+
+	/** handle time update: read and process packets */
 	ENGINE_API virtual void TickDispatch( float DeltaTime );
+
+	/** PostTickDispatch actions */
+	ENGINE_API virtual void PostTickDispatch();
 
 	/** ReplicateActors and Flush */
 	ENGINE_API virtual void TickFlush(float DeltaSeconds);
@@ -630,6 +726,12 @@ public:
 	/** PostTick actions */
 	ENGINE_API virtual void PostTickFlush();
 
+	DEPRECATED(4.21, "Please use the LowLevelSend that requires packet traits for analytics and packet modifiers.")
+	ENGINE_API virtual void LowLevelSend(FString Address, void* Data, int32 CountBits)
+	{
+		FOutPacketTraits EmptyTraits;
+		LowLevelSend(Address, Data, CountBits, EmptyTraits);
+	}
 
 	/**
 	 * Sends a 'connectionless' (not associated with a UNetConection) packet, to the specified address.
@@ -638,8 +740,9 @@ public:
 	 * @param Address		The address the packet should be sent to (format is abstract, determined by net driver subclasses)
 	 * @param Data			The packet data
 	 * @param CountBits		The size of the packet data, in bits
+	 * @param Traits		Traits for the packet, if applicable
 	 */
-	ENGINE_API virtual void LowLevelSend(FString Address, void* Data, int32 CountBits)
+	ENGINE_API virtual void LowLevelSend(FString Address, void* Data, int32 CountBits, FOutPacketTraits& Traits)
 		PURE_VIRTUAL(UNetDriver::LowLevelSend,);
 
 	/**
@@ -679,8 +782,18 @@ public:
 	bool HandleNetDumpDormancy( const TCHAR* Cmd, FOutputDevice& Ar );
 #endif
 
+	void HandlePacketLossBurstCommand( int32 DurationInMilliseconds );
+
+	// ---------------------------------------------------------------
+	//	Game code API for updating server Actor Replication State
+	// ---------------------------------------------------------------
+
+	ENGINE_API virtual void ForceNetUpdate(AActor* Actor);
+
 	/** Flushes actor from NetDriver's dormancy list, but does not change any state on the Actor itself */
-	ENGINE_API void FlushActorDormancy(class AActor *Actor);
+	ENGINE_API void FlushActorDormancy(AActor *Actor, bool bWasDormInitial=false);
+
+	ENGINE_API void NotifyActorDormancyChange(AActor* Actor, ENetDormancy OldDormancyState);
 
 	/** Forces properties on this actor to do a compare for one frame (rather than share shadow state) */
 	ENGINE_API void ForcePropertyCompare( AActor* Actor );
@@ -688,16 +801,27 @@ public:
 	/** Force this actor to be relevant for at least one update */
 	ENGINE_API void ForceActorRelevantNextUpdate(AActor* Actor);
 
+	/** Tells the net driver about a networked actor that was spawned */
+	ENGINE_API void AddNetworkActor(AActor* Actor);
+
 	/** Called when a spawned actor is destroyed. */
 	ENGINE_API virtual void NotifyActorDestroyed( AActor* Actor, bool IsSeamlessTravel=false );
 
 	/** Called when an actor is renamed. */
 	ENGINE_API virtual void NotifyActorRenamed(AActor* Actor, FName PreviousName);
 
-	ENGINE_API virtual void NotifyStreamingLevelUnload( ULevel* );
+	ENGINE_API void RemoveNetworkActor(AActor* Actor);
 
 	ENGINE_API virtual void NotifyActorLevelUnloaded( AActor* Actor );
-	
+
+	ENGINE_API virtual void NotifyActorTearOff(AActor* Actor);
+
+	// ---------------------------------------------------------------
+	//
+	// ---------------------------------------------------------------	
+
+	ENGINE_API virtual void NotifyStreamingLevelUnload( ULevel* );
+
 	/** creates a child connection and adds it to the given parent connection */
 	ENGINE_API virtual class UChildConnection* CreateChild(UNetConnection* Parent);
 
@@ -711,6 +835,10 @@ public:
 	ENGINE_API virtual bool IsServer() const;
 
 	ENGINE_API virtual void CleanPackageMaps();
+
+	void RemoveClassRepLayoutReferences(UClass* Class);
+
+	ENGINE_API void CleanupWorldForSeamlessTravel();
 
 	ENGINE_API void PreSeamlessTravelGarbageCollect();
 
@@ -761,6 +889,9 @@ public:
 
 	/** Returns true if actor channels with InGUID should queue up bunches, even if they wouldn't otherwise be queued. */
 	virtual bool ShouldQueueBunchesForActorGUID(FNetworkGUID InGUID) const { return false; }
+
+	/** Returns whether or not RPCs processed by this driver should be ignored. */
+	virtual bool ShouldIgnoreRPCs() const { return false; }
 
 	/** Returns the existing FNetworkGUID of InActor, if it has one. */
 	virtual FNetworkGUID GetGUIDForActor(const AActor* InActor) const { return FNetworkGUID(); }
@@ -825,17 +956,36 @@ public:
 	/** Sets the level ID/PIE instance ID for this netdriver to use. */
 	ENGINE_API void SetDuplicateLevelID(const int32 InDuplicateLevelID) { DuplicateLevelID = InDuplicateLevelID; }
 
-protected:
+	/** Explicitly sets the ReplicationDriver instance (you instantiate it and initialize it). Shouldn't be done during gameplay: ok to do in GameMode startup or via console commands for testing. Existing ReplicationDriver (if set) is destroyed when this is called.  */
+	ENGINE_API void SetReplicationDriver(UReplicationDriver* NewReplicationManager);
+
+	ENGINE_API UReplicationDriver* GetReplicationDriver() { return ReplicationDriver; }
+
+	template<class T>
+	T* GetReplicationDriver() { return Cast<T>(ReplicationDriver); }
+
+	void RemoveClientConnection(UNetConnection* ClientConnectionToRemove);
 
 	/** Adds (fully initialized, ready to go) client connection to the ClientConnections list + any other game related setup */
 	ENGINE_API void	AddClientConnection(UNetConnection * NewConnection);
+
+	ENGINE_API void NotifyActorFullyDormantForConnection(AActor* Actor, UNetConnection* Connection);
+
+	/** Returns true if this actor is considered to be in a loaded level */
+	ENGINE_API virtual bool IsLevelInitializedForActor( const AActor* InActor, const UNetConnection* InConnection ) const;
+
+	/** Called after processing RPC to track time spent */
+	void NotifyRPCProcessed(UFunction* Function, UNetConnection* Connection, double ElapsedTimeSeconds);
+
+protected:
 
 	/** Register all TickDispatch, TickFlush, PostTickFlush to tick in World */
 	ENGINE_API void RegisterTickEvents(class UWorld* InWorld);
 	/** Unregister all TickDispatch, TickFlush, PostTickFlush to tick in World */
 	ENGINE_API void UnregisterTickEvents(class UWorld* InWorld);
-	/** Returns true if this actor is considered to be in a loaded level */
-	ENGINE_API virtual bool IsLevelInitializedForActor( const AActor* InActor, const UNetConnection* InConnection ) const;
+
+	/** Subclasses may override this to customize channel creation. Called by GetOrCreateChannel if the pool is exhausted and a new channel must be allocated. */
+	ENGINE_API virtual UChannel* InternalCreateChannel(EChannelType ChType);
 
 #if WITH_SERVER_CODE
 	/**
@@ -850,10 +1000,23 @@ protected:
 	/** Used to handle any NetDriver specific cleanup once a level has been removed from the world. */
 	ENGINE_API virtual void OnLevelRemovedFromWorld(class ULevel* Level, class UWorld* World);
 
-	/** Handle that tracks OnLevelRemovedFromWorld. */
+	/** Used to handle any NetDriver specific setup when a level has been added to the world. */
+	ENGINE_API virtual void OnLevelAddedToWorld(class ULevel* Level, class UWorld* World);
+
+	/** Handles that track our LevelAdded / Removed delegates. */
 	FDelegateHandle OnLevelRemovedFromWorldHandle;
+	FDelegateHandle OnLevelAddedToWorldHandle;
 
 private:
+	FActorDestructionInfo* CreateDestructionInfo(UNetDriver* NetDriver, AActor* ThisActor, FActorDestructionInfo *DestructionInfo);
+
+	void CreateReplicatedStaticActorDestructionInfo(UNetDriver* NetDriver, ULevel* Level, const FReplicatedStaticActorDestructionInfo& Info);
+
+
+	void FlushActorDormancyInternal(AActor *Actor);
+
+	UPROPERTY(transient)
+	UReplicationDriver* ReplicationDriver;
 
 	/** Stores the list of objects to replicate into the replay stream. This should be a TUniquePtr, but it appears the generated.cpp file needs the full definition of the pointed-to type. */
 	TSharedPtr<FNetworkObjectList> NetworkObjects;
@@ -863,4 +1026,7 @@ private:
 
 	/** Duplicate level instance to use for playback (PIE instance ID) */
 	int32 DuplicateLevelID;
+
+	/** NetDriver time to end packet loss burst simulation. */
+	float PacketLossBurstEndTime;
 };

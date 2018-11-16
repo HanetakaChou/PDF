@@ -1,7 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "IBuildManifest.h"
+#include "Interfaces/IBuildManifest.h"
 #include "BuildPatchManifest.h"
 #include "Tests/Mock/ManifestField.mock.h"
 
@@ -80,7 +80,16 @@ namespace BuildPatchServices
 
 		virtual TArray<FString> GetBuildFileList() const override
 		{
-			return BuildFileList;
+			TArray<FString> Filenames;
+			GetFileList(Filenames);
+			return Filenames;
+		}
+
+		virtual TArray<FString> GetBuildFileList(const TSet<FString>& Tags) const override
+		{
+			TArray<FString> Filenames;
+			GetTaggedFileList(Tags, Filenames);
+			return Filenames;
 		}
 
 		virtual void GetFileTagList(TSet<FString>& Tags) const override
@@ -152,7 +161,7 @@ namespace BuildPatchServices
 			return true;
 		}
 
-		virtual bool SaveToFile(const FString& Filename, bool bUseBinary) override
+		virtual bool SaveToFile(const FString& Filename, EFeatureLevel InFeatureLevel) override
 		{
 			return true;
 		}
@@ -161,9 +170,9 @@ namespace BuildPatchServices
 		{
 		}
 
-		virtual EBuildPatchAppManifestVersion::Type GetManifestVersion() const override
+		virtual EFeatureLevel GetFeatureLevel() const override
 		{
-			return ManifestVersion;
+			return FeatureLevel;
 		}
 
 		virtual void GetChunksRequiredForFiles(const TSet<FString>& Filenames, TSet<FGuid>& RequiredChunks) const override
@@ -226,6 +235,11 @@ namespace BuildPatchServices
 			TaggedFiles = TaggedFileList;
 		}
 
+		virtual void GetTaggedFileList(const TSet<FString>& Tags, TArray<FString>& TaggedFiles) const override
+		{
+			TaggedFiles = TaggedFileList.Array();
+		}
+
 		virtual void GetDataList(TArray<FGuid>& DataGuids) const override
 		{
 			DataGuids = DataList;
@@ -236,7 +250,7 @@ namespace BuildPatchServices
 			DataGuids.Append(DataList);
 		}
 
-		virtual const FFileManifestData* GetFileManifest(const FString& Filename) const override
+		virtual const FFileManifest* GetFileManifest(const FString& Filename) const override
 		{
 			return FileManifests.Find(Filename);
 		}
@@ -256,7 +270,7 @@ namespace BuildPatchServices
 			return false;
 		}
 
-		virtual bool GetChunkShaHash(const FGuid& ChunkGuid, FSHAHashData& OutHash) const override
+		virtual bool GetChunkShaHash(const FGuid& ChunkGuid, FSHAHash& OutHash) const override
 		{
 			if (ChunkShaHashes.Contains(ChunkGuid))
 			{
@@ -266,7 +280,7 @@ namespace BuildPatchServices
 			return false;
 		}
 
-		virtual bool GetFileHash(const FGuid& FileGuid, FSHAHashData& OutHash) const override
+		virtual bool GetFileHash(const FGuid& FileGuid, FSHAHash& OutHash) const override
 		{
 			if (FileIdToHashes.Contains(FileGuid))
 			{
@@ -276,7 +290,7 @@ namespace BuildPatchServices
 			return false;
 		}
 
-		virtual bool GetFileHash(const FString& Filename, FSHAHashData& OutHash) const override
+		virtual bool GetFileHash(const FString& Filename, FSHAHash& OutHash) const override
 		{
 			if (FileNameToHashes.Contains(Filename))
 			{
@@ -341,7 +355,7 @@ namespace BuildPatchServices
 		int64 TagBuildSize;
 		TArray<FString> RemovableFiles;
 		TMap<FString, FMockManifestField> CustomFields;
-		EBuildPatchAppManifestVersion::Type ManifestVersion;
+		EFeatureLevel FeatureLevel;
 		TSet<FGuid> ChunksRequiredForFiles;
 		uint32 NumberOfChunkReferences;
 		int64 DataSize;
@@ -349,11 +363,11 @@ namespace BuildPatchServices
 		uint32 NumFiles;
 		TSet<FString> TaggedFileList;
 		TArray<FGuid> DataList;
-		TMap<FString, FFileManifestData> FileManifests;
+		TMap<FString, FFileManifest> FileManifests;
 		TMap<FGuid, uint64> ChunkHashes;
-		TMap<FGuid, FSHAHashData> ChunkShaHashes;
-		TMap<FGuid, FSHAHashData> FileIdToHashes;
-		TMap<FString, FSHAHashData> FileNameToHashes;
+		TMap<FGuid, FSHAHash> ChunkShaHashes;
+		TMap<FGuid, FSHAHash> FileIdToHashes;
+		TMap<FString, FSHAHash> FileNameToHashes;
 		TMap<FGuid, uint64> FilePartHashes;
 		TSet<FGuid> ProducibleChunks;
 		TSet<FString> OutdatedFiles;

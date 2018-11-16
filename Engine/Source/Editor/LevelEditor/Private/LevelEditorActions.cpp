@@ -18,6 +18,7 @@
 #include "Materials/Material.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "ISourceControlModule.h"
+#include "SourceControlHelpers.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Factories/BlueprintFactory.h"
@@ -51,7 +52,7 @@
 #include "DlgDeltaTransform.h"
 #include "Editor/NewLevelDialog/Public/NewLevelDialogModule.h"
 #include "MRUFavoritesList.h"
-#include "Private/SSocketChooser.h"
+#include "Editor/SceneOutliner/Private/SSocketChooser.h"
 #include "SnappingUtils.h"
 #include "LevelEditorViewport.h"
 #include "Layers/ILayers.h"
@@ -84,7 +85,7 @@
 #include "ILauncherPlatform.h"
 #include "LauncherPlatformModule.h"
 #include "Engine/LevelStreaming.h"
-#include "Engine/LevelStreamingKismet.h"
+#include "Engine/LevelStreamingDynamic.h"
 #include "EditorLevelUtils.h"
 #include "ActorGroupingUtils.h"
 #include "LevelUtils.h"
@@ -394,9 +395,9 @@ void FLevelEditorActionCallbacks::SaveCurrentAs()
 	UWorld* World = GetWorld();
 	ULevel* CurrentLevel = World->GetCurrentLevel();
 	
-	UClass* CurrentStreamingLevelClass = ULevelStreamingKismet::StaticClass();
+	UClass* CurrentStreamingLevelClass = ULevelStreamingDynamic::StaticClass();
 
-	for (ULevelStreaming* StreamingLevel : World->StreamingLevels)
+	for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
 	{
 		if (StreamingLevel->GetLoadedLevel() == CurrentLevel)
 		{
@@ -548,6 +549,8 @@ void FLevelEditorActionCallbacks::SetMaterialQualityLevel( EMaterialQualityLevel
 	static IConsoleVariable* MaterialQualityLevelVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MaterialQualityLevel"));
 	MaterialQualityLevelVar->Set(NewQualityLevel, ECVF_SetByScalability);
 
+	GUnrealEd->OnSceneMaterialsModified();
+
 	GUnrealEd->RedrawAllViewports();
 }
 
@@ -560,27 +563,7 @@ bool FLevelEditorActionCallbacks::IsMaterialQualityLevelChecked( EMaterialQualit
 
 void FLevelEditorActionCallbacks::SetPreviewPlatform(FName MaterialQualityPlatform, ERHIFeatureLevel::Type PreviewFeatureLevel)
 {
-	// If we have specified a MaterialQualityPlatform ensure its feature level matches the requested feature level.
-	check(MaterialQualityPlatform.IsNone() || GetMaxSupportedFeatureLevel(ShaderFormatToLegacyShaderPlatform(MaterialQualityPlatform)) == PreviewFeatureLevel);
-
-	UMaterialShaderQualitySettings* MaterialShaderQualitySettings = UMaterialShaderQualitySettings::Get();
-	const FName InitialPreviewPlatform = MaterialShaderQualitySettings->GetPreviewPlatform();
-
-	const ERHIFeatureLevel::Type InitialFeatureLevel = GetWorld()->FeatureLevel;
-	MaterialShaderQualitySettings->SetPreviewPlatform(MaterialQualityPlatform);
-	SetFeatureLevelPreview(PreviewFeatureLevel);
-
-	if (
-		// Rebuild materials if the preview platform has changed. 
-		InitialPreviewPlatform != MaterialQualityPlatform
-		// If the feature level changed then materials have been rebuilt already.
-		&& InitialFeatureLevel == PreviewFeatureLevel)
-	{
-		FGlobalComponentRecreateRenderStateContext Recreate;
-		FlushRenderingCommands();
-		UMaterial::AllMaterialsCacheResourceShadersForRendering();
-		UMaterialInstance::AllMaterialsCacheResourceShadersForRendering();
-	}
+	GEditor->SetPreviewPlatform(MaterialQualityPlatform, PreviewFeatureLevel);
 }
 
 bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FName MaterialQualityPlatform, ERHIFeatureLevel::Type PreviewFeatureLevel)
@@ -591,22 +574,7 @@ bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FName MaterialQuality
 
 void FLevelEditorActionCallbacks::SetFeatureLevelPreview(ERHIFeatureLevel::Type InPreviewFeatureLevel)
 {
-	// Record this feature level as we want to use it for all subsequent level creation and loading
-	GEditor->DefaultWorldFeatureLevel = InPreviewFeatureLevel;
-
-	GetWorld()->ChangeFeatureLevel(InPreviewFeatureLevel);
-
-	// Update any currently running PIE sessions.
-	for (TObjectIterator<UWorld> It; It; ++It)
-	{
-		UWorld* ItWorld = *It;
-		if (ItWorld->WorldType == EWorldType::PIE)
-		{
-			ItWorld->ChangeFeatureLevel(InPreviewFeatureLevel);
-		}
-	}
-
-	GUnrealEd->RedrawAllViewports();
+	GEditor->SetPreviewPlatform(NAME_None, InPreviewFeatureLevel);
 }
 
 bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewChecked(ERHIFeatureLevel::Type InPreviewFeatureLevel)
@@ -1220,7 +1188,7 @@ void FLevelEditorActionCallbacks::GoHere_Clicked( const FVector* Point )
 {
 	if( GCurrentLevelEditingViewportClient )
 	{
-		FVector ZoomToPoint;
+		FVector ZoomToPoint = FVector::ZeroVector;
 		if( !Point )
 		{
 			FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
@@ -2111,6 +2079,11 @@ bool FLevelEditorActionCallbacks::ToggleVR_CanExecute()
 	return VREditorModule.IsVREditorAvailable();
 }
 
+bool FLevelEditorActionCallbacks::ToggleVR_IsButtonActive()
+{
+	IVREditorModule& VREditorModule = IVREditorModule::Get();
+	return VREditorModule.IsVREditorButtonActive();
+}
 
 bool FLevelEditorActionCallbacks::ToggleVR_IsChecked()
 {
@@ -2216,7 +2189,7 @@ void FLevelEditorActionCallbacks::CheckOutProjectSettingsConfig( )
 	FString ConfigFilePath = FPaths::ConvertRelativePathToFull(FString::Printf(TEXT("%sDefaultEngine.ini"), *FPaths::SourceConfigDir()));
 	if(ISourceControlModule::Get().IsEnabled())
 	{
-		SourceControlHelpers::CheckOutFile(ConfigFilePath);
+		USourceControlHelpers::CheckOutOrAddFile(ConfigFilePath);
 	}
 	else
 	{

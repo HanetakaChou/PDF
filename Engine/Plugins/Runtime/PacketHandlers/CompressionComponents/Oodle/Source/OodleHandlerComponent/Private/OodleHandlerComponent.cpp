@@ -18,6 +18,8 @@
 #include "Engine/Engine.h"
 #endif
 
+#include "Features/IModularFeature.h"
+#include "Features/IModularFeatures.h"
 
 DEFINE_LOG_CATEGORY(OodleHandlerComponentLog);
 
@@ -27,6 +29,8 @@ DEFINE_LOG_CATEGORY(OodleHandlerComponentLog);
 // @todo #JohnB: The 'bCompressedPacket' bit goes at the very start of the packet.
 //					It would be useful if you could reserve a bit at the start of the bit reader, to eliminate some memcpy's
 
+// @todo #JohnB: If you could unwrap the analytics data shared pointer, by guaranteeing its lifetime, that would be a good optimization,
+//					as the multithreaded version is presently a bit expensive
 
 #if HAS_OODLE_SDK
 #define OODLE_INI_SECTION TEXT("OodleHandlerComponent")
@@ -275,42 +279,20 @@ OodleHandlerComponent::OodleHandlerComponent()
 	, bCaptureMode(false)
 #endif
 	, OodleReservedPacketBits(0)
+	, NetAnalyticsData()
+	, bOodleAnalytics(false)
 	, ServerDictionary()
 	, ClientDictionary()
-	, TotalInCompressedLength(0)
-	, TotalInDecompressedLength(0)
-	, TotalOutCompressedLength(0)
-	, TotalOutUncompressedLength(0)
 {
 	SetActive(true);
 
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 	OodleComponentList.Add(this);
 #endif
-
-	Analytics = FOodleAnalyticsFactory::Create();
 }
 
 OodleHandlerComponent::~OodleHandlerComponent()
 {
-	float InTotalSavings = 0.0f;
-	float OutTotalSavings = 0.0f;
-
-	if (TotalInCompressedLength > 0)
-	{
-		InTotalSavings = (1.0 - ((double)TotalInCompressedLength / (double)TotalInDecompressedLength)) * 100.0;
-	}
-
-	if (TotalOutCompressedLength > 0)
-	{
-		OutTotalSavings = (1.0 - ((double)TotalOutCompressedLength / (double)TotalOutUncompressedLength)) * 100.0;
-	}
-
-	if (Analytics.IsValid())
-	{
-		Analytics->FireEvent_OodleAnalytics(InTotalSavings, OutTotalSavings);
-	}
-
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 	OodleComponentList.Remove(this);
 
@@ -390,6 +372,32 @@ void OodleHandlerComponent::Initialize()
 		InitializeDictionaries();
 	}
 
+	if (bEnableOodle)
+	{
+		// Add a bit for bCompressedPacket
+		OodleReservedPacketBits = 1;
+
+		// Oodle writes the decompressed packet size, as its addition to the protocol - it writes using SerializeInt however,
+		// so determine the worst case number of packed bits that will be written, based on the MAX_OODLE_PACKET_SIZE packet limit.
+		FBitWriter MeasureAr(0, true);
+		uint32 MaxOodlePacket = MAX_OODLE_PACKET_BYTES;
+
+		SerializeOodlePacketSize(MeasureAr, MaxOodlePacket);
+
+		if (!MeasureAr.IsError())
+		{
+			OodleReservedPacketBits += MeasureAr.GetNumBits();
+
+#if !UE_BUILD_SHIPPING
+			SET_DWORD_STAT(STAT_PacketReservedOodle, OodleReservedPacketBits);
+#endif
+		}
+		else
+		{
+			LowLevelFatalError(TEXT("Failed to determine OodleHandlerComponent reserved packet bits."));
+		}
+	}
+
 	Initialized();
 }
 
@@ -399,7 +407,7 @@ void OodleHandlerComponent::InitializeDictionaries()
 	FString ClientDictionaryPath;
 	bool bGotDictionaryPath = false;
 
-#if (!UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING) && !(PLATFORM_PS4 || PLATFORM_XBOXONE)
+#if (!UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING) && !(PLATFORM_PS4 || PLATFORM_XBOXONE || PLATFORM_SWITCH)
 	if (bUseDictionaryIfPresent)
 	{
 		bGotDictionaryPath = FindFallbackDictionaries(ServerDictionaryPath, ClientDictionaryPath);
@@ -454,7 +462,7 @@ void OodleHandlerComponent::InitializeDictionary(FString FilePath, TSharedPtr<FO
 
 			if (!BoundArc.IsError())
 			{
-				UE_LOG(OodleHandlerComponentLog, Log, TEXT("Loading dictionary file: %s"), *FilePath);
+				UE_LOG(OodleHandlerComponentLog, VeryVerbose, TEXT("Loading dictionary file: %s"), *FilePath);
 
 				// Uncompact the compressor state
 				uint32 CompressorStateSize = OodleNetwork1UDP_State_Size();
@@ -810,6 +818,7 @@ void OodleHandlerComponent::Incoming(FBitReader& Packet)
 
 			if (CurDict != nullptr)
 			{
+				uint32 BeforeDecompressedLength = Packet.GetBytesLeft();
 				uint32 DecompressedLength;
 
 				SerializeOodlePacketSize(Packet, DecompressedLength);
@@ -865,8 +874,7 @@ void OodleHandlerComponent::Incoming(FBitReader& Packet)
 					if (bSuccess)
 					{
 						// @todo #JohnB: Decompress directly into FBitReader's buffer
-						FBitReader UnCompressedPacket(DecompressedData, DecompressedLength * 8);
-						Packet = UnCompressedPacket;
+						Packet.SetData(DecompressedData, DecompressedLength * 8);
 
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 						if (bCaptureMode && Handler->Mode == Handler::Mode::Server && InPacketLog != nullptr)
@@ -878,8 +886,16 @@ void OodleHandlerComponent::Incoming(FBitReader& Packet)
 #if STATS
 						GOodleNetStats.IncomingStats(CompressedLength, DecompressedLength);
 #endif
-						TotalInCompressedLength += CompressedLength;
-						TotalInDecompressedLength += DecompressedLength;
+
+						if (bOodleAnalytics && NetAnalyticsData.IsValid())
+						{
+							FOodleAnalyticsVars* AnalyticsVars = NetAnalyticsData->GetLocalData();
+
+							AnalyticsVars->InCompressedNum++;
+							AnalyticsVars->InCompressedWithOverheadLengthTotal += BeforeDecompressedLength;
+							AnalyticsVars->InCompressedLengthTotal += CompressedLength;
+							AnalyticsVars->InDecompressedLengthTotal += DecompressedLength;
+						}
 					}
 					else
 					{
@@ -903,22 +919,34 @@ void OodleHandlerComponent::Incoming(FBitReader& Packet)
 				Packet.SetError();
 			}
 		}
-#if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
-		else if (bCaptureMode && Handler->Mode == Handler::Mode::Server && InPacketLog != nullptr)
+		else
 		{
-			uint32 SizeOfPacket = Packet.GetBytesLeft();
-
-			if (SizeOfPacket > 0)
+			if (bOodleAnalytics && NetAnalyticsData.IsValid())
 			{
-				InPacketLog->SerializePacket((void*)Packet.GetData(), SizeOfPacket);
+				FOodleAnalyticsVars* AnalyticsVars = NetAnalyticsData->GetLocalData();
+
+				AnalyticsVars->InNotCompressedNum++;
 			}
-		}
+
+#if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
+			if (bCaptureMode && Handler->Mode == Handler::Mode::Server && InPacketLog != nullptr)
+			{
+				uint32 SizeOfPacket = Packet.GetBytesLeft();
+
+				if (SizeOfPacket > 0)
+				{
+					InPacketLog->SerializePacket((void*)Packet.GetData(), SizeOfPacket);
+				}
+			}
 #endif
+		}
 	}
 }
 
-void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
+void OodleHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
 {
+	// @todo #JohnB: Implement bAllowCompression trait flag
+
 	if (bEnableOodle)
 	{
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
@@ -987,6 +1015,16 @@ void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
 					Packet.Reset();
 					Packet.WriteBit(bCompressedPacket);
 
+					Traits.bIsCompressed = !!bCompressedPacket;
+
+
+					FOodleAnalyticsVars* AnalyticsVars = (bOodleAnalytics && NetAnalyticsData.IsValid()) ? NetAnalyticsData->GetLocalData() : nullptr;
+
+					if (AnalyticsVars != nullptr)
+					{
+						AnalyticsVars->OutBeforeCompressedLengthTotal += UncompressedBytes;
+					}
+
 					if (bCompressedPacket)
 					{
 						// @todo #JohnB: Compress directly into a (deliberately oversized) FBitWriter buffer, which you can shrink after
@@ -999,9 +1037,13 @@ void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
 #if STATS
 						GOodleNetStats.OutgoingStats(CompressedBytes, UncompressedBytes);
 #endif
-						TotalOutCompressedLength += CompressedBytes;
-						TotalOutUncompressedLength += UncompressedBytes;
 
+						if (AnalyticsVars != nullptr)
+						{
+							AnalyticsVars->OutCompressedNum++;
+							AnalyticsVars->OutCompressedWithOverheadLengthTotal += ((Packet.GetNumBits() - 1) + 7) >> 3;
+							AnalyticsVars->OutCompressedLengthTotal += CompressedBytes;
+						}
 					}
 					else
 					{
@@ -1009,12 +1051,16 @@ void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
 						//					at the start of the bit writer
 						Packet.SerializeBits(UncompressedData, UncompressedBits);
 
-
 						if (!bWithinBitBounds)
 						{
 #if STATS
 							INC_DWORD_STAT(STAT_Oodle_CompressFailSize);
 #endif
+
+							if (AnalyticsVars != nullptr)
+							{
+								AnalyticsVars->OutNotCompressedBoundedNum++;
+							}
 						}
 						else if (CompressedBytes >= UncompressedBytes)
 						{
@@ -1024,12 +1070,31 @@ void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
 							INC_DWORD_STAT(STAT_Oodle_CompressFailSavings);
 #endif
 
-							TotalOutCompressedLength += CompressedBytes;
-							TotalOutUncompressedLength += UncompressedBytes;
+							if (AnalyticsVars != nullptr)
+							{
+								AnalyticsVars->OutNotCompressedFailedNum++;
+
+								if (Traits.bIsKeepAlive)
+								{
+									AnalyticsVars->OutNotCompressedFailedKeepAliveNum++;
+								}
+								else if (Traits.NumAckBits > 0 && Traits.NumBunchBits == 0)
+								{
+									AnalyticsVars->OutNotCompressedFailedAckOnlyNum++;
+								}
+							}
 						}
 						else
 						{
 							// @todo #JohnB
+
+							// @todo #JohnB: For when NetDriver-level compression toggling is added
+#if 0
+							if (AnalyticsVars != nullptr)
+							{
+								AnalyticsVars->OutNotCompressedFlaggedNum++;
+							}
+#endif
 						}
 					}
 				}
@@ -1075,50 +1140,25 @@ void OodleHandlerComponent::Outgoing(FBitWriter& Packet)
 	}
 }
 
-int32 OodleHandlerComponent::GetReservedPacketBits()
+int32 OodleHandlerComponent::GetReservedPacketBits() const
 {
-	int32 ReturnVal = 0;
-
-	if (bEnableOodle)
-	{
-		if (OodleReservedPacketBits == 0)
-		{
-			// Add a bit for bCompressedPacket
-			OodleReservedPacketBits += 1;
-
-			// Oodle writes the decompressed packet size, as its addition to the protocol - it writes using SerializeInt however,
-			// so determine the worst case number of packed bits that will be written, based on the MAX_OODLE_PACKET_SIZE packet limit.
-			FBitWriter MeasureAr(0, true);
-			uint32 MaxOodlePacket = MAX_OODLE_PACKET_BYTES;
-
-			SerializeOodlePacketSize(MeasureAr, MaxOodlePacket);
-
-			if (!MeasureAr.IsError())
-			{
-				OodleReservedPacketBits += MeasureAr.GetNumBits();
-
-#if !UE_BUILD_SHIPPING
-				SET_DWORD_STAT(STAT_PacketReservedOodle, OodleReservedPacketBits);
-#endif
-			}
-			else
-			{
-				LowLevelFatalError(TEXT("Failed to determine OodleHandlerComponent reserved packet bits."));
-			}
-		}
-
-		ReturnVal += OodleReservedPacketBits;
-	}
-
-	return ReturnVal;
+	return bEnableOodle ? OodleReservedPacketBits : 0;
 }
 
-void OodleHandlerComponent::SetAnalyticsProvider(TSharedPtr<class IAnalyticsProvider> Provider)
+void OodleHandlerComponent::NotifyAnalyticsProvider()
 {
-	if (Analytics.IsValid())
+	TSharedPtr<FNetAnalyticsAggregator> Aggregator = Handler->GetAggregator();
+
+	if (Handler->GetProvider().IsValid() && Aggregator.IsValid())
 	{
-		Analytics->SetProvider(Provider);
+		NetAnalyticsData = REGISTER_NET_ANALYTICS(Aggregator, FOodleNetAnalyticsData, TEXT("Oodle.Stats"));
 	}
+	else
+	{
+		NetAnalyticsData.Reset();
+	}
+
+	bOodleAnalytics = NetAnalyticsData.IsValid();
 }
 
 #if !UE_BUILD_SHIPPING
@@ -1157,11 +1197,12 @@ static bool OodleExec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 			if (bTurnOn != bOodleForceEnable)
 			{
 				bOodleForceEnable = bTurnOn;
-
+#if USE_OODLE_TRAINER_COMMANDLET
 				if (bOodleForceEnable)
 				{
 					UOodleTrainerCommandlet::HandleEnable();
 				}
+#endif
 			}
 		}
 		// Used for enabling/disabling compression of outgoing packets (does not affect decompression of incoming packets)
@@ -1393,49 +1434,56 @@ TSharedPtr<HandlerComponent> FOodleComponentModuleInterface::CreateComponentInst
 	return MakeShareable(new OodleHandlerComponent);
 }
 
+void* LoadOodleDll()
+{
+	void* OodleDllHandle = nullptr;
+#if PLATFORM_WINDOWS
+	// Load the Oodle library (NOTE: Path and fallback path mirrored in Oodle.Build.cs)
+	FString OodleBinaryPath = FPaths::ProjectDir() / TEXT( "Binaries/ThirdParty/Oodle/" );
+	FString OodleBinaryFile = TEXT( "oo2core_5" );
+
+#if PLATFORM_64BITS
+	OodleBinaryPath += TEXT("Win64/");
+	OodleBinaryFile += TEXT("_win64.dll");
+#else
+	OodleBinaryPath += TEXT("Win32/");
+	OodleBinaryFile += TEXT("_win32.dll");
+#endif
+
+	FPlatformProcess::PushDllDirectory(*OodleBinaryPath);
+
+	OodleDllHandle = FPlatformProcess::GetDllHandle(*(OodleBinaryPath + OodleBinaryFile));
+
+	FPlatformProcess::PopDllDirectory(*OodleBinaryPath);
+
+	if (OodleDllHandle == nullptr)
+	{
+		UE_LOG(OodleHandlerComponentLog, Fatal, TEXT("Could not find Oodle .dll's in path: %s" ),
+				*(OodleBinaryPath + OodleBinaryFile));
+	}
+#endif
+	return OodleDllHandle;
+}
+
+
 void FOodleComponentModuleInterface::StartupModule()
 {
 	// If Oodle is force-enabled on the commandline, execute the commandlet-enable command, which also adds to the PacketHandler list
 	bOodleForceEnable = FParse::Param(FCommandLine::Get(), TEXT("Oodle"));
 
+#if USE_OODLE_TRAINER_COMMANDLET
 	if (bOodleForceEnable)
 	{
 		UOodleTrainerCommandlet::HandleEnable();
 	}
+#endif
 
 
 	// Use an absolute path for this, as we want all relative paths, to be relative to this folder
 	GOodleSaveDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(*FPaths::ProjectSavedDir(), TEXT("Oodle")));
 	GOodleContentDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(*FPaths::ProjectContentDir(), TEXT("Oodle")));
 
-#if PLATFORM_WINDOWS
-	{
-		// Load the Oodle library (NOTE: Path and fallback path mirrored in Oodle.Build.cs)
-		FString OodleBinaryPath = FPaths::ProjectDir() / TEXT( "Binaries/ThirdParty/Oodle/" );
-		FString OodleBinaryFile = TEXT( "oo2core_5" );
-
-	#if PLATFORM_64BITS
-		OodleBinaryPath += TEXT("Win64/");
-		OodleBinaryFile += TEXT("_win64.dll");
-	#else
-		OodleBinaryPath += TEXT("Win32/");
-		OodleBinaryFile += TEXT("_win32.dll");
-	#endif
-
-		FPlatformProcess::PushDllDirectory(*OodleBinaryPath);
-
-		OodleDllHandle = FPlatformProcess::GetDllHandle(*(OodleBinaryPath + OodleBinaryFile));
-
-		FPlatformProcess::PopDllDirectory(*OodleBinaryPath);
-
-		if (OodleDllHandle == nullptr)
-		{
-			UE_LOG(OodleHandlerComponentLog, Fatal, TEXT("Could not find Oodle .dll's in path: %s" ),
-					*(OodleBinaryPath + OodleBinaryFile));
-		}
-	}
-#endif
-
+	OodleDllHandle = LoadOodleDll();
 
 	// @todo #JohnB: Remove after Oodle update, and after checking with Luigi
 	OodlePlugins_SetAssertion(&UEOodleDisplayAssert);
@@ -1470,3 +1518,15 @@ void FOodleComponentModuleInterface::ShutdownModule()
 #endif
 
 IMPLEMENT_MODULE( FOodleComponentModuleInterface, OodleHandlerComponent );
+
+#ifdef REGISTER_OODLE_CUSTOM_COMPRESSOR
+struct FOodleCompressorRegistration
+{
+	FOodleCompressorRegistration()
+	{
+		LoadOodleDll();
+		extern ICustomCompressor* CreateOodleCustomCompressor();
+		IModularFeatures::Get().RegisterModularFeature(CUSTOM_COMPRESSOR_FEATURE_NAME, CreateOodleCustomCompressor());
+	}
+} GOodleCompressionRegistration;
+#endif

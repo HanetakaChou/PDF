@@ -12,7 +12,7 @@
 #include "GenericOctreePublic.h"
 #include "SceneManagement.h"
 #include "GenericOctree.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 
 class FLightPrimitiveInteraction;
 class FLightSceneInfo;
@@ -69,7 +69,7 @@ struct FSortedLightSceneInfo
 		struct
 		{
 			// Note: the order of these members controls the light sort order!
-			// Currently bShadowed is the MSB and LightType is LSB
+			// Currently bUsesLightingChannels is the MSB and LightType is LSB
 			/** The type of light. */
 			uint32 LightType : LightType_NumBits;
 			/** Whether the light has a texture profile. */
@@ -78,6 +78,8 @@ struct FSortedLightSceneInfo
 			uint32 bLightFunction : 1;
 			/** Whether the light casts shadows. */
 			uint32 bShadowed : 1;
+			/** Whether the light uses lighting channels. */
+			uint32 bUsesLightingChannels : 1;
 		} Fields;
 		/** Sort key bits packed into an integer. */
 		int32 Packed;
@@ -196,11 +198,8 @@ public:
 	/** Octree bounds setup. */
 	FORCEINLINE FBoxCenterAndExtent GetBoundingBox() const
 	{
-		const float Extent = Proxy->GetRadius();
-		return FBoxCenterAndExtent(
-			Proxy->GetOrigin(),
-			FVector(Extent,Extent,Extent)
-			);
+		FSphere BoundingSphere = Proxy->GetBoundingSphere();
+		return FBoxCenterAndExtent(BoundingSphere.Center, FVector(BoundingSphere.W, BoundingSphere.W, BoundingSphere.W));
 	}
 
 	bool ShouldRenderLight(const FViewInfo& View) const;
@@ -233,7 +232,15 @@ public:
 
 	void SetDynamicShadowMapChannel(int32 NewChannel)
 	{
-		DynamicShadowMapChannel = NewChannel;
+		if (Proxy->HasStaticShadowing())
+		{
+			// This ensure would trigger if several static shadowing light intersects eachother and have the same channel.
+			// ensure(Proxy->GetPreviewShadowMapChannel() == NewChannel);
+		}
+		else
+		{
+			DynamicShadowMapChannel = NewChannel;
+		}
 	}
 
 	int32 GetDynamicShadowMapChannel() const

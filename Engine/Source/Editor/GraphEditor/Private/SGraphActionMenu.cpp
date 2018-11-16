@@ -588,6 +588,11 @@ static bool CompareGraphActionNode(TSharedPtr<FGraphActionNode> A, TSharedPtr<FG
 		return false;
 	}
 
+	if (A->SectionID != B->SectionID)
+	{
+		return false;
+	}
+
 	if (A->HasValidAction() && B->HasValidAction())
 	{
 		return A->GetPrimaryAction()->GetMenuDescription().CompareTo(B->GetPrimaryAction()->GetMenuDescription()) == 0;
@@ -1271,8 +1276,14 @@ FReply SGraphActionMenu::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent
 	{
 		return TryToSpawnActiveSuggestion() ? FReply::Handled() : FReply::Unhandled();
 	}
-	else if (FilteredActionNodes.Num() > 0 && !FilterTextBox->GetText().IsEmpty())
+	else if (!FilterTextBox->GetText().IsEmpty())
 	{
+		// Needs to be done here in order not to eat up the text navigation key events when list isn't populated
+		if (FilteredActionNodes.Num() <= 0)
+		{
+			return FReply::Unhandled();
+		}
+
 		// Up and down move thru the filtered node list
 		if (KeyEvent.GetKey() == EKeys::Up)
 		{

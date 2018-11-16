@@ -25,8 +25,16 @@ bool USoundNodeParamCrossFade::AllowCrossfading(FActiveSound& ActiveSound) const
 	return true;
 }
 
-float USoundNodeParamCrossFade::MaxAudibleDistance(float CurrentMaxDistance)
+float USoundNodeParamCrossFade::GetMaxDistance() const
 {
-	// Param-based crossfades are not a factor in max distance calculations
-	return CurrentMaxDistance;
+	float MaxDistance = 0.0f;
+	for (USoundNode* ChildNode : ChildNodes)
+	{
+		if (ChildNode)
+		{
+			ChildNode->ConditionalPostLoad();
+			MaxDistance = FMath::Max(ChildNode->GetMaxDistance(), MaxDistance);
+		}
+	}
+	return MaxDistance;
 }

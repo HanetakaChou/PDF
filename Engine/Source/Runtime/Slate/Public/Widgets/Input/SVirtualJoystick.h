@@ -33,10 +33,10 @@ public:
 		// Set by the game
 
 		/** The brush to use to draw the background for joysticks, or unclicked for buttons */
-		TSharedPtr< FSlateDynamicImageBrush > Image1;
+		TSharedPtr< ISlateBrushSource > Image1;
 
 		/** The brush to use to draw the thumb for joysticks, or clicked for buttons */
-		TSharedPtr< FSlateDynamicImageBrush > Image2;
+		TSharedPtr< ISlateBrushSource > Image2;
 
 		/** The actual center of the control */
 		FVector2D Center;
@@ -218,4 +218,7 @@ protected:
 
 	/* Countdown until next state change */
 	float Countdown;
+
+	/** Last used scaling value for  */
+	float PreviousScalingFactor = 0.0f;
 };

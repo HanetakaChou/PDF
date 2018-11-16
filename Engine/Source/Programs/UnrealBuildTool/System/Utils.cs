@@ -129,6 +129,30 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Makes sure path can be used as a command line param (adds quotes if it contains spaces)
+		/// </summary>
+		/// <param name="InPath">Path to convert</param>
+		/// <returns></returns>
+		public static string MakePathSafeToUseWithCommandLine(string InPath)
+		{
+			if (InPath.Contains(' ') && InPath[0] != '\"')
+			{
+				InPath = "\"" + InPath + "\"";
+			}
+			return InPath;
+		}
+
+		/// <summary>
+		/// Escapes whitespace in the given command line argument with a backslash. Used on Unix-like platforms for command line arguments in shell commands.
+		/// </summary>
+		/// <param name="Argument">The argument to escape </param>
+		/// <returns>Escaped shell argument</returns>
+		public static string EscapeShellArgument(string Argument)
+		{
+			return Argument.Replace(" ", "\\ ");
+		}
+
+		/// <summary>
 		/// This is a faster replacement of File.ReadAllText. Code snippet based on code
 		/// and analysis by Sam Allen
 		/// http://dotnetperls.com/Content/File-Handling.aspx
@@ -297,23 +321,53 @@ namespace UnrealBuildTool
 		/// <param name="Command">Command to run</param>
 		/// <param name="Args">Arguments to Command</param>
 		/// <param name="ExitCode">The return code from the process after it exits</param>
-		public static string RunLocalProcessAndReturnStdOut(string Command, string Args, out int ExitCode)
+		/// <param name="LogOutput">Whether to also log standard output and standard error</param>
+		public static string RunLocalProcessAndReturnStdOut(string Command, string Args, out int ExitCode, bool LogOutput = false)
 		{
+			//LUMIN_MERGE
 			ProcessStartInfo StartInfo = new ProcessStartInfo(Command, Args);
 			StartInfo.UseShellExecute = false;
 			StartInfo.RedirectStandardOutput = true;
+			StartInfo.RedirectStandardError = true;
 			StartInfo.CreateNoWindow = true;
 
 			string FullOutput = "";
+			string ErrorOutput = "";
 			using (Process LocalProcess = Process.Start(StartInfo))
 			{
 				StreamReader OutputReader = LocalProcess.StandardOutput;
 				// trim off any extraneous new lines, helpful for those one-line outputs
 				FullOutput = OutputReader.ReadToEnd().Trim();
+
+				StreamReader ErrorReader = LocalProcess.StandardError;
+				// trim off any extraneous new lines, helpful for those one-line outputs
+				ErrorOutput = ErrorReader.ReadToEnd().Trim();
+				if (LogOutput)
+				{
+					if(FullOutput.Length > 0)
+					{
+						Log.TraceInformation(FullOutput);
+					}
+
+					if (ErrorOutput.Length > 0)
+					{
+						Log.TraceError(ErrorOutput);
+					}
+				}
+
 				LocalProcess.WaitForExit();
 				ExitCode = LocalProcess.ExitCode;
 			}
 
+			// trim off any extraneous new lines, helpful for those one-line outputs
+			if (ErrorOutput.Length > 0)
+			{
+				if (FullOutput.Length > 0)
+				{
+					FullOutput += Environment.NewLine;
+				}
+				FullOutput += ErrorOutput;
+			}
 			return FullOutput;
 		}
 
@@ -410,7 +464,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-
 		/// <summary>
 		/// Takes a path string and makes all of the path separator characters consistent. Also removes unnecessary multiple separators.
 		/// </summary>
@@ -470,7 +523,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="InPath">The path to be collapsed</param>
 		/// <returns>true if the path could be collapsed, false otherwise.</returns>
-		static string CollapseRelativeDirectories(string InPath)
+		public static string CollapseRelativeDirectories(string InPath)
 		{
 			string LocalString = InPath;
 			bool bHadBackSlashes = false;
@@ -881,6 +934,59 @@ namespace UnrealBuildTool
 
 		[DllImport("kernel32.dll", SetLastError=true)]
 		extern static bool GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP RelationshipType, IntPtr Buffer, ref uint ReturnedLength);
+
+		/// <summary>
+		/// Gets the number of logical cores. We use this rather than Environment.ProcessorCount when possible to handle machines with > 64 cores (the single group limit available to the .NET framework).
+		/// </summary>
+		/// <returns>The number of logical cores.</returns>
+		public static int GetLogicalProcessorCount()
+		{
+			// This function uses Windows P/Invoke calls; if we're on Mono, just return the default.
+			if(!Utils.IsRunningOnMono)
+			{
+				const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+				// Determine the required buffer size to store the processor information
+				uint ReturnLength = 0;
+				if(!GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup, IntPtr.Zero, ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
+				{
+					// Allocate a buffer for it
+					IntPtr Ptr = Marshal.AllocHGlobal((int)ReturnLength);
+					try
+					{
+						if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup, Ptr, ref ReturnLength))
+						{
+							int Count = 0;
+							for(int Pos = 0; Pos < ReturnLength; )
+							{
+								LOGICAL_PROCESSOR_RELATIONSHIP Type = (LOGICAL_PROCESSOR_RELATIONSHIP)Marshal.ReadInt16(Ptr, Pos);
+								if(Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup)
+								{
+									// Read the values from the embedded GROUP_RELATIONSHIP structure
+									int GroupRelationshipPos = Pos + 8;
+									int ActiveGroupCount = Marshal.ReadInt16(Ptr, GroupRelationshipPos + 2);
+
+									// Read the processor counts from the embedded PROCESSOR_GROUP_INFO structures
+									int GroupInfoPos = GroupRelationshipPos + 24;
+									for(int GroupIdx = 0; GroupIdx < ActiveGroupCount; GroupIdx++)
+									{
+										Count += Marshal.ReadByte(Ptr, GroupInfoPos + 1);
+										GroupInfoPos += 40 + IntPtr.Size;
+									}
+								}
+								Pos += Marshal.ReadInt32(Ptr, Pos + 4);
+							}
+							return Count;
+						}
+					}
+					finally
+					{
+						Marshal.FreeHGlobal(Ptr);		
+					}
+				}
+			}
+			return Environment.ProcessorCount;
+		}
 
 		/// <summary>
 		/// Gets the number of physical cores, excluding hyper threading.

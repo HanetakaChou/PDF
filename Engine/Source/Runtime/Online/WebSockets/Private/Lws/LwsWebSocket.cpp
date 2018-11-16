@@ -1,14 +1,19 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "Private/Lws/LwsWebSocket.h"
+#include "LwsWebSocket.h"
 
 #if WITH_WEBSOCKETS && WITH_LIBWEBSOCKETS
 
-#include "Private/Lws/LwsWebSocketsManager.h"
+#include "LwsWebSocketsManager.h"
 #include "WebSocketsModule.h"
 #include "WebSocketsLog.h"
+#if WITH_SSL
 #include "Ssl.h"
+#endif
 #include "Misc/ScopeLock.h"
+#include "HttpModule.h"
+#include "HttpManager.h"
+#include "PlatformHttp.h"
 
 // FLwsSendBuffer 
 FLwsSendBuffer::FLwsSendBuffer(const uint8* Data, SIZE_T Size, bool bInIsBinary)
@@ -89,7 +94,16 @@ void FLwsWebSocket::Connect()
 {
 	if (LastGameThreadState != EState::None)
 	{
-		UE_LOG(LogWebSockets, Warning, TEXT("FLwsWebSocket[%d]::Connect: State is not None (%s), unable to start connecting!"), Identifier, ToString(State));
+		UE_LOG(LogWebSockets, Warning, TEXT("FLwsWebSocket[%d]::Connect: State is not None (%s), unable to start connecting!"), Identifier, ToString(LastGameThreadState));
+		return;
+	}
+
+	FHttpManager& HttpManager = FHttpModule::Get().GetHttpManager();
+	if (!HttpManager.IsDomainAllowed(Url))
+	{
+		State = EState::Error;
+		UE_LOG(LogWebSockets, Warning, TEXT("FLwsWebSocket[%d]::Connect: %s is not whitelisted. Refusing to connect."), Identifier, *Url);
+		OnConnectionError().Broadcast(TEXT("Invalid Domain"));
 		return;
 	}
 
@@ -117,9 +131,11 @@ void FLwsWebSocket::Close(int32 Code, const FString& Reason)
 		return;
 	}
 
+	// We are doing this conversion here so we don't have to do it on the ws thread
 	FTCHARToUTF8 Convert(*Reason);
 	ANSICHAR* ANSIReason = static_cast<ANSICHAR*>(FMemory::Malloc(Convert.Length() + 1));
 	FCStringAnsi::Strcpy(ANSIReason, Convert.Length(), Convert.Get());
+	ANSIReason[Convert.Length()] = 0;
 
 	UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::Close: Close queued with code=%d reason=%s"), Identifier, Code, *Reason);
 
@@ -146,7 +162,8 @@ void FLwsWebSocket::SendFromQueue()
 	check(LwsConnection);
 
 	FLwsSendBuffer* CurrentBuffer;
-	while (SendQueue.Peek(CurrentBuffer))
+	// libwebsockets-3.0 only allows us to send once per LWS_CALLBACK_*_WRITABLE event
+	if (SendQueue.Peek(CurrentBuffer))
 	{
 		int32 LastBytesWritten = CurrentBuffer->BytesWritten;
 		const bool bWriteSuccessful = WriteBuffer(*CurrentBuffer);
@@ -168,10 +185,6 @@ void FLwsWebSocket::SendFromQueue()
 		{
 			SendQueue.Dequeue(CurrentBuffer);
 			delete CurrentBuffer;
-		}
-		else
-		{
-			break;
 		}
 	}
 
@@ -282,8 +295,12 @@ int FLwsWebSocket::LwsCallback(lws* Instance, lws_callback_reasons Reason, void*
 		// The status is the first two bytes of the message in network byte order
 		CloseStatus = BYTESWAP_ORDER16(CloseStatus);
 #endif
-		FUTF8ToTCHAR Convert((const ANSICHAR*)Data + sizeof(uint16), Length - sizeof(uint16));
-		FString CloseReasonString(Convert.Get());
+		FString CloseReasonString;
+		if (Length > sizeof(uint16))
+		{
+			auto Convert = StringCast<TCHAR>((const ANSICHAR*)Data + sizeof(uint16), Length - sizeof(uint16));
+			CloseReasonString.AppendChars(Convert.Get(), Convert.Length());
+		}
 
 		// We only modify our state if we are Connected or ClosingByRequest (effectively connected)
 		if (State == EState::Connected ||
@@ -328,6 +345,13 @@ int FLwsWebSocket::LwsCallback(lws* Instance, lws_callback_reasons Reason, void*
 		}
 		else
 		{
+			if (State == EState::Connected)
+			{
+				FScopeLock ScopeLock(&StateLock);
+				State = EState::Closed;
+				ClosedReason.bWasClean = false;
+				ClosedReason.CloseStatus = LWS_CLOSE_STATUS_ABNORMAL_CLOSE;
+			}
 			UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::LwsCallback: Received LWS_CALLBACK_WSI_DESTROY, State=%s"), Identifier, ToString(State));
 		}
 		LwsConnection = nullptr;
@@ -424,6 +448,23 @@ int FLwsWebSocket::LwsCallback(lws* Instance, lws_callback_reasons Reason, void*
 		}
 		break;
 	}
+#if WITH_SSL
+	case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
+	{
+		// in FLwsWebSocketsManager::CallbackWrapper, we copied UserData to Data, so Data is the X509_STORE_CTX* instead of the SSL*
+		X509_STORE_CTX* Context = static_cast<X509_STORE_CTX*>(Data);
+		int PreverifyOk = Length;
+		if (PreverifyOk == 1)
+		{
+			const FString Domain = FGenericPlatformHttp::GetUrlDomain(Url);
+			if (!FSslModule::Get().GetCertificateManager().VerifySslCertificates(Context, Domain))
+			{
+				PreverifyOk = 0;
+			}
+		}
+		return PreverifyOk == 1 ? 0 : 1;
+	}
+#endif
 	default:
 		break;
 	}
@@ -439,12 +480,13 @@ void FLwsWebSocket::GameThreadTick()
 	}
 	if (CurrentState != LastGameThreadState)
 	{
+		LastGameThreadState = CurrentState;
+
 		// State changed, broadcast events
 		if (CurrentState == EState::Connected)
 		{
 			OnConnected().Broadcast();
 		}
-		LastGameThreadState = CurrentState;
 	}
 
 	// If we requested a close then we don't care about any messages we receive
@@ -469,15 +511,19 @@ void FLwsWebSocket::GameThreadFinalize()
 {
 	EState PreviousState;
 	FClosedReason LastClosedReason;
+
 	{
 		// TODO:  The contract requires the libwebsockets be done with this object prior to this being called.  Is there a better way to ensure we get the last set value by the libwebsockets thread?  FPlatformMisc::MemoryBarrier maybe?
 		FScopeLock ScopeLock(&StateLock);
 		PreviousState = State;
 		State = EState::None; // Will be re-usable on final delegate triggering
+		LastGameThreadState = State;
 		LastClosedReason = MoveTemp(ClosedReason);
 	}
+
 	UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::GameThreadFinalize: setting State=%s PreviousState=%s"),
 		Identifier, ToString(EState::None), ToString(PreviousState));
+
 	const bool bWasError = (PreviousState == EState::Error);
 	if (bWasError)
 	{
@@ -555,7 +601,7 @@ void FLwsWebSocket::ConnectInternal(struct lws_context &LwsContext)
 	{
 		FString Reason(TEXT("Bad URL"));
 
-		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s"),
+		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s Reason=%s"),
 			Identifier, ToString(EState::Error), ToString(EState::Connecting), *Reason);
 		{
 			FScopeLock ScopeLock(&StateLock);
@@ -590,7 +636,7 @@ void FLwsWebSocket::ConnectInternal(struct lws_context &LwsContext)
 	{
 		FString Reason(FString::Printf(TEXT("Bad protocol '%s'. Use either 'ws', 'wss', or 'wss+insecure'"), UTF8_TO_TCHAR(UrlProtocol)));
 
-		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s"),
+		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s Reason=%s"),
 			Identifier, ToString(EState::Error), ToString(EState::Connecting), *Reason);
 		{
 			FScopeLock ScopeLock(&StateLock);
@@ -623,7 +669,7 @@ void FLwsWebSocket::ConnectInternal(struct lws_context &LwsContext)
 	{
 		FString Reason(TEXT("Could not initialize connection"));
 		
-		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s"),
+		UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::ConnectInternal: setting State=%s PreviousState=%s Reason=%s"),
 			Identifier, ToString(EState::Error), ToString(EState::Connecting), *Reason);
 		{
 			FScopeLock ScopeLock(&StateLock);

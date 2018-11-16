@@ -16,6 +16,7 @@
 
 class FExportObjectInnerContext;
 class UActorComponent;
+class UAssetExportTask;
 
 UCLASS(abstract, transient, MinimalAPI)
 class UExporter : public UObject
@@ -23,7 +24,7 @@ class UExporter : public UObject
 	GENERATED_UCLASS_BODY()
 
 	/** Supported class of this exporter */
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category=Misc)
 	TSubclassOf<class UObject>  SupportedClass;
 
 	/**
@@ -34,11 +35,11 @@ class UExporter : public UObject
 	class UObject* ExportRootScope;    // transient
 
 	/** File extension to use for this exporter */
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category=Misc)
 	TArray<FString> FormatExtension;
 
 	/** Descriptiong of the export format */
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category=Misc)
 	TArray<FString> FormatDescription;
 
 	/** Index into FormatExtension/FormatDescription of the preferred export format. */
@@ -50,7 +51,7 @@ class UExporter : public UObject
 	int32 TextIndent;
 
 	/** If true, this will export the data as text */
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category=Misc)
 	uint32 bText:1;
 
 	/** If true, this will export only the selected objects */
@@ -61,6 +62,8 @@ class UExporter : public UObject
 	UPROPERTY()
 	uint32 bForceFileOperations:1;
 
+	UPROPERTY(BlueprintReadWrite, Category=Misc)
+	class UAssetExportTask* ExportTask;
 
 	ENGINE_API static		FString	CurrentFilename;
 	/** (debugging purposes only) */
@@ -180,7 +183,7 @@ class UExporter : public UObject
 
 	/**
 	 * Export this object to a file.  Child classes do not override this, but they do provide an Export() function
-	 * to do the resoource-specific export work.
+	 * to do the resource-specific export work.
 	 * 
 	 * @param	Object				the object to export
 	 * @param	InExporter			exporter to use for exporting this object.  If NULL, attempts to create a valid exporter.
@@ -189,7 +192,7 @@ class UExporter : public UObject
 	 * @param	NoReplaceIdentical	false if we always want to overwrite any existing files, even if they're identical
 	 * @param	Prompt				true if the user should be prompted to checkout/overwrite the output file if it already exists and is read-only
 	 *
-	 * @return	1 if the the object was successfully exported, 0 if a fatal error was encountered during export, or -1 if a non fatal error was encountered
+	 * @return	1 if the the object was successfully exported, 0 if a fatal error was encountered during export
 	 */
 	ENGINE_API static int32 ExportToFile( UObject* Object, UExporter* Exporter, const TCHAR* Filename, bool InSelectedOnly, bool NoReplaceIdentical=false, bool Prompt=false );
 
@@ -244,8 +247,41 @@ class UExporter : public UObject
 	 *
 	 * @return	1 if the the object was successfully exported, 0 if a fatal error was encountered during export, or -1 if a non fatal error was encountered
 	 */
+	DEPRECATED(4.20, "ExportToFileEx was deprecated, please use RunAssetExportTask.")
 	ENGINE_API static int32 ExportToFileEx( FExportToFileParams& ExportParams );
 
+	/**
+	* Export the given object to file.  Child classes do not override this, but they do provide an Export() function
+	* to do the resource-specific export work.
+	*
+	* @param	Task		The task to export.
+	*
+	* @return	true if the the object was successfully exported
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Miscellaneous")
+	static ENGINE_API bool RunAssetExportTask( class UAssetExportTask* Task );
+
+	/**
+	* Export the given object to file.  Overridden by script based exporters.
+	*
+	* @param	Task		The task to export.
+	*
+	* @return	true if overridden by script exporter.
+	*/
+	UFUNCTION(BlueprintImplementableEvent, Category = "Miscellaneous")
+	bool ScriptRunAssetExportTask( class UAssetExportTask* Task );
+
+	/**
+	 * Export the given objects to files.  Child classes do not override this, but they do provide an Export() function
+	 * to do the resource-specific export work.
+	 * 
+	 * @param	ExportTasks		The array of tasks to export.
+	 *
+	 * @return	true if all tasks ran without error
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Miscellaneous")
+	static ENGINE_API bool RunAssetExportTasks( const TArray<UAssetExportTask*>& ExportTasks );
+	
 	/**
 	 * Single entry point to export an object's subobjects, its components, and its properties
 	 *
@@ -284,6 +320,7 @@ protected:
 	 */
 	ENGINE_API void EmitEndObject( FOutputDevice& Ar );
 
+protected:
 	/** The set of registered exporters. */
 	static TSet< TWeakObjectPtr<UExporter> > RegisteredExporters;
 

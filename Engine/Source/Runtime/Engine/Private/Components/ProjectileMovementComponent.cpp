@@ -6,7 +6,9 @@
 #include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/WorldSettings.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 DEFINE_LOG_CATEGORY_STATIC(LogProjectileMovement, Log, All);
 
 const float UProjectileMovementComponent::MIN_TICK_TIME = 1e-6f;
@@ -17,6 +19,15 @@ UProjectileMovementComponent::UProjectileMovementComponent(const FObjectInitiali
 	bUpdateOnlyIfRendered = false;
 	bInitialVelocityInLocalSpace = true;
 	bForceSubStepping = false;
+	bSimulationEnabled = true;
+	bSweepCollision = true;
+	bInterpMovement = false;
+	bInterpRotation = false;
+	bInterpolationComplete = true;
+	InterpLocationTime = 0.100f;
+	InterpRotationTime = 0.050f;
+	InterpLocationMaxLagDistance = 300.0f;
+	InterpLocationSnapToTargetDistance = 500.0f;
 
 	Velocity = FVector(1.f,0.f,0.f);
 
@@ -25,13 +36,16 @@ UProjectileMovementComponent::UProjectileMovementComponent(const FObjectInitiali
 	Bounciness = 0.6f;
 	Friction = 0.2f;
 	BounceVelocityStopSimulatingThreshold = 5.f;
+	MinFrictionFraction = 0.0f;
 
 	HomingAccelerationMagnitude = 0.f;
 
 	bWantsInitializeComponent = true;
+	bComponentShouldUpdatePhysicsVolume = false;
 
 	MaxSimulationTimeStep = 0.05f;
-	MaxSimulationIterations = 8;
+	MaxSimulationIterations = 4;
+	BounceAdditionalIterations = 1;
 
 	bBounceAngleAffectsFriction = false;
 	bIsSliding = false;
@@ -91,9 +105,32 @@ void UProjectileMovementComponent::InitializeComponent()
 }
 
 
+void UProjectileMovementComponent::UpdateTickRegistration()
+{
+	if (bAutoUpdateTickRegistration)
+	{
+		if (!bInterpolationComplete)
+		{
+			SetComponentTickEnabled(true);
+		}
+		else
+		{
+			Super::UpdateTickRegistration();
+		}
+	}
+}
+
 void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
 	QUICK_SCOPE_CYCLE_COUNTER( STAT_ProjectileMovementComponent_TickComponent );
+	CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_ProjectileMovement);
+
+	// Still need to finish interpolating after we've stopped simulating, so do that first.
+	if (bInterpMovement && !bInterpolationComplete)
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_ProjectileMovementComponent_TickInterpolation);
+		TickInterpolation(DeltaTime);
+	}
 
 	// skip if don't want component updated when not rendered or updated component can't move
 	if (HasStoppedSimulation() || ShouldSkipUpdate(DeltaTime))
@@ -103,7 +140,7 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!IsValid(UpdatedComponent))
+	if (!IsValid(UpdatedComponent) || !bSimulationEnabled)
 	{
 		return;
 	}
@@ -120,35 +157,44 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 	}
 
 	float RemainingTime	= DeltaTime;
-	uint32 NumBounces = 0;
+	int32 NumImpacts = 0;
+	int32 NumBounces = 0;
+	int32 LoopCount = 0;
 	int32 Iterations = 0;
 	FHitResult Hit(1.f);
 	
-	while( RemainingTime >= MIN_TICK_TIME && (Iterations < MaxSimulationIterations) && !ActorOwner->IsPendingKill() && !HasStoppedSimulation() )
+	while (bSimulationEnabled && RemainingTime >= MIN_TICK_TIME && (Iterations < MaxSimulationIterations) && !ActorOwner->IsPendingKill() && !HasStoppedSimulation())
 	{
+		LoopCount++;
 		Iterations++;
 
 		// subdivide long ticks to more closely follow parabolic trajectory
+		const float InitialTimeRemaining = RemainingTime;
 		const float TimeTick = ShouldUseSubStepping() ? GetSimulationTimeStep(RemainingTime, Iterations) : RemainingTime;
 		RemainingTime -= TimeTick;
+		
+		// Logging
+		UE_LOG(LogProjectileMovement, Verbose, TEXT("Projectile %s: (Role: %d, Iteration %d, step %.3f, [%.3f / %.3f] cur/total) sim (Pos %s, Vel %s)"),
+			*GetNameSafe(ActorOwner), (int32)ActorOwner->Role, LoopCount, TimeTick, FMath::Max(0.f, DeltaTime - InitialTimeRemaining), DeltaTime,
+			*UpdatedComponent->GetComponentLocation().ToString(), *Velocity.ToString());
 
+		// Initial move state
 		Hit.Time = 1.f;
 		const FVector OldVelocity = Velocity;
 		const FVector MoveDelta = ComputeMoveDelta(OldVelocity, TimeTick);
-
 		const FQuat NewRotation = (bRotationFollowsVelocity && !OldVelocity.IsNearlyZero(0.01f)) ? OldVelocity.ToOrientationQuat() : UpdatedComponent->GetComponentQuat();
 
 		// Move the component
 		if (bShouldBounce)
 		{
 			// If we can bounce, we are allowed to move out of penetrations, so use SafeMoveUpdatedComponent which does that automatically.
-			SafeMoveUpdatedComponent( MoveDelta, NewRotation, true, Hit );
+			SafeMoveUpdatedComponent( MoveDelta, NewRotation, bSweepCollision, Hit );
 		}
 		else
 		{
 			// If we can't bounce, then we shouldn't adjust if initially penetrating, because that should be a blocking hit that causes a hit event and stop simulation.
 			TGuardValue<EMoveComponentFlags> ScopedFlagRestore(MoveComponentFlags, MoveComponentFlags | MOVECOMP_NeverIgnoreBlockingOverlaps);
-			MoveUpdatedComponent(MoveDelta, NewRotation, true, &Hit );
+			MoveUpdatedComponent(MoveDelta, NewRotation, bSweepCollision, &Hit );
 		}
 		
 		// If we hit a trigger that destroyed us, abort.
@@ -168,6 +214,10 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 			{
 				Velocity = ComputeVelocity(Velocity, TimeTick);				
 			}
+
+			// Logging
+			UE_LOG(LogProjectileMovement, VeryVerbose, TEXT("Projectile %s: (Role: %d, Iteration %d, step %.3f) no hit (Pos %s, Vel %s)"),
+				*GetNameSafe(ActorOwner), (int32)ActorOwner->Role, LoopCount, TimeTick, *UpdatedComponent->GetComponentLocation().ToString(), *Velocity.ToString());
 		}
 		else
 		{
@@ -178,7 +228,12 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 				Velocity = (Hit.Time > KINDA_SMALL_NUMBER) ? ComputeVelocity(OldVelocity, TimeTick * Hit.Time) : OldVelocity;
 			}
 
+			// Logging
+			UE_CLOG(UpdatedComponent != nullptr, LogProjectileMovement, VeryVerbose, TEXT("Projectile %s: (Role: %d, Iteration %d, step %.3f) new hit at t=%.3f: (Pos %s, Vel %s)"),
+				*GetNameSafe(ActorOwner), (int32)ActorOwner->Role, LoopCount, TimeTick, Hit.Time, *UpdatedComponent->GetComponentLocation().ToString(), *Velocity.ToString());
+
 			// Handle blocking hit
+			NumImpacts++;
 			float SubTickTimeRemaining = TimeTick * (1.f - Hit.Time);
 			const EHandleBlockingHitResult HandleBlockingResult = HandleBlockingHit(Hit, TimeTick, MoveDelta, SubTickTimeRemaining);
 			if (HandleBlockingResult == EHandleBlockingHitResult::Abort || HasStoppedSimulation())
@@ -203,12 +258,24 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 				checkNoEntry();
 			}
 			
+			// Logging
+			UE_CLOG(UpdatedComponent != nullptr, LogProjectileMovement, VeryVerbose, TEXT("Projectile %s: (Role: %d, Iteration %d, step %.3f) deflect at t=%.3f: (Pos %s, Vel %s)"),
+				*GetNameSafe(ActorOwner), (int32)ActorOwner->Role, Iterations, TimeTick, Hit.Time, *UpdatedComponent->GetComponentLocation().ToString(), *Velocity.ToString());
 			
-			// A few initial bounces should add more time and iterations to complete most of the simulation.
-			if (NumBounces <= 2 && SubTickTimeRemaining >= MIN_TICK_TIME)
+			// Add unprocessed time after impact
+			if (SubTickTimeRemaining >= MIN_TICK_TIME)
 			{
 				RemainingTime += SubTickTimeRemaining;
-				Iterations--;
+
+				// A few initial impacts should possibly allow more iterations to complete more of the simulation.
+				if (NumImpacts <= BounceAdditionalIterations)
+				{
+					Iterations--;
+
+					// Logging
+					UE_LOG(LogProjectileMovement, Verbose, TEXT("Projectile %s: (Role: %d, Iteration %d, step %.3f) allowing extra iteration after bounce %u (t=%.3f, adding %.3f secs)"),
+						*GetNameSafe(ActorOwner), (int32)ActorOwner->Role, LoopCount, TimeTick, NumBounces, Hit.Time, SubTickTimeRemaining);
+				}
 			}
 		}
 	}
@@ -250,7 +317,7 @@ bool UProjectileMovementComponent::HandleDeflection(FHitResult& Hit, const FVect
 		}
 
 		// Check min velocity.
-		if (Velocity.SizeSquared() < FMath::Square(BounceVelocityStopSimulatingThreshold))
+		if (IsVelocityUnderSimulationThreshold())
 		{
 			StopSimulating(Hit);
 			return false;
@@ -277,7 +344,7 @@ bool UProjectileMovementComponent::HandleSliding(FHitResult& Hit, float& SubTick
 
 	// Velocity is now parallel to the impact surface.
 	// Perform the move now, before adding gravity/accel again, so we don't just keep hitting the surface.
-	SafeMoveUpdatedComponent(Velocity * SubTickTimeRemaining, UpdatedComponent->GetComponentQuat(), true, Hit);
+	SafeMoveUpdatedComponent(Velocity * SubTickTimeRemaining, UpdatedComponent->GetComponentQuat(), bSweepCollision, Hit);
 
 	if (HasStoppedSimulation())
 	{
@@ -318,7 +385,7 @@ bool UProjectileMovementComponent::HandleSliding(FHitResult& Hit, float& SubTick
 		}
 
 		// Check min velocity
-		if (Velocity.SizeSquared() < FMath::Square(BounceVelocityStopSimulatingThreshold))
+		if (IsVelocityUnderSimulationThreshold())
 		{
 			StopSimulating(InitialHit);
 			return false;
@@ -407,8 +474,9 @@ float UProjectileMovementComponent::GetGravityZ() const
 
 void UProjectileMovementComponent::StopSimulating(const FHitResult& HitResult)
 {
-	SetUpdatedComponent(NULL);
 	Velocity = FVector::ZeroVector;
+	UpdateComponentVelocity();
+	SetUpdatedComponent(NULL);
 	OnProjectileStop.Broadcast(HitResult);
 }
 
@@ -428,6 +496,12 @@ UProjectileMovementComponent::EHandleBlockingHitResult UProjectileMovementCompon
 		return EHandleBlockingHitResult::Abort;
 	}
 
+	if (Hit.bStartPenetrating)
+	{
+		UE_LOG(LogProjectileMovement, Verbose, TEXT("Projectile %s is stuck inside %s.%s!"), *GetNameSafe(ActorOwner), *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()));
+		return EHandleBlockingHitResult::Abort;
+	}
+
 	SubTickTimeRemaining = TimeTick * (1.f - Hit.Time);
 	return EHandleBlockingHitResult::Deflect;
 }
@@ -438,8 +512,8 @@ FVector UProjectileMovementComponent::ComputeBounceResult(const FHitResult& Hit,
 	const FVector Normal = ConstrainNormalToPlane(Hit.Normal);
 	const float VDotNormal = (TempVelocity | Normal);
 
-	// Only if velocity is opposed by normal
-	if (VDotNormal < 0.f)
+	// Only if velocity is opposed by normal or parallel
+	if (VDotNormal <= 0.f)
 	{
 		// Project velocity onto normal in reflected direction.
 		const FVector ProjectedNormal = Normal * -VDotNormal;
@@ -448,7 +522,7 @@ FVector UProjectileMovementComponent::ComputeBounceResult(const FHitResult& Hit,
 		TempVelocity += ProjectedNormal;
 
 		// Only tangential velocity should be affected by friction.
-		const float ScaledFriction = (bBounceAngleAffectsFriction || bIsSliding) ? FMath::Clamp(-VDotNormal / TempVelocity.Size(), 0.f, 1.f) * Friction : Friction;
+		const float ScaledFriction = (bBounceAngleAffectsFriction || bIsSliding) ? FMath::Clamp(-VDotNormal / TempVelocity.Size(), MinFrictionFraction, 1.f) * Friction : Friction;
 		TempVelocity *= FMath::Clamp(1.f - ScaledFriction, 0.f, 1.f);
 
 		// Coefficient of restitution only applies perpendicular to impact.
@@ -475,7 +549,7 @@ void UProjectileMovementComponent::HandleImpact(const FHitResult& Hit, float Tim
 
 		// Event may modify velocity or threshold, so check velocity threshold now.
 		Velocity = LimitVelocity(Velocity);
-		if (Velocity.SizeSquared() < FMath::Square(BounceVelocityStopSimulatingThreshold))
+		if (IsVelocityUnderSimulationThreshold())
 		{
 			bStopSimulating = true;
 		}
@@ -560,13 +634,20 @@ float UProjectileMovementComponent::GetSimulationTimeStep(float RemainingTime, i
 		}
 		else
 		{
-			// If this is the last iteration, just use all the remaining time. This is usually better than cutting things short, as the simulation won't move far enough otherwise.
+			// If this is the last iteration, just use all the remaining time. This is better than cutting things short, as the simulation won't move far enough otherwise.
 			// Print a throttled warning.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			static uint32 s_WarningCount = 0;
-			if ((s_WarningCount++ < 100) || (GFrameCounter & 15) == 0)
+			if (const UWorld* const World = GetWorld())
 			{
-				UE_LOG(LogProjectileMovement, Warning, TEXT("GetSimulationTimeStep() - Max iterations %d hit while remaining time %.6f > MaxSimulationTimeStep (%.3f) for '%s'"), MaxSimulationIterations, RemainingTime, MaxSimulationTimeStep, *GetPathNameSafe(UpdatedComponent));
+				// Don't report during long hitches, we're more concerned about normal behavior just to make sure we have reasonable simulation settings.
+				if (World->DeltaTimeSeconds < 0.20f)
+				{
+					static uint32 s_WarningCount = 0;
+					if ((s_WarningCount++ < 100) || (GFrameCounter & 15) == 0)
+					{
+						UE_LOG(LogProjectileMovement, Warning, TEXT("GetSimulationTimeStep() - Max iterations %d hit while remaining time %.6f > MaxSimulationTimeStep (%.3f) for '%s'"), MaxSimulationIterations, RemainingTime, MaxSimulationTimeStep, *GetPathNameSafe(UpdatedComponent));
+					}
+				}
 			}
 #endif
 		}
@@ -574,4 +655,176 @@ float UProjectileMovementComponent::GetSimulationTimeStep(float RemainingTime, i
 
 	// no less than MIN_TICK_TIME (to avoid potential divide-by-zero during simulation).
 	return FMath::Max(MIN_TICK_TIME, RemainingTime);
+}
+
+void UProjectileMovementComponent::SetInterpolatedComponent(USceneComponent* Component)
+{
+	if (Component == GetInterpolatedComponent())
+	{
+		return;
+	}
+
+	if (Component)
+	{
+		ResetInterpolation();
+		InterpolatedComponentPtr = Component;
+		InterpInitialLocationOffset = Component->RelativeLocation;
+		InterpInitialRotationOffset = Component->RelativeRotation.Quaternion();
+		bInterpolationComplete = false;
+	}
+	else
+	{
+		ResetInterpolation();
+		InterpolatedComponentPtr = nullptr;
+		InterpInitialLocationOffset = FVector::ZeroVector;
+		InterpInitialRotationOffset = FQuat::Identity;
+		bInterpolationComplete = true;
+	}
+}
+
+USceneComponent* UProjectileMovementComponent::GetInterpolatedComponent() const
+{
+	return InterpolatedComponentPtr.Get();
+}
+
+void UProjectileMovementComponent::MoveInterpolationTarget(const FVector& NewLocation, const FRotator& NewRotation)
+{
+	if (!UpdatedComponent)
+	{
+		return;
+	}
+
+	bool bHandledMovement = false;
+	if (bInterpMovement)
+	{
+		if (USceneComponent* InterpComponent = GetInterpolatedComponent())
+		{
+			// Avoid moving the child, it will interpolate later
+			const FRotator InterpRelativeRotation = InterpComponent->RelativeRotation;
+			FScopedPreventAttachedComponentMove ScopedChildNoMove(InterpComponent);
+			
+			// Update interp offset
+			const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+			const FVector NewToOldVector = (OldLocation - NewLocation);
+			InterpLocationOffset += NewToOldVector;
+
+			// Enforce distance limits
+			if (NewToOldVector.SizeSquared() > FMath::Square(InterpLocationSnapToTargetDistance))
+			{
+				InterpLocationOffset = FVector::ZeroVector;
+			}
+			else if (InterpLocationOffset.SizeSquared() > FMath::Square(InterpLocationMaxLagDistance))
+			{
+				InterpLocationOffset = InterpLocationMaxLagDistance * InterpLocationOffset.GetSafeNormal();
+			}
+
+			// Handle rotation
+			if (bInterpRotation)
+			{
+				const FQuat OldRotation = UpdatedComponent->GetComponentQuat();
+				InterpRotationOffset = (NewRotation.Quaternion().Inverse() * OldRotation) * InterpRotationOffset;
+			}
+			else
+			{
+				// If not interpolating rotation, we should allow the component to rotate.
+				// The absolute flag will get restored by the scoped move.
+				InterpComponent->bAbsoluteRotation = false;
+				InterpComponent->RelativeRotation = InterpRelativeRotation;
+				InterpRotationOffset = FQuat::Identity;
+			}
+
+			// Move the root
+			UpdatedComponent->SetRelativeLocationAndRotation(NewLocation, NewRotation);
+			bHandledMovement = true;
+			bInterpolationComplete = false;
+		}
+		else
+		{
+			ResetInterpolation();
+			bInterpolationComplete = true;
+		}
+	}
+	
+	if (!bHandledMovement)
+	{
+		UpdatedComponent->SetRelativeLocationAndRotation(NewLocation, NewRotation);
+	}
+}
+
+void UProjectileMovementComponent::ResetInterpolation()
+{
+	if (USceneComponent* InterpComponent = GetInterpolatedComponent())
+	{
+		InterpComponent->SetRelativeLocationAndRotation(InterpInitialLocationOffset, InterpInitialRotationOffset);
+	}
+
+	InterpLocationOffset = FVector::ZeroVector;
+	InterpRotationOffset = FQuat::Identity;
+	bInterpolationComplete = true;
+}
+
+void UProjectileMovementComponent::TickInterpolation(float DeltaTime)
+{
+	if (!bInterpolationComplete)
+	{
+		if (USceneComponent* InterpComponent = GetInterpolatedComponent())
+		{
+			// Smooth location. Interp faster when stopping.
+			const float ActualInterpLocationTime = Velocity.IsZero() ? 0.5f * InterpLocationTime : InterpLocationTime;
+			if (DeltaTime < ActualInterpLocationTime)
+			{
+				// Slowly decay translation offset (lagged exponential smoothing)
+				InterpLocationOffset = (InterpLocationOffset * (1.f - DeltaTime / ActualInterpLocationTime));
+			}
+			else
+			{
+				InterpLocationOffset = FVector::ZeroVector;
+			}
+
+			// Smooth rotation
+			if (DeltaTime < InterpRotationTime && bInterpRotation)
+			{
+				// Slowly decay rotation offset
+				InterpRotationOffset = FQuat::FastLerp(InterpRotationOffset, FQuat::Identity, DeltaTime / InterpRotationTime).GetNormalized();
+			}
+			else
+			{
+				InterpRotationOffset = FQuat::Identity;
+			}
+
+			// Test for reaching the end
+			if (InterpLocationOffset.IsNearlyZero(1e-2f) && InterpRotationOffset.Equals(FQuat::Identity, 1e-5f))
+			{
+				InterpLocationOffset = FVector::ZeroVector;
+				InterpRotationOffset = FQuat::Identity;
+				bInterpolationComplete = true;
+			}
+
+			// Apply result
+			if (UpdatedComponent)
+			{
+				const FVector NewRelTranslation = UpdatedComponent->GetComponentToWorld().InverseTransformVectorNoScale(InterpLocationOffset) + InterpInitialLocationOffset;
+				if (bInterpRotation)
+				{
+					const FQuat NewRelRotation = InterpRotationOffset * InterpInitialRotationOffset;
+					InterpComponent->SetRelativeLocationAndRotation(NewRelTranslation, NewRelRotation);
+				}
+				else
+				{
+					InterpComponent->SetRelativeLocation(NewRelTranslation);
+				}
+			}
+		}
+		else
+		{
+			ResetInterpolation();
+			bInterpolationComplete = true;
+		}
+	}
+
+	// Might be done interpolating and want to disable tick
+	if (bInterpolationComplete && bAutoUpdateTickRegistration && (UpdatedComponent == nullptr))
+	{
+		UpdateTickRegistration();
+	}
 }

@@ -114,6 +114,10 @@ class ENGINE_API AGameNetworkManager : public AInfo
 	UPROPERTY(GlobalConfig)
 	float MAXCLIENTUPDATEINTERVAL;
 
+	/** MaxClientForcedUpdateDuration is the maximum time duration over which the server will force updates, after MAXCLIENTUPDATEINTERVAL is initially exceeded. */
+	UPROPERTY(GlobalConfig)
+	float MaxClientForcedUpdateDuration;
+
 	/** MaxMoveDeltaTime is the default maximum time delta of CharacterMovement ServerMoves. Should be less than or equal to MAXCLIENTUPDATEINTERVAL, otherwise server will interfere by forcing position updates. */
 	UPROPERTY(GlobalConfig)
 	float MaxMoveDeltaTime;
@@ -128,6 +132,10 @@ class ENGINE_API AGameNetworkManager : public AInfo
 	/** ClientNetSendMoveDeltaTimeThrottled is used in place of ClientNetSendMoveDeltaTime when player count is high or net speed is low. See ClientNetSendMoveDeltaTime for more info. */
 	UPROPERTY(GlobalConfig)
 	float ClientNetSendMoveDeltaTimeThrottled;
+
+	/** ClientNetSendMoveDeltaTimeStationary is used when players are determined to not be moving or changing their view. See ClientNetSendMoveDeltaTime for more info. */
+	UPROPERTY(GlobalConfig)
+	float ClientNetSendMoveDeltaTimeStationary;
 
 	/** When player net speed (CurrentNetSpeed, based on ConfiguredInternetSpeed or ConfiguredLanSpeed) is less than or equal to this amount, ClientNetSendMoveDeltaTimeThrottled is used instead of ClientNetSendMoveDeltaTime. */
 	UPROPERTY(GlobalConfig)

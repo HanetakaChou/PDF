@@ -96,7 +96,6 @@ extern PFNGLBEGINQUERYEXTPROC 			glBeginQueryEXT;
 extern PFNGLENDQUERYEXTPROC 			glEndQueryEXT;
 extern PFNGLQUERYCOUNTEREXTPROC			glQueryCounterEXT;
 extern PFNGLGETQUERYIVEXTPROC 			glGetQueryivEXT;  
-extern PFNGLGETQUERYOBJECTIVEXTPROC 	glGetQueryObjectivEXT;
 extern PFNGLGETQUERYOBJECTUIVEXTPROC 	glGetQueryObjectuivEXT;
 extern PFNGLGETQUERYOBJECTUI64VEXTPROC	glGetQueryObjectui64vEXT;
 extern PFNGLMAPBUFFEROESPROC			glMapBufferOESa;
@@ -145,13 +144,44 @@ extern PFNGLBINDBUFFERRANGEPROC			glBindBufferRange;
 extern PFNGLBINDBUFFERBASEPROC			glBindBufferBase;
 extern PFNGLGETUNIFORMBLOCKINDEXPROC	glGetUniformBlockIndex;
 extern PFNGLUNIFORMBLOCKBINDINGPROC		glUniformBlockBinding;
+extern PFNGLBLITFRAMEBUFFERPROC			glBlitFramebuffer;
 
 extern PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC glFramebufferTextureMultiviewOVR;
 extern PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC glFramebufferTextureMultisampleMultiviewOVR;
 extern PFNGLVERTEXATTRIBIPOINTERPROC	glVertexAttribIPointer;
 
+extern PFNGLGENSAMPLERSPROC				glGenSamplers;
+extern PFNGLDELETESAMPLERSPROC			glDeleteSamplers;
+extern PFNGLSAMPLERPARAMETERIPROC		glSamplerParameteri;
+extern PFNGLBINDSAMPLERPROC				glBindSampler;
+
+extern PFNGLPROGRAMPARAMETERIPROC		glProgramParameteri;
+
 #include "OpenGLES2.h"
 
+typedef khronos_stime_nanoseconds_t EGLnsecsANDROID;
+
+typedef GLboolean(GL_APIENTRYP PFNeglPresentationTimeANDROID) (EGLDisplay dpy, EGLSurface surface, EGLnsecsANDROID time);
+typedef GLboolean(GL_APIENTRYP PFNeglGetNextFrameIdANDROID) (EGLDisplay dpy, EGLSurface surface, EGLuint64KHR *frameId);
+typedef GLboolean(GL_APIENTRYP PFNeglGetCompositorTimingANDROID) (EGLDisplay dpy, EGLSurface surface, EGLint numTimestamps, const EGLint *names, EGLnsecsANDROID *values);
+typedef GLboolean(GL_APIENTRYP PFNeglGetFrameTimestampsANDROID) (EGLDisplay dpy, EGLSurface surface, EGLuint64KHR frameId, EGLint numTimestamps, const EGLint *timestamps, EGLnsecsANDROID *values);
+typedef GLboolean(GL_APIENTRYP PFNeglQueryTimestampSupportedANDROID) (EGLDisplay dpy, EGLSurface surface, EGLint timestamp);
+
+#define EGL_TIMESTAMPS_ANDROID 0x3430
+#define EGL_COMPOSITE_DEADLINE_ANDROID 0x3431
+#define EGL_COMPOSITE_INTERVAL_ANDROID 0x3432
+#define EGL_COMPOSITE_TO_PRESENT_LATENCY_ANDROID 0x3433
+#define EGL_REQUESTED_PRESENT_TIME_ANDROID 0x3434
+#define EGL_RENDERING_COMPLETE_TIME_ANDROID 0x3435
+#define EGL_COMPOSITION_LATCH_TIME_ANDROID 0x3436
+#define EGL_FIRST_COMPOSITION_START_TIME_ANDROID 0x3437
+#define EGL_LAST_COMPOSITION_START_TIME_ANDROID 0x3438
+#define EGL_FIRST_COMPOSITION_GPU_FINISHED_TIME_ANDROID 0x3439
+#define EGL_DISPLAY_PRESENT_TIME_ANDROID 0x343A
+#define EGL_DEQUEUE_READY_TIME_ANDROID 0x343B
+#define EGL_READS_DONE_TIME_ANDROID 0x343C
+#define EGL_TIMESTAMP_PENDING_ANDROID - 2
+#define EGL_TIMESTAMP_INVALID_ANDROID - 1
 
 extern "C"
 {
@@ -159,6 +189,15 @@ extern "C"
 	extern PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR_p;
 	extern PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR_p;
 	extern PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR_p;
+	extern PFNEGLGETSYNCATTRIBKHRPROC eglGetSyncAttribKHR_p;
+
+	extern PFNeglPresentationTimeANDROID eglPresentationTimeANDROID_p;
+	extern PFNeglGetNextFrameIdANDROID eglGetNextFrameIdANDROID_p;
+	extern PFNeglGetCompositorTimingANDROID eglGetCompositorTimingANDROID_p;
+	extern PFNeglGetFrameTimestampsANDROID eglGetFrameTimestampsANDROID_p;
+	extern PFNeglQueryTimestampSupportedANDROID eglQueryTimestampSupportedANDROID_p;
+	extern PFNeglQueryTimestampSupportedANDROID eglGetCompositorTimingSupportedANDROID_p;
+	extern PFNeglQueryTimestampSupportedANDROID eglGetFrameTimestampsSupportedANDROID_p;
 }
 
 struct FAndroidOpenGL : public FOpenGLES2
@@ -190,24 +229,22 @@ struct FAndroidOpenGL : public FOpenGLES2
 	static FORCEINLINE bool HasHardwareHiddenSurfaceRemoval() { return bHasHardwareHiddenSurfaceRemoval; };
 
 	// Optional:
-	static FORCEINLINE void QueryTimestampCounter(GLuint QueryID)
+	static void QueryTimestampCounter(GLuint QueryID);
+
+	static GLuint MakeVirtualQueryReal(GLuint QueryID);
+
+	static FORCEINLINE void GenQueries(GLsizei NumQueries, GLuint* QueryIDs)
 	{
-		glQueryCounterEXT(QueryID, GL_TIMESTAMP_EXT);
+		*(char*)3 = 0; // this is virtualized and should not be called
 	}
 
-	static FORCEINLINE void GetQueryObject(GLuint QueryId, EQueryMode QueryMode, GLuint *OutResult)
-	{
-		GLenum QueryName = (QueryMode == QM_Result) ? GL_QUERY_RESULT_EXT : GL_QUERY_RESULT_AVAILABLE_EXT;
-		glGetQueryObjectuivEXT(QueryId, QueryName, OutResult);
-	}
+	static void GetQueryObject(GLuint QueryId, EQueryMode QueryMode, GLuint *OutResult);
 
-	static FORCEINLINE void GetQueryObject(GLuint QueryId, EQueryMode QueryMode, GLuint64* OutResult)
-	{
-		GLenum QueryName = (QueryMode == QM_Result) ? GL_QUERY_RESULT_EXT : GL_QUERY_RESULT_AVAILABLE_EXT;
-		GLuint64 Result = 0;
-		glGetQueryObjectui64vEXT(QueryId, QueryName, &Result);
-		*OutResult = Result;
-	}
+	static void GetQueryObject(GLuint QueryId, EQueryMode QueryMode, GLuint64* OutResult);
+
+	static void BeginQuery(GLenum QueryType, GLuint QueryId);
+
+	static void EndQuery(GLenum QueryType);
 
 	static FORCEINLINE void DeleteSync(UGLsync Sync)
 	{
@@ -244,6 +281,7 @@ struct FAndroidOpenGL : public FOpenGLES2
 	{
 		if (GUseThreadedRendering)
 		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_eglClientWaitSyncKHR_p);
 			// check( Flags == GL_SYNC_FLUSH_COMMANDS_BIT );
 			GLenum Result = eglClientWaitSyncKHR_p( AndroidEGL::GetInstance()->GetDisplay(), Sync, EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, Timeout );
 			switch (Result)
@@ -266,7 +304,7 @@ struct FAndroidOpenGL : public FOpenGLES2
 				|| (SupportsMultipleRenderTargets() && Attachment >= GL_COLOR_ATTACHMENT0 && Attachment <= GL_COLOR_ATTACHMENT7));
 
 		glFramebufferTexture2D(Target, Attachment, TexTarget, Texture, Level);
-		VERIFY_GL(FramebufferTexture_2D)
+		VERIFY_GL(FramebufferTexture_2D);
 	}
 	
 	// Required:
@@ -276,6 +314,11 @@ struct FAndroidOpenGL : public FOpenGLES2
 		{
 			glBlitFramebufferNV(SrcX0, SrcY0, SrcX1, SrcY1, DstX0, DstY0, DstX1, DstY1, Mask, Filter);
 		}
+		else if (IsES31Usable())
+		{
+			glBlitFramebuffer(SrcX0, SrcY0, SrcX1, SrcY1, DstX0, DstY0, DstX1, DstY1, Mask, Filter);
+		}
+		
 	}
 
 	static FORCEINLINE bool TexStorage2D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLenum Format, GLenum Type, uint32 Flags)
@@ -301,13 +344,13 @@ struct FAndroidOpenGL : public FOpenGLES2
 			case GL_RGB_INTEGER:
 			case GL_RGBA_INTEGER:
 				bValidFormat = false;
-			break;
+				break;
 		}
 
 		if (bES30Support && (bValidFormat || (bUseHalfFloatTexStorage && Type == GetTextureHalfFloatPixelType() && (Flags & TexCreate_RenderTargetable) != 0)))
 		{
 			glTexStorage2D(Target, Levels, InternalFormat, Width, Height);
-			VERIFY_GL(glTexStorage2D)
+			VERIFY_GL(glTexStorage2D);
 			return true;
 		}
 
@@ -352,7 +395,7 @@ struct FAndroidOpenGL : public FOpenGLES2
 				NULL
 				);
 
-			VERIFY_GL(TexImage_3D)
+			VERIFY_GL(TexImage_3D);
 		}
 	}
 	
@@ -375,7 +418,7 @@ struct FAndroidOpenGL : public FOpenGLES2
 	{
 		glCopyTexSubImage3D(Target, Level, XOffset, YOffset, ZOffset, X, Y, Width, Height);
 	}
-
+	
 	static FORCEINLINE void CopyImageSubData(GLuint SrcName, GLenum SrcTarget, GLint SrcLevel, GLint SrcX, GLint SrcY, GLint SrcZ, GLuint DstName, GLenum DstTarget, GLint DstLevel, GLint DstX, GLint DstY, GLint DstZ, GLsizei Width, GLsizei Height, GLsizei Depth)
 	{
 		check(bSupportsCopyImage);
@@ -426,9 +469,22 @@ struct FAndroidOpenGL : public FOpenGLES2
 		glGetProgramBinary(Program, BufSize, Length, BinaryFormat, Binary);
 	}
 
-	static FORCEINLINE void ProgramBinary(GLuint Program, GLenum BinaryFormat, void *Binary, GLsizei Length)
+	static FORCEINLINE void ProgramBinary(GLuint Program, GLenum BinaryFormat, const void *Binary, GLsizei Length)
 	{
 		glProgramBinary(Program, BinaryFormat, Binary, Length);
+	}
+
+	static FORCEINLINE void ProgramParameter(GLuint Program, GLenum PName, GLint Value)
+	{
+		if (bES30Support)
+		{
+			check(glProgramParameteri);
+			glProgramParameteri(Program, PName, Value);
+		}
+		else
+		{
+			FOpenGLBase::ProgramParameter(Program, PName, Value);
+		}
 	}
 
 	static FORCEINLINE void BindBufferBase(GLenum Target, GLuint Index, GLuint Buffer)
@@ -463,7 +519,7 @@ struct FAndroidOpenGL : public FOpenGLES2
 
 	static FORCEINLINE void VertexAttribIPointer(GLuint Index, GLint Size, GLenum Type, GLsizei Stride, const GLvoid* Pointer)
 	{
-		if (IsES31Usable() && glVertexAttribIPointer != nullptr)
+		if (IsES31Usable())
 		{
 			glVertexAttribIPointer(Index, Size, Type, Stride, Pointer);
 		}
@@ -471,6 +527,26 @@ struct FAndroidOpenGL : public FOpenGLES2
 		{
 			glVertexAttribPointer(Index, Size, Type, GL_FALSE, Stride, Pointer);
 		}
+	}
+
+	static FORCEINLINE void GenSamplers(GLsizei Count, GLuint* Samplers)
+	{
+		glGenSamplers(Count, Samplers);
+	}
+
+	static FORCEINLINE void DeleteSamplers(GLsizei Count, GLuint* Samplers)
+	{
+		glDeleteSamplers(Count, Samplers);
+	}
+
+	static FORCEINLINE void SetSamplerParameter(GLuint Sampler, GLenum Parameter, GLint Value)
+	{
+		glSamplerParameteri(Sampler, Parameter, Value);
+	}
+
+	static FORCEINLINE void BindSampler(GLuint Unit, GLuint Sampler)
+	{
+		glBindSampler(Unit, Sampler);
 	}
 
 	// Adreno doesn't support HALF_FLOAT
@@ -500,10 +576,18 @@ struct FAndroidOpenGL : public FOpenGLES2
 	static FORCEINLINE bool SupportsTexture3D()							{ return bES30Support; }
 	static FORCEINLINE bool SupportsMobileMultiView()					{ return bSupportsMobileMultiView; }
 	static FORCEINLINE bool SupportsImageExternal()						{ return bSupportsImageExternal; }
+	static FORCEINLINE bool SupportsSamplerObjects()					{ return IsES31Usable(); }
 	static FORCEINLINE bool UseES30ShadingLanguage()
 	{
 		return bUseES30ShadingLanguage;
 	}
+
+	// Disable all queries except occlusion
+	// Query is a limited resource on Android and we better spent them all on occlusion
+	static FORCEINLINE bool SupportsTimestampQueries()					{ return false; }
+	static FORCEINLINE bool SupportsDisjointTimeQueries()				{ return false; }
+	
+	static FORCEINLINE bool SupportsBlitFramebuffer() { return FOpenGLES2::SupportsBlitFramebuffer() || IsES31Usable(); }
 
 	enum class EImageExternalType : uint8
 	{

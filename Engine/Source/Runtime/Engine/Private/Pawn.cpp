@@ -11,7 +11,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
 #include "Components/PrimitiveComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
@@ -57,6 +57,7 @@ APawn::APawn(const FObjectInitializer& ObjectInitializer)
 	bReplicateMovement = true;
 	BaseEyeHeight = 64.0f;
 	AllowedYawError = 10.99f;
+	BlendedReplayViewPitch = 0.0f;
 	bCollideWhenPlacing = true;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 	bProcessingOutsideWorldBounds = false;
@@ -167,8 +168,8 @@ void APawn::SetCanAffectNavigationGeneration(bool bNewValue, bool bForceUpdate)
 		// update components 
 		UpdateNavigationRelevance();
 
-		// update entries in navigation octree 
-		UNavigationSystem::UpdateActorAndComponentsInNavOctree(*this);
+		// update entries in navigation system
+		FNavigationSystem::UpdateActorAndComponentData(*this);
 	}
 }
 
@@ -464,7 +465,23 @@ void APawn::OnRep_Controller()
 	}
 }
 
-void APawn::OnRep_PlayerState() {}
+void APawn::OnRep_PlayerState()
+{
+	SetPlayerState(PlayerState);
+}
+
+void APawn::SetPlayerState(APlayerState* NewPlayerState)
+{
+	if (PlayerState && PlayerState->GetPawn() == this)
+	{
+		FSetPlayerStatePawn(PlayerState, nullptr);
+	}
+	PlayerState = NewPlayerState;
+	if (PlayerState)
+	{
+		FSetPlayerStatePawn(PlayerState, this);
+	}
+}
 
 void APawn::PossessedBy(AController* NewController)
 {
@@ -475,7 +492,7 @@ void APawn::PossessedBy(AController* NewController)
 
 	if (Controller->PlayerState != nullptr)
 	{
-		PlayerState = Controller->PlayerState;
+		SetPlayerState(Controller->PlayerState);
 	}
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(Controller))
@@ -504,7 +521,7 @@ void APawn::UnPossessed()
 
 	ForceNetUpdate();
 
-	PlayerState = nullptr;
+	SetPlayerState(nullptr);
 	SetOwner(nullptr);
 	Controller = nullptr;
 
@@ -783,11 +800,20 @@ FRotator APawn::GetBaseAimRotation() const
 	// If we have no controller, we simply use our rotation
 	POVRot = GetActorRotation();
 
-	// If our Pitch is 0, then use RemoteViewPitch
+	// If our Pitch is 0, then use a replicated view pitch
 	if( FMath::IsNearlyZero(POVRot.Pitch) )
 	{
-		POVRot.Pitch = RemoteViewPitch;
-		POVRot.Pitch = POVRot.Pitch * 360.f/255.f;
+		if (BlendedReplayViewPitch != 0.0f)
+		{
+			// If we are in a replay and have a blended value for playback, use that
+			POVRot.Pitch = BlendedReplayViewPitch;
+		}
+		else
+		{
+			// Else use the RemoteViewPitch
+			POVRot.Pitch = RemoteViewPitch;
+			POVRot.Pitch = POVRot.Pitch * 360.0f / 255.0f;
+		}
 	}
 
 	return POVRot;

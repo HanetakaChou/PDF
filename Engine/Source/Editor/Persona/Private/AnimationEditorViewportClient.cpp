@@ -23,7 +23,6 @@
 #include "ScopedTransaction.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Engine/SkeletalMeshSocket.h"
-#include "ISkeletonTree.h"
 #include "SAnimationEditorViewport.h"
 #include "AssetViewerSettings.h"
 #include "IPersonaEditorModeManager.h"
@@ -65,9 +64,8 @@ IMPLEMENT_HIT_PROXY( HPersonaBoneProxy, HHitProxy );
 /////////////////////////////////////////////////////////////////////////
 // FAnimationViewportClient
 
-FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<ISkeletonTree>& InSkeletonTree, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, const TSharedRef<SAnimationEditorViewport>& InAnimationEditorViewport, const TSharedRef<FAssetEditorToolkit>& InAssetEditorToolkit, int32 InViewportIndex, bool bInShowStats)
+FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPreviewScene>& InPreviewScene, const TSharedRef<SAnimationEditorViewport>& InAnimationEditorViewport, const TSharedRef<FAssetEditorToolkit>& InAssetEditorToolkit, int32 InViewportIndex, bool bInShowStats)
 	: FEditorViewportClient(FModuleManager::LoadModuleChecked<FPersonaModule>("Persona").CreatePersonaEditorModeManager(), &InPreviewScene.Get(), StaticCastSharedRef<SEditorViewport>(InAnimationEditorViewport))
-	, SkeletonTreePtr(InSkeletonTree)
 	, PreviewScenePtr(InPreviewScene)
 	, AssetEditorToolkitPtr(InAssetEditorToolkit)
 	, AnimationPlaybackSpeedMode(EAnimationPlaybackSpeeds::Normal)
@@ -94,6 +92,9 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<ISkeletonTre
 	Widget->SetUsesEditorModeTools(ModeTools);
 	((FAssetEditorModeManager*)ModeTools)->SetPreviewScene(&InPreviewScene.Get());
 	((FAssetEditorModeManager*)ModeTools)->SetDefaultMode(FPersonaEditModes::SkeletonSelection);
+
+	// Default to local space
+	SetWidgetCoordSystemSpace(COORD_Local);
 
 	// load config
 	ConfigOption = UPersonaOptions::StaticClass()->GetDefaultObject<UPersonaOptions>();
@@ -150,10 +151,6 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<ISkeletonTre
 	InPreviewScene->RegisterOnPreTick(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandlePreviewScenePreTick));
 	InPreviewScene->RegisterOnPostTick(FSimpleDelegate::CreateRaw(this, &FAnimationViewportClient::HandlePreviewScenePostTick));
 
-	UDebugSkelMeshComponent* MeshComponent = InPreviewScene->GetPreviewMeshComponent();
-	MeshComponent->SelectionOverrideDelegate = UPrimitiveComponent::FSelectionOverride::CreateRaw(this, &FAnimationViewportClient::PreviewComponentSelectionOverride);
-	MeshComponent->PushSelectionToProxy();
-
 	// Register delegate to update the show flags when the post processing is turned on or off
 	UAssetViewerSettings::Get()->OnAssetViewerSettingsChanged().AddRaw(this, &FAnimationViewportClient::OnAssetViewerSettingsChanged);
 	// Set correct flags according to current profile settings
@@ -167,12 +164,6 @@ FAnimationViewportClient::~FAnimationViewportClient()
 	if (PreviewScenePtr.IsValid())
 	{
 		TSharedPtr<IPersonaPreviewScene> ScenePtr = PreviewScenePtr.Pin();
-
-		UDebugSkelMeshComponent* MeshComponent = ScenePtr->GetPreviewMeshComponent();
-		if (MeshComponent)
-		{
-			MeshComponent->SelectionOverrideDelegate.Unbind();
-		}
 
 		ScenePtr->UnregisterOnPreviewMeshChanged(this);
 		ScenePtr->UnregisterOnInvalidateViews(this);
@@ -371,8 +362,6 @@ void FAnimationViewportClient::HandleSkeletalMeshChanged(USkeletalMesh* OldSkele
 {
 	if (OldSkeletalMesh != NewSkeletalMesh || NewSkeletalMesh == nullptr)
 	{
-		GetSkeletonTree()->DeselectAll();
-
 		if (!bInitiallyFocused)
 		{
 			FocusViewportOnPreviewMesh(true);
@@ -443,7 +432,6 @@ void FAnimationViewportClient::Draw(const FSceneView* View, FPrimitiveDrawInterf
 		DrawWatchedPoses(PreviewMeshComponent, PDI);
 
 		PreviewMeshComponent->DebugDrawClothing(PDI);
-
 		
 		// Display socket hit points
 		if (PreviewMeshComponent->bDrawSockets )
@@ -499,7 +487,7 @@ void FAnimationViewportClient::DrawUVsForMesh(FViewport* InViewport, FCanvas* In
 	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
 
 	//use the overridden LOD level
-	const uint32 LODLevel = FMath::Clamp(PreviewMeshComponent->ForcedLodModel - 1, 0, PreviewMeshComponent->SkeletalMesh->LODInfo.Num() - 1);
+	const uint32 LODLevel = FMath::Clamp(PreviewMeshComponent->ForcedLodModel - 1, 0, PreviewMeshComponent->SkeletalMesh->GetLODNum() - 1);
 
 	TArray<FVector2D> SelectedEdgeTexCoords; //No functionality in Persona for this (yet?)
 
@@ -653,7 +641,7 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View 
 		const FColor BoneColor = FColor::White;
 		if (BoneColor.A != 0)
 		{
-			const FVector BonePos = PreviewMeshComponent->GetComponentTransform().TransformPosition(PreviewMeshComponent->GetComponentSpaceTransforms()[BoneIndex].GetLocation());
+			const FVector BonePos = PreviewMeshComponent->GetComponentTransform().TransformPosition(PreviewMeshComponent->GetDrawTransform(BoneIndex).GetLocation());
 
 			const FPlane proj = View->Project(BonePos);
 			if (proj.W > 0.f)
@@ -661,7 +649,7 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View 
 				const int32 XPos = HalfX + ( HalfX * proj.X );
 				const int32 YPos = HalfY + ( HalfY * (proj.Y * -1) );
 
-				const FName BoneName = PreviewMeshComponent->SkeletalMesh->RefSkeleton.GetBoneName(BoneIndex);
+				const FName BoneName = PreviewMeshComponent->GetReferenceSkeleton().GetBoneName(BoneIndex);
 				const FString BoneString = FString::Printf( TEXT("%d: %s"), BoneIndex, *BoneName.ToString() );
 				FCanvasTextItem TextItem( FVector2D( XPos, YPos), FText::FromString( BoneString ), GEngine->GetSmallFont(), BoneColor );
 				TextItem.EnableShadow(FLinearColor::Black);
@@ -867,10 +855,11 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			{
 				int32 SectionVerts = LODData.RenderSections[SectionIndex].GetNumVertices();
 
-				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("SectionFormat", " [Section {0}] Verts: {1}, Bones: {2}"),
+				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("SectionFormat", " [Section {0}] Verts: {1}, Bones: {2}, Max Influences: {3}"),
 					FText::AsNumber(SectionIndex),
 					FText::AsNumber(SectionVerts),
-					FText::AsNumber(LODData.RenderSections[SectionIndex].BoneMap.Num())
+					FText::AsNumber(LODData.RenderSections[SectionIndex].BoneMap.Num()),
+					FText::AsNumber(LODData.RenderSections[SectionIndex].MaxBoneInfluences)
 					));
 			}
 
@@ -884,9 +873,9 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 			if (PreviewMeshComponent->BonesOfInterest.Num() > 0)
 			{
 				int32 BoneIndex = PreviewMeshComponent->BonesOfInterest[0];
-				FTransform ReferenceTransform = PreviewMeshComponent->SkeletalMesh->RefSkeleton.GetRefBonePose()[BoneIndex];
+				FTransform ReferenceTransform = PreviewMeshComponent->GetReferenceSkeleton().GetRefBonePose()[BoneIndex];
 				FTransform LocalTransform = PreviewMeshComponent->BoneSpaceTransforms[BoneIndex];
-				FTransform ComponentTransform = PreviewMeshComponent->GetComponentSpaceTransforms()[BoneIndex];
+				FTransform ComponentTransform = PreviewMeshComponent->GetDrawTransform(BoneIndex);
 
 				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("LocalTransform", "Local: {0}"), FText::FromString(LocalTransform.ToHumanReadableString())));
 
@@ -956,6 +945,11 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 	{
 		// Notify the user if they are isolating a mesh section.
 		TextValue = ConcatenateLine(TextValue, LOCTEXT("MeshMaterialHiddenWarning", "Mesh Materials Hidden"));
+	}
+
+	if (const UAnimSequence* AnimSequence = Cast<UAnimSequence>(GetAnimPreviewScene()->GetPreviewAnimationAsset()))
+	{
+		TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("FramerateFormat", "Framerate: {0}"), FText::AsNumber(AnimSequence->GetFrameRate())));
 	}
 
 	return TextValue;
@@ -1129,22 +1123,23 @@ void FAnimationViewportClient::DrawBonesFromTransforms(TArray<FTransform>& Trans
 		BoneColours.AddUninitialized(Transforms.Num());
 
 		// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
-		for ( int32 Index=0; Index < MeshComponent->RequiredBones.Num(); ++Index )
+		const TArray<FBoneIndexType>& DrawBoneIndices = MeshComponent->GetDrawBoneIndices();
+		for ( int32 Index=0; Index < MeshComponent->GetDrawBoneIndices().Num(); ++Index )
 		{
-			const int32 BoneIndex = MeshComponent->RequiredBones[Index];
-			const int32 ParentIndex = MeshComponent->SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+			const int32 BoneIndex = DrawBoneIndices[Index];
+			const int32 ParentIndex = MeshComponent->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 
 			WorldTransforms[BoneIndex] = Transforms[BoneIndex] * MeshComponent->GetComponentTransform();
 			BoneColours[BoneIndex] = (ParentIndex >= 0) ? BoneColour : RootBoneColour;
 		}
 
-		DrawBones(MeshComponent, MeshComponent->RequiredBones, WorldTransforms, PDI, BoneColours);
+		DrawBones(DrawBoneIndices, MeshComponent->GetReferenceSkeleton(), WorldTransforms, MeshComponent->BonesOfInterest, PDI, BoneColours);
 	}
 }
 
 void FAnimationViewportClient::DrawBonesFromCompactPose(const FCompactHeapPose& Pose, UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI, const FLinearColor& DrawColour) const
 {
-	if (Pose.GetNumBones() > 0)
+	if (Pose.GetNumBones() > 0 && MeshComponent != nullptr)
 	{
 		TArray<FTransform> WorldTransforms;
 		WorldTransforms.AddUninitialized(Pose.GetBoneContainer().GetNumBones());
@@ -1170,7 +1165,11 @@ void FAnimationViewportClient::DrawBonesFromCompactPose(const FCompactHeapPose& 
 			BoneColours[MeshBoneIndex.GetInt()] = DrawColour;
 		}
 
-		DrawBones(MeshComponent, MeshComponent->RequiredBones, WorldTransforms, PDI, BoneColours, 1.0f, true);
+		if (MeshComponent && MeshComponent->SkeletalMesh)
+		{
+			DrawBones(MeshComponent->GetDrawBoneIndices(), MeshComponent->GetReferenceSkeleton(), WorldTransforms, MeshComponent->BonesOfInterest, PDI, BoneColours, 1.0f, true);
+		}
+
 	}
 }
 
@@ -1231,29 +1230,26 @@ void FAnimationViewportClient::DrawMeshBonesBakedAnimation(UDebugSkelMeshCompone
 	}
 }
 
-void FAnimationViewportClient::DrawMeshBones(USkeletalMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const
+void FAnimationViewportClient::DrawMeshBones(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const
 {
 	if ( MeshComponent && MeshComponent->SkeletalMesh )
 	{
 		TArray<FTransform> WorldTransforms;
-		WorldTransforms.AddUninitialized(MeshComponent->GetNumComponentSpaceTransforms());
+		WorldTransforms.AddUninitialized(MeshComponent->GetNumDrawTransform());
 
 		TArray<FLinearColor> BoneColours;
-		BoneColours.AddUninitialized(MeshComponent->GetNumComponentSpaceTransforms());
+		BoneColours.AddUninitialized(MeshComponent->GetNumDrawTransform());
 
-		TArray<int32> SelectedBones;
-		if(UDebugSkelMeshComponent* DebugMeshComponent = Cast<UDebugSkelMeshComponent>(MeshComponent))
-		{
-			SelectedBones = DebugMeshComponent->BonesOfInterest;
-		}
+		TArray<int32> SelectedBones = MeshComponent->BonesOfInterest;
 
 		// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
-		for ( int32 Index=0; Index<MeshComponent->RequiredBones.Num(); ++Index )
+		const TArray<FBoneIndexType>& DrawBoneIndices = MeshComponent->GetDrawBoneIndices();
+		for ( int32 Index=0; Index<DrawBoneIndices.Num(); ++Index )
 		{
-			const int32 BoneIndex = MeshComponent->RequiredBones[Index];
-			const int32 ParentIndex = MeshComponent->SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+			const int32 BoneIndex = DrawBoneIndices[Index];
+			const int32 ParentIndex = MeshComponent->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 
-			WorldTransforms[BoneIndex] = MeshComponent->GetComponentSpaceTransforms()[BoneIndex] * MeshComponent->GetComponentTransform();
+			WorldTransforms[BoneIndex] = MeshComponent->GetDrawTransform(BoneIndex) * MeshComponent->GetComponentTransform();
 			
 			if(SelectedBones.Contains(BoneIndex))
 			{
@@ -1265,89 +1261,85 @@ void FAnimationViewportClient::DrawMeshBones(USkeletalMeshComponent * MeshCompon
 			}
 		}
 
-		DrawBones(MeshComponent, MeshComponent->RequiredBones, WorldTransforms, PDI, BoneColours);
+		DrawBones(DrawBoneIndices, MeshComponent->GetReferenceSkeleton(), WorldTransforms, MeshComponent->BonesOfInterest, PDI, BoneColours);
 	}
 }
 
-void FAnimationViewportClient::DrawBones(const USkeletalMeshComponent* MeshComponent, const TArray<FBoneIndexType> & RequiredBones, const TArray<FTransform> & WorldTransforms, FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float LineThickness/*=0.f*/, bool bForceDraw/*=false*/) const
+void FAnimationViewportClient::DrawBones(const TArray<FBoneIndexType>& RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> & WorldTransforms, const TArray<int32>& InSelectedBones, FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float LineThickness/*=0.f*/, bool bForceDraw/*=false*/) const
 {
-	check ( MeshComponent && MeshComponent->SkeletalMesh );
-
-	TArray<int32> SelectedBones;
-	if(const UDebugSkelMeshComponent* DebugMeshComponent = Cast<const UDebugSkelMeshComponent>(MeshComponent))
+	TArray<int32> SelectedBones = InSelectedBones;
+	if(InSelectedBones.Num() > 0 && GetBoneDrawMode() == EBoneDrawMode::SelectedAndParents)
 	{
-		SelectedBones = DebugMeshComponent->BonesOfInterest;
-
-		if(GetBoneDrawMode() == EBoneDrawMode::SelectedAndParents)
+		int32 BoneIndex = InSelectedBones[0];
+		while (BoneIndex != INDEX_NONE)
 		{
-			int32 BoneIndex = GetAnimPreviewScene()->GetSelectedBoneIndex();
-			while (BoneIndex != INDEX_NONE)
+			int32 ParentIndex = RefSkeleton.GetParentIndex(BoneIndex);
+			if (ParentIndex != INDEX_NONE)
 			{
-				int32 ParentIndex = DebugMeshComponent->SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
-				if (ParentIndex != INDEX_NONE)
-				{
-					SelectedBones.AddUnique(ParentIndex);
-				}
-				BoneIndex = ParentIndex;
+				SelectedBones.AddUnique(ParentIndex);
 			}
+			BoneIndex = ParentIndex;
 		}
+	}
 
-		// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
-		for ( int32 Index=0; Index<RequiredBones.Num(); ++Index )
+	// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
+	for ( int32 Index=0; Index<RequiredBones.Num(); ++Index )
+	{
+		const int32 BoneIndex = RequiredBones[Index];
+
+		if (bForceDraw ||
+			(GetBoneDrawMode() == EBoneDrawMode::All) ||
+			((GetBoneDrawMode() == EBoneDrawMode::Selected || GetBoneDrawMode() == EBoneDrawMode::SelectedAndParents) && SelectedBones.Contains(BoneIndex) )
+			)
 		{
-			const int32 BoneIndex = RequiredBones[Index];
+			const int32 ParentIndex = RefSkeleton.GetParentIndex(BoneIndex);
+			FVector Start, End;
+			FLinearColor LineColor = BoneColours[BoneIndex];
 
-			if (bForceDraw ||
-				(GetBoneDrawMode() == EBoneDrawMode::All) ||
-				((GetBoneDrawMode() == EBoneDrawMode::Selected || GetBoneDrawMode() == EBoneDrawMode::SelectedAndParents) && SelectedBones.Contains(BoneIndex) )
+			if (ParentIndex >= 0)
+			{
+				Start = WorldTransforms[ParentIndex].GetLocation();
+				End = WorldTransforms[BoneIndex].GetLocation();
+			}
+			else
+			{
+				Start = FVector::ZeroVector;
+				End = WorldTransforms[BoneIndex].GetLocation();
+			}
+
+			const float BoneLength = (End - Start).Size();
+			const float AxisLength = FMath::Max(BoneLength * 0.1f, 1.f);
+			//Render Sphere for bone end point and a cone between it and its parent.
+			PDI->SetHitProxy(new HPersonaBoneProxy(RefSkeleton.GetBoneName(BoneIndex)));
+			SkeletalDebugRendering::DrawWireBone(PDI, Start, End, LineColor, SDPG_Foreground, AxisLength);
+			PDI->SetHitProxy(NULL);
+
+			// draw gizmo
+			if ((GetLocalAxesMode() == ELocalAxesMode::All) ||
+				((GetLocalAxesMode() == ELocalAxesMode::Selected) && SelectedBones.Contains(BoneIndex))
 				)
 			{
-				const int32 ParentIndex = MeshComponent->SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
-				FVector Start, End;
-				FLinearColor LineColor = BoneColours[BoneIndex];
-
-				if (ParentIndex >= 0)
-				{
-					Start = WorldTransforms[ParentIndex].GetLocation();
-					End = WorldTransforms[BoneIndex].GetLocation();
-				}
-				else
-				{
-					Start = FVector::ZeroVector;
-					End = WorldTransforms[BoneIndex].GetLocation();
-				}
-
-				//Render Sphere for bone end point and a cone between it and its parent.
-				PDI->SetHitProxy(new HPersonaBoneProxy(MeshComponent->SkeletalMesh->RefSkeleton.GetBoneName(BoneIndex)));
-				SkeletalDebugRendering::DrawWireBone(PDI, Start, End, LineColor, SDPG_Foreground);
-				PDI->SetHitProxy(NULL);
-
-				// draw gizmo
-				if ((GetLocalAxesMode() == ELocalAxesMode::All) ||
-					((GetLocalAxesMode() == ELocalAxesMode::Selected) && SelectedBones.Contains(BoneIndex))
-					)
-				{
-					SkeletalDebugRendering::DrawAxes(PDI, WorldTransforms[BoneIndex], SDPG_Foreground);
-				}
+				// we want to say 10 % of bone length is good
+				SkeletalDebugRendering::DrawAxes(PDI, WorldTransforms[BoneIndex], SDPG_Foreground, 0.f , AxisLength);
 			}
 		}
 	}
 }
 
-void FAnimationViewportClient::DrawMeshSubsetBones(const USkeletalMeshComponent* MeshComponent, const TArray<int32>& BonesOfInterest, FPrimitiveDrawInterface* PDI) const
+void FAnimationViewportClient::DrawMeshSubsetBones(const UDebugSkelMeshComponent* MeshComponent, const TArray<int32>& BonesOfInterest, FPrimitiveDrawInterface* PDI) const
 {
 	// this BonesOfInterest has to be in MeshComponent base, not Skeleton 
 	if ( MeshComponent && MeshComponent->SkeletalMesh && BonesOfInterest.Num() > 0 )
 	{
 		TArray<FTransform> WorldTransforms;
-		WorldTransforms.AddUninitialized(MeshComponent->GetNumComponentSpaceTransforms());
+		WorldTransforms.AddUninitialized(MeshComponent->GetNumDrawTransform());
 
 		TArray<FLinearColor> BoneColours;
-		BoneColours.AddUninitialized(MeshComponent->GetNumComponentSpaceTransforms());
+		BoneColours.AddUninitialized(MeshComponent->GetNumDrawTransform());
 
 		TArray<FBoneIndexType> RequiredBones;
 
-		const FReferenceSkeleton& RefSkeleton = MeshComponent->SkeletalMesh->RefSkeleton;
+		const FReferenceSkeleton& RefSkeleton = MeshComponent->GetReferenceSkeleton();
 
 		static const FName SelectionColorName("SelectionColor");
 
@@ -1355,7 +1347,8 @@ void FAnimationViewportClient::DrawMeshSubsetBones(const USkeletalMeshComponent*
 		const FLinearColor LinearSelectionColor( SelectionColor.IsColorSpecified() ? SelectionColor.GetSpecifiedColor() : FLinearColor::White );
 
 		// we could cache parent bones as we calculate, but right now I'm not worried about perf issue of this
-		for ( auto Iter = MeshComponent->RequiredBones.CreateConstIterator(); Iter; ++Iter)
+		const TArray<FBoneIndexType>& DrawBoneIndices = MeshComponent->GetDrawBoneIndices();
+		for ( auto Iter = DrawBoneIndices.CreateConstIterator(); Iter; ++Iter)
 		{
 			const int32 BoneIndex = *Iter;
 			bool bDrawBone = false;
@@ -1372,7 +1365,7 @@ void FAnimationViewportClient::DrawMeshSubsetBones(const USkeletalMeshComponent*
 					//found a bone we are interested in
 					if(ParentIndex >= 0)
 					{
-						WorldTransforms[ParentIndex] = MeshComponent->GetComponentSpaceTransforms()[ParentIndex]*MeshComponent->GetComponentTransform();
+						WorldTransforms[ParentIndex] = MeshComponent->GetDrawTransform(ParentIndex)*MeshComponent->GetComponentTransform();
 					}
 					BoneColours[BoneIndex] = LinearSelectionColor;
 					bDrawBone = true;
@@ -1390,11 +1383,11 @@ void FAnimationViewportClient::DrawMeshSubsetBones(const USkeletalMeshComponent*
 			{
 				//add to the list
 				RequiredBones.AddUnique(BoneIndex);
-				WorldTransforms[BoneIndex] = MeshComponent->GetComponentSpaceTransforms()[BoneIndex] * MeshComponent->GetComponentTransform();
+				WorldTransforms[BoneIndex] = MeshComponent->GetDrawTransform(BoneIndex) * MeshComponent->GetComponentTransform();
 			}
 		}
 
-		DrawBones(MeshComponent, RequiredBones, WorldTransforms, PDI, BoneColours, 0.3f);
+		DrawBones(RequiredBones, MeshComponent->GetReferenceSkeleton(), WorldTransforms, MeshComponent->BonesOfInterest, PDI, BoneColours, 0.3f);
 	}
 }
 
@@ -1407,7 +1400,7 @@ void FAnimationViewportClient::DrawSockets(const UDebugSkelMeshComponent* InPrev
 		for ( auto SocketIt = InSockets.CreateConstIterator(); SocketIt; ++SocketIt )
 		{
 			USkeletalMeshSocket* Socket = *(SocketIt);
-			FReferenceSkeleton& RefSkeleton = InPreviewMeshComponent->SkeletalMesh->RefSkeleton;
+			const FReferenceSkeleton& RefSkeleton = InPreviewMeshComponent->GetReferenceSkeleton();
 
 			const int32 ParentIndex = RefSkeleton.FindBoneIndex(Socket->BoneName);
 
@@ -1417,7 +1410,7 @@ void FAnimationViewportClient::DrawSockets(const UDebugSkelMeshComponent* InPrev
 			FVector Start, End;
 			if (ParentIndex >=0)
 			{
-				FTransform WorldTransformParent = InPreviewMeshComponent->GetComponentSpaceTransforms()[ParentIndex] * InPreviewMeshComponent->GetComponentTransform();
+				FTransform WorldTransformParent = InPreviewMeshComponent->GetDrawTransform(ParentIndex) * InPreviewMeshComponent->GetComponentTransform();
 				Start = WorldTransformParent.GetLocation();
 				End = WorldTransformSocket.GetLocation();
 			}
@@ -1556,17 +1549,6 @@ void FAnimationViewportClient::GetAllVertexIndicesUsedInSection(const FRawStatic
 		const int32 VertexIndexForWedge = IndexBuffer.Get(SkelMeshSection.BaseIndex + WedgeIndex);
 		OutIndices.Add(VertexIndexForWedge);
 	}
-}
-
-bool FAnimationViewportClient::PreviewComponentSelectionOverride(const UPrimitiveComponent* InComponent) const
-{
-	if (InComponent == GetPreviewScene()->GetPreviewMeshComponent())
-	{
-		const USkeletalMeshComponent* Component = CastChecked<USkeletalMeshComponent>(InComponent);
-		return (Component->GetSelectedEditorSection() != INDEX_NONE || Component->GetSelectedEditorMaterial() != INDEX_NONE);
-	}
-
-	return false;
 }
 
 FBox FAnimationViewportClient::ComputeBoundingBoxForSelectedEditorSection() const

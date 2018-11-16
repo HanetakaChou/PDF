@@ -9,209 +9,6 @@
 #include "BoundShaderStateCache.h"
 #include "CrossCompilerCommon.h"
 
-#if 0
-class FVulkanShaderVarying
-{
-public:
-	FVulkanShaderVarying():
-		Location(0),
-		Components(0)
-	{
-	}
-
-	uint16 Location;
-	TArray<ANSICHAR> Varying;
-	uint16 Components; // Scalars/Integers
-
-	friend bool operator==(const FVulkanShaderVarying& A, const FVulkanShaderVarying& B)
-	{
-		if (&A != &B)
-		{
-			return (A.Location == B.Location)
-				&& (A.Varying.Num() == B.Varying.Num())
-				&& (FMemory::Memcmp(A.Varying.GetData(), B.Varying.GetData(), A.Varying.Num() * sizeof(ANSICHAR)) == 0)
-				&& (A.Components == B.Components);
-		}
-		return true;
-	}
-
-	friend uint32 GetTypeHash(const FVulkanShaderVarying& Var)
-	{
-		uint32 Hash = GetTypeHash(Var.Location);
-		Hash ^= FCrc::MemCrc32(Var.Varying.GetData(), Var.Varying.Num() * sizeof(ANSICHAR));
-		return Hash;
-	}
-};
-
-inline FArchive& operator<<(FArchive& Ar, FVulkanShaderVarying& Var)
-{
-	check(!Ar.IsSaving() || Var.Components > 0);
-
-	Ar << Var.Varying;
-	Ar << Var.Location;
-	Ar << Var.Components;
-	return Ar;
-}
-#endif
-
-class FVulkanShaderSerializedBindings : public CrossCompiler::FShaderBindings
-{
-public:
-	FVulkanShaderSerializedBindings()
-	{
-		InOutMask = 0;
-		NumSamplers = 0;
-		NumUniformBuffers = 0;
-		NumUAVs = 0;
-		bHasRegularUniformBuffers = 0;
-	}
-};
-
-inline FArchive& operator<<(FArchive& Ar, FVulkanShaderSerializedBindings& Bindings)
-{
-	Ar << Bindings.PackedUniformBuffers;
-	Ar << Bindings.PackedGlobalArrays;
-	Ar << Bindings.ShaderResourceTable.ResourceTableBits;
-	Ar << Bindings.ShaderResourceTable.MaxBoundResourceTable;
-	Ar << Bindings.ShaderResourceTable.TextureMap;
-	Ar << Bindings.ShaderResourceTable.ShaderResourceViewMap;
-	Ar << Bindings.ShaderResourceTable.SamplerMap;
-	Ar << Bindings.ShaderResourceTable.UnorderedAccessViewMap;
-	Ar << Bindings.ShaderResourceTable.ResourceTableLayoutHashes;
-
-	Ar << Bindings.InOutMask;
-	Ar << Bindings.NumSamplers;
-	Ar << Bindings.NumUniformBuffers;
-	Ar << Bindings.NumUAVs;
-
-	return Ar;
-}
-
-class FNEWVulkanShaderDescriptorInfo
-{
-public:
-	TArray<VkDescriptorType> DescriptorTypes;
-	uint16 NumImageInfos;
-	uint16 NumBufferInfos;
-};
-
-inline FArchive& operator<<(FArchive& Ar, FNEWVulkanShaderDescriptorInfo& Info)
-{
-	int32 NumDescriptorTypes = Info.DescriptorTypes.Num();
-	Ar << NumDescriptorTypes;
-	if (Ar.IsLoading())
-	{
-		Info.DescriptorTypes.Empty(NumDescriptorTypes);
-		Info.DescriptorTypes.AddUninitialized(NumDescriptorTypes);
-		for (int32 Index = 0; Index < NumDescriptorTypes; ++Index)
-		{
-			int32 Type;
-			Ar << Type;
-			Info.DescriptorTypes[Index] = (VkDescriptorType)Type;
-		}
-	}
-	else
-	{
-		for (int32 Index = 0; Index < NumDescriptorTypes; ++Index)
-		{
-			int32 Type = (int32)Info.DescriptorTypes[Index];
-			Ar << Type;
-		}
-	}
-	Ar << Info.NumImageInfos;
-	Ar << Info.NumBufferInfos;
-	return Ar;
-}
-
-
-struct FVulkanCodeHeader
-{
-	FVulkanShaderSerializedBindings SerializedBindings;
-
-	FNEWVulkanShaderDescriptorInfo NEWDescriptorInfo;
-
-	struct FPackedUBToVulkanBindingIndex
-	{
-		CrossCompiler::EPackedTypeName	TypeName;
-		uint8							VulkanBindingIndex;
-	};
-	TArray<FPackedUBToVulkanBindingIndex> NEWPackedUBToVulkanBindingIndices;
-
-	// List of memory copies from RHIUniformBuffer to packed uniforms when emulating UB's
-	TArray<CrossCompiler::FUniformBufferCopyInfo> UniformBuffersCopyInfo;
-
-	FString ShaderName;
-	FSHAHash SourceHash;
-
-	uint64 UniformBuffersWithDescriptorMask;
-
-	// Number of uniform buffers (not including PackedGlobalUBs)
-	uint32 NEWNumNonGlobalUBs;
-
-	// (Separated to improve cache) if this is non-zero, then we can assume all UBs are emulated
-	TArray<uint32> NEWPackedGlobalUBSizes;
-
-	// Number of copies per emulated buffer source index (to skip searching among UniformBuffersCopyInfo). Upper uint16 is the index, Lower uint16 is the count
-	TArray<uint32> NEWEmulatedUBCopyRanges;
-
-	FBaseShaderResourceTable ShaderResourceTable;
-};
-
-inline FArchive& operator<<(FArchive& Ar, FVulkanCodeHeader& Header)
-{
-	Ar << Header.SerializedBindings;
-	Ar << Header.NEWDescriptorInfo;
-	{
-		int32 NumInfos = Header.NEWPackedUBToVulkanBindingIndices.Num();
-		Ar << NumInfos;
-		if (Ar.IsSaving())
-		{
-			for (int32 Index = 0; Index < NumInfos; ++Index)
-			{
-				Ar << Header.NEWPackedUBToVulkanBindingIndices[Index].TypeName;
-				Ar << Header.NEWPackedUBToVulkanBindingIndices[Index].VulkanBindingIndex;
-			}
-		}
-		else if (Ar.IsLoading())
-		{
-			Header.NEWPackedUBToVulkanBindingIndices.Empty(NumInfos);
-			Header.NEWPackedUBToVulkanBindingIndices.AddUninitialized(NumInfos);
-			for (int32 Index = 0; Index < NumInfos; ++Index)
-			{
-				Ar << Header.NEWPackedUBToVulkanBindingIndices[Index].TypeName;
-				Ar << Header.NEWPackedUBToVulkanBindingIndices[Index].VulkanBindingIndex;
-			}
-		}
-	}
-	Ar << Header.NEWNumNonGlobalUBs;
-	Ar << Header.NEWPackedGlobalUBSizes;
-	Ar << Header.NEWEmulatedUBCopyRanges;
-	{
-		int32 NumInfos = Header.UniformBuffersCopyInfo.Num();
-		Ar << NumInfos;
-		if (Ar.IsSaving())
-		{
-			for (int32 Index = 0; Index < NumInfos; ++Index)
-			{
-				Ar << Header.UniformBuffersCopyInfo[Index];
-			}
-		}
-		else if (Ar.IsLoading())
-		{
-			Header.UniformBuffersCopyInfo.Empty(NumInfos);
-			for (int32 Index = 0; Index < NumInfos; ++Index)
-			{
-				CrossCompiler::FUniformBufferCopyInfo Info;
-				Ar << Info;
-				Header.UniformBuffersCopyInfo.Add(Info);
-			}
-		}
-	}
-	Ar << Header.ShaderName;
-	Ar << Header.UniformBuffersWithDescriptorMask;
-	Ar << Header.SourceHash;
-	return Ar;
-}
 
 static inline VkDescriptorType BindingToDescriptorType(EVulkanBindingType::EType Type)
 {
@@ -227,10 +24,268 @@ static inline VkDescriptorType BindingToDescriptorType(EVulkanBindingType::EType
 	case EVulkanBindingType::StorageImage:			return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	case EVulkanBindingType::StorageTexelBuffer:	return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
 	case EVulkanBindingType::StorageBuffer:			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	case EVulkanBindingType::InputAttachment:		return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	default:
 		check(0);
 		break;
 	}
 
 	return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+}
+
+static inline EVulkanBindingType::EType DescriptorTypeToBinding(VkDescriptorType Type, bool bUsePacked = false)
+{
+	switch (Type)
+	{
+	case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:			return bUsePacked ? EVulkanBindingType::PackedUniformBuffer : EVulkanBindingType::UniformBuffer;
+	case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:	return EVulkanBindingType::CombinedImageSampler;
+	case VK_DESCRIPTOR_TYPE_SAMPLER:				return EVulkanBindingType::Sampler;
+	case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:			return EVulkanBindingType::Image;
+	case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:	return EVulkanBindingType::UniformTexelBuffer;
+	case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:			return EVulkanBindingType::StorageImage;
+	case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:	return EVulkanBindingType::StorageTexelBuffer;
+	case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:			return EVulkanBindingType::StorageBuffer;
+	case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:		return EVulkanBindingType::InputAttachment;
+	default:
+		check(0);
+		break;
+	}
+
+	return EVulkanBindingType::Count;
+}
+
+
+// Vulkan ParameterMap:
+// Buffer Index = EBufferIndex
+// Base Offset = Index into the subtype
+// Size = Ignored for non-globals
+struct FVulkanShaderHeader
+{
+	enum EType
+	{
+		PackedGlobal,
+		Global,
+		UniformBuffer,
+
+		Count,
+	};
+
+	struct FSpirvInfo
+	{
+		FSpirvInfo() = default;
+		FSpirvInfo(uint32 InDescriptorSetOffset, uint32 InBindingIndexOffset)
+			: DescriptorSetOffset(InDescriptorSetOffset)
+			, BindingIndexOffset(InBindingIndexOffset)
+		{
+		}
+
+		uint32	DescriptorSetOffset = UINT32_MAX;
+		uint32	BindingIndexOffset = UINT32_MAX;
+	};
+
+	struct FUBResourceInfo
+	{
+		uint16									SourceUBResourceIndex;
+		uint16									OriginalBindingIndex;
+		// Index into the Global Array
+		uint16									GlobalIndex;
+		TEnumAsByte<EUniformBufferBaseType>		UBBaseType;
+		uint8									Pad0 = 0;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+		FString									DebugName;
+#endif
+	};
+
+	struct FUniformBufferInfo
+	{
+		uint32					LayoutHash;
+		uint16					ConstantDataOriginalBindingIndex;
+		uint8					bOnlyHasResources;
+		uint8					Pad0 = 0;
+		//uint32					ConstantDataSizeInBytes;
+		TArray<FUBResourceInfo>	ResourceEntries;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+		FString					DebugName;
+#endif
+	};
+	TArray<FUniformBufferInfo>	UniformBuffers;
+
+	struct FGlobalInfo
+	{
+		uint16							OriginalBindingIndex;
+		// If this is UINT16_MAX, it's a regular parameter, otherwise this is the SamplerState portion for a CombinedImageSampler
+		// and this is the index into Global for the Texture portion
+		uint16							CombinedSamplerStateAliasIndex;
+		uint16							TypeIndex;
+		// 1 if this is an immutable sampler
+		uint8							bImmutableSampler = 0;
+		uint8							Pad0 = 0;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+		FString							DebugName;
+#endif
+	};
+	TArray<FGlobalInfo>						Globals;
+	TArray<TEnumAsByte<VkDescriptorType>>	GlobalDescriptorTypes;
+
+	struct FPackedGlobalInfo
+	{
+		uint16							ConstantDataSizeInFloats;
+		CrossCompiler::EPackedTypeIndex	PackedTypeIndex;
+		uint8							PackedUBIndex;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+		FString							DebugName;
+#endif
+	};
+	TArray<FPackedGlobalInfo>	PackedGlobals;
+
+	struct FPackedUBInfo
+	{
+		uint32							SizeInBytes;
+		uint16							OriginalBindingIndex;
+		CrossCompiler::EPackedTypeIndex	PackedTypeIndex;
+		uint8							Pad0 = 0;
+		uint32							SPIRVDescriptorSetOffset;
+		uint32							SPIRVBindingIndexOffset;
+	};
+	TArray<FPackedUBInfo>					PackedUBs;
+
+	enum class EAttachmentType : uint8
+	{
+		Color,
+		Depth,
+
+		Count,
+	};
+	struct FInputAttachment
+	{
+		uint16			GlobalIndex;
+		EAttachmentType	Type;
+		uint8			Pad = 0;
+	};
+	TArray<FInputAttachment>				InputAttachments;
+
+	// Number of copies per emulated buffer source index (to skip searching among UniformBuffersCopyInfo). Upper uint16 is the index, Lower uint16 is the count
+	TArray<uint32>									EmulatedUBCopyRanges;
+	TArray<CrossCompiler::FUniformBufferCopyInfo>	EmulatedUBsCopyInfo;
+
+	// Mostly relevant for Vertex Shaders
+	uint32									InOutMask;
+
+	bool									bHasRealUBs;
+	uint8									Pad0 = 0;
+	uint16									Pad1 = 1;
+
+	FSHAHash								SourceHash;
+	//FSHAHash								SpirvHash;
+
+	TArray<FSpirvInfo>						UniformBufferSpirvInfos;
+	TArray<FSpirvInfo>						GlobalSpirvInfos;
+
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	FString									DebugName;
+#endif
+
+	FVulkanShaderHeader() = default;
+	enum EInit
+	{
+		EZero
+	};
+	FVulkanShaderHeader(EInit)
+		: InOutMask(0)
+		, bHasRealUBs(0)
+	{
+	}
+};
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FSpirvInfo& Info)
+{
+	Ar << Info.DescriptorSetOffset;
+	Ar << Info.BindingIndexOffset;
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FUBResourceInfo& Entry)
+{
+	Ar << Entry.SourceUBResourceIndex;
+	Ar << Entry.OriginalBindingIndex;
+	Ar << Entry.GlobalIndex;
+	Ar << Entry.UBBaseType;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	Ar << Entry.DebugName;
+#endif
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FUniformBufferInfo& UBInfo)
+{
+	Ar << UBInfo.LayoutHash;
+	Ar << UBInfo.ConstantDataOriginalBindingIndex;
+	Ar << UBInfo.bOnlyHasResources;
+	//Ar << UBInfo.ConstantDataSizeInBytes;
+	Ar << UBInfo.ResourceEntries;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	Ar << UBInfo.DebugName;
+#endif
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FPackedGlobalInfo& PackedGlobalInfo)
+{
+	Ar << PackedGlobalInfo.ConstantDataSizeInFloats;
+	Ar << PackedGlobalInfo.PackedTypeIndex;
+	Ar << PackedGlobalInfo.PackedUBIndex;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	Ar << PackedGlobalInfo.DebugName;
+#endif
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FPackedUBInfo& PackedUBInfo)
+{
+	Ar << PackedUBInfo.SizeInBytes;
+	Ar << PackedUBInfo.OriginalBindingIndex;
+	Ar << PackedUBInfo.PackedTypeIndex;
+	Ar << PackedUBInfo.SPIRVDescriptorSetOffset;
+	Ar << PackedUBInfo.SPIRVBindingIndexOffset;
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FGlobalInfo& GlobalInfo)
+{
+	Ar << GlobalInfo.OriginalBindingIndex;
+	Ar << GlobalInfo.CombinedSamplerStateAliasIndex;
+	Ar << GlobalInfo.TypeIndex;
+	Ar << GlobalInfo.bImmutableSampler;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	Ar << GlobalInfo.DebugName;
+#endif
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader::FInputAttachment& AttachmentInfo)
+{
+	Ar << AttachmentInfo.GlobalIndex;
+	Ar << AttachmentInfo.Type;
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVulkanShaderHeader& Header)
+{
+	Ar << Header.UniformBuffers;
+	Ar << Header.Globals;
+	Ar << Header.GlobalDescriptorTypes;
+	Ar << Header.PackedGlobals;
+	Ar << Header.PackedUBs;
+	Ar << Header.InputAttachments;
+	Ar << Header.EmulatedUBCopyRanges;
+	Ar << Header.EmulatedUBsCopyInfo;
+	Ar << Header.InOutMask;
+	Ar << Header.bHasRealUBs;
+	Ar << Header.SourceHash;
+	Ar << Header.UniformBufferSpirvInfos;
+	Ar << Header.GlobalSpirvInfos;
+#if VULKAN_ENABLE_SHADER_DEBUG_NAMES
+	Ar << Header.DebugName;
+#endif
+	return Ar;
 }

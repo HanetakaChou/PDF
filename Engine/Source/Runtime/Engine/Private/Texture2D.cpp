@@ -30,7 +30,7 @@
 #include "Streaming/Texture2DStreamIn_IO_AsyncCreate.h"
 #include "Streaming/Texture2DStreamIn_IO_AsyncReallocate.h"
 #include "Streaming/Texture2DStreamIn_IO_Virtual.h"
-#include "AsyncFileHandle.h"
+#include "Async/AsyncFileHandle.h"
 
 UTexture2D::UTexture2D(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -186,6 +186,7 @@ void FTexture2DMipMap::Serialize(FArchive& Ar, UObject* Owner, int32 MipIdx)
 	BulkData.Serialize(Ar, Owner, MipIdx);
 	Ar << SizeX;
 	Ar << SizeY;
+	Ar << SizeZ;
 
 #if WITH_EDITORONLY_DATA
 	if (!bCooked)
@@ -273,7 +274,27 @@ void UTexture2D::InvalidateLastRenderTimeForStreaming()
 	}
 	TextureReference.InvalidateLastRenderTime();
 }
-
+int32 UTexture2D::CalcNumOptionalMips() const
+{
+	if (PlatformData)
+	{
+		int32 NumOptionalMips = 0;
+		for (int32 MipIndex = 0; MipIndex < PlatformData->Mips.Num(); ++MipIndex)
+		{
+			if (PlatformData->Mips[MipIndex].BulkData.GetBulkDataFlags() & BULKDATA_OptionalPayload)
+			{
+				++NumOptionalMips;
+			}
+			else
+			{
+				// currently the rules specify all the optional mips need to be at the end of hte mip chain
+				break;
+			}
+		}
+		return NumOptionalMips;
+	}
+	return 0;
+}
 int32 UTexture2D::GetNumResidentMips() const
 {
 	FTexture2DResource* Texture2DResource = (FTexture2DResource*)Resource;
@@ -472,7 +493,8 @@ void UTexture2D::UpdateResource()
 	// Make sure there are no pending requests in flight.
 	while( UpdateStreamingStatus() == true )
 	{
-		// Give up timeslice.
+		// Force flush the RHI threads to execute all commands issued for texture streaming, and give up timeslice.
+		FlushRenderingCommands();
 		FPlatformProcess::Sleep(0);
 	}
 
@@ -525,31 +547,29 @@ FString UTexture2D::GetDesc()
 		);
 }
 
-bool UTexture2D::IsReadyForStreaming() const
-{
-	FTexture2DResource* Texture2DResource = (FTexture2DResource*)Resource;
-	return Texture2DResource && Texture2DResource->bReadyForStreaming;
-}
-
-
 void UTexture2D::WaitForStreaming()
 {
-	// Make sure there are no pending requests in flight otherwise calling UpdateIndividualTexture could be prevented to defined a new requested mip.
-	while (	!IsReadyForStreaming() || UpdateStreamingStatus() ) 
+	if (bIsStreamable)
 	{
-		// Give up timeslice.
-		FPlatformProcess::Sleep(0);
-	}
-
-	// Update the wanted mip and stream in..		
-	if (IStreamingManager::Get().IsTextureStreamingEnabled())
-	{
-		IStreamingManager::Get().GetTextureStreamingManager().UpdateIndividualTexture( this );
-
-		while (	UpdateStreamingStatus() ) 
+		// Make sure there are no pending requests in flight otherwise calling UpdateIndividualTexture could be prevented to defined a new requested mip.
+		while (	!IsReadyForStreaming() || UpdateStreamingStatus() ) 
 		{
-			// Give up timeslice.
+			// Force flush the RHI threads to execute all commands issued for texture streaming, and give up timeslice.
+			FlushRenderingCommands();
 			FPlatformProcess::Sleep(0);
+		}
+
+		// Update the wanted mip and stream in..		
+		if (IStreamingManager::Get().IsTextureStreamingEnabled())
+		{
+			IStreamingManager::Get().GetTextureStreamingManager().UpdateIndividualTexture( this );
+
+			while (	UpdateStreamingStatus() ) 
+			{
+				// Force flush the RHI threads to execute all commands issued for texture streaming, and give up timeslice.
+				FlushRenderingCommands();
+				FPlatformProcess::Sleep(0);
+			}
 		}
 	}
 }
@@ -564,7 +584,8 @@ bool UTexture2D::UpdateStreamingStatus( bool bWaitForMipFading /*= false*/ )
 			PendingUpdate->Abort();
 		}
 
-		PendingUpdate->Tick(this, FTexture2DUpdate::TT_None);
+		// When the renderthread is the gamethread, allow the Tick to execute rendercommands.
+		PendingUpdate->Tick(this, GIsThreadedRendering ? FTexture2DUpdate::TT_None : FTexture2DUpdate::TT_Render);
 		if (!PendingUpdate->IsCompleted())
 		{
 			return true;
@@ -578,19 +599,22 @@ bool UTexture2D::UpdateStreamingStatus( bool bWaitForMipFading /*= false*/ )
 		PendingUpdate = nullptr;
 
 #if WITH_EDITOR
-		// When all the requested mips are streamed in, generate an empty property changed event, to force the
-		// ResourceSize asset registry tag to be recalculated.
-		FPropertyChangedEvent EmptyPropertyChangedEvent(nullptr);
-		FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(this, EmptyPropertyChangedEvent);
-
-		// We can't load the source art from a bulk data object if the texture itself is pending kill because the linker will have been detached.
-		// In this case we don't rebuild the data and instead let the streaming request be cancelled. This will let the garbage collector finish
-		// destroying the object.
-		if (bRebuildPlatformData)
+		if (GIsEditor)
 		{
-			ForceRebuildPlatformData();
-			// @TODO this can not be called from this callstack since the entry needs to be removed completely from the streamer.
-			// UpdateResource();
+			// When all the requested mips are streamed in, generate an empty property changed event, to force the
+			// ResourceSize asset registry tag to be recalculated.
+			FPropertyChangedEvent EmptyPropertyChangedEvent(nullptr);
+			FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(this, EmptyPropertyChangedEvent);
+
+			// We can't load the source art from a bulk data object if the texture itself is pending kill because the linker will have been detached.
+			// In this case we don't rebuild the data and instead let the streaming request be cancelled. This will let the garbage collector finish
+			// destroying the object.
+			if (bRebuildPlatformData)
+			{
+				ForceRebuildPlatformData();
+				// @TODO this can not be called from this callstack since the entry needs to be removed completely from the streamer.
+				// UpdateResource();
+			}
 		}
 #endif
 	}
@@ -837,7 +861,7 @@ FTextureResource* UTexture2D::CreateResource()
 	{
 		if (bFormatNotSupported)
 		{
-			UE_LOG(LogTexture, Error, TEXT("%s is %s which is not supported."), *GetFullName(), GPixelFormats[PixelFormat].Name);
+			UE_LOG(LogTexture, Error, TEXT("%s is %s [raw type %d] which is not supported."), *GetFullName(), GPixelFormats[PixelFormat].Name, static_cast<int32>(PixelFormat));
 		}
 		else if (bNotSupportedByRHI)
 		{
@@ -883,7 +907,7 @@ FTextureResource* UTexture2D::CreateResource()
 		{	
 			RequestedMips = FMath::Max( RequestedMips, ResourceMem->GetNumMips() );
 		}
-		RequestedMips	= FMath::Max( RequestedMips, 1 );
+		RequestedMips	= FMath::Max( RequestedMips, 0 );
 	}
 
 	FTexture2DResource* Texture2DResource = NULL;
@@ -1011,7 +1035,7 @@ int32 UTexture2D::Blueprint_GetSizeX() const
 	if (!GetSizeX())
 	{
 		const UTextureLODSettings* LODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
-		const int32 CookedLODBias = LODSettings->CalculateLODBias(Source.SizeX, Source.SizeY, LODGroup, LODBias, 0, MipGenSettings);
+		const int32 CookedLODBias = LODSettings->CalculateLODBias(Source.SizeX, Source.SizeY, MaxTextureSize, LODGroup, LODBias, 0, MipGenSettings);
 		return FMath::Max<int32>(Source.SizeX >> CookedLODBias, 1);
 	}
 #endif
@@ -1026,7 +1050,7 @@ int32 UTexture2D::Blueprint_GetSizeY() const
 	if (!GetSizeY())
 	{
 		const UTextureLODSettings* LODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
-		const int32 CookedLODBias = LODSettings->CalculateLODBias(Source.SizeX, Source.SizeY, LODGroup, LODBias, 0, MipGenSettings);
+		const int32 CookedLODBias = LODSettings->CalculateLODBias(Source.SizeX, Source.SizeY, MaxTextureSize, LODGroup, LODBias, 0, MipGenSettings);
 		return FMath::Max<int32>(Source.SizeY >> CookedLODBias, 1);
 	}
 #endif
@@ -1222,11 +1246,7 @@ void FTexture2DResource::InitRHI()
 
 	// Create the RHI texture.
 	uint32 TexCreateFlags = (Owner->SRGB ? TexCreate_SRGB : 0) | TexCreate_OfflineProcessed | TexCreate_Streamable;
-	// if no miptail is available then create the texture without a packed miptail
-	if( Owner->GetMipTailBaseIndex() == -1 )
-	{
-		TexCreateFlags |= TexCreate_NoMipTail;
-	}
+	ensure(Owner->GetMipTailBaseIndex() != -1); //TexCreate_NoMipTail is deprecated
 	// disable tiled format if needed
 	if( Owner->bNoTiling )
 	{

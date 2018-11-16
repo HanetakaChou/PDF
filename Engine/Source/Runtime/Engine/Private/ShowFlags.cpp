@@ -329,7 +329,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	// NVCHANGE_END: Add VXGI
 }
 
-void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex ViewModeIndex, FEngineShowFlags& EngineShowFlags, FName CurrentBufferVisualizationMode, bool bIsSplitScreen)
+void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex ViewModeIndex, FEngineShowFlags& EngineShowFlags, FName CurrentBufferVisualizationMode)
 {
 	if(ShowFlagInitMode == ESFIM_Game)
 	{
@@ -354,14 +354,6 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		}
 	}
 
-	if( bIsSplitScreen )
-	{
-		//Disabling some post processing effects in split screen for now as they don't work correctly.
-		EngineShowFlags.TemporalAA = 0;
-		EngineShowFlags.MotionBlur = 0;
-		EngineShowFlags.Bloom = 0;
-	}
-
 	{
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.LightFunctionQuality"));
 		if(ICVar->GetValueOnGameThread() <= 0)
@@ -383,6 +375,14 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		if(ICVar->GetValueOnGameThread() <= 0)
 		{
 			EngineShowFlags.DynamicShadows = 0;
+		}
+	}
+
+	{
+		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SkyLightingQuality"));
+		if (ICVar->GetValueOnGameThread() <= 0)
+		{
+			EngineShowFlags.SkyLighting = 0;
 		}
 	}
 

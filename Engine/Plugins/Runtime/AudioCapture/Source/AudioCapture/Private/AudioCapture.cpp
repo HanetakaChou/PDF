@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "AudioCapture.h"
+#include "CoreMinimal.h"
 #include "Misc/ScopeLock.h"
 #include "Modules/ModuleManager.h"
 #include "AudioCaptureInternal.h"
@@ -75,7 +76,7 @@ bool FAudioCapture::AbortStream()
 	return false;
 }
 
-bool FAudioCapture::GetStreamTime(double& OutStreamTime)
+bool FAudioCapture::GetStreamTime(double& OutStreamTime) const
 {
 	if (Impl.IsValid())
 	{
@@ -84,7 +85,16 @@ bool FAudioCapture::GetStreamTime(double& OutStreamTime)
 	return false;
 }
 
-bool FAudioCapture::IsStreamOpen()
+int32 FAudioCapture::GetSampleRate() const
+{
+	if (Impl.IsValid())
+	{
+		return Impl->GetSampleRate();
+	}
+	return 0;
+}
+
+bool FAudioCapture::IsStreamOpen() const
 {
 	if (Impl.IsValid())
 	{
@@ -93,7 +103,7 @@ bool FAudioCapture::IsStreamOpen()
 	return false;
 }
 
-bool FAudioCapture::IsCapturing()
+bool FAudioCapture::IsCapturing() const
 {
 	if (Impl.IsValid())
 	{
@@ -102,14 +112,11 @@ bool FAudioCapture::IsCapturing()
 	return false;
 }
 
-static const float MAX_LOOK_AHEAD_DELAY_MSEC = 100.9f;
-
 FAudioCaptureSynth::FAudioCaptureSynth()
-	: bSreamOpened(false)
+	: NumSamplesEnqueued(0)
 	, bInitialized(false)
+	, bIsCapturing(false)
 {
-	CurrentInputWriteIndex.Set(1);
-	CurrentOutputReadIndex.Set(0);
 }
 
 FAudioCaptureSynth::~FAudioCaptureSynth()
@@ -118,20 +125,17 @@ FAudioCaptureSynth::~FAudioCaptureSynth()
 
 void FAudioCaptureSynth::OnAudioCapture(float* AudioData, int32 NumFrames, int32 NumChannels, double StreamTime, bool bOverflow)
 {
-	// If our read and write indices are the same, bump up our write index
-	if (CurrentInputWriteIndex.GetValue() == CurrentOutputReadIndex.GetValue())
-	{
-		CurrentInputWriteIndex.Set((CurrentInputWriteIndex.GetValue() + 1) % NumBuffers);
-	}
-
-	// Get the write buffer
-	int32 WriteIndex = CurrentInputWriteIndex.GetValue();
-	TArray<float>& WriteBuffer = AudioDataBuffers[WriteIndex];
-
 	int32 NumSamples = NumChannels * NumFrames;
-	int32 Index = WriteBuffer.AddUninitialized(NumSamples);
-	float* WriteBufferPtr = WriteBuffer.GetData();
-	FMemory::Memcpy(&WriteBufferPtr[Index], AudioData, NumSamples * sizeof(float));
+
+	FScopeLock Lock(&CaptureCriticalSection);
+
+	if (bIsCapturing)
+	{
+		// Append the audio memory to the capture data buffer
+		int32 Index = AudioCaptureData.AddUninitialized(NumSamples);
+		float* AudioCaptureDataPtr = AudioCaptureData.GetData();
+		FMemory::Memcpy(&AudioCaptureDataPtr[Index], AudioData, NumSamples * sizeof(float));
+	}
 }
 
 bool FAudioCaptureSynth::GetDefaultCaptureDeviceInfo(FCaptureDeviceInfo& OutInfo)
@@ -141,27 +145,38 @@ bool FAudioCaptureSynth::GetDefaultCaptureDeviceInfo(FCaptureDeviceInfo& OutInfo
 
 bool FAudioCaptureSynth::OpenDefaultStream()
 {
-	check(!AudioCapture.IsStreamOpen());
+	bool bSuccess = true;
+	if (!AudioCapture.IsStreamOpen())
+	{
+		FAudioCaptureStreamParam StreamParam;
+		StreamParam.Callback = this;
+		StreamParam.NumFramesDesired = 1024;
 
-	FAudioCaptureStreamParam StreamParam;
-	StreamParam.Callback = this;
-	StreamParam.NumFramesDesired = 1024;
+		// Prepare the audio buffer memory for 2 seconds of stereo audio at 48k SR to reduce chance for allocation in callbacks
+		AudioCaptureData.Reserve(2 * 2 * 48000);
 
-	return AudioCapture.OpenDefaultCaptureStream(StreamParam);
+		// Start the stream here to avoid hitching the audio render thread. 
+		if (AudioCapture.OpenDefaultCaptureStream(StreamParam))
+		{
+			AudioCapture.StartStream();
+		}
+		else
+		{
+			bSuccess = false;
+		}
+	}
+	return bSuccess;
 }
 
 bool FAudioCaptureSynth::StartCapturing()
 {
-	for (int32 i = 0; i < NumBuffers; ++i)
-	{
-		AudioDataBuffers[i].Reset();
-	}
+	FScopeLock Lock(&CaptureCriticalSection);
+
+	AudioCaptureData.Reset();
 
 	check(AudioCapture.IsStreamOpen());
-	check(!AudioCapture.IsCapturing());
 
-	AudioCapture.StartStream();
-
+	bIsCapturing = true;
 	return true;
 }
 
@@ -169,61 +184,49 @@ void FAudioCaptureSynth::StopCapturing()
 {
 	check(AudioCapture.IsStreamOpen());
 	check(AudioCapture.IsCapturing());
-	AudioCapture.StopStream();
-	bSreamOpened = false;
+	FScopeLock Lock(&CaptureCriticalSection);
+	bIsCapturing = false;
 }
 
 void FAudioCaptureSynth::AbortCapturing()
 {
 	AudioCapture.AbortStream();
 	AudioCapture.CloseStream();
-	bSreamOpened = false;
-	bInitialized = false;
 }
 
-bool FAudioCaptureSynth::IsStreamOpen()
+bool FAudioCaptureSynth::IsStreamOpen() const
 {
 	return AudioCapture.IsStreamOpen();
 }
 
-bool FAudioCaptureSynth::IsCapturing()
+bool FAudioCaptureSynth::IsCapturing() const
 {
-	return AudioCapture.IsCapturing();
+	return bIsCapturing;
+}
+
+int32 FAudioCaptureSynth::GetNumSamplesEnqueued()
+{
+	FScopeLock Lock(&CaptureCriticalSection);
+	return AudioCaptureData.Num();
 }
 
 bool FAudioCaptureSynth::GetAudioData(TArray<float>& OutAudioData)
 {
-	// Reset the output buffer, hopefully the caller is re-using the same TArray to avoid thrashing.
-	OutAudioData.Reset();
+	FScopeLock Lock(&CaptureCriticalSection);
 
-	bool bHadData = false;
-
-	// If these indices are the same then we're retrieving audio faster than we're producing
-	if (CurrentOutputReadIndex.GetValue() != CurrentInputWriteIndex.GetValue())
+	int32 CaptureDataSamples = AudioCaptureData.Num();
+	if (CaptureDataSamples > 0)
 	{
-		// Get the current buffer index value
-		int32 CurrentIndex = CurrentOutputReadIndex.GetValue();
+		// Append the capture audio to the output buffer
+		int32 OutIndex = OutAudioData.AddUninitialized(CaptureDataSamples);
+		float* OutDataPtr = OutAudioData.GetData();
+		FMemory::Memcpy(&OutDataPtr[OutIndex], AudioCaptureData.GetData(), CaptureDataSamples * sizeof(float));
 
-		// Get the audio data at this index.
-		TArray<float>& Data = AudioDataBuffers[CurrentIndex];
-
-		// If the data is non-empty, that means we've generated non-zero audio
-		if (Data.Num())
-		{
-			// Append the data to the output buffer
-			OutAudioData.Append(Data);
-
-			// And now reset the data so if no audio is generated in the future, it'll be registered as a silent audio buffer
-			Data.Reset();
-
-			bHadData = true;
-		}
-
-		// Publish that we've read from the buffer so the next audio callback will now write into this buffer
-		CurrentOutputReadIndex.Set((CurrentIndex + 1) % NumBuffers);
+		// Reset the capture data buffer since we copied the audio out
+		AudioCaptureData.Reset();
+		return true;
 	}
-
-	return bHadData;
+	return false;
 }
 
 } // namespace audio

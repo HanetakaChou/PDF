@@ -12,10 +12,23 @@
 #include "BehaviorTree/BehaviorTreeManager.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Tasks/BTTask_RunBehaviorDynamic.h"
+#include "ProfilingDebugging/ScopedTimers.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/ConfigCacheIni.h"
+
 
 #if USE_BEHAVIORTREE_DEBUGGER
 int32 UBehaviorTreeComponent::ActiveDebuggerCounter = 0;
+#endif
+
+// Code for timing BT Search
+CSV_DEFINE_CATEGORY(BT_COMPONENT, true);
+static TAutoConsoleVariable<int32> CVarBTRecordFrameSearchTimes(TEXT("BehaviorTree.RecordFrameSearchTimes"), 0, TEXT("Record Search Times Per Frame For Perf Stats"));
+#if !UE_BUILD_SHIPPING
+bool UBehaviorTreeComponent::bAddedEndFrameCallback = false;
+double UBehaviorTreeComponent::FrameSearchTime = 0.;
+int32 UBehaviorTreeComponent::NumSearchTimeCalls = 0;
 #endif
 
 struct FScopedBehaviorTreeLock
@@ -59,6 +72,15 @@ UBehaviorTreeComponent::UBehaviorTreeComponent(const FObjectInitializer& ObjectI
 	bWantsInitializeComponent = true; 
 	bIsRunning = false;
 	bIsPaused = false;
+
+	// Adding hook for bespoke framepro BT timings for BR
+#if !UE_BUILD_SHIPPING
+	if (!bAddedEndFrameCallback)
+	{
+		bAddedEndFrameCallback = true;
+		FCoreDelegates::OnEndFrame.AddStatic(&UBehaviorTreeComponent::EndFrame);
+	}
+#endif
 }
 
 UBehaviorTreeComponent::UBehaviorTreeComponent(FVTableHelper& Helper)
@@ -210,6 +232,8 @@ void UBehaviorTreeComponent::ProcessPendingInitialize()
 
 void UBehaviorTreeComponent::StopTree(EBTStopMode::Type StopMode)
 {
+	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_StopTree);
+
 	if (StopTreeLock)
 	{
 		bDeferredStopTree = true;
@@ -374,6 +398,8 @@ void UBehaviorTreeComponent::RestartTree()
 
 void UBehaviorTreeComponent::Cleanup()
 {
+	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_Cleanup);
+
 	StopTree(EBTStopMode::Forced);
 	RemoveAllInstances();
 
@@ -762,6 +788,12 @@ void UBehaviorTreeComponent::RequestExecution(UBTCompositeNode* RequestedOn, int
 											  int32 RequestedByChildIndex, EBTNodeResult::Type ContinueWithResult, bool bStoreForDebugger)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_SearchTime);
+#if !UE_BUILD_SHIPPING // Disable in shipping builds
+	// Code for timing BT Search
+	CSV_SCOPED_TIMING_STAT(BT_COMPONENT, AI_BehaviorTree_SearchTime);
+
+	FScopedSwitchedCountedDurationTimer ScopedSwitchedCountedDurationTimer(FrameSearchTime, NumSearchTimeCalls, CVarBTRecordFrameSearchTimes.GetValueOnGameThread() != 0);
+#endif
 
 	UE_VLOG(GetOwner(), LogBehaviorTree, Log, TEXT("Execution request by %s (result: %s)"),
 		*UBehaviorTreeTypes::DescribeNodeHelper(RequestedBy),
@@ -1009,7 +1041,7 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 		{
 			// special case: service node at root of top most subtree - don't remove/re-add them when tree is in looping mode
 			// don't bother with decorators parent == root means that they are on child branches
-			if (bLoopExecution && UpdateInfo.AuxNode->GetParentNode() == InstanceStack[0].RootNode &&
+			if (bLoopExecution && UpdateInfo.AuxNode->GetMyNode() == InstanceStack[0].RootNode &&
 				UpdateInfo.AuxNode->IsA(UBTService::StaticClass()))
 			{
 				if (UpdateInfo.Mode == EBTNodeUpdateMode::Remove ||
@@ -1079,6 +1111,17 @@ void UBehaviorTreeComponent::ApplySearchData(UBTNode* NewActiveNode)
 	// search is finalized, can't rollback anymore at this point
 	SearchData.RollbackInstanceIdx = INDEX_NONE;
 
+	// send all deactivation notifies for bookkeeping
+	for (int32 Idx = 0; Idx < SearchData.PendingNotifies.Num(); Idx++)
+	{
+		const FBehaviorTreeSearchUpdateNotify& NotifyInfo = SearchData.PendingNotifies[Idx];
+		if (InstanceStack.IsValidIndex(NotifyInfo.InstanceIndex))
+		{
+			InstanceStack[NotifyInfo.InstanceIndex].DeactivationNotify.ExecuteIfBound(*this, NotifyInfo.NodeResult);
+		}	
+	}
+
+	// apply changes to aux nodes and parallel tasks
 	const int32 NewNodeExecutionIndex = NewActiveNode ? NewActiveNode->GetExecutionIndex() : 0;
 
 	ApplySearchUpdates(SearchData.PendingUpdates, NewNodeExecutionIndex);
@@ -1103,6 +1146,7 @@ void UBehaviorTreeComponent::ApplySearchData(UBTNode* NewActiveNode)
 	// clear update list
 	// nothing should be added during application or tick - all changes are supposed to go to ExecutionRequest accumulator first
 	SearchData.PendingUpdates.Reset();
+	SearchData.PendingNotifies.Reset();
 }
 
 void UBehaviorTreeComponent::ApplyDiscardedSearch()
@@ -1128,13 +1172,17 @@ void UBehaviorTreeComponent::ApplyDiscardedSearch()
 
 	// remove everything else
 	SearchData.PendingUpdates.Reset();
+
+	// don't send deactivation notifies
+	SearchData.PendingNotifies.Reset();
 }
 
 void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_Tick);
 	SCOPE_CYCLE_COUNTER(STAT_AI_Overall);
+	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_Tick);
+	CSV_SCOPED_TIMING_STAT(BT_COMPONENT, AI_BehaviorTree_TickTime);
 
 	check(this != nullptr && this->IsPendingKill() == false);
 
@@ -1148,6 +1196,7 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 		{
 			const UBTAuxiliaryNode* AuxNode = InstanceInfo.ActiveAuxNodes[AuxIndex];
 			uint8* NodeMemory = AuxNode->GetNodeMemory<uint8>(InstanceInfo);
+			SCOPE_CYCLE_UOBJECT(AuxNode, AuxNode);
 			AuxNode->WrappedTickNode(*this, NodeMemory, DeltaTime);
 		}
 	}
@@ -1173,6 +1222,7 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 			{
 				const UBTTaskNode* ParallelTask = InstanceInfo.ParallelTasks[TaskIndex].TaskNode;
 				uint8* NodeMemory = ParallelTask->GetNodeMemory<uint8>(InstanceInfo);
+				SCOPE_CYCLE_UOBJECT(ParallelTask, ParallelTask);
 				ParallelTask->WrappedTickTask(*this, NodeMemory, DeltaTime);
 			}
 		}
@@ -1186,6 +1236,7 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 			{
 				UBTTaskNode* ActiveTask = (UBTTaskNode*)ActiveInstance.ActiveNode;
 				uint8* NodeMemory = ActiveTask->GetNodeMemory<uint8>(ActiveInstance);
+				SCOPE_CYCLE_UOBJECT(ActiveTask, ActiveTask);
 				ActiveTask->WrappedTickTask(*this, NodeMemory, DeltaTime);
 			}
 		}
@@ -1198,6 +1249,7 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 			{
 				UBTTaskNode* ActiveTask = (UBTTaskNode*)LastInstance.ActiveNode;
 				uint8* NodeMemory = ActiveTask->GetNodeMemory<uint8>(LastInstance);
+				SCOPE_CYCLE_UOBJECT(ActiveTask, ActiveTask);
 				ActiveTask->WrappedTickTask(*this, NodeMemory, DeltaTime);
 			}
 		}
@@ -1245,6 +1297,13 @@ void UBehaviorTreeComponent::ProcessExecutionRequest()
 	{
 		SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_SearchTime);
 
+#if !UE_BUILD_SHIPPING
+		// Code for timing BT Search
+		CSV_SCOPED_TIMING_STAT(BT_COMPONENT, AI_BehaviorTree_SearchTime);
+
+		FScopedSwitchedCountedDurationTimer ScopedSwitchedCountedDurationTimer(FrameSearchTime, NumSearchTimeCalls, CVarBTRecordFrameSearchTimes.GetValueOnGameThread() != 0);
+#endif
+
 		// copy current memory in case we need to rollback search
 		CopyInstanceMemoryToPersistent();
 
@@ -1254,6 +1313,10 @@ void UBehaviorTreeComponent::ProcessExecutionRequest()
 			const bool bDeactivated = DeactivateUpTo(ExecutionRequest.ExecuteNode, ExecutionRequest.ExecuteInstanceIdx, NodeResult);
 			if (!bDeactivated)
 			{
+				// error occurred and tree will restart, all pending deactivation notifies will be lost
+				// this is should happen
+				SearchData.PendingUpdates.Reset();
+
 				return;
 			}
 		}
@@ -1331,6 +1394,9 @@ void UBehaviorTreeComponent::ProcessExecutionRequest()
 						StoreDebuggerSearchStep(InstanceStack[ActiveInstanceIdx].ActiveNode, ActiveInstanceIdx, NodeResult);
 						StoreDebuggerRemovedInstance(ActiveInstanceIdx);
 						InstanceStack[ActiveInstanceIdx].DeactivateNodes(SearchData, ActiveInstanceIdx);
+
+						// store notify for later use if search is not reverted
+						SearchData.PendingNotifies.Add(FBehaviorTreeSearchUpdateNotify(ActiveInstanceIdx, NodeResult));
 
 						// and leave subtree
 						ActiveInstanceIdx--;
@@ -1552,6 +1618,9 @@ bool UBehaviorTreeComponent::DeactivateUpTo(UBTCompositeNode* Node, uint16 NodeI
 				return false;
 			}
 
+			// store notify for later use if search is not reverted
+			SearchData.PendingNotifies.Add(FBehaviorTreeSearchUpdateNotify(ActiveInstanceIdx, NodeResult));
+
 			ActiveInstanceIdx--;
 			DeactivatedChild = InstanceStack[ActiveInstanceIdx].ActiveNode;
 		}
@@ -1658,8 +1727,12 @@ void UBehaviorTreeComponent::ExecuteTask(UBTTaskNode* TaskNode)
 	// store instance before execution, it could result in pushing a subtree
 	uint16 InstanceIdx = ActiveInstanceIdx;
 
-	uint8* NodeMemory = (uint8*)(TaskNode->GetNodeMemory<uint8>(ActiveInstance));
-	EBTNodeResult::Type TaskResult = TaskNode->WrappedExecuteTask(*this, NodeMemory);
+	EBTNodeResult::Type TaskResult;
+	{
+		SCOPE_CYCLE_UOBJECT(TaskNode, TaskNode);
+		uint8* NodeMemory = (uint8*)(TaskNode->GetNodeMemory<uint8>(ActiveInstance));
+		TaskResult = TaskNode->WrappedExecuteTask(*this, NodeMemory);
+	}
 
 	// pass task finished if wasn't already notified (FinishLatentTask)
 	const UBTNode* ActiveNodeAfterExecution = GetActiveNode();
@@ -1906,6 +1979,9 @@ bool UBehaviorTreeComponent::PushInstance(UBehaviorTree& TreeAsset)
 		{
 			UBTService* ServiceNode = RootNode->Services[ServiceIndex];
 			uint8* NodeMemory = (uint8*)ServiceNode->GetNodeMemory<uint8>(InstanceStack[ActiveInstanceIdx]);
+
+			// send initial on search start events in case someone is using them for init logic
+			ServiceNode->NotifyParentActivation(SearchData);
 
 			InstanceStack[ActiveInstanceIdx].ActiveAuxNodes.Add(ServiceNode);
 			ServiceNode->WrappedOnBecomeRelevant(*this, NodeMemory);
@@ -2619,6 +2695,27 @@ void UBehaviorTreeComponent::StoreDebuggerBlackboard(TMap<FName, FString>& Black
 	}
 #endif
 }
+
+// Code for timing BT Search for FramePro
+#if !UE_BUILD_SHIPPING
+void UBehaviorTreeComponent::EndFrame()
+{
+	if (CVarBTRecordFrameSearchTimes.GetValueOnGameThread() != 0)
+	{
+		const double FrameSearchTimeMilliSecsDouble = FrameSearchTime * 1000.;
+		const double AvFrameSearchTimeMilliSecsDouble = (NumSearchTimeCalls > 0) ? FrameSearchTimeMilliSecsDouble / static_cast<double>(NumSearchTimeCalls) : 0.;
+		const float FrameSearchTimeMilliSecsFloat = static_cast<float>(FrameSearchTimeMilliSecsDouble);
+		const float AvFrameSearchTimeMilliSecsFloat = static_cast<float>(AvFrameSearchTimeMilliSecsDouble);
+
+		FPlatformMisc::CustomNamedStat("BehaviorTreeSearchTimeFrameMs", FrameSearchTimeMilliSecsFloat, "BehaviorTree", "MilliSecs");
+		FPlatformMisc::CustomNamedStat("BehaviorTreeSearchCallsFrame", NumSearchTimeCalls, "BehaviorTree", "Count");
+		FPlatformMisc::CustomNamedStat("BehaviorTreeSearchTimeFrameAvMs", AvFrameSearchTimeMilliSecsFloat, "BehaviorTree", "MilliSecs");
+
+		FrameSearchTime = 0.;
+		NumSearchTimeCalls = 0;
+	}
+}
+#endif
 
 bool UBehaviorTreeComponent::IsDebuggerActive()
 {

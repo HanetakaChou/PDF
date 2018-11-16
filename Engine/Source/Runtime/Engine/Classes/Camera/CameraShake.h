@@ -15,39 +15,55 @@ class AActor;
  * Parameters for defining oscillating camera shakes
  ************************************************************/
 
+/** Types of waveforms that can be used for camera shake oscillators */
+UENUM(BlueprintType)
+enum class EOscillatorWaveform : uint8
+{
+	/** A sinusoidal wave */
+	SineWave,
+
+	/** Perlin noise */
+	PerlinNoise,
+};
+
 /** Shake start offset parameter */
 UENUM()
 enum EInitialOscillatorOffset
 {
 	/** Start with random offset (default). */
-	EOO_OffsetRandom,
+	EOO_OffsetRandom UMETA(DisplayName = "Random"),
 	/** Start with zero offset. */
-	EOO_OffsetZero,
+	EOO_OffsetZero UMETA(DisplayName = "Zero"),
 	EOO_MAX,
 };
 
 /** Defines oscillation of a single number. */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct ENGINE_API FFOscillator
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** Amplitude of the sinusoidal oscillation. */
-	UPROPERTY(EditAnywhere, Category=FOscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FOscillator)
 	float Amplitude;
 
 	/** Frequency of the sinusoidal oscillation. */
-	UPROPERTY(EditAnywhere, Category = FOscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = FOscillator)
 	float Frequency;
 
 	/** Defines how to begin (either at zero, or at a randomized value. */
 	UPROPERTY(EditAnywhere, Category=FOscillator)
 	TEnumAsByte<enum EInitialOscillatorOffset> InitialOffset;
 	
+	/** Type of waveform to use for oscillation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FOscillator)
+	EOscillatorWaveform Waveform;
+
 	FFOscillator()
 		: Amplitude(0)
 		, Frequency(0)
 		, InitialOffset(0)
+		, Waveform( EOscillatorWaveform::SineWave ) 
 	{}
 
 	/** Advances the oscillation time and returns the current value. */
@@ -61,41 +77,41 @@ struct ENGINE_API FFOscillator
 };
 
 /** Defines FRotator oscillation. */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FROscillator
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** Pitch oscillation. */
-	UPROPERTY(EditAnywhere, Category=ROscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ROscillator)
 	struct FFOscillator Pitch;
 
 	/** Yaw oscillation. */
-	UPROPERTY(EditAnywhere, Category = ROscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ROscillator)
 	struct FFOscillator Yaw;
 
 	/** Roll oscillation. */
-	UPROPERTY(EditAnywhere, Category = ROscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ROscillator)
 	struct FFOscillator Roll;
 
 };
 
 /** Defines FVector oscillation. */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FVOscillator
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** Oscillation in the X axis. */
-	UPROPERTY(EditAnywhere, Category = VOscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VOscillator)
 	struct FFOscillator X;
 
 	/** Oscillation in the Y axis. */
-	UPROPERTY(EditAnywhere, Category = VOscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VOscillator)
 	struct FFOscillator Y;
 
 	/** Oscillation in the Z axis. */
-	UPROPERTY(EditAnywhere, Category = VOscillator)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VOscillator)
 	struct FFOscillator Z;
 
 };
@@ -121,6 +137,7 @@ class ENGINE_API UCameraShake : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
+public:
 	/** 
 	 *  If true to only allow a single instance of this shake class to play at any given time.
 	 *  Subsequent attempts to play this shake will simply restart the timer.
@@ -141,15 +158,15 @@ class ENGINE_API UCameraShake : public UObject
 	float OscillationBlendOutTime;
 
 	/** Rotational oscillation */
-	UPROPERTY(EditAnywhere, Category=Oscillation)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Oscillation)
 	struct FROscillator RotOscillation;
 
 	/** Positional oscillation */
-	UPROPERTY(EditAnywhere, Category=Oscillation)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Oscillation)
 	struct FVOscillator LocOscillation;
 
 	/** FOV oscillation */
-	UPROPERTY(EditAnywhere, Category=Oscillation)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Oscillation)
 	struct FFOscillator FOVOscillation;
 
 	/************************************************************
@@ -235,7 +252,7 @@ protected:
 
 public:
 	/** Overall intensity scale for this shake instance. */
-	UPROPERTY(transient, BlueprintReadOnly, Category = CameraShake)
+	UPROPERTY(transient, BlueprintReadWrite, Category = CameraShake)
 	float ShakeScale;
 
 	/** Time remaining for oscillation shakes. Less than 0.f means shake infinitely. */

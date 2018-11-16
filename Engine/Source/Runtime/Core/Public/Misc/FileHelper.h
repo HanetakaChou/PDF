@@ -6,7 +6,7 @@
 #include "Containers/UnrealString.h"
 #include "HAL/FileManager.h"
 #include "Containers/ArrayView.h"
-#include "EnumClassFlags.h"
+#include "Misc/EnumClassFlags.h"
 
 /*-----------------------------------------------------------------------------
 	FFileHelper
@@ -38,7 +38,7 @@ struct CORE_API FFileHelper
 	static void BufferToString( FString& Result, const uint8* Buffer, int32 Size );
 
 	/**
-	 * Load a binary file to a dynamic array.
+	 * Load a binary file to a dynamic array with two uninitialized bytes at end as padding.
 	 *
 	 * @param Result    Receives the contents of the file
 	 * @param Filename  The file to read
@@ -123,7 +123,7 @@ struct CORE_API FFileHelper
 
 	/**
 	* Checks to see if a filename is valid for saving.
-	* A filename must be under MAX_UNREAL_FILENAME_LENGTH to be saved
+	* A filename must be under FPlatformMisc::GetMaxPathLength() to be saved
 	*
 	* @param Filename	Filename, with or without path information, to check.
 	* @param OutError	If an error occurs, this is the reason why

@@ -37,7 +37,7 @@
 #include "Sound/SoundWave.h"
 #include "Components/AudioComponent.h"
 #include "Misc/ConfigCacheIni.h"
-#include "SlateApplication.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Preferences/PersonaOptions.h"
 #include "Settings/SkeletalMeshEditorSettings.h"
 
@@ -1147,7 +1147,7 @@ void SAnimationSequenceBrowser::CreateAssetTooltipResources()
 	ViewportWidget->SetViewportInterface(SceneViewport.ToSharedRef());
 
 	// Setup the preview component to ensure an animation will update when requested
-	PreviewComponent->MeshComponentUpdateFlag = EMeshComponentUpdateFlag::AlwaysTickPoseAndRefreshBones;
+	PreviewComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 	PreviewScene.AddComponent(PreviewComponent, FTransform::Identity);
 
 	const USkeletalMeshEditorSettings* Options = GetDefault<USkeletalMeshEditorSettings>();

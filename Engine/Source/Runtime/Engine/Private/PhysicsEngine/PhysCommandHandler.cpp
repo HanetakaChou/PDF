@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "EngineDefines.h"
 #include "PhysicsPublic.h"
+#include "Physics/PhysicsInterfaceCore.h"
 
 #if WITH_PHYSX
 	#include "PhysicsEngine/PhysXSupport.h"
@@ -64,10 +65,45 @@ void FPhysCommandHandler::ExecuteCommands()
 			}
 			break;
 		}
+		case PhysCommand::DeleteContactModifyCallback:
+		{
+			FContactModifyCallback* ContactModifyCallback = Command.Pointer.ContactModifyCallback;
+			if (FPhysScene::ContactModifyCallbackFactory.IsValid())
+			{
+				FPhysScene::ContactModifyCallbackFactory->Destroy(ContactModifyCallback);
+			}
+			else
+			{
+				delete ContactModifyCallback;
+			}
+			break;
+		}
+
+		case PhysCommand::DeleteCCDContactModifyCallback:
+		{
+			FCCDContactModifyCallback* CCDContactModifyCallback = Command.Pointer.CCDContactModifyCallback;
+			if (FPhysScene::CCDContactModifyCallbackFactory.IsValid())
+			{
+				FPhysScene::CCDContactModifyCallbackFactory->Destroy(CCDContactModifyCallback);
+			}
+			else
+			{
+				delete CCDContactModifyCallback;
+			}
+			break;
+		}
+
 		case PhysCommand::DeleteCPUDispatcher:
 		{
 			physx::PxCpuDispatcher * CPUDispatcher = Command.Pointer.CPUDispatcher;
 			delete CPUDispatcher;
+			break;
+		}
+
+		case PhysCommand::DeleteMbpBroadphaseCallback:
+		{
+			FPhysXMbpBroadphaseCallback* Callback = Command.Pointer.MbpCallback;
+			delete Callback;
 			break;
 		}
 #endif
@@ -99,9 +135,33 @@ void FPhysCommandHandler::DeferredRelease(physx::PxScene* PScene)
 
 }
 
+void  FPhysCommandHandler::DeferredDeleteContactModifyCallback(FContactModifyCallback* ContactModifyCallback)
+{
+	if (ContactModifyCallback)	//default is nullptr
+	{
+		FPhysPendingCommand Command;
+		Command.Pointer.ContactModifyCallback = ContactModifyCallback;
+		Command.CommandType = PhysCommand::DeleteContactModifyCallback;
+
+		EnqueueCommand(Command);
+	}
+}
+
+void FPhysCommandHandler::DeferredDeleteMbpBroadphaseCallback(FPhysXMbpBroadphaseCallback* MbpCallback)
+{
+	if(MbpCallback)	//default is nullptr
+	{
+		FPhysPendingCommand Command;
+		Command.Pointer.MbpCallback = MbpCallback;
+		Command.CommandType = PhysCommand::DeleteMbpBroadphaseCallback;
+
+		EnqueueCommand(Command);
+	}
+}
+
 void  FPhysCommandHandler::DeferredDeleteSimEventCallback(physx::PxSimulationEventCallback * SimEventCallback)
 {
-	check(SimEventCallback);
+	check(SimEventCallback)
 
 	FPhysPendingCommand Command;
 	Command.Pointer.SimEventCallback = SimEventCallback;

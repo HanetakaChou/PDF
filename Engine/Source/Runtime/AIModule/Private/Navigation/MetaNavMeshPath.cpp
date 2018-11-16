@@ -2,10 +2,11 @@
 
 #include "Navigation/MetaNavMeshPath.h"
 #include "GameFramework/Controller.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "NavigationSystem.h"
 #include "VisualLogger/VisualLoggerTypes.h"
 #include "VisualLogger/VisualLogger.h"
-#include "AI/Navigation/NavAreas/NavArea.h"
+#include "NavAreas/NavArea.h"
+#include "NavigationSystemTypes.h"
 #include "DrawDebugHelpers.h"
 
 const FNavPathType FMetaNavMeshPath::Type(&FMetaNavMeshPath::Super::Type);
@@ -35,7 +36,7 @@ FMetaNavMeshPath::FMetaNavMeshPath(const TArray<FMetaPathWayPoint>& InWaypoints,
 FMetaNavMeshPath::FMetaNavMeshPath(const TArray<FMetaPathWayPoint>& InWaypoints, const AController& Owner)
 	: FMetaNavMeshPath()
 {
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(Owner.GetWorld());
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Owner.GetWorld());
 	const ANavigationData* NavData = NavSys ? NavSys->GetNavDataForProps(Owner.GetNavAgentPropertiesRef()) : nullptr;
 
 	if (ensure(NavData))
@@ -57,7 +58,7 @@ FMetaNavMeshPath::FMetaNavMeshPath(const TArray<FVector>& InWaypoints, const ANa
 
 FMetaNavMeshPath::FMetaNavMeshPath(const TArray<FVector>& InWaypoints, const AController& Owner) : FMetaNavMeshPath()
 {
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(Owner.GetWorld());
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Owner.GetWorld());
 	const ANavigationData* NavData = NavSys ? NavSys->GetNavDataForProps(Owner.GetNavAgentPropertiesRef()) : nullptr;
 
 	if (ensure(NavData))
@@ -221,7 +222,7 @@ float FMetaNavMeshPath::GetLengthFromPosition(FVector SegmentStart, uint32 NextP
 float FMetaNavMeshPath::GetCostFromIndex(int32 PathPointIndex) const
 {
 	// return approximation of full path * default cost, there's not enough data to give accurate value
-	const UNavArea* DefaultAreaOb = UNavigationSystem::GetDefaultWalkableArea().GetDefaultObject();
+	const UNavArea* DefaultAreaOb = static_cast<const UNavArea*>(FNavigationSystem::GetDefaultWalkableArea().GetDefaultObject());
 	const float DefaultAreaCost = DefaultAreaOb ? DefaultAreaOb->DefaultCost : 1.0f;
 	return ApproximateLength * DefaultAreaCost;
 }

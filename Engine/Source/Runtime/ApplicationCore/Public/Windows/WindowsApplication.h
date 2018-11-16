@@ -7,14 +7,14 @@
 #include "HAL/IConsoleManager.h"
 #include "GenericPlatform/GenericApplication.h"
 
-#include "WindowsHWrapper.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <Ole2.h>
 	#include <oleidl.h>
 	#include <ShObjIdl.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #include "GenericPlatform/IForceFeedbackSystem.h"
-#include "WindowsTextInputMethodSystem.h"
+#include "Windows/WindowsTextInputMethodSystem.h"
 
 class FGenericWindow;
 struct FVector2D;
@@ -30,6 +30,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogWindowsDesktop, Log, All);
 class FWindowsWindow;
 class FGenericApplicationMessageHandler;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FWindowsApplication_OnWindowCreated, HWND);
 
 namespace ETaskbarProgressState
 {
@@ -452,6 +453,8 @@ private:
 	bool bIsMouseAttached;
 
 	bool bForceActivateByMouse;
+
+	bool bForceNoGamepads;
 
 	TArray<FDeferredWindowsMessage> DeferredMessages;
 

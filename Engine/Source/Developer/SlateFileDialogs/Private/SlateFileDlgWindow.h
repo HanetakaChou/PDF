@@ -141,6 +141,8 @@ public:
 	SLATE_ARGUMENT(FSlateFileDialogsStyle*, StyleSet)
 	SLATE_END_ARGS()
 
+	~SSlateFileOpenDlg();
+
 	void Construct(const FArguments& InArgs);
 	FSlateFileDlgWindow::EResult GetResponse() { return UserResponse; }
 	void SetOutNames(TArray<FString>* Ptr) { OutNames = Ptr; }
@@ -163,6 +165,7 @@ private:
 	void OnItemDoubleClicked(TSharedPtr<FFileEntry> Item);
 
 	void OnFilterChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
+	bool IsAcceptEnabled() const;
 	FReply OnAcceptCancelClick(FSlateFileDlgWindow::EResult ButtonID);
 	FReply OnQuickLinkClick(FSlateFileDlgWindow::EResult ButtonID);
 	FReply OnDirSublevelClick(int32 Level);
@@ -301,7 +304,8 @@ public:
 			{
 				Icon = StyleSet->GetBrush("SlateFileDialogs.Audio");
 			}
-			else if (Extension.Equals(TEXT("mp4"), ESearchCase::IgnoreCase))
+			else if (Extension.Equals(TEXT("mp4"), ESearchCase::IgnoreCase) ||
+					 Extension.Equals(TEXT("webm"), ESearchCase::IgnoreCase))
 			{
 				Icon = StyleSet->GetBrush("SlateFileDialogs.Video");
 			}

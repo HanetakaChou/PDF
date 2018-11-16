@@ -1,10 +1,10 @@
 // Copyright 2017 Google Inc.
 
 
-#include "Classes/GoogleVRGazeReticleComponent.h"
+#include "GoogleVRGazeReticleComponent.h"
 #include "GoogleVRController.h"
-#include "Classes/GoogleVRPointerInputComponent.h"
-#include "Classes/GoogleVRControllerFunctionLibrary.h"
+#include "GoogleVRPointerInputComponent.h"
+#include "GoogleVRControllerFunctionLibrary.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/WorldSettings.h"
 #include "Components/StaticMeshComponent.h"
@@ -64,7 +64,7 @@ void UGoogleVRGazeReticleComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	TArray<UGoogleVRPointerInputComponent*> Components;
+	TInlineComponentArray<UGoogleVRPointerInputComponent*> Components;
 	UGoogleVRPointerInputComponent* InputComponent = nullptr;
 
 	GetOwner()->GetComponents(Components);
@@ -91,7 +91,7 @@ void UGoogleVRGazeReticleComponent::BeginPlay()
 		InputComponent->SetPointer(this);
 	}
 
-	TArray<UCameraComponent*> CameraComponents;
+	TInlineComponentArray<UCameraComponent*> CameraComponents;
 	GetOwner()->GetComponents(CameraComponents);
 	if (CameraComponents.Num() == 0)
 	{

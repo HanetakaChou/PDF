@@ -9,6 +9,7 @@
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
 DEFINE_LOG_CATEGORY(LogAnimMarkerSync);
 
@@ -48,6 +49,31 @@ void UAnimSequenceBase::PostLoad()
 
 	if(USkeleton* MySkeleton = GetSkeleton())
 	{
+#if WITH_EDITOR
+		if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::FixUpNoneNameAnimationCurves)
+		{
+			for (int32 Index = 0; Index < RawCurveData.FloatCurves.Num(); ++Index)
+			{
+				FFloatCurve& Curve = RawCurveData.FloatCurves[Index];
+				if (Curve.Name.DisplayName == NAME_None)
+				{
+					// give unique name
+					Curve.Name.DisplayName = FName(*FString(GetName() + TEXT("_CurveNameFix_") + FString::FromInt(Index)));
+					UE_LOG(LogAnimation, Warning, TEXT("[AnimSequence %s] contains invalid curve name \'None\'. Renaming this to %s. Please fix this curve in the editor. "), *GetFullName(), *Curve.Name.DisplayName.ToString());
+				}
+			}
+		}
+		else
+		{
+			for (int32 Index = 0; Index < RawCurveData.FloatCurves.Num(); ++Index)
+			{
+				const FFloatCurve& Curve = RawCurveData.FloatCurves[Index];
+				ensureMsgf(Curve.Name.DisplayName != NAME_None, TEXT("[AnimSequencer %s] has invalid curve name."), *GetFullName());
+			}
+		}
+#endif // WITH_EDITOR
+
+
 		VerifyCurveNames<FFloatCurve>(*MySkeleton, USkeleton::AnimCurveMappingName, RawCurveData.FloatCurves);
 
 #if WITH_EDITOR
@@ -254,6 +280,15 @@ void UAnimSequenceBase::GetAnimNotifiesFromDeltaPositions(const float& PreviousP
 		}
 	}
 }
+
+#if WITH_EDITOR
+void UAnimSequenceBase::RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces)
+{
+	Super::RemapTracksToNewSkeleton(NewSkeleton, bConvertSpaces);
+	VerifyCurveNames<FFloatCurve>(*NewSkeleton, USkeleton::AnimCurveMappingName, RawCurveData.FloatCurves);
+	VerifyCurveNames<FTransformCurve>(*NewSkeleton, USkeleton::AnimTrackCurveMappingName, RawCurveData.TransformCurves);
+}
+#endif
 
 void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQueue& NotifyQueue, FAnimAssetTickContext& Context) const
 {
@@ -482,6 +517,13 @@ void UAnimSequenceBase::RefreshCacheData()
 #endif //WITH_EDITOR
 }
 
+int32 UAnimSequenceBase::GetNumberOfFrames() const
+{
+	static float DefaultSampleRateInterval = 1.f / DEFAULT_SAMPLERATE;
+	// because of float error, add small margin at the end, so it can clamp correctly
+	return (SequenceLength / DefaultSampleRateInterval + KINDA_SMALL_NUMBER);
+}
+
 #if WITH_EDITOR
 void UAnimSequenceBase::RefreshCurveData()
 {
@@ -495,13 +537,6 @@ void UAnimSequenceBase::InitializeNotifyTrack()
 	{
 		AnimNotifyTracks.Add(FAnimNotifyTrack(TEXT("1"), FLinearColor::White ));
 	}
-}
-
-int32 UAnimSequenceBase::GetNumberOfFrames() const
-{
-	static float DefaultSampleRateInterval = 1.f/DEFAULT_SAMPLERATE;
-	// because of float error, add small margin at the end, so it can clamp correctly
-	return (SequenceLength/DefaultSampleRateInterval + KINDA_SMALL_NUMBER);
 }
 
 int32 UAnimSequenceBase::GetFrameAtTime(const float Time) const
@@ -691,6 +726,7 @@ void UAnimSequenceBase::EvaluateCurveData(FBlendedCurve& OutCurve, float Current
 void UAnimSequenceBase::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
 	Super::Serialize(Ar);
 

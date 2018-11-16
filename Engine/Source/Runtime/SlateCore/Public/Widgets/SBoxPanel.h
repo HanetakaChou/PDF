@@ -12,9 +12,9 @@
 #include "Widgets/SWidget.h"
 #include "Layout/Children.h"
 #include "Widgets/SPanel.h"
-#include "ArrangedChildren.h"
-#include "DragAndDrop.h"
-#include "DrawElements.h"
+#include "Layout/ArrangedChildren.h"
+#include "Input/DragAndDrop.h"
+#include "Rendering/DrawElements.h"
 
 class FArrangedChildren;
 
@@ -234,7 +234,7 @@ public:
 	FORCENOINLINE SHorizontalBox()
 	: SBoxPanel( Orient_Horizontal )
 	{
-		bCanTick = false;
+		SetCanTick(false);
 		bCanSupportFocus = false;
 	}
 
@@ -379,7 +379,7 @@ public:
 	FORCENOINLINE SVerticalBox()
 	: SBoxPanel( Orient_Vertical )
 	{
-		bCanTick = false;
+		SetCanTick(false);
 		bCanSupportFocus = false;
 	}
 

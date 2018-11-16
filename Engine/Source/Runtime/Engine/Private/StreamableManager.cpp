@@ -4,7 +4,7 @@
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/ObjectRedirector.h"
 #include "Misc/PackageName.h"
-#include "UObjectThreadContext.h"
+#include "UObject/UObjectThreadContext.h"
 #include "HAL/IConsoleManager.h"
 #include "Tickable.h"
 
@@ -160,7 +160,7 @@ bool FStreamableHandle::BindUpdateDelegate(FStreamableUpdateDelegate NewDelegate
 	return true;
 }
 
-EAsyncPackageState::Type FStreamableHandle::WaitUntilComplete(float Timeout)
+EAsyncPackageState::Type FStreamableHandle::WaitUntilComplete(float Timeout, bool bStartStalledHandles)
 {
 	if (HasLoadCompleted())
 	{
@@ -176,7 +176,7 @@ EAsyncPackageState::Type FStreamableHandle::WaitUntilComplete(float Timeout)
 	{
 		TSharedRef<FStreamableHandle> Handle = HandlesToStart[i];
 
-		if (Handle->IsStalled())
+		if (bStartStalledHandles && Handle->IsStalled())
 		{
 			// If we were stalled, start us now to avoid deadlocks
 			UE_LOG(LogStreamableManager, Warning, TEXT("FStreamableHandle::WaitUntilComplete called on stalled handle %s, forcing load even though resources may not have been acquired yet"), *Handle->GetDebugName());
@@ -192,14 +192,44 @@ EAsyncPackageState::Type FStreamableHandle::WaitUntilComplete(float Timeout)
 		}
 	}
 
-	EAsyncPackageState::Type State = ProcessAsyncLoadingUntilComplete([this]() { return HasLoadCompleted(); }, Timeout);
+	// Finish when all handles are completed or stalled. If we started stalled above then there will be no stalled handles
+	EAsyncPackageState::Type State = ProcessAsyncLoadingUntilComplete([this]() { return HasLoadCompletedOrStalled(); }, Timeout);
 	
 	if (State == EAsyncPackageState::Complete)
 	{
-		ensureMsgf(HasLoadCompleted() || WasCanceled(), TEXT("WaitUntilComplete failed for streamable handle %s, async loading is done but handle is not complete"), *GetDebugName());
+		ensureMsgf(HasLoadCompletedOrStalled() || WasCanceled(), TEXT("WaitUntilComplete failed for streamable handle %s, async loading is done but handle is not complete"), *GetDebugName());
 	}
 
 	return State;
+}
+
+bool FStreamableHandle::HasLoadCompletedOrStalled() const
+{
+	// We need to recursively look for complete or stalled handles
+	TArray<TSharedRef< FStreamableHandle>> HandlesToCheck;
+
+	HandlesToCheck.Add(const_cast<FStreamableHandle*>(this)->AsShared());
+
+	for (int32 i = 0; i < HandlesToCheck.Num(); i++)
+	{
+		TSharedRef<const FStreamableHandle> Handle = HandlesToCheck[i];
+
+		if (!Handle->IsCombinedHandle() && !Handle->HasLoadCompleted() && !Handle->IsStalled())
+		{
+			return false;
+		}
+
+		for (TSharedPtr<FStreamableHandle> ChildHandle : Handle->ChildHandles)
+		{
+			if (ChildHandle.IsValid())
+			{
+				HandlesToCheck.Add(ChildHandle.ToSharedRef());
+			}
+		}
+	}
+
+	// All handles are either completed or stalled
+	return true;
 }
 
 void FStreamableHandle::GetRequestedAssets(TArray<FSoftObjectPath>& AssetList) const
@@ -336,10 +366,14 @@ void FStreamableHandle::CancelHandle()
 	ExecuteDelegate(CancelDelegate, SharedThis);
 	UnbindDelegates();
 
-	// Remove from referenced list
-	for (const FSoftObjectPath& AssetRef : RequestedAssets)
+	// Remove from referenced list. If it is stalled then it won't have been registered with
+	// the manager yet
+	if (!bStalled)
 	{
-		OwningManager->RemoveReferencedAsset(AssetRef, SharedThis);
+		for (const FSoftObjectPath& AssetRef : RequestedAssets)
+		{
+			OwningManager->RemoveReferencedAsset(AssetRef, SharedThis);
+		}
 	}
 
 	// Remove from explicit list
@@ -588,10 +622,10 @@ struct FStreamable
 	/** If this object failed to load, don't try again */
 	bool	bLoadFailed;
 
-	/** List of handles that are waiting for this to load */
+	/** List of handles that are waiting for this to load. The same handle may be here multiple times with redirectors */
 	TArray< TSharedRef< FStreamableHandle> > LoadingHandles;
 
-	/** List of handles that are keeping this streamable in memory */
+	/** List of handles that are keeping this streamable in memory. The same handle may be here multiple times */
 	TArray< TWeakPtr< FStreamableHandle> > ActiveHandles;
 
 	FStreamable()
@@ -615,7 +649,7 @@ struct FStreamable
 		{
 			TSharedPtr<FStreamableHandle> ActiveHandle = ActiveHandles[i].Pin();
 
-			if (ActiveHandle.IsValid())
+			if (ActiveHandle.IsValid() && !ActiveHandle->bCanceled)
 			{
 				// Full cancel isn't safe any more
 
@@ -634,12 +668,7 @@ struct FStreamable
 
 	void AddLoadingRequest(TSharedRef<FStreamableHandle> NewRequest)
 	{
-		if (ActiveHandles.Contains(NewRequest))
-		{
-			ensureMsgf(!ActiveHandles.Contains(NewRequest), TEXT("Duplicate item added to StreamableRequest"));
-			return;
-		}
-		
+		// With redirectors we can end up adding the same handle multiple times, this is unusual but supported
 		ActiveHandles.Add(NewRequest);
 
 		LoadingHandles.Add(NewRequest);
@@ -784,28 +813,17 @@ FStreamable* FStreamableManager::StreamInternal(const FSoftObjectPath& InTargetN
 			FRedirectedPath RedirectedPath;
 			UE_LOG(LogStreamableManager, Verbose, TEXT("     Static loading %s"), *TargetName.ToString());
 			Existing->Target = StaticLoadObject(UObject::StaticClass(), nullptr, *TargetName.ToString());
-			// need to manually detect redirectors because the above call only expects to load a UObject::StaticClass() type
-			while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(Existing->Target))
+
+			// Need to manually detect redirectors because the above call only expects to load a UObject::StaticClass() type
+			UObjectRedirector* Redir = Cast<UObjectRedirector>(Existing->Target);
+			if (Redir)
 			{
-				if (!RedirectedPath.LoadedRedirector)
-				{
-					RedirectedPath.LoadedRedirector = Redirector;
-				}
-				Existing->Target = Redirector->DestinationObject;
+				TargetName = HandleLoadedRedirector(Redir, TargetName, Existing);
 			}
+
 			if (Existing->Target)
 			{
 				UE_LOG(LogStreamableManager, Verbose, TEXT("     Static loaded %s"), *Existing->Target->GetFullName());
-				FSoftObjectPath PossiblyNewName(Existing->Target->GetPathName());
-				if (PossiblyNewName != TargetName)
-				{
-					UE_LOG(LogStreamableManager, Verbose, TEXT("     Which redirected to %s"), *PossiblyNewName.ToString());
-					RedirectedPath.NewPath = PossiblyNewName;
-					StreamableRedirects.Add(TargetName, RedirectedPath);
-					StreamableItems.Add(PossiblyNewName, Existing);
-					StreamableItems.Remove(TargetName);
-					TargetName = PossiblyNewName; // we are done with the old name
-				}
 			}
 			else
 			{
@@ -1045,37 +1063,14 @@ void FStreamableManager::FindInMemory( FSoftObjectPath& InOutTargetName, struct 
 	}
 
 	UObjectRedirector* Redir = Cast<UObjectRedirector>(Existing->Target);
-	
-	FRedirectedPath RedirectedPath;
-	RedirectedPath.LoadedRedirector = Redir;
 
-	while (Redir)
+	if (Redir)
 	{
-		Existing->Target = Redir->DestinationObject;
-		Redir = Cast<UObjectRedirector>(Existing->Target);
-		UE_LOG(LogStreamableManager, Verbose, TEXT("     Found redirect %s"), *Redir->GetFullName());
-		if (!Existing->Target)
-		{
-			Existing->bLoadFailed = true;
-			UE_LOG(LogStreamableManager, Warning, TEXT("Destination of redirector was not found %s -> %s."), *InOutTargetName.ToString(), *Redir->GetFullName());
-		}
-		else
-		{
-			UE_LOG(LogStreamableManager, Verbose, TEXT("     Redirect to %s"), *Redir->DestinationObject->GetFullName());
-		}
+		InOutTargetName = HandleLoadedRedirector(Redir, InOutTargetName, Existing);
 	}
+
 	if (Existing->Target)
 	{
-		FSoftObjectPath PossiblyNewName(Existing->Target->GetPathName());
-		if (InOutTargetName != PossiblyNewName)
-		{
-			UE_LOG(LogStreamableManager, Verbose, TEXT("     Name changed to %s"), *PossiblyNewName.ToString());
-			RedirectedPath.NewPath = PossiblyNewName;
-			StreamableRedirects.Add(InOutTargetName, RedirectedPath);
-			StreamableItems.Add(PossiblyNewName, Existing);
-			StreamableItems.Remove(InOutTargetName);
-			InOutTargetName = PossiblyNewName; // we are done with the old name
-		}
 		UE_LOG(LogStreamableManager, Verbose, TEXT("     Found in memory %s"), *Existing->Target->GetFullName());
 		Existing->bLoadFailed = false;
 	}
@@ -1183,9 +1178,11 @@ void FStreamableManager::RemoveReferencedAsset(const FSoftObjectPath& Target, TS
 		ensureMsgf(Existing->ActiveHandles.Remove(Handle) > 0, TEXT("Failed to remove active handle for %s"), *Target.ToString());
 
 		// Try removing from loading list if it's still there, this won't call the callback as it's being called from cancel
-		if (Existing->LoadingHandles.Remove(Handle))
+		// This may remove more than one copy if streamables were merged
+		int32 LoadingRemoved = Existing->LoadingHandles.Remove(Handle);
+		if (LoadingRemoved > 0)
 		{
-			Handle->StreamablesLoading--;
+			Handle->StreamablesLoading -= LoadingRemoved;
 
 			if (Existing->LoadingHandles.Num() == 0)
 			{
@@ -1285,7 +1282,8 @@ bool FStreamableManager::GetActiveHandles(const FSoftObjectPath& Target, TArray<
 				TSharedRef<FStreamableHandle> HandleRef = Handle.ToSharedRef();
 				if (!bOnlyManagedHandles || ManagedActiveHandles.Contains(HandleRef))
 				{
-					HandleList.Add(HandleRef);
+					// Only add each handle once, we can have duplicates in the source list
+					HandleList.AddUnique(HandleRef);
 				}
 			}
 		}
@@ -1307,4 +1305,51 @@ FSoftObjectPath FStreamableManager::ResolveRedirects(const FSoftObjectPath& Targ
 	return Target;
 }
 
+FSoftObjectPath FStreamableManager::HandleLoadedRedirector(UObjectRedirector* LoadedRedirector, FSoftObjectPath RequestedPath, struct FStreamable* RequestedStreamable)
+{
+	UE_LOG(LogStreamableManager, Verbose, TEXT("     Found redirect %s"), *LoadedRedirector->GetPathName());
+
+	// Need to follow the redirector chain
+	while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(RequestedStreamable->Target))
+	{
+		RequestedStreamable->Target = Redirector->DestinationObject;
+
+		if (!RequestedStreamable->Target)
+		{
+			RequestedStreamable->bLoadFailed = true;
+			UE_LOG(LogStreamableManager, Warning, TEXT("Destination of redirector was not found %s -> %s."), *RequestedPath.ToString(), *Redirector->GetPathName());
+
+			return RequestedPath;
+		}
+	}
+
+	FSoftObjectPath NewPath(RequestedStreamable->Target->GetPathName());
+	UE_LOG(LogStreamableManager, Verbose, TEXT("     Which redirected to %s"), *NewPath.ToString());
+
+	// We add the originally loaded redirector to GC keep alive, this will keep entire chain alive
+	StreamableRedirects.Add(RequestedPath, FRedirectedPath(NewPath, LoadedRedirector));
+
+	// Remove the requested streamable from it's old location
+	StreamableItems.Remove(RequestedPath);
+
+	if (FStreamable** FoundStreamable = StreamableItems.Find(NewPath))
+	{
+		// We found an existing streamable, need to merge the handles and delete old streamable
+		// This may result in the same handle being in the list twice! But the rest of the code is ready for that
+		// We let LoadFailed and InProgress stay as false on the new streamable because we've successfully loaded an object
+
+		RequestedStreamable->LoadingHandles.Append((*FoundStreamable)->LoadingHandles);
+		(*FoundStreamable)->LoadingHandles.Empty();
+
+		RequestedStreamable->ActiveHandles.Append((*FoundStreamable)->ActiveHandles);
+		(*FoundStreamable)->ActiveHandles.Empty();
+
+		delete *FoundStreamable;
+	}
+
+	// Add requested streamable with new path
+	StreamableItems.Add(NewPath, RequestedStreamable);
+	
+	return NewPath;
+}
 

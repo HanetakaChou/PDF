@@ -8,9 +8,7 @@
 #include "Engine/NetConnection.h"
 #include "Engine/ControlChannel.h"
 
-static const int32 MAX_BUNCH_SIZE = 1024 * 1024; 
-
-
+const int32 MAX_BUNCH_SIZE = 1024 * 1024; 
 
 
 /*-----------------------------------------------------------------------------
@@ -33,14 +31,16 @@ FInBunch::FInBunch( UNetConnection* InConnection, uint8* Src, int64 CountBits )
 ,	bPartialInitial ( 0 )
 ,	bPartialFinal ( 0 )
 ,	bHasPackageMapExports ( 0 )
+,	bHasMustBeMappedGUIDs ( 0 )
+,	bIgnoreRPCs ( 0 )
 {
 	check(Connection);
 	// Match the byte swapping settings of the connection
 	SetByteSwapping(Connection->bNeedsByteSwapping);
 
 	// Copy network version info
-	ArEngineNetVer = InConnection->EngineNetworkProtocolVersion;
-	ArGameNetVer = InConnection->GameNetworkProtocolVersion;
+	this->SetEngineNetVer(InConnection->EngineNetworkProtocolVersion);
+	this->SetGameNetVer(InConnection->GameNetworkProtocolVersion);
 
 	// Crash protection: the max string size serializable on this archive 
 	ArMaxSerializeSize = MAX_STRING_SERIALIZE_SIZE;
@@ -49,19 +49,36 @@ FInBunch::FInBunch( UNetConnection* InConnection, uint8* Src, int64 CountBits )
 /** Copy constructor but with optional parameter to not copy buffer */
 FInBunch::FInBunch( FInBunch &InBunch, bool CopyBuffer )
 {
-	// Copy fields
-	FMemory::Memcpy(&PacketId,&InBunch.PacketId,sizeof(FInBunch) - sizeof(FNetBitReader));
+	PacketId =	InBunch.PacketId;
+	Next =	InBunch.Next;
+	Connection = InBunch.Connection;
+	ChIndex = InBunch.ChIndex;
+	ChType = InBunch.ChType;
+	ChSequence = InBunch.ChSequence;
+	bOpen =	InBunch.bOpen;
+	bClose = InBunch.bClose;
+	bDormant = InBunch.bDormant;
+	bIsReplicationPaused = InBunch.bIsReplicationPaused;
+	bReliable =	InBunch.bReliable;
+	bPartial = InBunch.bPartial;
+	bPartialInitial = InBunch.bPartialInitial;
+	bPartialFinal =	InBunch.bPartialFinal;
+	bHasPackageMapExports = InBunch.bHasPackageMapExports;
+	bHasMustBeMappedGUIDs =	InBunch.bHasMustBeMappedGUIDs;
+	bIgnoreRPCs = InBunch.bIgnoreRPCs;
 
 	// Copy network version info
-	ArEngineNetVer = InBunch.ArEngineNetVer;
-	ArGameNetVer = InBunch.ArGameNetVer;
+	this->SetEngineNetVer(InBunch.EngineNetVer());
+	this->SetGameNetVer(InBunch.GameNetVer());
 
 	PackageMap = InBunch.PackageMap;
 	
 	ArMaxSerializeSize = MAX_STRING_SERIALIZE_SIZE;
 
 	if (CopyBuffer)
+	{
 		FBitReader::operator=(InBunch);
+	}
 
 	Pos = 0;
 }
@@ -82,11 +99,11 @@ FOutBunch::FOutBunch( UChannel* InChannel, bool bInClose )
 ,	Next		( NULL )
 ,	Channel		( InChannel )
 ,	Time		( 0 )
-,	ReceivedAck	(false)
-,	ChIndex     ( InChannel->ChIndex )
-,	ChType      ( InChannel->ChType )
+,	ChIndex		( InChannel->ChIndex )
+,	ChType		( InChannel->ChType )
 ,	ChSequence	( 0 )
 ,	PacketId	( 0 )
+,	ReceivedAck	( 0 )
 ,	bOpen		( 0 )
 ,	bClose		( bInClose )
 ,	bDormant	( 0 )
@@ -115,12 +132,12 @@ FOutBunch::FOutBunch( UPackageMap *InPackageMap, int64 MaxBits )
 :	FNetBitWriter	( InPackageMap, MaxBits )
 ,	Next		( NULL )
 ,	Channel		( NULL )
-,   Time		( 0 )
-,	ReceivedAck	(false)
+,	Time		( 0 )
 ,	ChIndex     ( 0 )
 ,	ChType      ( 0 )
 ,	ChSequence	( 0 )
 ,	PacketId	( 0 )
+,	ReceivedAck	( 0 )
 ,	bOpen		( 0 )
 ,	bClose		( 0 )
 ,	bDormant	( 0 )

@@ -6,9 +6,9 @@
 
 #pragma once
 #include "CoreTypes.h"
-#include "LogMacros.h"
-#include "Map.h"
-#include "UnrealString.h"
+#include "Logging/LogMacros.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #if PLATFORM_MAC
 #include "Mac/MacSystemIncludes.h"
 #elif PLATFORM_IOS
@@ -35,7 +35,8 @@ struct FApplePlatformDebugEvents
 	{
 		void const* Tag;
 		uint32 Color;
-		uint16 Code;
+		uint64 Code;
+		dispatch_block_t Destructor;
 	};
 	
 	static TArray<FEvent>* GetEventStack();

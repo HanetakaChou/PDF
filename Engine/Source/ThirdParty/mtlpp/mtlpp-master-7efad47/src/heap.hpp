@@ -19,12 +19,37 @@
 
 MTLPP_BEGIN
 
+namespace ue4
+{
+	template<>
+	struct ITable<id<MTLHeap>, void> : public IMPTable<id<MTLHeap>, void>, public ITableCacheRef
+	{
+		ITable()
+		{
+		}
+		
+		ITable(Class C)
+		: IMPTable<id<MTLHeap>, void>(C)
+		{
+		}
+	};
+	
+	template<>
+	inline ITable<MTLHeapDescriptor*, void>* CreateIMPTable(MTLHeapDescriptor* handle)
+	{
+		static ITable<MTLHeapDescriptor*, void> Table(object_getClass(handle));
+		return &Table;
+	}
+}
+
 namespace mtlpp
 {
-    class HeapDescriptor : public ns::Object<MTLHeapDescriptor*>
+    class MTLPP_EXPORT HeapDescriptor : public ns::Object<MTLHeapDescriptor*>
     {
     public:
-        HeapDescriptor(MTLHeapDescriptor* handle) : ns::Object<MTLHeapDescriptor*>(handle) { }
+		HeapDescriptor();
+		
+		HeapDescriptor(MTLHeapDescriptor* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLHeapDescriptor*>(handle, retain) { }
 
         NSUInteger     GetSize() const;
         StorageMode  GetStorageMode() const;
@@ -36,13 +61,14 @@ namespace mtlpp
     }
     MTLPP_AVAILABLE(10_13, 10_0);
 
-    class Heap : public ns::Object<ns::Protocol<id<MTLHeap>>::type>
+    class MTLPP_EXPORT Heap : public ns::Object<ns::Protocol<id<MTLHeap>>::type>
     {
     public:
-        Heap(ns::Protocol<id<MTLHeap>>::type handle) : ns::Object<ns::Protocol<id<MTLHeap>>::type>(handle) { }
+		Heap(ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLHeap>>::type>(retain) { }
+		Heap(ns::Protocol<id<MTLHeap>>::type handle, ue4::ITableCache* cache = nullptr, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLHeap>>::type>(handle, retain, ue4::ITableCacheRef(cache).GetHeap(handle)) { }
 
-        ns::String   GetLabel() const;
-        Device       GetDevice() const;
+        ns::AutoReleased<ns::String>   GetLabel() const;
+        ns::AutoReleased<Device>       GetDevice() const;
         StorageMode  GetStorageMode() const;
         CpuCacheMode GetCpuCacheMode() const;
         NSUInteger     GetSize() const;

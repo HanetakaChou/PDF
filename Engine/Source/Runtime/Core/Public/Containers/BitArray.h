@@ -226,11 +226,10 @@ public:
 		}
 
 		Empty(Copy.Num());
-		NumBits = MaxBits = Copy.NumBits;
+		NumBits = Copy.NumBits;
 		if(NumBits)
 		{
 			const int32 NumDWORDs = FMath::DivideAndRoundUp(MaxBits, NumBitsPerDWORD);
-			Realloc(0);
 			FMemory::Memcpy(GetData(),Copy.GetData(),NumDWORDs * sizeof(uint32));
 		}
 		return *this;
@@ -340,23 +339,31 @@ public:
 	int32 Add(const bool Value)
 	{
 		const int32 Index = NumBits;
-		const bool bReallocate = (NumBits + 1) > MaxBits;
 
-		NumBits++;
-
-		if(bReallocate)
-		{
-			// Allocate memory for the new bits.
-			const uint32 MaxDWORDs = AllocatorInstance.CalculateSlackGrow(
-				FMath::DivideAndRoundUp(NumBits, NumBitsPerDWORD),
-				FMath::DivideAndRoundUp(MaxBits, NumBitsPerDWORD),
-				sizeof(uint32)
-				);
-			MaxBits = MaxDWORDs * NumBitsPerDWORD;
-			Realloc(NumBits - 1);
-		}
-
+		Reserve(Index + 1);
+		++NumBits;
 		(*this)[Index] = Value;
+
+		return Index;
+	}
+
+	/**
+	 * Adds multiple bits to the array with the given value.
+	 * @return The index of the first added bit.
+	 */
+	int32 Add(const bool Value, int32 NumToAdd)
+	{
+		const int32 Index = NumBits;
+
+		if (NumToAdd > 0)
+		{
+			Reserve(Index + NumToAdd);
+			NumBits += NumToAdd;
+			for (int32 It = Index, End = It + NumToAdd; It != End; ++It)
+			{
+				(*this)[It] = Value;
+			}
+		}
 
 		return Index;
 	}
@@ -375,6 +382,25 @@ public:
 		{
 			MaxBits = ExpectedNumBits;
 			Realloc(0);
+		}
+	}
+
+	/**
+	 * Reserves memory such that the array can contain at least Number bits.
+	 *
+	 * @Number  The number of bits to reserve space for.
+	 */
+	void Reserve(int32 Number)
+	{
+		if (Number > MaxBits)
+		{
+			const uint32 MaxDWORDs = AllocatorInstance.CalculateSlackGrow(
+				FMath::DivideAndRoundUp(Number,  NumBitsPerDWORD),
+				FMath::DivideAndRoundUp(MaxBits, NumBitsPerDWORD),
+				sizeof(uint32)
+				);
+			MaxBits = MaxDWORDs * NumBitsPerDWORD;
+			Realloc(NumBits);
 		}
 	}
 
@@ -420,12 +446,12 @@ public:
 		}
 
 		// Work out which uint32 index to set from, and how many
-		uint32 StartIndex = Index / 32;
-		uint32 Count      = (Index + Num + 31) / 32 - StartIndex;
+		uint32 StartIndex = Index / NumBitsPerDWORD;
+		uint32 Count      = (Index + Num + (NumBitsPerDWORD - 1)) / NumBitsPerDWORD - StartIndex;
 
 		// Work out masks for the start/end of the sequence
-		uint32 StartMask  = 0xFFFFFFFFu << (Index % 32);
-		uint32 EndMask    = 0xFFFFFFFFu >> (32 - (Index + Num) % 32) % 32;
+		uint32 StartMask  = 0xFFFFFFFFu << (Index % NumBitsPerDWORD);
+		uint32 EndMask    = 0xFFFFFFFFu >> (NumBitsPerDWORD - (Index + Num) % NumBitsPerDWORD) % NumBitsPerDWORD;
 
 		uint32* Data = GetData() + StartIndex;
 		if (Value)

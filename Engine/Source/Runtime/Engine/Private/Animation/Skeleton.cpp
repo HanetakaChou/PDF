@@ -27,6 +27,8 @@
 #include "Engine/PreviewMeshCollection.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Animation/AnimBlueprint.h"
+#include "UObject/AnimObjectVersion.h"
+#include "EngineUtils.h"
 
 #define LOCTEXT_NAMESPACE "Skeleton"
 #define ROOT_BONE_PARENT	INDEX_NONE
@@ -111,6 +113,11 @@ void USkeleton::PostInitProperties()
 	}
 }
 
+bool USkeleton::IsPostLoadThreadSafe() const
+{
+	return true;
+}
+
 void USkeleton::PostLoad()
 {
 	Super::PostLoad();
@@ -148,6 +155,8 @@ void USkeleton::PostDuplicate(bool bDuplicateForPIE)
 
 void USkeleton::Serialize( FArchive& Ar )
 {
+	Ar.UsingCustomVersion(FAnimObjectVersion::GUID);
+
 	DECLARE_SCOPE_CYCLE_COUNTER( TEXT("USkeleton::Serialize"), STAT_Skeleton_Serialize, STATGROUP_LoadTime );
 
 	Super::Serialize(Ar);
@@ -200,6 +209,7 @@ void USkeleton::Serialize( FArchive& Ar )
 
 	if (Ar.UE4Ver() < VER_UE4_SKELETON_GUID_SERIALIZATION)
 	{
+		UE_LOG(LogAnimation, Warning, TEXT("Skeleton '%s' has not been saved since version 'VER_UE4_SKELETON_GUID_SERIALIZATION' This asset will not cook deterministically until it is resaved."), *GetPathName());
 		RegenerateGuid();
 	}
 	else
@@ -230,6 +240,15 @@ void USkeleton::Serialize( FArchive& Ar )
 		PreviewAttachedAssetContainer.SaveAttachedObjectsFromDeprecatedProperties();
 	}
 #endif
+
+	if (Ar.CustomVer(FAnimObjectVersion::GUID) >= FAnimObjectVersion::StoreMarkerNamesOnSkeleton)
+	{
+		FStripDataFlags StripFlags(Ar);
+		if (!StripFlags.IsEditorDataStripped())
+		{
+			Ar << ExistingMarkerNames;
+		}
+	}
 
 	const bool bRebuildNameMap = false;
 	ReferenceSkeleton.RebuildRefSkeleton(this, bRebuildNameMap);
@@ -699,6 +718,24 @@ void USkeleton::SetBoneTranslationRetargetingMode(const int32 BoneIndex, EBoneTr
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+
+FName USkeleton::GetRetargetSourceForMesh(USkeletalMesh* InMesh) const
+{
+	FSoftObjectPath MeshPath(InMesh);
+	for(const TPair<FName, FReferencePose>& AnimRetargetSource : AnimRetargetSources)
+	{
+		if(AnimRetargetSource.Value.SourceReferenceMesh.ToSoftObjectPath() == MeshPath)
+		{
+			return AnimRetargetSource.Key;
+		}
+	}
+
+	return NAME_None;
+}
+
+#endif
+
 int32 USkeleton::GetAnimationTrackIndex(const int32 InSkeletonBoneIndex, const UAnimSequence* InAnimSeq, const bool bUseRawData)
 {
 	const TArray<FTrackToSkeletonMap>& TrackToSkelMap = bUseRawData ? InAnimSeq->GetRawTrackToSkeletonMapTable() : InAnimSeq->GetCompressedTrackToSkeletonMapTable();
@@ -735,6 +772,61 @@ int32 USkeleton::GetMeshBoneIndexFromSkeletonBoneIndex(const USkeletalMesh* InSk
 	const FSkeletonToMeshLinkup& LinkupTable = LinkupCache[LinkupCacheIdx];
 
 	return LinkupTable.SkeletonToMeshTable[SkeletonBoneIndex];
+}
+
+
+USkeletalMesh* USkeleton::GetPreviewMesh(bool bFindIfNotSet/*=false*/)
+{
+#if WITH_EDITORONLY_DATA
+	USkeletalMesh* PreviewMesh = PreviewSkeletalMesh.LoadSynchronous();
+
+	if(PreviewMesh && PreviewMesh->Skeleton != this) // fix mismatched skeleton
+	{
+		PreviewSkeletalMesh.Reset();
+		PreviewMesh = nullptr;
+	}
+
+	// if not existing, and if bFindIfNotExisting is true, then try find one
+	if(!PreviewMesh && bFindIfNotSet)
+	{
+		USkeletalMesh* CompatibleSkeletalMesh = FindCompatibleMesh();
+		if(CompatibleSkeletalMesh)
+		{
+			SetPreviewMesh(CompatibleSkeletalMesh, false);
+			// update PreviewMesh
+			PreviewMesh = PreviewSkeletalMesh.Get();
+		}
+	}
+
+	return PreviewMesh;
+#else
+	return nullptr;
+#endif
+}
+
+USkeletalMesh* USkeleton::GetPreviewMesh() const
+{
+#if WITH_EDITORONLY_DATA
+	if (!PreviewSkeletalMesh.IsValid())
+	{
+		PreviewSkeletalMesh.LoadSynchronous();
+	}
+	return PreviewSkeletalMesh.Get();
+#else
+	return nullptr;
+#endif
+}
+
+void USkeleton::SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty/*=true*/)
+{
+#if WITH_EDITORONLY_DATA
+	if (bMarkAsDirty)
+	{
+		Modify();
+	}
+
+	PreviewSkeletalMesh = PreviewMesh;
+#endif
 }
 
 #if WITH_EDITORONLY_DATA
@@ -777,18 +869,7 @@ void USkeleton::RefreshAllRetargetSources()
 
 int32 USkeleton::GetChildBones(int32 ParentBoneIndex, TArray<int32> & Children) const
 {
-	Children.Empty();
-
-	const int32 NumBones = ReferenceSkeleton.GetNum();
-	for(int32 ChildIndex=ParentBoneIndex+1; ChildIndex<NumBones; ChildIndex++)
-	{
-		if ( ParentBoneIndex == ReferenceSkeleton.GetParentIndex(ChildIndex) )
-		{
-			Children.Add(ChildIndex);
-		}
-	}
-
-	return Children.Num();
+	return ReferenceSkeleton.GetDirectChildBones(ParentBoneIndex, Children);
 }
 
 void USkeleton::CollectAnimationNotifies()
@@ -854,36 +935,6 @@ USkeletalMesh* USkeleton::FindCompatibleMesh() const
 	return nullptr;
 }
 
-USkeletalMesh* USkeleton::GetPreviewMesh(bool bFindIfNotSet)
-{
-	USkeletalMesh* PreviewMesh = PreviewSkeletalMesh.LoadSynchronous();
-
-	if(PreviewMesh && PreviewMesh->Skeleton != this) // fix mismatched skeleton
-	{
-		PreviewSkeletalMesh.Reset();
-		PreviewMesh = nullptr;
-	}
-
-	// if not existing, and if bFindIfNotExisting is true, then try find one
-	if(!PreviewMesh && bFindIfNotSet)
-	{
-		USkeletalMesh* CompatibleSkeletalMesh = FindCompatibleMesh();
-		if(CompatibleSkeletalMesh)
-		{
-			SetPreviewMesh(CompatibleSkeletalMesh, false);
-			// update PreviewMesh
-			PreviewMesh = PreviewSkeletalMesh.Get();
-		}
-	}
-
-	return PreviewMesh;
-}
-
-USkeletalMesh* USkeleton::GetPreviewMesh() const
-{
-	return PreviewSkeletalMesh.Get();
-}
-
 USkeletalMesh* USkeleton::GetAssetPreviewMesh(UObject* InAsset) 
 {
 	USkeletalMesh* PreviewMesh = nullptr;
@@ -905,16 +956,6 @@ USkeletalMesh* USkeleton::GetAssetPreviewMesh(UObject* InAsset)
 	}
 
 	return PreviewMesh;
-}
-
-void USkeleton::SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty/*=true*/)
-{
-	if (bMarkAsDirty)
-	{
-		Modify();
-	}
-
-	PreviewSkeletalMesh = PreviewMesh;
 }
 
 void USkeleton::LoadAdditionalPreviewSkeletalMeshes()
@@ -1183,30 +1224,38 @@ void USkeleton::RenameSlotName(const FName& OldName, const FName& NewName)
 
 bool USkeleton::AddSmartNameAndModify(FName ContainerName, FName NewDisplayName, FSmartName& NewName)
 {
-	NewName.DisplayName = NewDisplayName;
-	const bool bAdded = VerifySmartNameInternal(ContainerName, NewName);
-
-	if(bAdded)
+	if (NewDisplayName != NAME_None)
 	{
-		IncreaseAnimCurveUidVersion();
+		NewName.DisplayName = NewDisplayName;
+		const bool bAdded = VerifySmartNameInternal(ContainerName, NewName);
+
+		if (bAdded)
+		{
+			IncreaseAnimCurveUidVersion();
+		}
+
+		return bAdded;
 	}
 
-	return bAdded;
+	return false;
 }
 
 bool USkeleton::RenameSmartnameAndModify(FName ContainerName, SmartName::UID_Type Uid, FName NewName)
 {
 	bool Successful = false;
-	FSmartNameMapping* RequestedMapping = SmartNames.GetContainerInternal(ContainerName);
-	if (RequestedMapping)
+	if (NewName != NAME_None)
 	{
-		FName CurrentName;
-		RequestedMapping->GetName(Uid, CurrentName);
-		if (CurrentName != NewName)
+		FSmartNameMapping* RequestedMapping = SmartNames.GetContainerInternal(ContainerName);
+		if (RequestedMapping)
 		{
-			Modify();
-			Successful = RequestedMapping->Rename(Uid, NewName);
-			IncreaseAnimCurveUidVersion();
+			FName CurrentName;
+			RequestedMapping->GetName(Uid, CurrentName);
+			if (CurrentName != NewName)
+			{
+				Modify();
+				Successful = RequestedMapping->Rename(Uid, NewName);
+				IncreaseAnimCurveUidVersion();
+			}
 		}
 	}
 	return Successful;
@@ -1387,6 +1436,7 @@ void USkeleton::IncreaseAnimCurveUidVersion()
 	if (Mapping != nullptr)
 	{
 		DefaultCurveUIDList.Reset();
+		// this should exactly work with what current index is
 		Mapping->FillUidArray(DefaultCurveUIDList);
 	}
 }

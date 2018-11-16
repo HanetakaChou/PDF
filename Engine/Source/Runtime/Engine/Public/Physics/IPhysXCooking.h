@@ -29,7 +29,10 @@ enum class EPhysXMeshCookFlags : uint8
 	FastCook = 0x2,
 
 	// Do not create remap table for this mesh
-	SuppressFaceRemapTable = 0x4
+	SuppressFaceRemapTable = 0x4,
+
+	// Turn off ActiveEdgePrecompute (This makes cooking faster, but will slow contact generation)
+	DisableActiveEdgePrecompute = 0x8,
 };
 ENUM_CLASS_FLAGS(EPhysXMeshCookFlags);
 
@@ -124,18 +127,6 @@ public:
 	* @return true on success, false otherwise.
 	*/
 	virtual bool CreateHeightField(FName Format, FIntPoint HFSize, const void* Samples, uint32 SamplesStride, physx::PxHeightField*& OutHeightField) const = 0;
-
-	/**
-	 * Serializes the BodyInstance
-	 *
-	 * @param Format The desired format
-	 * @param Bodies The bodies containing the needed physx actors to serialize
-	 * @param BodySetups The various body setups used by Bodies (could be just 1). This is needed for keeping geometry out of the serialized data
-	 * @param PhysicalMaterials The physical materials used by Bodies (could be just 1). This is needed for keeping physical materials out of the serialized data
-	 * @param OutBuffer The resulting cooked data
-	 * @return true on success, false otherwise.
-	 */
-	virtual bool SerializeActors( FName Format, const TArray<struct FBodyInstance*>& Bodies, const TArray<class UBodySetup*>& BodySetups, const TArray<class UPhysicalMaterial*>& PhysicalMaterials, TArray<uint8>& OutBuffer ) const = 0;
 
 	/**
 	 * Gets the list of supported formats.

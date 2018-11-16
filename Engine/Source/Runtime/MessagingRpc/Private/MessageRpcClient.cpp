@@ -77,6 +77,7 @@ void FMessageRpcClient::SendCall(const TSharedPtr<IMessageRpcCall>& Call)
 		MessageEndpoint->Send(
 			Call->ConstructMessage(),
 			Call->GetMessageType(),
+			EMessageFlags::None,
 			nullptr,
 			TArrayBuilder<FMessageAddress>().Add(ServerAddress),
 			FTimespan::Zero(),
@@ -145,6 +146,8 @@ void FMessageRpcClient::HandleRpcMessages(const TSharedRef<IMessageContext, ESPM
 
 bool FMessageRpcClient::HandleTicker(float DeltaTime)
 {
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FMessageRpcClient_HandleTicker);
+
 	const FDateTime UtcNow = FDateTime::UtcNow();
 
 	for (TMap<FGuid, TSharedPtr<IMessageRpcCall>>::TIterator It(Calls); It; ++It)

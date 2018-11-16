@@ -28,11 +28,13 @@ extern FString GetMetalBinaryPath(uint32 ShaderPlatform);
 extern FString GetMetalToolsPath(uint32 ShaderPlatform);
 extern FString GetMetalLibraryPath(uint32 ShaderPlatform);
 extern FString GetMetalCompilerVersion(uint32 ShaderPlatform);
+extern uint16 GetXcodeVersion(uint64& BuildVersion);
 extern EShaderPlatform MetalShaderFormatToLegacyShaderPlatform(FName ShaderFormat);
 extern void BuildMetalShaderOutput(
 	FShaderCompilerOutput& ShaderOutput,
 	const FShaderCompilerInput& ShaderInput,
 	FSHAHash const& GUIDHash,
+	uint32 CCFlags,
 	const ANSICHAR* InShaderSource,
 	uint32 SourceLen,
 	uint32 SourceCRCLen,
@@ -46,6 +48,7 @@ extern void BuildMetalShaderOutput(
 	uint32 TypedBuffers,
 	uint32 InvariantBuffers,
 	uint32 TypedUAVs,
+	uint32 ConstantBuffers,
 	TArray<uint8> const& TypedBufferFormats,
 	bool bAllowFastIntriniscs
 );
@@ -165,9 +168,8 @@ bool FMetalShaderBytecodeCooker::Build(TArray<uint8>& OutData)
 
 #if PLATFORM_MAC
 	// Unset the SDKROOT to avoid problems with the incorrect path being used when compiling with the shared PCH.
-	TCHAR SdkRoot[4096];
-	FPlatformMisc::GetEnvironmentVariable(TEXT("SDKROOT"), SdkRoot, ARRAY_COUNT(SdkRoot));
-	if (FCStringWide::Strlen(SdkRoot))
+	FString SdkRoot = FPlatformMisc::GetEnvironmentVariable(TEXT("SDKROOT"));
+	if (SdkRoot.Len() > 0)
 	{
 		unsetenv("SDKROOT");
 	}
@@ -204,16 +206,20 @@ bool FMetalShaderBytecodeCooker::Build(TArray<uint8>& OutData)
 	{
 		CopyLocalFileToRemote(Job.InputFile, RemoteInputFile);
 
+		uint64 XcodeBuildVers = 0;
+		uint16 XcodeVers = GetXcodeVersion(XcodeBuildVers);
+		uint16 XcodeMajorVers = ((XcodeVers >> 8) & 0xff);
+		
 		// PCH 
 		bool bUseSharedPCH = Job.InputPCHFile.Len() && IFileManager::Get().FileExists(*Job.InputPCHFile);
 		if (bUseSharedPCH)
         {
             CopyLocalFileToRemote(Job.InputPCHFile, RemoteInputPCHFile);
-			MetalParams = FString::Printf(TEXT("-include-pch %s %s %s %s -Wno-null-character -fbracket-depth=1024 %s %s %s %s -o %s"), *RemoteInputPCHFile, *Job.MinOSVersion, *Job.DebugInfo, *Job.MathMode, *Job.Standard, *Job.Defines, *IncludeArgs, *RemoteInputFile, *RemoteObjFile);
+			MetalParams = FString::Printf(TEXT("-include-pch %s %s %s %s %s -Wno-null-character -fbracket-depth=1024 %s %s %s %s -o %s"), *RemoteInputPCHFile, *Job.MinOSVersion, *Job.DebugInfo, *Job.MathMode, TEXT("-c"), *Job.Standard, *Job.Defines, *IncludeArgs, *RemoteInputFile, *RemoteObjFile);
         }
         else
         {
-            MetalParams = FString::Printf(TEXT("%s %s %s -Wno-null-character -fbracket-depth=1024 %s %s %s %s -o %s"), *Job.MinOSVersion, *Job.DebugInfo, *Job.MathMode, *Job.Standard, *Job.Defines, *IncludeArgs, *RemoteInputFile, *RemoteObjFile);
+            MetalParams = FString::Printf(TEXT("%s %s %s %s -Wno-null-character -fbracket-depth=1024 %s %s %s %s -o %s"), *Job.MinOSVersion, *Job.DebugInfo, *Job.MathMode, TEXT("-c"), *Job.Standard, *Job.Defines, *IncludeArgs, *RemoteInputFile, *RemoteObjFile);
         }
 	}
 
@@ -266,11 +272,11 @@ bool FMetalShaderBytecodeCooker::Build(TArray<uint8>& OutData)
 	{
 		if (Job.bCompileAsPCH)
 		{
-			Job.Message = FString::Printf(TEXT("Metal Shared PCH generation failed %s: %s."), CompileType, *Job.Errors);
+			Job.Message = FString::Printf(TEXT("Metal Shared PCH generation failed %s to generate %s: %s."), CompileType, *RemoteOutputFilename, *Job.Errors);
 		}
 		else
 		{
-			Job.Message = FString::Printf(TEXT("Failed to compile to bytecode %s, code: %d, output: %s %s"), CompileType, Job.ReturnCode, *Job.Results, *Job.Errors);
+			Job.Message = FString::Printf(TEXT("Failed to compile %s to bytecode %s, code: %d, output: %s %s"), CompileType, *RemoteOutputFilename, Job.ReturnCode, *Job.Results, *Job.Errors);
 		}
 	}
 
@@ -282,9 +288,9 @@ bool FMetalShaderBytecodeCooker::Build(TArray<uint8>& OutData)
 
 #if PLATFORM_MAC
 	// Reset the SDKROOT environment we unset earlier.
-	if (FCStringWide::Strlen(SdkRoot))
+	if (SdkRoot.Len() > 0)
 	{
-		setenv("SDKROOT", TCHAR_TO_UTF8(SdkRoot), 1);
+		setenv("SDKROOT", TCHAR_TO_UTF8(*SdkRoot), 1);
 	}
 #endif
 
@@ -372,7 +378,7 @@ bool FMetalShaderOutputCooker::Build(TArray<uint8>& OutData)
 	FString const* FastIntrinsics = Input.Environment.GetDefinitions().Find(TEXT("METAL_USE_FAST_INTRINSICS"));
 	if (FastIntrinsics)
 	{
-		LexicalConversion::FromString(bAllowFastIntriniscs, *(*FastIntrinsics));
+		LexFromString(bAllowFastIntriniscs, *(*FastIntrinsics));
 	}
 
 	bool bForceInvariance = false;
@@ -437,7 +443,7 @@ bool FMetalShaderOutputCooker::Build(TArray<uint8>& OutData)
 	if (Result != 0)
 	{
 		Output.Target = Input.Target;
-		BuildMetalShaderOutput(Output, Input, GUIDHash, MetalShaderSource, SourceLen, CRCLen, CRC, VersionEnum, *Standard, *MinOSVersion, TypeMode, Output.Errors, Attribs, MetalBackEnd.TypedBuffers, MetalBackEnd.InvariantBuffers, MetalBackEnd.TypedUAVs, MetalBackEnd.TypedBufferFormats, bAllowFastIntriniscs);
+		BuildMetalShaderOutput(Output, Input, GUIDHash, CCFlags, MetalShaderSource, SourceLen, CRCLen, CRC, VersionEnum, *Standard, *MinOSVersion, TypeMode, Output.Errors, Attribs, MetalBackEnd.TypedBuffers, MetalBackEnd.InvariantBuffers, MetalBackEnd.TypedUAVs, MetalBackEnd.ConstantBuffers, MetalBackEnd.TypedBufferFormats, bAllowFastIntriniscs);
 
 		FMemoryWriter Ar(OutData);
 		Ar << Output;

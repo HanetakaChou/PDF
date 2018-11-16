@@ -12,6 +12,7 @@
 #include "BoneIndices.h"
 #include "Serialization/BulkData.h"
 #include "SkeletalMeshTypes.h"
+#include "Rendering/SkeletalMeshLODImporterData.h"
 
 
 //
@@ -23,11 +24,11 @@ struct FSoftSkinVertex
 	FVector			Position;
 
 	// Tangent, U-direction
-	FPackedNormal	TangentX;
+	FVector			TangentX;
 	// Binormal, V-direction
-	FPackedNormal	TangentY;
+	FVector			TangentY;
 	// Normal
-	FPackedNormal	TangentZ;
+	FVector4		TangentZ;
 
 	// UVs
 	FVector2D		UVs[MAX_TEXCOORDS];
@@ -120,6 +121,12 @@ struct FSkelMeshSection
 	/** If disabled, we won't render this section */
 	bool bDisabled;
 
+	/*
+	 * The LOD index at which any generated lower quality LODs will include this section.
+	 * A value of -1 mean the section will always be include when generating a LOD
+	 */
+	int32 GenerateUpToLodIndex;
+
 	FSkelMeshSection()
 		: MaterialIndex(0)
 		, BaseIndex(0)
@@ -134,6 +141,7 @@ struct FSkelMeshSection
 		, MaxBoneInfluences(4)
 		, CorrespondClothAssetIndex(INDEX_NONE)
 		, bDisabled(false)
+		, GenerateUpToLodIndex(-1)
 	{}
 
 
@@ -215,6 +223,8 @@ public:
 	FIntBulkData				RawPointIndices;
 	FWordBulkData				LegacyRawPointIndices;
 
+	/** Imported raw mesh data. Optional, only the imported mesh LOD has this, generated LOD or old asset will be null. */
+	FRawSkeletalMeshBulkData	RawSkeletalMeshBulkData;
 
 	/** Constructor (default) */
 	FSkeletalMeshLODModel()

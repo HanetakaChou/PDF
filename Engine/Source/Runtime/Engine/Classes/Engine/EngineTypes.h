@@ -294,7 +294,7 @@ enum ETranslucencyLightingMode
 	TLM_VolumetricPerVertexDirectional UMETA(DisplayName="Volumetric PerVertex Directional"),
 
 	/** 
-	 * Lighting will be calculated for a surface. The light in accumulated in a volume so the result is blurry, 
+	 * Lighting will be calculated for a surface. The light is accumulated in a volume so the result is blurry, 
 	 * limited distance but the per pixel cost is very low. Use this on translucent surfaces like glass and water.
 	 * Only diffuse lighting is supported.
 	 */
@@ -519,8 +519,8 @@ enum EMovementMode
 
 	/** 
 	 * Simplified walking on navigation data (e.g. navmesh). 
-	 * If bGenerateOverlapEvents is true, then we will perform sweeps with each navmesh move.
-	 * If bGenerateOverlapEvents is false then movement is cheaper but characters can overlap other objects without some extra process to repel/resolve their collisions.
+	 * If GetGenerateOverlapEvents() is true, then we will perform sweeps with each navmesh move.
+	 * If GetGenerateOverlapEvents() is false then movement is cheaper but characters can overlap other objects without some extra process to repel/resolve their collisions.
 	 */
 	MOVE_NavWalking	UMETA(DisplayName="Navmesh Walking"),
 
@@ -751,8 +751,6 @@ enum EPhysicsSceneType
 {
 	/** The synchronous scene, which must finish before Unreal simulation code is run. */
 	PST_Sync,
-	/** The cloth scene, which may run while Unreal simulation code runs. */
-	PST_Cloth,
 	/** The asynchronous scene, which may run while Unreal simulation code runs. */
 	PST_Async,
 	PST_MAX,
@@ -814,6 +812,9 @@ namespace EWorldType
 
 		/** A preview world for a game */
 		GamePreview,
+
+		/** A minimal RPC world for a game */
+		GameRPC,
 
 		/** An editor world that was loaded but not currently being edited in the level editor */
 		Inactive
@@ -1181,6 +1182,11 @@ namespace ERigidBodyFlags
 	};
 }
 
+enum class ESleepEvent : uint8
+{
+	SET_Wakeup,
+	SET_Sleep
+};
 
 /** Rigid body error correction data */
 USTRUCT()
@@ -1188,42 +1194,82 @@ struct FRigidBodyErrorCorrection
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** max squared position difference to perform velocity adjustment */
-	UPROPERTY()
-	float LinearDeltaThresholdSq;
+	/** Value between 0 and 1 which indicates how much velocity
+		and ping based correction to use */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float PingExtrapolation;
 
-	/** strength of snapping to desired linear velocity */
-	UPROPERTY()
-	float LinearInterpAlpha;
+	/** For the purpose of extrapolation, ping will be clamped to this value */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float PingLimit;
 
-	/** inverted duration after which linear velocity adjustment will fix error */
-	UPROPERTY()
-	float LinearRecipFixTime;
+	/** Error per centimeter */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float ErrorPerLinearDifference;
 
-	/** max squared angle difference (in radians) to perform velocity adjustment */
-	UPROPERTY()
-	float AngularDeltaThreshold;
+	/** Error per degree */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float ErrorPerAngularDifference;
 
-	/** strength of snapping to desired angular velocity */
-	UPROPERTY()
-	float AngularInterpAlpha;
+	/** Maximum allowable error for a state to be considered "resolved" */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float MaxRestoredStateError;
 
-	/** inverted duration after which angular velocity adjustment will fix error */
-	UPROPERTY()
-	float AngularRecipFixTime;
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float MaxLinearHardSnapDistance;
 
-	/** min squared body speed to perform velocity adjustment */
-	UPROPERTY()
-	float BodySpeedThresholdSq;
+	/** How much to directly lerp to the correct position. Generally
+		this should be very low, if not zero. A higher value will
+		increase precision along with jerkiness. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float PositionLerp;
+
+	/** How much to directly lerp to the correct angle. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float AngleLerp;
+
+	/** This is the coefficient `k` in the differential equation:
+		dx/dt = k ( x_target(t) - x(t) ), which is used to update
+		the velocity in a replication step. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float LinearVelocityCoefficient;
+
+	/** This is the angular analog to LinearVelocityCoefficient. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float AngularVelocityCoefficient;
+
+	/** Number of seconds to remain in a heuristically
+		unresolveable state before hard snapping. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float ErrorAccumulationSeconds;
+
+	/** If the body has moved less than the square root of
+		this amount towards a resolved state in the previous
+		frame, then error may accumulate towards a hard snap. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float ErrorAccumulationDistanceSq;
+
+	/** If the previous error projected onto the current error
+		is greater than this value (indicating "similarity"
+		between states), then error may accumulate towards a
+		hard snap. */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	float ErrorAccumulationSimilarity;
 
 	FRigidBodyErrorCorrection()
-		: LinearDeltaThresholdSq(5.0f)
-		, LinearInterpAlpha(0.2f)
-		, LinearRecipFixTime(1.0f)
-		, AngularDeltaThreshold(0.2f * PI)
-		, AngularInterpAlpha(0.1f)
-		, AngularRecipFixTime(1.0f)
-		, BodySpeedThresholdSq(0.2f)
+		: PingExtrapolation(0.1f)
+		, PingLimit(100.f)
+		, ErrorPerLinearDifference(1.0f)
+		, ErrorPerAngularDifference(1.0f)
+		, MaxRestoredStateError(1.0f)
+		, MaxLinearHardSnapDistance(400.f)
+		, PositionLerp(0.0f)
+		, AngleLerp(0.4f)
+		, LinearVelocityCoefficient(100.0f)
+		, AngularVelocityCoefficient(10.0f)
+		, ErrorAccumulationSeconds(0.5f)
+		, ErrorAccumulationDistanceSq(15.0f)
+		, ErrorAccumulationSimilarity(100.0f)
 	{ }
 };
 
@@ -1771,6 +1817,7 @@ struct FSwarmDebugOptions
 	FSwarmDebugOptions()
 		: bDistributionEnabled(true)
 		, bForceContentExport(false)
+		, bInitialized(false)
 	{
 	}
 
@@ -2094,12 +2141,17 @@ struct TStructOpsTypeTraits<FHitResult> : public TStructOpsTypeTraitsBase2<FHitR
 
 
 /** Whether to teleport physics body or not */
+UENUM()
 enum class ETeleportType : uint8
 {
 	/** Do not teleport physics body. This means velocity will reflect the movement between initial and final position, and collisions along the way will occur */
 	None,
+
 	/** Teleport physics body so that velocity remains the same and no collision occurs */
-	TeleportPhysics
+	TeleportPhysics,
+
+	/** Teleport physics body and reset physics state completely */
+	ResetPhysics,
 };
 
 FORCEINLINE ETeleportType TeleportFlagToEnum(bool bTeleport) { return bTeleport ? ETeleportType::TeleportPhysics : ETeleportType::None; }
@@ -2630,7 +2682,7 @@ struct ENGINE_API FPointDamageEvent : public FDamageEvent
 	UPROPERTY()
 	struct FHitResult HitInfo;
 
-	FPointDamageEvent() : HitInfo() {}
+	FPointDamageEvent() : Damage(0.0f), ShotDirection(ForceInitToZero), HitInfo() {}
 	FPointDamageEvent(float InDamage, struct FHitResult const& InHitInfo, FVector const& InShotDirection, TSubclassOf<class UDamageType> InDamageTypeClass)
 		: FDamageEvent(InDamageTypeClass), Damage(InDamage), ShotDirection(InShotDirection), HitInfo(InHitInfo)
 	{}
@@ -2712,6 +2764,10 @@ struct ENGINE_API FRadialDamageEvent : public FDamageEvent
 
 	/** Simple API for common cases where we are happy to assume a single hit is expected, even though damage event may have multiple hits. */
 	virtual void GetBestHitInfo(AActor const* HitActor, AActor const* HitInstigator, struct FHitResult& OutHitInfo, FVector& OutImpulseDir) const override;
+
+	FRadialDamageEvent()
+		: Origin(ForceInitToZero)
+	{}
 };
 
 
@@ -2808,6 +2864,7 @@ struct FTimerHandle
 	GENERATED_BODY()
 
 	friend class FTimerManager;
+	friend struct FTimerHeapOrder;
 
 	FTimerHandle()
 	: Handle(0)
@@ -2823,9 +2880,6 @@ struct FTimerHandle
 	{
 		Handle = 0;
 	}
-
-	DEPRECATED(4.12, "This function is deprecated to avoid problems with timer wraparound. Please call FTimerManager::ValidateHandle.")
-	void MakeValid();
 
 	bool operator==(const FTimerHandle& Other) const
 	{
@@ -2843,8 +2897,38 @@ struct FTimerHandle
 	}
 
 private:
+	static const uint32 IndexBits        = 24;
+	static const uint32 SerialNumberBits = 40;
+
+	static_assert(IndexBits + SerialNumberBits == 64, "The space for the timer index and serial number should total 64 bits");
+
+	static const int32  MaxIndex        = (int32)1 << IndexBits;
+	static const uint64 MaxSerialNumber = (uint64)1 << SerialNumberBits;
+
+	void SetIndexAndSerialNumber(int32 Index, uint64 SerialNumber)
+	{
+		check(Index >= 0 && Index < MaxIndex);
+		check(SerialNumber < MaxSerialNumber);
+		Handle = (SerialNumber << IndexBits) | (uint64)(uint32)Index;
+	}
+
+	FORCEINLINE int32 GetIndex() const
+	{
+		return (int32)(Handle & (uint64)(MaxIndex - 1));
+	}
+
+	FORCEINLINE uint64 GetSerialNumber() const
+	{
+		return Handle >> IndexBits;
+	}
+
 	UPROPERTY(Transient)
 	uint64 Handle;
+
+	friend uint32 GetTypeHash(const FTimerHandle& InHandle)
+	{
+		return GetTypeHash(InHandle.Handle);
+	}
 };
 
 UENUM()
@@ -3251,6 +3335,7 @@ struct TStructOpsTypeTraits<FRepMovement> : public TStructOpsTypeTraitsBase2<FRe
 	enum 
 	{
 		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 	};
 };
 
@@ -3272,6 +3357,8 @@ struct FReplicationFlags
 			uint32 bRepPhysics:1;
 			/** True if this actor is replicating on a replay connection. */
 			uint32 bReplay:1;
+			/** True if this actor's RPCs should be ignored. */
+			uint32 bIgnoreRPCs:1;
 		};
 
 		uint32	Value;
@@ -3394,7 +3481,7 @@ enum EPhysicalSurface
 
 
 /** Describes how often this component is allowed to move. */
-UENUM()
+UENUM(BlueprintType)
 namespace EComponentMobility
 {
 	enum Type
@@ -3919,5 +4006,7 @@ enum class ELevelCollectionType
 	 * only static geometry and other visuals that are not replicated or affected by gameplay.
 	 * These will not be duplicated in order to save memory.
 	 */
-	StaticLevels
+	StaticLevels,
+
+	MAX
 };

@@ -17,8 +17,9 @@ public class HTTP : ModuleRules
         PrivateDependencyModuleNames.AddRange(
 			new string[] { 
 				"Core",
-				"Sockets"
-			}
+                "Sockets",
+                "SSL",
+            }
 			);
 
 		bool bWithCurl = false;
@@ -26,30 +27,32 @@ public class HTTP : ModuleRules
         if (Target.Platform == UnrealTargetPlatform.Win32 ||
             Target.Platform == UnrealTargetPlatform.Win64)
         {
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "WinInet");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "WinHttp");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "libcurl");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 
 			bWithCurl = true;
-
-			PrivateDependencyModuleNames.Add("SSL");
-		}
-        else if (Target.Platform == UnrealTargetPlatform.Linux ||
-			Target.Platform == UnrealTargetPlatform.Android ||
-			Target.Platform == UnrealTargetPlatform.Switch)
+        }
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) ||
+				Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
             AddEngineThirdPartyPrivateStaticDependencies(Target, "libcurl");
-            PrivateDependencyModuleNames.Add("SSL");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+
+			bWithCurl = true;
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Switch)
+		{
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "libcurl");
 
 			bWithCurl = true;
 		}
 		else
 		{
-			PublicDefinitions.Add("WITH_SSL=0");
 			PublicDefinitions.Add("WITH_LIBCURL=0");
 		}
 
-		if (bWithCurl)
+        if (bWithCurl)
 		{
 			PublicDefinitions.Add("CURL_ENABLE_DEBUG_CALLBACK=1");
 			if (Target.Configuration != UnrealTargetConfiguration.Shipping)

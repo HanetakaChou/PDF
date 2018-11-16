@@ -30,7 +30,7 @@ FString UObjectProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	return TEXT("OBJECT");
 }
 
-bool UObjectProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, bool& bOutAdvanceProperty)
+EConvertFromTypeResult UObjectProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
 {
 	static FName NAME_AssetObjectProperty = "AssetObjectProperty"; // old name of soft object property
 
@@ -38,33 +38,51 @@ bool UObjectProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uin
 	{
 		// This property used to be a TSoftObjectPtr<Foo> but is now a raw UObjectProperty Foo*, we can convert without loss of data
 		FSoftObjectPtr PreviousValue;
-		Ar << PreviousValue;
+		Slot << PreviousValue;
 
-		// now copy the value into the object's address space
-		UObject* PreviousValueObj = PreviousValue.LoadSynchronous();
+		UObject* PreviousValueObj = nullptr;
+
+		// If we're async loading it's not safe to do a sync load because it may crash or fail to set the variable, so throw an error if it's not already in memory
+		if (IsInAsyncLoadingThread())
+		{
+			PreviousValueObj = PreviousValue.Get();
+
+			if (!PreviousValueObj && !PreviousValue.IsNull())
+			{
+				UE_LOG(LogClass, Error, TEXT("Failed to convert soft path %s to unloaded object as this is not safe during async loading. Load and resave %s in the editor to fix!"), *PreviousValue.ToString(), *Slot.GetUnderlyingArchive().GetArchiveName());
+			}
+		}
+		else
+		{
+			PreviousValueObj = PreviousValue.LoadSynchronous();
+		}
+
+		// Now copy the value into the object's address space
 		SetPropertyValue_InContainer(Data, PreviousValueObj, Tag.ArrayIndex);
 
 		// Validate the type is proper
 		CheckValidObject(GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex));
 
-		return true;
+		return EConvertFromTypeResult::Converted;
 	}
 
-	return false;
+	return EConvertFromTypeResult::UseSerializeItem;
 }
 
-void UObjectProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaults ) const
+void UObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults ) const
 {
-	if (Ar.IsObjectReferenceCollector())
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
+
+	if (UnderlyingArchive.IsObjectReferenceCollector())
 	{
 		// Serialize in place
 		UObject** ObjectPtr = GetPropertyValuePtr(Value);
-		Ar << (*ObjectPtr);
+		Slot << (*ObjectPtr);
 	}
 	else
 	{
 		UObject* ObjectValue = GetObjectPropertyValue(Value);
-		Ar << ObjectValue;
+		Slot << ObjectValue;
 
 		UObject* CurrentValue = GetObjectPropertyValue(Value);
 		if (ObjectValue != CurrentValue)

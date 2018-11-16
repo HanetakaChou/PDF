@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using Tools.DotNETCommon;
 
 namespace AutomationTool
 {
@@ -53,7 +54,7 @@ namespace AutomationTool
 		/// Creates a new process and adds it to the tracking list.
 		/// </summary>
 		/// <returns>New Process objects</returns>
-		public static IProcessResult CreateProcess(string AppName, bool bAllowSpew, Dictionary<string, string> Env = null, UnrealBuildTool.LogEventType SpewVerbosity = UnrealBuildTool.LogEventType.Console, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null)
+		public static IProcessResult CreateProcess(string AppName, bool bAllowSpew, bool bCaptureSpew, Dictionary<string, string> Env = null, LogEventType SpewVerbosity = LogEventType.Console, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null)
 		{
 			var NewProcess = HostPlatform.Current.CreateProcess(AppName);
 			if (Env != null)
@@ -70,7 +71,7 @@ namespace AutomationTool
 					}
 				}
 			}
-			var Result = new ProcessResult(AppName, NewProcess, bAllowSpew, SpewVerbosity: SpewVerbosity, InSpewFilterCallback: SpewFilterCallback);
+			var Result = new ProcessResult(AppName, NewProcess, bAllowSpew, bCaptureSpew, SpewVerbosity: SpewVerbosity, InSpewFilterCallback: SpewFilterCallback);
 			AddProcess(Result);
 			return Result;
 		}
@@ -156,7 +157,7 @@ namespace AutomationTool
 							if (ProcessResult.HasAnyDescendants(Process.GetCurrentProcess()))
 							{
 								AllDone = false;
-								CommandUtils.Log("Waiting for descendants of main process...");
+								CommandUtils.LogInformation("Waiting for descendants of main process...");
 							}
 						}
 						catch (Exception Ex)
@@ -228,9 +229,9 @@ namespace AutomationTool
 		public delegate string SpewFilterCallbackType(string Message);
 
 		private int ProcessExitCode = -1;
-		private StringBuilder ProcessOutput = new StringBuilder();
+		private StringBuilder ProcessOutput;
 		private bool AllowSpew = true;
-		private UnrealBuildTool.LogEventType SpewVerbosity = UnrealBuildTool.LogEventType.Console;
+		private LogEventType SpewVerbosity = LogEventType.Console;
 		private SpewFilterCallbackType SpewFilterCallback = null;
 		private string AppName = String.Empty;
 		private Process Proc = null;
@@ -238,12 +239,21 @@ namespace AutomationTool
 		private AutoResetEvent ErrorWaitHandle = new AutoResetEvent(false);
 		private object ProcSyncObject;
 
-		public ProcessResult(string InAppName, Process InProc, bool bAllowSpew, UnrealBuildTool.LogEventType SpewVerbosity = UnrealBuildTool.LogEventType.Console, SpewFilterCallbackType InSpewFilterCallback = null)
+		public ProcessResult(string InAppName, Process InProc, bool bAllowSpew, bool bCaptureSpew = true, LogEventType SpewVerbosity = LogEventType.Console, SpewFilterCallbackType InSpewFilterCallback = null)
 		{
 			AppName = InAppName;
 			ProcSyncObject = new object();
 			Proc = InProc;
 			AllowSpew = bAllowSpew;
+			if(bCaptureSpew)
+			{
+				ProcessOutput = new StringBuilder();
+			}
+			else
+			{
+				OutputWaitHandle.Set();
+				ErrorWaitHandle.Set();
+			}
 			this.SpewVerbosity = SpewVerbosity;
 			SpewFilterCallback = InSpewFilterCallback;
 			if (Proc != null)
@@ -275,9 +285,9 @@ namespace AutomationTool
         /// <param name="Verbosity"></param>
         /// <param name="Message"></param>
         [MethodImplAttribute(MethodImplOptions.NoInlining)]
-		private void LogOutput(UnrealBuildTool.LogEventType Verbosity, string Message)
+		private void LogOutput(LogEventType Verbosity, string Message)
 		{
-            UnrealBuildTool.Log.WriteLine(1, Verbosity, Message);
+            Log.WriteLine(1, Verbosity, Message);
 		}
        
 		/// <summary>
@@ -317,10 +327,13 @@ namespace AutomationTool
 					}
 				}
 
-				lock (ProcSyncObject)
+				if(ProcessOutput != null)
 				{
-					ProcessOutput.Append(e.Data);
-					ProcessOutput.Append(Environment.NewLine);
+					lock (ProcSyncObject)
+					{
+						ProcessOutput.Append(e.Data);
+						ProcessOutput.Append(Environment.NewLine);
+					}
 				}
 			}
 			else
@@ -350,10 +363,13 @@ namespace AutomationTool
 				{
 					LogOutput(SpewVerbosity, e.Data);
 				}
-				lock (ProcSyncObject)
+				if(ProcessOutput != null)
 				{
-					ProcessOutput.Append(e.Data);
-					ProcessOutput.Append(Environment.NewLine);
+					lock (ProcSyncObject)
+					{
+						ProcessOutput.Append(e.Data);
+						ProcessOutput.Append(Environment.NewLine);
+					}
 				}
 			}
 			else
@@ -367,6 +383,7 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Result"></param>
 		/// <returns>Process exit code.</returns>
+		[Obsolete]
 		public static implicit operator int(ProcessResult Result)
 		{
 			return Result.ExitCode;
@@ -388,6 +405,10 @@ namespace AutomationTool
 		{
 			get
 			{
+				if (ProcessOutput == null)
+				{
+					return null;
+				}
 				lock (ProcSyncObject)
 				{
 					return ProcessOutput.ToString();
@@ -502,11 +523,17 @@ namespace AutomationTool
 				lock (ProcSyncObject)
 				{
 					bProcTerminated = (Proc == null) || Proc.HasExited;
-				}
-				if (!bProcTerminated)
-				{
-					// The process did not terminate yet but we've read all output messages, wait until the process terminates
-					Proc.WaitForExit();
+
+					if (Proc != null)
+					{
+						if (!bProcTerminated)
+						{
+							// The process did not terminate yet but we've read all output messages, wait until the process terminates
+							Proc.WaitForExit();
+						}
+
+						ExitCode = Proc.ExitCode;
+					}
 				}
 			}
 		}
@@ -721,6 +748,15 @@ namespace AutomationTool
             /// If NoLoggingOfRunCommand is set, it normally suppresses the run duration output. This turns it back on.
             /// </summary>
             LoggingOfRunDuration = 1 << 7,
+			/// <summary>
+			/// If set, a window is allowed to be created
+			/// </summary>
+			NoHideWindow = 1 << 8,
+
+			/// <summary>
+			/// Do not capture stdout in the process result
+			/// </summary>
+			NoStdOutCapture = 1 << 8,
 
 			Default = AllowSpew | AppMustExist,
 		}
@@ -770,16 +806,16 @@ namespace AutomationTool
 			}
 			var StartTime = DateTime.UtcNow;
 
-			UnrealBuildTool.LogEventType SpewVerbosity = Options.HasFlag(ERunOptions.SpewIsVerbose) ? UnrealBuildTool.LogEventType.Verbose : UnrealBuildTool.LogEventType.Console;
+			LogEventType SpewVerbosity = Options.HasFlag(ERunOptions.SpewIsVerbose) ? LogEventType.Verbose : LogEventType.Console;
             if (!Options.HasFlag(ERunOptions.NoLoggingOfRunCommand))
             {
                 LogWithVerbosity(SpewVerbosity,"Running: " + App + " " + (String.IsNullOrEmpty(CommandLine) ? "" : CommandLine));
             }
 
-			string PrevIndent = UnrealBuildTool.Log.Indent;
-			UnrealBuildTool.Log.Indent += "  ";
+			string PrevIndent = Tools.DotNETCommon.Log.Indent;
+			Tools.DotNETCommon.Log.Indent += "  ";
 
-			IProcessResult Result = ProcessManager.CreateProcess(App, Options.HasFlag(ERunOptions.AllowSpew), Env, SpewVerbosity: SpewVerbosity, SpewFilterCallback: SpewFilterCallback);
+			IProcessResult Result = ProcessManager.CreateProcess(App, Options.HasFlag(ERunOptions.AllowSpew), !Options.HasFlag(ERunOptions.NoStdOutCapture), Env, SpewVerbosity: SpewVerbosity, SpewFilterCallback: SpewFilterCallback);
 			try
 			{
 				Process Proc = Result.ProcessObject;
@@ -796,7 +832,7 @@ namespace AutomationTool
 					Proc.ErrorDataReceived += Result.StdErr;
 				}
 				Proc.StartInfo.RedirectStandardInput = Input != null;
-				Proc.StartInfo.CreateNoWindow = true;
+				Proc.StartInfo.CreateNoWindow = (Options & ERunOptions.NoHideWindow) == 0;
 				if ((Options & ERunOptions.UTF8Output) == ERunOptions.UTF8Output)
 				{
 					Proc.StartInfo.StandardOutputEncoding = new System.Text.UTF8Encoding(false, false);
@@ -826,7 +862,7 @@ namespace AutomationTool
 			}
 			finally
 			{
-				UnrealBuildTool.Log.Indent = PrevIndent;
+				Tools.DotNETCommon.Log.Indent = PrevIndent;
 			}
 
 			if (!Options.HasFlag(ERunOptions.NoWaitForExit))
@@ -970,111 +1006,45 @@ namespace AutomationTool
 		/// <param name="Env">Environment to use.</param>
 		/// <param name="CommandLine">Commandline to pass on to the executable</param>
 		/// <param name="Identifier">Log prefix for output</param>
-		public static string RunUAT(CommandEnvironment Env, string CommandLine, string Identifier = null)
+		public static void RunUAT(CommandEnvironment Env, string CommandLine, string Identifier)
 		{
-			// We want to redirect the output from recursive UAT calls into our normal log folder, but prefix everything with a unique identifier. To do so, we set the EnvVarNames.LogFolder environment
-			// variable to a subfolder of it, then copy its contents into the main folder with a prefix after it's finished. Start by finding a base name we can use to identify the output of this run.
-			string BaseLogSubdir = "Recur";
-			if (!String.IsNullOrEmpty(CommandLine))
-			{
-				int Space = CommandLine.IndexOf(" ");
-				if (Space > 0)
-				{
-					BaseLogSubdir = BaseLogSubdir + "_" + CommandLine.Substring(0, Space);
-				}
-                else if (CommandLine.Contains("-profile"))
-                {
-                    string PathToProfile = CommandLine.Substring(CommandLine.IndexOf('=') + 1);
-                    BaseLogSubdir = BaseLogSubdir + "_" + (Path.GetFileNameWithoutExtension(PathToProfile));
-                }
-                else
-                {
-                    BaseLogSubdir = BaseLogSubdir + "_" + CommandLine;
-                }
-			}
-			BaseLogSubdir = BaseLogSubdir.Trim();
-
 			// Check if there are already log files which start with this prefix, and try to uniquify it if until there aren't.
-			int Index = 0;
-			string DirOnlyName = BaseLogSubdir;
+			string DirOnlyName = Identifier;
 			string LogSubdir = CombinePaths(CmdEnv.LogFolder, DirOnlyName, "");
-            while (true)
+			for(int Attempt = 1;;Attempt++)
 			{
-                var ExistingFiles = FindFiles(DirOnlyName + "*", false, CmdEnv.LogFolder);
+                string[] ExistingFiles = FindFiles(DirOnlyName + "*", false, CmdEnv.LogFolder);
                 if (ExistingFiles.Length == 0)
                 {
                     break;
                 }
-				Index++;
-				if (Index == 1000)
+				if (Attempt == 1000)
 				{
 					throw new AutomationException("Couldn't seem to create a log subdir {0}", LogSubdir);
 				}
-				DirOnlyName = String.Format("{0}_{1}_", BaseLogSubdir, Index);
+				DirOnlyName = String.Format("{0}_{1}", Identifier, Attempt + 1);
 				LogSubdir = CombinePaths(CmdEnv.LogFolder, DirOnlyName, "");
 			}
 
 			// Get the stdout log file for this run, and create the subdirectory for all the other log output
-			string LogFile = CombinePaths(CmdEnv.LogFolder, DirOnlyName + ".log");
-			LogVerbose("Recursive UAT Run, in log folder {0}, main log file {1}", LogSubdir, LogFile);
 			CreateDirectory(LogSubdir);
 
 			// Run UAT with the log folder redirected through the environment
-			string App = CmdEnv.UATExe;
-
-			Log("Running {0} {1}", App, CommandLine);
-			var OSEnv = new Dictionary<string, string>();
-
-			OSEnv.Add(EnvVarNames.LogFolder, LogSubdir);
-			OSEnv.Add(EnvVarNames.DisableStartupMutex, "1");
-			OSEnv.Add(EnvVarNames.IsChildInstance, "1");
+			Dictionary<string, string> EnvironmentVars = new Dictionary<string, string>();
+			EnvironmentVars.Add(EnvVarNames.LogFolder, LogSubdir);
+			EnvironmentVars.Add(EnvVarNames.FinalLogFolder, CombinePaths(CmdEnv.FinalLogFolder, DirOnlyName));
+			EnvironmentVars.Add(EnvVarNames.DisableStartupMutex, "1");
+			EnvironmentVars.Add(EnvVarNames.IsChildInstance, "1");
 			if (!IsBuildMachine)
 			{
-				OSEnv.Add(AutomationTool.EnvVarNames.LocalRoot, ""); // if we don't clear this out, it will think it is a build machine; it will rederive everything
+				EnvironmentVars.Add(AutomationTool.EnvVarNames.LocalRoot, ""); // if we don't clear this out, it will think it is a build machine; it will rederive everything
 			}
 
-			IProcessResult Result = Run(App, CommandLine, null, ERunOptions.Default, OSEnv, Identifier: Identifier);
-			if (Result.Output.Length > 0)
-			{
-				WriteToFile(LogFile, Result.Output);
-			}
-			else
-			{
-				WriteToFile(LogFile, "[None!, no output produced]");
-			}
-
-			// Copy everything into the main log folder, using the prefix we decided on earlier.
-			LogVerbose("Flattening log folder {0}", LogSubdir);
-
-			var Files = FindFiles("*", true, LogSubdir);
-			string MyLogFolder = CombinePaths(CmdEnv.LogFolder, "");
-			foreach (var ThisFile in Files)
-			{
-				if (!ThisFile.StartsWith(MyLogFolder, StringComparison.InvariantCultureIgnoreCase))
-				{
-					throw new AutomationException("Can't rebase {0} because it doesn't start with {1}", ThisFile, MyLogFolder);
-				}
-				string NewFilename = ThisFile.Substring(MyLogFolder.Length).Replace("/", "_").Replace("\\", "_");
-				NewFilename = CombinePaths(CmdEnv.LogFolder, NewFilename);
-				if (FileExists_NoExceptions(NewFilename))
-				{
-					throw new AutomationException("Destination log file already exists? {0}", NewFilename);
-				}
-				CopyFile(ThisFile, NewFilename);
-				if (!FileExists_NoExceptions(NewFilename))
-				{
-					throw new AutomationException("Destination log file could not be copied {0}", NewFilename);
-				}
-				DeleteFile_NoExceptions(ThisFile);
-			}
-            DeleteDirectory_NoExceptions(LogSubdir);
-
+			IProcessResult Result = Run(CmdEnv.UATExe, CommandLine, null, ERunOptions.Default, EnvironmentVars, Identifier: Identifier);
 			if (Result.ExitCode != 0)
 			{
-				throw new CommandFailedException(String.Format("Recursive UAT Command failed (Result:{3}): {0} {1}. See logfile for details: '{2}' ",
-																				App, CommandLine, Path.GetFileName(LogFile), Result.ExitCode));
+				throw new CommandFailedException(String.Format("Recursive UAT command failed (exit code {0})", Result.ExitCode));
 			}
-			return LogFile;
 		}
 
 		protected delegate bool ProcessLog(string LogText);
@@ -1088,7 +1058,7 @@ namespace AutomationTool
 		{
 			while (!FileExists(LogFilename) && !LogProcess.HasExited)
 			{
-				Log("Waiting for logging process to start...");
+				LogInformation("Waiting for logging process to start...");
 				Thread.Sleep(2000);
 			}
 			Thread.Sleep(1000);

@@ -328,7 +328,7 @@ static void ImportMaterialsForSkelMesh(FSkeletalMeshImportData &ImportData, cons
 			if (!Materials.Contains(MaterialName))
 			{
 				Materials.Add(MaterialName);
-				ImportData.Materials.Add(VMaterial());
+				ImportData.Materials.Add(SkeletalMeshImportData::FMaterial());
 				ImportData.Materials.Last().Material = DefaultMaterial;
 				ImportData.Materials.Last().MaterialImportName = DefaultMaterial->GetName();
 			}
@@ -364,9 +364,9 @@ static void CreateBones(FSkeletalMeshImportData &ImportData, const apex::Destruc
 	// Turn parts into bones
 	for (uint32 BoneIndex=0; BoneIndex<BoneCount; ++BoneIndex)
 	{
-		ImportData.RefBonesBinary.Add( VBone() );
+		ImportData.RefBonesBinary.Add(SkeletalMeshImportData::FBone() );
 		// Set bone
-		VBone& Bone = ImportData.RefBonesBinary[BoneIndex];
+		SkeletalMeshImportData::FBone& Bone = ImportData.RefBonesBinary[BoneIndex];
 		if (BoneIndex == 0)
 		{
 			// Bone 0 is the required root bone
@@ -384,7 +384,7 @@ static void CreateBones(FSkeletalMeshImportData &ImportData, const apex::Destruc
 		}
 
 		// Set transform to identity
-		VJointPos& JointMatrix = Bone.BonePos;
+		SkeletalMeshImportData::FJointPos& JointMatrix = Bone.BonePos;
 		JointMatrix.Transform = FTransform::Identity;
 		JointMatrix.Length = 1.0f;
 		JointMatrix.XSize = 100.0f;
@@ -619,7 +619,7 @@ static bool FillSkelMeshImporterFromApexDestructibleAsset(FSkeletalMeshImportDat
 #endif
 
 				// Fill triangle
-				VTriangle& Triangle = ImportData.Faces[TriangleIndex++];
+				SkeletalMeshImportData::FTriangle& Triangle = ImportData.Faces[TriangleIndex++];
 
 				// set the face smoothing by default. It could be any number, but not zero
 				Triangle.SmoothingGroups = 255; 
@@ -643,7 +643,7 @@ static bool FillSkelMeshImporterFromApexDestructibleAsset(FSkeletalMeshImportDat
 
 					// Wedges
 					Triangle.WedgeIndex[V] = WedgeIndex;
-					VVertex& Wedge = ImportData.Wedges[WedgeIndex++];
+					SkeletalMeshImportData::FVertex& Wedge = ImportData.Wedges[WedgeIndex++];
 					Wedge.VertexIndex = VertexIndexBase + SubmeshVertexIndex[V];
 					Wedge.MatIndex = Triangle.MatIndex;
 					Wedge.Color = Colors[SubmeshVertexIndex[V]];
@@ -830,6 +830,12 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 	bool bHaveNormals, bHaveTangents;
 	if (!FillSkelMeshImporterFromApexDestructibleAsset(*SkelMeshImportDataPtr, ApexDestructibleAsset, bHaveNormals, bHaveTangents))
 	{
+		if (ExistDestMeshDataPtr)
+		{
+			RestoreExistingDestMeshData(ExistDestMeshDataPtr, &DestructibleMesh);
+			delete ExistDestMeshDataPtr;
+			ExistDestMeshDataPtr = NULL;
+		}
 		return false;
 	}
 
@@ -855,6 +861,12 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 	int32 SkeletalDepth=0;
 	if(!ProcessImportMeshSkeleton(DestructibleMesh.Skeleton, DestructibleMesh.RefSkeleton, SkeletalDepth, *SkelMeshImportDataPtr))
 	{
+		if (ExistDestMeshDataPtr)
+		{
+			RestoreExistingDestMeshData(ExistDestMeshDataPtr, &DestructibleMesh);
+			delete ExistDestMeshDataPtr;
+			ExistDestMeshDataPtr = NULL;
+		}
 		return false;
 	}
 	UE_LOG(LogApexDestructibleAssetImport, Warning, TEXT("Bones digested - %i  Depth of hierarchy - %i"), DestructibleMesh.RefSkeleton.GetNum(), SkeletalDepth);
@@ -867,9 +879,9 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 	DestructibleMeshResource.LODModels.Empty();
 	new(DestructibleMeshResource.LODModels)FSkeletalMeshLODModel();
 
-	DestructibleMesh.LODInfo.Empty();
-	DestructibleMesh.LODInfo.AddZeroed();
-	DestructibleMesh.LODInfo[0].LODHysteresis = 0.02f;
+	DestructibleMesh.ResetLODInfo();
+	DestructibleMesh.AddLODInfo();
+	DestructibleMesh.GetLODInfo(0)->LODHysteresis = 0.02f;
 
 	// Create initial bounding box based on expanded version of reference pose for meshes without physics assets. Can be overridden by artist.
 	FBox BoundingBox(SkelMeshImportDataPtr->Points.GetData(), SkelMeshImportDataPtr->Points.Num());
@@ -888,9 +900,9 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 	{
 		// copy vertex data needed to generate skinning streams for LOD
 		TArray<FVector> LODPoints;
-		TArray<FMeshWedge> LODWedges;
-		TArray<FMeshFace> LODFaces;
-		TArray<FVertInfluence> LODInfluences;
+		TArray<SkeletalMeshImportData::FMeshWedge> LODWedges;
+		TArray<SkeletalMeshImportData::FMeshFace> LODFaces;
+		TArray<SkeletalMeshImportData::FVertInfluence> LODInfluences;
 		TArray<int32> LODPointToRawMap;
 		SkelMeshImportDataPtr->CopyLODImportData(LODPoints,LODWedges,LODFaces,LODInfluences,LODPointToRawMap);
 
@@ -904,6 +916,10 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 		if (!MeshUtilities.BuildSkeletalMesh(DestructibleMeshResource.LODModels[0], DestructibleMesh.RefSkeleton, LODInfluences,LODWedges,LODFaces,LODPoints,LODPointToRawMap,BuildOptions))
 		{
 			DestructibleMesh.MarkPendingKill();
+
+			delete ExistDestMeshDataPtr;
+			ExistDestMeshDataPtr = NULL;
+
 			return false;
 		}
 
@@ -969,9 +985,7 @@ bool BuildDestructibleMeshFromFractureSettings(UDestructibleMesh& DestructibleMe
 	apex::DestructibleAsset* NewApexDestructibleAsset = NULL;
 
 #if WITH_EDITORONLY_DATA
-	UDestructibleFractureSettings* FractureSettings = DestructibleMesh.FractureSettings;
-
-	if (FractureSettings)
+	if (DestructibleMesh.FractureSettings != NULL)
 	{
 		TArray<UMaterialInterface*> OverrideMaterials;
 		OverrideMaterials.SetNumUninitialized(DestructibleMesh.Materials.Num());	//save old materials
@@ -980,23 +994,36 @@ bool BuildDestructibleMeshFromFractureSettings(UDestructibleMesh& DestructibleMe
 			OverrideMaterials[MaterialIndex] = DestructibleMesh.Materials[MaterialIndex].MaterialInterface;
 		}
 
-		DestructibleMesh.Materials.SetNum(DestructibleMesh.FractureSettings->Materials.Num());
-
-		// If we have valid overrides or defaults, use those settings - otherwise a blank material (from default construction above)
+		int32 MaterialCount = 0;
 		for (int32 MaterialIndex = 0; MaterialIndex < DestructibleMesh.Materials.Num(); ++MaterialIndex)
 		{
+			if (DestructibleMesh.FractureSettings->Materials[MaterialIndex] != nullptr)
+			{
+				MaterialCount++;
+			}
+		}
+		DestructibleMesh.Materials.SetNum(MaterialCount);
+
+		int32 NewMaterialIndex = 0;
+		for (int32 MaterialIndex = 0; MaterialIndex < DestructibleMesh.Materials.Num(); ++MaterialIndex)
+		{
+			if (DestructibleMesh.FractureSettings->Materials[MaterialIndex] == nullptr)
+			{
+				continue;
+			}
 			if(MaterialIndex < OverrideMaterials.Num() && OverrideMaterials[MaterialIndex])//if user has overridden materials use it
 			{
-				DestructibleMesh.Materials[MaterialIndex].MaterialInterface = OverrideMaterials[MaterialIndex];
-				DestructibleMesh.Materials[MaterialIndex].ImportedMaterialSlotName = OverrideMaterials[MaterialIndex]->GetFName();
-				DestructibleMesh.Materials[MaterialIndex].MaterialSlotName = OverrideMaterials[MaterialIndex]->GetFName();
+				DestructibleMesh.Materials[NewMaterialIndex].MaterialInterface = OverrideMaterials[MaterialIndex];
+				DestructibleMesh.Materials[NewMaterialIndex].ImportedMaterialSlotName = OverrideMaterials[MaterialIndex]->GetFName();
+				DestructibleMesh.Materials[NewMaterialIndex].MaterialSlotName = OverrideMaterials[MaterialIndex]->GetFName();
 			}
-			else if(FractureSettings->Materials[MaterialIndex])
+			else
 			{
-				DestructibleMesh.Materials[MaterialIndex].MaterialInterface = FractureSettings->Materials[MaterialIndex];
-				DestructibleMesh.Materials[MaterialIndex].ImportedMaterialSlotName = FractureSettings->Materials[MaterialIndex]->GetFName();
-				DestructibleMesh.Materials[MaterialIndex].MaterialSlotName = FractureSettings->Materials[MaterialIndex]->GetFName();
+				DestructibleMesh.Materials[NewMaterialIndex].MaterialInterface = DestructibleMesh.FractureSettings->Materials[MaterialIndex];
+				DestructibleMesh.Materials[NewMaterialIndex].ImportedMaterialSlotName = DestructibleMesh.FractureSettings->Materials[MaterialIndex]->GetFName();
+				DestructibleMesh.Materials[NewMaterialIndex].MaterialSlotName = DestructibleMesh.FractureSettings->Materials[MaterialIndex]->GetFName();
 			}
+			NewMaterialIndex++;
 		}
 
 		apex::DestructibleAssetCookingDesc DestructibleAssetCookingDesc;
@@ -1013,7 +1040,7 @@ bool BuildDestructibleMeshFromFractureSettings(UDestructibleMesh& DestructibleMe
 
 	return Success;
 }
-    #endif
+
 UDestructibleMesh* ImportDestructibleMeshFromApexDestructibleAsset(UObject* InParent, apex::DestructibleAsset& ApexDestructibleAsset, FName Name, EObjectFlags Flags, FSkeletalMeshImportData* OutData, EDestructibleImportOptions::Type Options)
 {
 	// The APEX Destructible Asset contains an APEX Render Mesh Asset, get a pointer to this
@@ -1088,3 +1115,4 @@ UDestructibleMesh* ImportDestructibleMeshFromApexDestructibleAsset(UObject* InPa
 }
 
 #endif // WITH_APEX
+#endif // WITH_EDITOR

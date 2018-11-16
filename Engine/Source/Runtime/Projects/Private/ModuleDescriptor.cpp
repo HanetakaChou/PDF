@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "ModuleDescriptor.h"
+#include "Misc/App.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Dom/JsonObject.h"
 #include "Modules/ModuleManager.h"
@@ -36,7 +37,10 @@ const TCHAR* ELoadingPhase::ToString( const ELoadingPhase::Type Value )
 
 	case PostConfigInit:
 		return TEXT( "PostConfigInit" );
-			
+		
+	case PreEarlyLoadingScreen:
+		return TEXT("PreEarlyLoadingScreen");
+
 	case PreLoadingScreen:
 		return TEXT( "PreLoadingScreen" );
 
@@ -194,6 +198,50 @@ bool FModuleDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
 		}
 	}
 
+	// Read the whitelisted target configurations
+	TSharedPtr<FJsonValue> WhitelistTargetConfigurationsValue = Object.TryGetField(TEXT("WhitelistTargetConfigurations"));
+	if (WhitelistTargetConfigurationsValue.IsValid() && WhitelistTargetConfigurationsValue->Type == EJson::Array)
+	{
+		const TArray< TSharedPtr< FJsonValue > >& ConfigsArray = WhitelistTargetConfigurationsValue->AsArray();
+		for (int Idx = 0; Idx < ConfigsArray.Num(); Idx++)
+		{
+			WhitelistTargetConfigurations.Add(ConfigsArray[Idx]->AsString());
+		}
+	}
+
+	// Read the blacklisted target configurations
+	TSharedPtr<FJsonValue> BlacklistTargetConfigurationsValue = Object.TryGetField(TEXT("BlacklistTargetConfigurations"));
+	if (BlacklistTargetConfigurationsValue.IsValid() && BlacklistTargetConfigurationsValue->Type == EJson::Array)
+	{
+		const TArray< TSharedPtr< FJsonValue > >& ConfigsArray = BlacklistTargetConfigurationsValue->AsArray();
+		for (int Idx = 0; Idx < ConfigsArray.Num(); Idx++)
+		{
+			BlacklistTargetConfigurations.Add(ConfigsArray[Idx]->AsString());
+		}
+	}
+
+	// Read the whitelisted programs
+	TSharedPtr<FJsonValue> WhitelistProgramsValue = Object.TryGetField(TEXT("WhitelistPrograms"));
+	if (WhitelistProgramsValue.IsValid() && WhitelistProgramsValue->Type == EJson::Array)
+	{
+		const TArray< TSharedPtr< FJsonValue > >& ProgramsArray = WhitelistProgramsValue->AsArray();
+		for (int Idx = 0; Idx < ProgramsArray.Num(); Idx++)
+		{
+			WhitelistPrograms.Add(ProgramsArray[Idx]->AsString());
+		}
+	}
+
+	// Read the blacklisted programs
+	TSharedPtr<FJsonValue> BlacklistProgramsValue = Object.TryGetField(TEXT("BlacklistPrograms"));
+	if (BlacklistProgramsValue.IsValid() && BlacklistProgramsValue->Type == EJson::Array)
+	{
+		const TArray< TSharedPtr< FJsonValue > >& ProgramsArray = BlacklistProgramsValue->AsArray();
+		for (int Idx = 0; Idx < ProgramsArray.Num(); Idx++)
+		{
+			BlacklistPrograms.Add(ProgramsArray[Idx]->AsString());
+		}
+	}
+
 	// Read the additional dependencies
 	TSharedPtr<FJsonValue> AdditionalDependenciesValue = Object.TryGetField(TEXT("AdditionalDependencies"));
 	if (AdditionalDependenciesValue.IsValid() && AdditionalDependenciesValue->Type == EJson::Array)
@@ -284,6 +332,42 @@ void FModuleDescriptor::Write(TJsonWriter<>& Writer) const
 		}
 		Writer.WriteArrayEnd();
 	}
+	if (WhitelistTargetConfigurations.Num() > 0)
+	{
+		Writer.WriteArrayStart(TEXT("WhitelistTargetConfigurations"));
+		for (int Idx = 0; Idx < WhitelistTargetConfigurations.Num(); Idx++)
+		{
+			Writer.WriteValue(WhitelistTargetConfigurations[Idx]);
+		}
+		Writer.WriteArrayEnd();
+	}
+	if (BlacklistTargetConfigurations.Num() > 0)
+	{
+		Writer.WriteArrayStart(TEXT("BlacklistTargetConfigurations"));
+		for (int Idx = 0; Idx < BlacklistTargetConfigurations.Num(); Idx++)
+		{
+			Writer.WriteValue(BlacklistTargetConfigurations[Idx]);
+		}
+		Writer.WriteArrayEnd();
+	}
+	if (WhitelistPrograms.Num() > 0)
+	{
+		Writer.WriteArrayStart(TEXT("WhitelistPrograms"));
+		for (int Idx = 0; Idx < WhitelistPrograms.Num(); Idx++)
+		{
+			Writer.WriteValue(WhitelistPrograms[Idx]);
+		}
+		Writer.WriteArrayEnd();
+	}
+	if (BlacklistPrograms.Num() > 0)
+	{
+		Writer.WriteArrayStart(TEXT("BlacklistPrograms"));
+		for (int Idx = 0; Idx < BlacklistPrograms.Num(); Idx++)
+		{
+			Writer.WriteValue(BlacklistPrograms[Idx]);
+		}
+		Writer.WriteArrayEnd();
+	}
 	if (AdditionalDependencies.Num() > 0)
 	{
 		Writer.WriteArrayStart(TEXT("AdditionalDependencies"));
@@ -312,7 +396,9 @@ void FModuleDescriptor::WriteArray(TJsonWriter<>& Writer, const TCHAR* Name, con
 bool FModuleDescriptor::IsCompiledInCurrentConfiguration() const
 {
 	// Cache the string for the current platform
-	static FString UBTPlatform(FPlatformMisc::GetUBTPlatform());
+	static const FString UBTPlatform = FPlatformMisc::GetUBTPlatform();
+	static const FString UBTTarget = FPlatformMisc::GetUBTTarget();
+	static const FString UBTTargetConfiguration = EBuildConfigurations::ToString(FApp::GetBuildConfiguration());
 
 	// Check the platform is whitelisted
 	if(WhitelistPlatforms.Num() > 0 && !WhitelistPlatforms.Contains(UBTPlatform))
@@ -326,8 +412,6 @@ bool FModuleDescriptor::IsCompiledInCurrentConfiguration() const
 		return false;
 	}
 
-	static FString UBTTarget(FPlatformMisc::GetUBTTarget());
-
 	// Check the target is whitelisted
 	if (WhitelistTargets.Num() > 0 && !WhitelistTargets.Contains(UBTTarget))
 	{
@@ -340,16 +424,41 @@ bool FModuleDescriptor::IsCompiledInCurrentConfiguration() const
 		return false;
 	}
 
+	// Check the target configuration is whitelisted
+	if (WhitelistTargetConfigurations.Num() > 0 && !WhitelistTargetConfigurations.Contains(UBTTargetConfiguration))
+	{
+		return false;
+	}
+
+	// Check the target configuration is not blacklisted
+	if (BlacklistTargetConfigurations.Num() > 0 && BlacklistTargetConfigurations.Contains(UBTTargetConfiguration))
+	{
+		return false;
+	}
+
+#if IS_PROGRAM
+	// Check the program is whitelisted. Note that the behavior is slightly different to other whitelist/blacklist pairs here; we will whitelist a module of any type if it's explicitly allowed for this program.
+	if (WhitelistPrograms.Num() > 0)
+	{
+		return WhitelistPrograms.Contains(UE_APP_NAME);
+	}
+
+	// Check the program is allowed
+	if (BlacklistPrograms.Num() > 0 && BlacklistPrograms.Contains(UE_APP_NAME))
+	{
+		return false;
+	}
+#endif
+
 	// Check the module is compatible with this target. This should match ModuleDescriptor.IsCompiledInConfiguration in UBT
 	switch (Type)
 	{
 	case EHostType::Runtime:
 	case EHostType::RuntimeNoCommandlet:
-#if IS_PROGRAM
-		return false;
-#else
-		return true;
-#endif
+		#if !IS_PROGRAM
+			return true;
+		#endif
+		break;
 
 	case EHostType::RuntimeAndProgram:
 		return true;
@@ -491,7 +600,8 @@ void FModuleDescriptor::LoadModulesForPhase(ELoadingPhase::Type LoadingPhase, co
 	}
 }
 
-bool FModuleDescriptor::CheckModuleCompatibility(const TArray<FModuleDescriptor>& Modules, bool bGameModules, TArray<FString>& OutIncompatibleFiles)
+#if !IS_MONOLITHIC
+bool FModuleDescriptor::CheckModuleCompatibility(const TArray<FModuleDescriptor>& Modules, TArray<FString>& OutIncompatibleFiles)
 {
 	FModuleManager& ModuleManager = FModuleManager::Get();
 
@@ -500,11 +610,12 @@ bool FModuleDescriptor::CheckModuleCompatibility(const TArray<FModuleDescriptor>
 	{
 		if (Module.IsCompiledInCurrentConfiguration() && !ModuleManager.IsModuleUpToDate(Module.Name))
 		{
-			OutIncompatibleFiles.Add(ModuleManager.GetCleanModuleFilename(Module.Name, bGameModules));
+			OutIncompatibleFiles.Add(Module.Name.ToString());
 			bResult = false;
 		}
 	}
 	return bResult;
 }
+#endif
 
 #undef LOCTEXT_NAMESPACE

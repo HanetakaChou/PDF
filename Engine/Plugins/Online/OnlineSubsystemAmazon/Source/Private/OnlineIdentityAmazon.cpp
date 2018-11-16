@@ -66,19 +66,19 @@ FOnlineIdentityAmazon::FOnlineIdentityAmazon(FOnlineSubsystemAmazon* InSubsystem
 {
 	if (!GConfig->GetString(TEXT("OnlineSubsystemAmazon.OnlineSubsystemAmazon"), TEXT("AmazonEndpoint"), AmazonEndpoint, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing AmazonEndpoint= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing AmazonEndpoint= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
 	}
 	if (!GConfig->GetString(TEXT("OnlineSubsystemAmazon.OnlineSubsystemAmazon"), TEXT("RedirectUrl"), RedirectUrl, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing RedirectUrl= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing RedirectUrl= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
 	}
 	if (!GConfig->GetString(TEXT("OnlineSubsystemAmazon.OnlineSubsystemAmazon"), TEXT("ClientId"), ClientId, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing AmazonEndpoint= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing AmazonEndpoint= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
 	}
 	if (!GConfig->GetFloat(TEXT("OnlineSubsystemAmazon.OnlineSubsystemAmazon"), TEXT("RegistrationTimeout"), MaxCheckElapsedTime, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing RegistrationTimeout= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing RegistrationTimeout= in [OnlineSubsystemAmazon.OnlineSubsystemAmazon] of DefaultEngine.ini"));
 		// Default to 30 seconds
 		MaxCheckElapsedTime = 30.f;
 	}
@@ -119,14 +119,14 @@ void FOnlineIdentityAmazon::TickLogin(float DeltaTime)
 				}
 				else
 				{
-					TriggerOnLoginCompleteDelegates(LocalUserNumPendingLogin, false, FUniqueNetIdString(TEXT("")), FString(TEXT("RegisterUser() failed to parse the user registration results")));
+					TriggerOnLoginCompleteDelegates(LocalUserNumPendingLogin, false, FUniqueNetIdAmazon(TEXT("")), FString(TEXT("RegisterUser() failed to parse the user registration results")));
 				}
 			}
 			// Trigger the delegate if we hit the timeout limit
 			else if (TotalCheckElapsedTime > MaxCheckElapsedTime)
 			{
 				bHasLoginOutstanding = false;
-				TriggerOnLoginCompleteDelegates(LocalUserNumPendingLogin, false, FUniqueNetIdString(TEXT("")), FString(TEXT("RegisterUser() timed out without getting the data")));
+				TriggerOnLoginCompleteDelegates(LocalUserNumPendingLogin, false, FUniqueNetIdAmazon(TEXT("")), FString(TEXT("RegisterUser() timed out without getting the data")));
 			}
 		}
 		// Reset our time trackers if we are done ticking for now
@@ -233,7 +233,7 @@ bool FOnlineIdentityAmazon::Login(int32 LocalUserNum, const FOnlineAccountCreden
 		bHasLoginOutstanding = bWasSuccessful = FPlatformMisc::OsExecute(TEXT("open"), *Command);
 		if (!bWasSuccessful)
 		{
-			UE_LOG(LogOnline, Error, TEXT("RegisterUser() : Failed to execute command %s "), *Command);
+			UE_LOG_ONLINE_IDENTITY(Error, TEXT("RegisterUser() : Failed to execute command %s "), *Command);
 		}
 		else
 		{
@@ -243,11 +243,11 @@ bool FOnlineIdentityAmazon::Login(int32 LocalUserNum, const FOnlineAccountCreden
 	}
 	else
 	{
-		UE_LOG(LogOnline, Error, TEXT("RegisterUser() : OnlineSubsystemAmazon is improperly configured in DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Error, TEXT("RegisterUser() : OnlineSubsystemAmazon is improperly configured in DefaultEngine.ini"));
 	}
 	if (!bWasSuccessful)
 	{
-		TriggerOnLoginCompleteDelegates(LocalUserNum, false, FUniqueNetIdString(TEXT("")), FString(TEXT("RegisterUser() failed")));
+		TriggerOnLoginCompleteDelegates(LocalUserNum, false, FUniqueNetIdAmazon(TEXT("")), FString(TEXT("RegisterUser() failed")));
 	}
 	return bWasSuccessful;
 }
@@ -257,14 +257,14 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityAmazon::CreateUniquePlayerId(uint8
 	if (Bytes != NULL && Size > 0)
 	{
 		FString StrId(Size, (TCHAR*)Bytes);
-		return MakeShareable(new FUniqueNetIdString(StrId));
+		return MakeShareable(new FUniqueNetIdAmazon(StrId));
 	}
 	return NULL;
 }
 
 TSharedPtr<const FUniqueNetId> FOnlineIdentityAmazon::CreateUniquePlayerId(const FString& Str)
 {
-	return MakeShareable(new FUniqueNetIdString(Str));
+	return MakeShareable(new FUniqueNetIdAmazon(Str));
 }
 
 // All of the methods below here fail because they aren't supported
@@ -285,7 +285,7 @@ bool FOnlineIdentityAmazon::Logout(int32 LocalUserNum)
 	}
 	else
 	{
-		UE_LOG(LogOnline, Warning, TEXT("No logged in user found for LocalUserNum=%d."),
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("No logged in user found for LocalUserNum=%d."),
 			LocalUserNum);
 		TriggerOnLogoutCompleteDelegates(LocalUserNum, false);
 	}
@@ -347,7 +347,7 @@ FString FOnlineIdentityAmazon::GetAuthToken(int32 LocalUserNum) const
 
 void FOnlineIdentityAmazon::RevokeAuthToken(const FUniqueNetId& UserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate)
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityAmazon::RevokeAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityAmazon::RevokeAuthToken not implemented"));
 	TSharedRef<const FUniqueNetId> UserIdRef(UserId.AsShared());
 	AmazonSubsystem->ExecuteNextTick([UserIdRef, Delegate]()
 	{

@@ -76,7 +76,7 @@ FIcmpEchoResult UDPEchoImpl(ISocketSubsystem* SocketSub, const FString& TargetAd
 	}
 
 	int32 Port = 0;
-	Lex::FromString(Port, *PortStr);
+	LexFromString(Port, *PortStr);
 
 	//ISocketSubsystem* SocketSub = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	if (SocketSub)
@@ -112,8 +112,8 @@ FIcmpEchoResult UDPEchoImpl(ISocketSubsystem* SocketSub, const FString& TargetAd
 
 				// Calculate the time packet is to be sent
 				uint64* TimeCodeStart = (uint64*)(SendBuffer + TimeCodeOffset);
-				FDateTime TimeCode = FDateTime::UtcNow();
-				TimeCodeStart[0] = TimeCode.GetTicks();
+				uint64 TimeCode = FPlatformTime::Cycles64();
+				TimeCodeStart[0] = TimeCode;
 
 				// Calculate the packet checksum
 				PacketHeader->Checksum = CalculateChecksum(SendBuffer, PacketSize);
@@ -136,42 +136,50 @@ FIcmpEchoResult UDPEchoImpl(ISocketSubsystem* SocketSub, const FString& TargetAd
 
 							int32 BytesRead = 0;
 							TSharedRef<FInternetAddr> RecvAddr = SocketSub->CreateInternetAddr();
-							if (Socket->RecvFrom(ResultBuffer, ResultPacketSize, BytesRead, *RecvAddr) && BytesRead > 0)
+							if (Socket->RecvFrom(ResultBuffer, ResultPacketSize, BytesRead, *RecvAddr))
 							{
-								FDateTime NowTime = FDateTime::UtcNow();
-
-								Result.ReplyFrom = RecvAddr->ToString(false);
-								FUDPPingHeader* RecvHeader = reinterpret_cast<FUDPPingHeader*>(ResultBuffer);
-
-								// Validate the packet checksum
-								const uint16 RecvChecksum = RecvHeader->Checksum;
-								RecvHeader->Checksum = 0;
-								const uint16 LocalChecksum = (uint16)CalculateChecksum((uint8*)RecvHeader, PacketSize);
-
-								if (RecvChecksum == LocalChecksum)
+								if (BytesRead > 0)
 								{
-									// Convert values back from network byte order
-									RecvHeader->Id = NtoHS(RecvHeader->Id);
-									RecvHeader->Sequence = NtoHS(RecvHeader->Sequence);
+									uint64 NowTime = FPlatformTime::Cycles64();
 
-									uint32* MagicNumberPtr = (uint32*)(ResultBuffer + MagicNumberOffset);
-									if (MagicNumberPtr[0] == MAGIC_HIGH && MagicNumberPtr[1] == MAGIC_LOW)
+									Result.ReplyFrom = RecvAddr->ToString(false);
+									FUDPPingHeader* RecvHeader = reinterpret_cast<FUDPPingHeader*>(ResultBuffer);
+
+									// Validate the packet checksum
+									const uint16 RecvChecksum = RecvHeader->Checksum;
+									RecvHeader->Checksum = 0;
+									const uint16 LocalChecksum = (uint16)CalculateChecksum((uint8*)RecvHeader, PacketSize);
+
+									if (RecvChecksum == LocalChecksum)
 									{
-										// Estimate elapsed time
-										uint64* TimeCodePtr = (uint64*)(ResultBuffer + TimeCodeOffset);
-										FDateTime PrevTime(*TimeCodePtr);
-										double DeltaTime = (NowTime - PrevTime).GetTotalSeconds();
+										// Convert values back from network byte order
+										RecvHeader->Id = NtoHS(RecvHeader->Id);
+										RecvHeader->Sequence = NtoHS(RecvHeader->Sequence);
 
-										if (Result.ReplyFrom == Result.ResolvedAddress &&
-											RecvHeader->Id == SentId && RecvHeader->Sequence == SentSeq &&
-											DeltaTime >= 0.0 && DeltaTime < (60.0 * 1000.0))
+										uint32* MagicNumberPtr = (uint32*)(ResultBuffer + MagicNumberOffset);
+										if (MagicNumberPtr[0] == MAGIC_HIGH && MagicNumberPtr[1] == MAGIC_LOW)
 										{
-											Result.Time = DeltaTime;
-											Result.Status = EIcmpResponseStatus::Success;
+											// Estimate elapsed time
+											uint64* TimeCodePtr = (uint64*)(ResultBuffer + TimeCodeOffset);
+											uint64 PrevTime = *TimeCodePtr;
+											double DeltaTime = (NowTime - PrevTime) * FPlatformTime::GetSecondsPerCycle64();
+
+											if (Result.ReplyFrom == Result.ResolvedAddress &&
+												RecvHeader->Id == SentId && RecvHeader->Sequence == SentSeq &&
+												DeltaTime >= 0.0 && DeltaTime < (60.0 * 1000.0))
+											{
+												Result.Time = DeltaTime;
+												Result.Status = EIcmpResponseStatus::Success;
+											}
 										}
 									}
-								}
 
+									bDone = true;
+								}
+							}
+							else
+							{
+								// error reading from socket
 								bDone = true;
 							}
 						}
@@ -216,7 +224,15 @@ public:
 				return Result;
 			};
 
-			FutureResult = AsyncThread(Task, StackSize);
+			// if we don't need a special stack size, use the task graph
+			if (StackSize == 0)
+			{
+				FutureResult = Async(EAsyncExecution::ThreadPool, Task);
+			}
+			else
+			{
+				FutureResult = AsyncThread(Task, StackSize);
+			}
 		}
 		else
 		{
@@ -237,6 +253,8 @@ public:
 private:
 	virtual bool Tick(float DeltaTime) override
 	{
+        QUICK_SCOPE_CYCLE_COUNTER(STAT_UDPPing_Tick);
+
 		if (bThreadCompleted)
 		{
 			FIcmpEchoResult Result;

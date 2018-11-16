@@ -50,6 +50,19 @@ struct FHashBucket
 	* If the first one is not null, then it is a uobject ptr, and the second ptr is either null or a second element
 	*/
 	void *ElementsOrSetPtr[2];
+	/** If true this bucket is being iterated over and no Add or Remove operations are allowed */
+	int32 ReadOnlyLock;
+
+	FORCEINLINE void Lock()
+	{
+		ReadOnlyLock++;
+	}
+
+	FORCEINLINE void Unlock()
+	{
+		ReadOnlyLock--;
+		check(ReadOnlyLock >= 0);
+	}
 
 	FORCEINLINE TSet<UObjectBase*>* GetSet()
 	{
@@ -74,6 +87,7 @@ struct FHashBucket
 	{
 		ElementsOrSetPtr[0] = nullptr;
 		ElementsOrSetPtr[1] = nullptr;
+		ReadOnlyLock = 0;
 	}
 	FORCEINLINE ~FHashBucket()
 	{
@@ -82,6 +96,9 @@ struct FHashBucket
 	/** Adds an Object to the bucket */
 	FORCEINLINE void Add(UObjectBase* Object)
 	{
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to add %s to a hash bucket that is currently being iterated over which is not allowed and may lead to undefined behavior!"),
+			*static_cast<UObject*>(Object)->GetFullName());
+
 		TSet<UObjectBase*>* Items = GetSet();
 		if (Items)
 		{
@@ -109,6 +126,9 @@ struct FHashBucket
 	/** Removes an Object from the bucket */
 	FORCEINLINE int32 Remove(UObjectBase* Object)
 	{
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to remove %s from a hash bucket that is currently being iterated over which is not allowed and may lead to undefined behavior!"),
+			*static_cast<UObject*>(Object)->GetFullName());
+
 		int32 Result = 0;
 		TSet<UObjectBase*>* Items = GetSet();
 		if (Items)
@@ -240,6 +260,7 @@ struct FHashBucketIterator
 
 class FUObjectHashTables
 {
+	/** Critical section that guards against concurrent adds from multiple threads */
 	FCriticalSection CriticalSection;
 
 public:
@@ -366,6 +387,8 @@ static FORCEINLINE int32 GetObjectOuterHash(FName ObjName,PTRINT Outer)
 
 UObject* StaticFindObjectFastExplicitThreadSafe(FUObjectHashTables& ThreadHash, UClass* ObjectClass, FName ObjectName, const FString& ObjectPathName, bool bExactClass, EObjectFlags ExcludeFlags/*=0*/)
 {
+	const EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::Unreachable;
+
 	// Find an object with the specified name and (optional) class, in any package; if bAnyPackage is false, only matches top-level packages
 	int32 Hash = GetObjectHash(ObjectName);
 	FHashTableLock HashLock(ThreadHash);
@@ -380,6 +403,8 @@ UObject* StaticFindObjectFastExplicitThreadSafe(FUObjectHashTables& ThreadHash, 
 
 				/* Don't return objects that have any of the exclusive flags set */
 				&& !Object->HasAnyFlags(ExcludeFlags)
+
+				&& !Object->HasAnyInternalFlags(ExclusiveInternalFlags)
 
 				/** If a class was specified, check that the object is of the correct class */
 				&& (ObjectClass == nullptr || (bExactClass ? Object->GetClass() == ObjectClass : Object->IsA(ObjectClass)))
@@ -425,6 +450,8 @@ UObject* StaticFindObjectFastExplicit( UClass* ObjectClass, FName ObjectName, co
 
 UObject* StaticFindObjectFastInternalThreadSafe(FUObjectHashTables& ThreadHash, UClass* ObjectClass, UObject* ObjectPackage, FName ObjectName, bool bExactClass, bool bAnyPackage, EObjectFlags ExcludeFlags, EInternalObjectFlags ExclusiveInternalFlags)
 {
+	ExclusiveInternalFlags |= EInternalObjectFlags::Unreachable;
+
 	// If they specified an outer use that during the hashing
 	UObject* Result = nullptr;
 	if (ObjectPackage != nullptr)
@@ -695,6 +722,7 @@ void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UO
 	while (AllInners.Num())
 	{
 		FHashBucket* Inners = AllInners.Pop();
+		Inners->Lock();
 		for (FHashBucketIterator It(*Inners); It; ++It)
 		{
 			UObject *Object = static_cast<UObject*>(*It);
@@ -710,6 +738,7 @@ void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UO
 				}
 			}
 		}
+		Inners->Unlock();
 	}
 }
 
@@ -876,6 +905,35 @@ void GetDerivedClasses(UClass* ClassToLookFor, TArray<UClass *>& Results, bool b
 			Results.Append( DerivedClasses->Array() );
 		}
 	}
+}
+
+bool ClassHasInstancesAsyncLoading(UClass* ClassToLookFor)
+{
+	auto& ThreadHash = FUObjectHashTables::Get();
+	FHashTableLock HashLock(ThreadHash);
+	TSet<UClass*> ClassesToSearch;
+	ClassesToSearch.Add(ClassToLookFor);
+	{
+		RecursivelyPopulateDerivedClasses(ThreadHash, ClassToLookFor, ClassesToSearch);
+	}
+
+	for (auto ClassIt = ClassesToSearch.CreateConstIterator(); ClassIt; ++ClassIt)
+	{
+		TSet<UObjectBase*> const* List = ThreadHash.ClassToObjectListMap.Find(*ClassIt);
+		if (List)
+		{
+			for (auto ObjectIt = List->CreateConstIterator(); ObjectIt; ++ObjectIt)
+			{
+				UObject *Object = static_cast<UObject*>(*ObjectIt);
+				if (Object->HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 void AllocateUObjectIndexForCurrentThread(UObjectBase* Object)

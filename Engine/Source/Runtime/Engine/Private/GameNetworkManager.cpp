@@ -22,9 +22,11 @@ AGameNetworkManager::AGameNetworkManager(const FObjectInitializer& ObjectInitial
 	MAXNEARZEROVELOCITYSQUARED = 9.0f;
 	CLIENTADJUSTUPDATECOST = 180.0f;
 	MAXCLIENTUPDATEINTERVAL = 0.25f;
+	MaxClientForcedUpdateDuration=1.0f;
 	MaxMoveDeltaTime = 0.125f;
-	ClientNetSendMoveDeltaTime = 0.0111f;
+	ClientNetSendMoveDeltaTime = 0.0166f;
 	ClientNetSendMoveDeltaTimeThrottled = 0.0222f;
+	ClientNetSendMoveDeltaTimeStationary = 0.0166f;
 	ClientNetSendMoveThrottleAtNetSpeed = 10000;
 	ClientNetSendMoveThrottleOverPlayerCount = 10;
 	ClientAuthorativePosition = false;
@@ -108,7 +110,10 @@ void AGameNetworkManager::UpdateNetSpeeds(bool bIsLanMatch)
 		AdjustedNetSpeed = NewNetSpeed;
 		for( FConstPlayerControllerIterator Iterator = GetWorld()->GetPlayerControllerIterator(); Iterator; ++Iterator )
 		{
-			(*Iterator)->SetNetSpeed(AdjustedNetSpeed);
+			if (APlayerController* PC = Iterator->Get())
+			{
+				PC->SetNetSpeed(AdjustedNetSpeed);
+			}
 		}
 	}
 }

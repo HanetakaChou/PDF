@@ -90,7 +90,7 @@ AFunctionalTest::AFunctionalTest( const FObjectInitializer& ObjectInitializer )
 	, Result(EFunctionalTestResult::Invalid)
 	, PreparationTimeLimit(15.0f)
 	, TimeLimit(60.0f)
-	, TimesUpMessage( NSLOCTEXT("FunctionalTest", "DefaultTimesUpMessage", "Time's up!") )
+	, TimesUpMessage( NSLOCTEXT("FunctionalTest", "DefaultTimesUpMessage", "Time's Up.") )
 	, TimesUpResult(EFunctionalTestResult::Failed)
 	, bIsRunning(false)
 	, TotalTime(0.f)
@@ -176,7 +176,7 @@ void AFunctionalTest::OnConstruction(const FTransform& Transform)
 	{
 		if ( bIsEnabled )
 		{
-			TestName->SetTextRenderColor(FColor(11, 255, 0));
+			TestName->SetTextRenderColor(FColor(45, 255, 0));
 			TestName->SetText(FText::FromString(GetActorLabel()));
 		}
 		else
@@ -184,22 +184,22 @@ void AFunctionalTest::OnConstruction(const FTransform& Transform)
 			TestName->SetTextRenderColor(FColor(55, 55, 55));
 			TestName->SetText(FText::FromString(GetActorLabel() + TEXT("\n") + TEXT("# Disabled #")));
 		}
+
+		//TestName->SetTextMaterial();
 	}
 #endif
 }
 
 bool AFunctionalTest::RunTest(const TArray<FString>& Params)
 {
-	FAutomationTestFramework::Get().SetTreatWarningsAsErrors(bWarningsAsErrors);
+	ensure(GetWorld()->HasBegunPlay());
 
-	//Scalability::FQualityLevels Quality;
-	//Quality.SetDefaults();
-	//Scalability::SetQualityLevels(Quality);
+	FAutomationTestFramework::Get().SetTreatWarningsAsErrors(bWarningsAsErrors);
 
 	FailureMessage = TEXT("");
 	
 	//Do not collect garbage during the test. We force GC at the end.
-	GEngine->DelayGarbageCollection();
+	//GEngine->DelayGarbageCollection();
 
 	RunFrame = GFrameNumber;
 	RunTime = GetWorld()->GetTimeSeconds();
@@ -238,7 +238,20 @@ void AFunctionalTest::StartTest()
 
 void AFunctionalTest::OnTimeout()
 {
-	FinishTest(TimesUpResult, TimesUpMessage.ToString());
+	FText FailureReason;
+
+	if (bIsReady)
+	{
+		FailureReason = FText::Format(NSLOCTEXT("FunctionalTest", "TimeOutInTest", "{0}. Test timed out in {1} seconds"),
+			TimesUpMessage, FText::AsNumber(TotalTime));
+	}
+	else
+	{
+		FailureReason = FText::Format(NSLOCTEXT("FunctionalTest", "TimeOutInTestPrep", "{0}. Test preparation timed out in {1} seconds"),
+			TimesUpMessage, FText::AsNumber(TotalTime));
+	}
+
+	FinishTest(TimesUpResult, FailureReason.ToString());
 }
 
 void AFunctionalTest::Tick(float DeltaSeconds)
@@ -252,6 +265,8 @@ void AFunctionalTest::Tick(float DeltaSeconds)
 	//Do not collect garbage during the test. We force GC at the end.
 	GEngine->DelayGarbageCollection();
 
+	TotalTime += DeltaSeconds;
+
 	if ( !bIsReady )
 	{
 		bIsReady = IsReady();
@@ -261,28 +276,23 @@ void AFunctionalTest::Tick(float DeltaSeconds)
 		{
 			StartTest();
 		}
-	}
-
-	if ( bIsReady )
-	{
-		TotalTime += DeltaSeconds;
-		if ( TimeLimit > 0.f && TotalTime > TimeLimit )
-		{
-			OnTimeout();
-		}
 		else
 		{
-			Super::Tick(DeltaSeconds);
+			if (PreparationTimeLimit > 0.f && TotalTime > PreparationTimeLimit)
+			{
+				OnTimeout();
+			}
 		}
 	}
 	else
 	{
-		TotalTime += DeltaSeconds;
-		if ( PreparationTimeLimit > 0.f && TotalTime > PreparationTimeLimit )
+		if (TimeLimit > 0.f && TotalTime > TimeLimit)
 		{
 			OnTimeout();
 		}
 	}
+
+	Super::Tick(DeltaSeconds);
 }
 
 bool AFunctionalTest::IsReady_Implementation()
@@ -362,6 +372,12 @@ void AFunctionalTest::FinishTest(EFunctionalTestResult TestResult, const FString
 
 void AFunctionalTest::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// If end play occurs and we're still running, notify that the testing has stopped.
+	if (bIsRunning)
+	{
+		TestFinishedObserver.ExecuteIfBound(this);
+	}
+
 	TestFinishedObserver.Unbind();
 
 	Super::EndPlay(EndPlayReason);
@@ -1262,14 +1278,18 @@ FPerfStatsRecord* UAutomationPerformaceHelper::GetCurrentRecord()
 
 void UAutomationPerformaceHelper::StartCPUProfiling()
 {
+#if UE_EXTERNAL_PROFILING_ENABLED
 	UE_LOG(LogFunctionalTest, Log, TEXT("START PROFILING..."));
 	ExternalProfiler.StartProfiler(false);
+#endif
 }
 
 void UAutomationPerformaceHelper::StopCPUProfiling()
 {
+#if UE_EXTERNAL_PROFILING_ENABLED
 	UE_LOG(LogFunctionalTest, Log, TEXT("STOP PROFILING..."));
 	ExternalProfiler.StopProfiler();
+#endif
 }
 
 void UAutomationPerformaceHelper::TriggerGPUTraceIfRecordFallsBelowBudget()

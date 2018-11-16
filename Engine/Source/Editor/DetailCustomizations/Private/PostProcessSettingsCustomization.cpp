@@ -66,18 +66,20 @@ void FPostProcessSettingsCustomization::CustomizeChildren( TSharedRef<IPropertyH
 	static const FName LegacyTonemapperName("LegacyTonemapper");
 	static const FName TonemapperCategory("Film");
 	static const FName MobileTonemapperCategory("Mobile Tonemapper");
-
 	const bool bDesktopTonemapperFilm = VarTonemapperFilm->GetValueOnGameThread() == 1;
 	const bool bMobileTonemapperFilm = VarMobileTonemapperFilm->GetValueOnGameThread() == 1;
 	const bool bUsingFilmTonemapper = bDesktopTonemapperFilm || bMobileTonemapperFilm;		// Are any platforms use film tonemapper
 	const bool bUsingLegacyTonemapper = !bDesktopTonemapperFilm || !bMobileTonemapperFilm;	// Are any platforms use legacy/ES2 tonemapper
+
+	static const auto VarDefaultAutoExposureExtendDefaultLuminanceRange = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+	const bool bExtendedLuminanceRange = VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnGameThread() == 1;
+	static const FName ExposureCategory("Lens|Exposure");
 
 	if(Result == FPropertyAccess::Success && NumChildren > 0)
 	{
 		for( uint32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex )
 		{
 			TSharedPtr<IPropertyHandle> ChildHandle = StructPropertyHandle->GetChildHandle( ChildIndex );
-
 			
 			if( ChildHandle.IsValid() && ChildHandle->GetProperty() )
 			{
@@ -106,6 +108,26 @@ void FPostProcessSettingsCustomization::CustomizeChildren( TSharedRef<IPropertyH
 						}
 					}
 				}
+				else if (CategoryFName == ExposureCategory && bExtendedLuminanceRange)
+				{
+					if (Property->GetName() == TEXT("AutoExposureMinBrightness"))
+					{
+						Property->SetMetaData(TEXT("DisplayName"), TEXT("Min EV100"));
+					}
+					else if (Property->GetName() == TEXT("AutoExposureMaxBrightness"))
+					{
+						Property->SetMetaData(TEXT("DisplayName"), TEXT("Max EV100"));
+					}
+					else if (Property->GetName() == TEXT("HistogramLogMin"))
+					{
+						Property->SetMetaData(TEXT("DisplayName"), TEXT("Histogram Min EV100"));
+					}
+					else if (Property->GetName() == TEXT("HistogramLogMax"))
+					{
+						Property->SetMetaData(TEXT("DisplayName"), TEXT("Histogram Max EV100"));
+					}
+				}
+
 				
 				FString RawCategoryName = CategoryFName.ToString();
 
@@ -195,7 +217,7 @@ void FPostProcessSettingsCustomization::CustomizeHeader( TSharedRef<IPropertyHan
 	// No header
 }
 
-void FWeightedBlendableCustomization::AddDirectAsset(TSharedRef<IPropertyHandle> StructPropertyHandle, UPackage* Package, TSharedPtr<IPropertyHandle> Weight, TSharedPtr<IPropertyHandle> Value, UClass* Class)
+void FWeightedBlendableCustomization::AddDirectAsset(TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedPtr<IPropertyHandle> Weight, TSharedPtr<IPropertyHandle> Value, UClass* Class)
 {
 	Weight->SetValue(1.0f);
 
@@ -283,7 +305,7 @@ TSharedRef<SWidget> FWeightedBlendableCustomization::GenerateContentWidget(TShar
 							SupportedClass == UMaterialInstanceConstant::StaticClass()
 							))
 						{
-							FUIAction Direct2(FExecuteAction::CreateSP(this, &FWeightedBlendableCustomization::AddDirectAsset, StructPropertyHandle, Package, Weight, Value, SupportedClass));
+							FUIAction Direct2(FExecuteAction::CreateSP(this, &FWeightedBlendableCustomization::AddDirectAsset, StructPropertyHandle, Weight, Value, SupportedClass));
 
 							FName ClassName = SupportedClass->GetFName();
 						
@@ -405,13 +427,23 @@ void FWeightedBlendableCustomization::CustomizeHeader( TSharedRef<IPropertyHandl
 		{
 			UObject* ref = *It;
 
-			if(StructPackage)
+			if (StructPackage)
 			{
-				// does this mean we have to deal with multiple levels? The code here is not ready for that
-				check(StructPackage == ref->GetOutermost());
+				// Differing outermost package values indicate that the current RefObject refers to post-process 
+				// volumes selected within different levels, e.g. persistent and a sub-level. 
+				// In this case, do not store a package name. It is only used by ComputeSwitcherIndex() to determine direct
+				// vs. indirect assets in the post process materials/blendables array. When more than one volume is selected, the direct
+				// asset entries will simple read 'Multiple values' since each belongs to separate post-process volumes.
+				if (StructPackage != ref->GetOutermost())
+				{
+					StructPackage = NULL;
+					break;
+				}
 			}
-
-			StructPackage = ref->GetOutermost();
+			else
+			{
+				StructPackage = ref->GetOutermost();
+			}
 		}
 	}
 

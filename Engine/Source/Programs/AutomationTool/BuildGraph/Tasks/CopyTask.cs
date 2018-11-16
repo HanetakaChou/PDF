@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
 using System;
@@ -35,6 +35,12 @@ namespace BuildGraph.Tasks
 		/// </summary>
 		[TaskParameter(ValidationType = TaskParameterValidationType.FileSpec)]
 		public string To;
+
+		/// <summary>
+		/// Whether or not to overwrite existing files
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool Overwrite = true;
 
 		/// <summary>
 		/// Tag to be applied to build products of this task
@@ -86,12 +92,26 @@ namespace BuildGraph.Tasks
 			}
 
 			// Build the file mapping
-			Dictionary<FileReference, FileReference> TargetFileToSourceFile = FilePattern.CreateMapping(Files, SourcePattern, TargetPattern);
+			Dictionary<FileReference, FileReference> TargetFileToSourceFile = FilePattern.CreateMapping(Files, ref SourcePattern, ref TargetPattern);
+
+			//  If we're not overwriting, remove any files where the destination file already exists.
+			if(!Parameters.Overwrite)
+			{
+				TargetFileToSourceFile = TargetFileToSourceFile.Where(File =>
+				{
+					if (FileReference.Exists(File.Key))
+					{
+						CommandUtils.LogInformation("Not copying existing file {0}", File.Key);
+						return false;
+					}
+					return true;
+				}).ToDictionary(Pair => Pair.Key, Pair => Pair.Value);
+			}
 
 			// Check we got some files
 			if(TargetFileToSourceFile.Count == 0)
 			{
-				CommandUtils.Log("No files found matching '{0}'", SourcePattern);
+				CommandUtils.LogInformation("No files found matching '{0}'", SourcePattern);
 				return;
 			}
 
@@ -136,7 +156,7 @@ namespace BuildGraph.Tasks
 
 			// Copy them all
 			KeyValuePair<FileReference, FileReference>[] FilePairs = TargetFileToSourceFile.ToArray();
-			CommandUtils.Log("Copying {0} file{1} from {2} to {3}...", FilePairs.Length, (FilePairs.Length == 1)? "" : "s", SourcePattern.BaseDirectory, TargetPattern.BaseDirectory);
+			CommandUtils.LogInformation("Copying {0} file{1} from {2} to {3}...", FilePairs.Length, (FilePairs.Length == 1)? "" : "s", SourcePattern.BaseDirectory, TargetPattern.BaseDirectory);
 			CommandUtils.ThreadedCopyFiles(FilePairs.Select(x => x.Value.FullName).ToList(), FilePairs.Select(x => x.Key.FullName).ToList(), bQuiet: true);
 
 			// Update the list of build products

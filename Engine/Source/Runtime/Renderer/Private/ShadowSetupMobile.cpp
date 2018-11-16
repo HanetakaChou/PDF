@@ -22,9 +22,10 @@ static TAutoConsoleVariable<int32> CVarCsmShaderCullingDebugGfx(
 	TEXT(""),
 	ECVF_RenderThreadSafe);
 
+const uint32 CSMShaderCullingMethodDefault = !PLATFORM_LUMIN;
 static TAutoConsoleVariable<int32> CVarsCsmShaderCullingMethod(
 	TEXT("r.Mobile.Shadow.CSMShaderCullingMethod"),
-	1,
+	CSMShaderCullingMethodDefault,
 	TEXT("Method to determine which primitives will receive CSM shaders:\n")
 	TEXT("0 - disabled (all primitives will receive CSM)\n")
 	TEXT("1 - Light frustum, all primitives whose bounding box is within CSM receiving distance. (default)\n")
@@ -198,6 +199,7 @@ static bool MobileDetermineStaticMeshesCSMVisibilityState(FScene* Scene, FViewIn
 			}
 		}
 	}
+
 	return bFoundReceiver;
 }
 
@@ -229,7 +231,7 @@ static void VisualizeMobileDynamicCSMSubjectCapsules(FViewInfo& View, FLightScen
 			// Combined bounds
 			FVector CombinedCasterStart;
 			FVector CombinedCasterEnd;
-			FBoxSphereBounds CombinedBounds(EForceInit::ForceInitToZero);
+			FBoxSphereBounds CombinedBounds(ForceInitToZero);
 			for (auto& Caster : MobileCSMSubjectPrimitives.GetShadowSubjectPrimitives())
 			{
 				CombinedBounds = (CombinedBounds.SphereRadius > 0.0f) ? CombinedBounds + Caster->Proxy->GetBounds() : Caster->Proxy->GetBounds();
@@ -400,8 +402,11 @@ void FMobileSceneRenderer::BuildCSMVisibilityState(FLightSceneInfo* LightSceneIn
 
 				FConvexVolume ViewFrustum;
 				GetViewFrustumBounds(ViewFrustum, View.ViewMatrices.GetViewProjectionMatrix(), true);
+				//FConvexVolume& ShadowReceiverFrustum = ProjectedShadowInfo->CascadeSettings.ShadowBoundsAccurate;
+				//FVector PreShadowTranslation = FVector(0, 0, 0);
 				FConvexVolume& ShadowReceiverFrustum = ProjectedShadowInfo->ReceiverFrustum;
 				FVector& PreShadowTranslation = ProjectedShadowInfo->PreShadowTranslation;
+
 
 				// Common receiver test functions.
 				// Test receiver bounding box against view+shadow frustum only
@@ -451,7 +456,7 @@ void FMobileSceneRenderer::BuildCSMVisibilityState(FLightSceneInfo* LightSceneIn
 					{
 						FVector CombinedCasterStart;
 						FVector CombinedCasterEnd;
-						FBoxSphereBounds CombinedBounds(EForceInit::ForceInitToZero);
+						FBoxSphereBounds CombinedBounds(ForceInitToZero);
 
 						// Calculate combined bounds
 						for (auto& Caster : ShadowSubjectPrimitives)

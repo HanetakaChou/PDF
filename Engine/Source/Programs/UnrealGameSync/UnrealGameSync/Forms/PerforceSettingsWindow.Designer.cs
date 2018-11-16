@@ -86,7 +86,7 @@
 			this.label2.AutoSize = true;
 			this.label2.Location = new System.Drawing.Point(21, 93);
 			this.label2.Name = "label2";
-			this.label2.Size = new System.Drawing.Size(90, 15);
+			this.label2.Size = new System.Drawing.Size(89, 15);
 			this.label2.TabIndex = 4;
 			this.label2.Text = "TCP Buffer Size:";
 			// 
@@ -131,8 +131,8 @@
 			// PerforceSettingsWindow
 			// 
 			this.AcceptButton = this.OkButton;
-			this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
-			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+			this.AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
+			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
 			this.CancelButton = this.CancButton;
 			this.ClientSize = new System.Drawing.Size(470, 203);
 			this.Controls.Add(this.CancButton);
@@ -141,6 +141,7 @@
 			this.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 			this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
 			this.Name = "PerforceSettingsWindow";
+			this.ShowInTaskbar = false;
 			this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
 			this.Text = "Perforce Settings";
 			this.Load += new System.EventHandler(this.PerforceSettingsWindow_Load);

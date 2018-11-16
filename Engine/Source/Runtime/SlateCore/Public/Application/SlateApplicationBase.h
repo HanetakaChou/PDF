@@ -8,6 +8,9 @@
 #include "Layout/Visibility.h"
 #include "Layout/SlateRect.h"
 #include "Rendering/SlateRenderer.h"
+#include "Misc/CoreDelegates.h"
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDebugSafeZoneChanged, const FMargin&, bool);
 
 class FActiveTimerHandle;
 class FSlateApplicationBase;
@@ -194,7 +197,16 @@ public:
 	 *
 	 * @param OutDisplayMetrics Will contain the display metrics.
 	 */
-	void GetDisplayMetrics(FDisplayMetrics& OutDisplayMetrics) const;
+	void GetDisplayMetrics(FDisplayMetrics& OutDisplayMetrics);
+
+	/**
+	* Gets the application's cached display metrics.
+	*
+	* @param OutDisplayMetrics Will contain the display metrics.
+	*/
+	void GetCachedDisplayMetrics(FDisplayMetrics& OutDisplayMetrics) const;
+
+	void GetSafeZoneSize(FMargin& SafeZone, const FVector2D& OverrideSize);
 
 	/**
 	 * Get the highest level of window transparency support currently enabled by this application
@@ -222,6 +234,8 @@ protected:
 	 * @return Widget with the mouse capture
 	 */
 	virtual TSharedPtr< SWidget > GetMouseCaptorImpl() const = 0;
+
+	void GetSafeZoneRatio(FMargin& SafeZoneRatio);
 
 public:
 	/**
@@ -486,6 +500,29 @@ protected:
 	/** Given a window, locate a widget under the cursor in it; returns an invalid path if cursor is not over this window. */
 	virtual FWidgetPath LocateWidgetInWindow(FVector2D ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus) const = 0;
 
+#if WITH_EDITOR
+	void UpdateCustomSafeZone(const FMargin& NewSafeZoneRatio, bool bShouldRecacheMetrics) 
+	{
+		if (bShouldRecacheMetrics)
+		{
+			FDisplayMetrics DisplayMetrics;
+			GetDisplayMetrics(DisplayMetrics);
+		}
+		CustomSafeZoneRatio = NewSafeZoneRatio; 
+	}
+	void SwapSafeZoneTypes()
+	{
+		if (FDisplayMetrics::GetDebugTitleSafeZoneRatio() != CachedDebugTitleSafeRatio)
+		{
+			FDisplayMetrics DisplayMetrics;
+			GetDisplayMetrics(DisplayMetrics);
+			CustomSafeZoneRatio = FMargin();
+			OnDebugSafeZoneChanged.Broadcast(FMargin(), false);
+		}
+
+	}
+#endif
+
 protected:
 
 	// Holds the Slate renderer used to render this application.
@@ -502,6 +539,11 @@ protected:
 	// Holds a pointer to the platform application.
 	static TSharedPtr<class GenericApplication> PlatformApplication;
 
+	// Caches the application's display metrics
+	FDisplayMetrics CachedDisplayMetrics;
+
+	// Caches the previous debug safe zone ratio
+	float CachedDebugTitleSafeRatio;
 public:
 
 	/**
@@ -520,6 +562,14 @@ public:
 	{
 		return PlatformApplication;
 	}
+#if WITH_EDITOR
+	void ResetCustomSafeZone() { CustomSafeZoneRatio = FMargin(); }
+	const FMargin& GetCustomSafeZone() { return CustomSafeZoneRatio; }
+#endif
+
+#if WITH_EDITORONLY_DATA
+	FOnDebugSafeZoneChanged OnDebugSafeZoneChanged;
+#endif
 
 protected:
 	/** multicast delegate to broadcast when a global invalidate is requested */
@@ -531,5 +581,8 @@ protected:
 	// Gets set when Slate goes to sleep and cleared when active.
 	bool bIsSlateAsleep;
 
+#if WITH_EDITORONLY_DATA
+	FMargin CustomSafeZoneRatio;
+#endif
 };
 

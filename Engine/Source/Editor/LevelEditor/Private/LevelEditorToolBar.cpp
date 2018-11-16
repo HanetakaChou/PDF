@@ -52,9 +52,10 @@
 #include "EngineUtils.h"
 #include "ScopedTransaction.h"
 #include "Features/EditorFeatures.h"
-#include "ConfigCacheIni.h"
+#include "Misc/ConfigCacheIni.h"
 #include "ILauncherPlatform.h"
 #include "LauncherPlatformModule.h"
+#include "Misc/ScopedSlowTask.h"
 
 namespace LevelEditorActionHelpers
 {
@@ -2233,6 +2234,9 @@ void FLevelEditorToolBar::OnCinematicsActorPicked( AActor* Actor )
 	}
 	else if (ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(Actor))
 	{
+		FScopedSlowTask SlowTask(1.f, NSLOCTEXT("LevelToolBarCinematicsMenu", "LoadSequenceSlowTask", "Loading Level Sequence..."));
+		SlowTask.MakeDialog();
+		SlowTask.EnterProgressFrame();
 		UObject* Asset = LevelSequenceActor->LevelSequence.TryLoad();
 
 		if (Asset != nullptr)

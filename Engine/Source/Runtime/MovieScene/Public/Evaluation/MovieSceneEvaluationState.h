@@ -29,6 +29,15 @@ struct FMovieSceneObjectCache
 	MOVIESCENE_API TArrayView<TWeakObjectPtr<>> FindBoundObjects(const FGuid& InBindingID, IMovieScenePlayer& Player);
 
 	/**
+	 * Find all objects that are bound to the specified binding ID
+	 * @note Does not update bindings if they are out of date, or invalid
+	 *
+	 * @param InBindingID		The object binding GUID for a spawnable or posessable in a UMovieScene
+	 * @return An iterable type of all objects bound to the specified ID.
+	 */
+	MOVIESCENE_API TArrayView<const TWeakObjectPtr<>> IterateBoundObjects(const FGuid& InBindingID) const;
+
+	/**
 	 * Set the sequence that this cache applies to
 	 *
 	 * @param InSequence		The sequence that this cache applies to
@@ -45,6 +54,16 @@ struct FMovieSceneObjectCache
 	 * @return The object's spawnable or possessable GUID, or a zero GUID if it was not found
 	 */
 	MOVIESCENE_API FGuid FindObjectId(UObject& InObject, IMovieScenePlayer& Player);
+
+	/**
+	* Attempt deduce the posessable or spawnable that relates to the specified object
+	* @note Does not clear the existing cache
+	*
+	* @param InObject			The object whose binding ID is to be find
+	* @param Player			The movie scene player that is playing back the sequence
+	* @return The object's spawnable or possessable GUID, or a zero GUID if it was not found
+	*/
+	MOVIESCENE_API FGuid FindCachedObjectId(UObject& InObject, IMovieScenePlayer& Player);
 
 	/**
 	 * Invalidate any object bindings for objects that have been destroyed
@@ -148,6 +167,16 @@ struct FMovieSceneEvaluationState
 	 * @return The object's spawnable or possessable GUID, or a zero GUID if it was not found
 	 */
 	MOVIESCENE_API FGuid FindObjectId(UObject& Object, FMovieSceneSequenceIDRef InSequenceID, IMovieScenePlayer& Player);
+
+	/**
+	* Attempt deduce the posessable or spawnable that relates to the specified object
+	* @note Does not clear the existing cache
+	*
+	* @param InObject			The object whose binding ID is to be find
+	* @param Player			The movie scene player that is playing back the sequence
+	* @return The object's spawnable or possessable GUID, or a zero GUID if it was not found
+	*/
+	MOVIESCENE_API FGuid FindCachedObjectId(UObject& Object, FMovieSceneSequenceIDRef InSequenceID, IMovieScenePlayer& Player);
 
 	/**
 	 * Find an object cache pertaining to the specified sequence

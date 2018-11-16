@@ -12,6 +12,7 @@
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/AnimSequence.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/AnimationSettings.h"
 #include "Engine/SkeletalMeshSocket.h"
@@ -30,15 +31,17 @@
 #include "Animation/AnimNode_SubInput.h"
 
 #include "PhysXIncludes.h"
-#include "ScopeExit.h"
+#include "Misc/ScopeExit.h"
 #include "ClothingSimulationFactoryInterface.h"
 #include "ClothingSimulationInterface.h"
 #include "ClothingSimulationInteractor.h"
 #include "Features/IModularFeatures.h"
 #include "Misc/RuntimeErrors.h"
-#include "AnimPhysObjectVersion.h"
-#include "ScopeExit.h"
-
+#include "UObject/AnimPhysObjectVersion.h"
+#include "Misc/ScopeExit.h"
+#include "ContentStreaming.h"
+#include "SkeletalRenderPublic.h"
+#include "ContentStreaming.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshComponent"
 
@@ -56,6 +59,8 @@ DECLARE_CYCLE_STAT(TEXT("Swap Anim Buffers"), STAT_CompleteAnimSwapBuffers, STAT
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Anim Instance Spawn Time"), STAT_AnimSpawnTime, STATGROUP_Anim, );
 DEFINE_STAT(STAT_AnimSpawnTime);
 DEFINE_STAT(STAT_PostAnimEvaluation);
+
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 FAutoConsoleTaskPriority CPrio_ParallelAnimationEvaluationTask(
 	TEXT("TaskGraph.TaskPriorities.ParallelAnimationEvaluationTask"),
@@ -136,6 +141,7 @@ public:
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_AnimGameThreadTime);
+		CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_AnimGameThread);
 
 		if (USkeletalMeshComponent* Comp = SkeletalMeshComponent.Get())
 		{
@@ -159,10 +165,10 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 	bWantsInitializeComponent = true;
 	GlobalAnimRateScale = 1.0f;
 	bNoSkeletonUpdate = false;
-	MeshComponentUpdateFlag = EMeshComponentUpdateFlag::AlwaysTickPoseAndRefreshBones;
+	VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 	KinematicBonesUpdateType = EKinematicBonesUpdateToPhysics::SkipSimulatingBones;
 	PhysicsTransformUpdateMode = EPhysicsTransformUpdateMode::SimulationUpatesComponentTransform;
-	bGenerateOverlapEvents = false;
+	SetGenerateOverlapEvents(false);
 	LineCheckBoundsScale = FVector(1.0f, 1.0f, 1.0f);
 
 	EndPhysicsTickFunction.TickGroup = TG_EndPhysics;
@@ -191,6 +197,18 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 	bClothingSimulationSuspended = false;
 
 #endif//#if WITH_APEX_CLOTHING
+
+	EdgeStiffness = 1.f;
+	BendingStiffness = 1.f;
+	AreaStiffness = 1.f;
+	VolumeStiffness = 0.f;
+	StrainLimitingStiffness = 1.f;
+	ShapeTargetStiffness = 0.f;
+	bUseBendingElements = false;
+	bUseTetrahedralConstraints = false;
+	bUseThinShellVolumeConstraints = false;
+	bUseSelfCollisions = false;
+	bUseContinuousCollisionDetection = false;
 
 #if WITH_EDITORONLY_DATA
 	DefaultPlayRate_DEPRECATED = 1.0f;
@@ -230,6 +248,9 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 	bPostEvaluatingAnimation = false;
 	bAllowAnimCurveEvaluation = true;
 	bDisablePostProcessBlueprint = false;
+
+	// By default enable overlaps when blending physics - user can disable if they are sure it's unnecessary
+	bUpdateOverlapsOnAnimationFinalize = true;
 }
 
 void USkeletalMeshComponent::Serialize(FArchive& Ar)
@@ -315,6 +336,17 @@ void USkeletalMeshComponent::NotifyObjectReferenceEliminated() const
 		*GetPathName());
 }
 
+void USkeletalMeshComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	// We know for sure that an override was set if this is non-zero.
+	if(MinLodModel > 0)
+	{
+		bOverrideMinLod = true;
+	}
+}
+
 void USkeletalMeshComponent::RegisterComponentTickFunctions(bool bRegister)
 {
 	Super::RegisterComponentTickFunctions(bRegister);
@@ -370,7 +402,7 @@ void USkeletalMeshComponent::RegisterClothTick(bool bRegister)
 bool USkeletalMeshComponent::ShouldRunEndPhysicsTick() const
 {
 	return	(bEnablePhysicsOnDedicatedServer || !IsNetMode(NM_DedicatedServer)) && // Early out if we are on a dedicated server and not running physics.
-			(IsSimulatingPhysics() || ShouldBlendPhysicsBones());
+			((IsSimulatingPhysics() && RigidBodyIsAwake()) || ShouldBlendPhysicsBones());
 }
 
 void USkeletalMeshComponent::UpdateEndPhysicsTickRegisteredState()
@@ -451,7 +483,7 @@ bool USkeletalMeshComponent::NeedToSpawnAnimScriptInstance() const
 	return false;
 }
 
-bool USkeletalMeshComponent::NeedToSpawnPostPhysicsInstance() const
+bool USkeletalMeshComponent::NeedToSpawnPostPhysicsInstance(bool bForceReinit) const
 {
 	if(SkeletalMesh)
 	{
@@ -460,7 +492,7 @@ bool USkeletalMeshComponent::NeedToSpawnPostPhysicsInstance() const
 		const UClass* CurrentClass = PostProcessAnimInstance ? PostProcessAnimInstance->GetClass() : nullptr;
 
 		// We need to have an instance, and we have the wrong class (different or null)
-		if(ClassToUse && ClassToUse != CurrentClass && MainInstanceClass != ClassToUse)
+		if(ClassToUse && (ClassToUse != CurrentClass || bForceReinit ) && MainInstanceClass != ClassToUse)
 		{
 			return true;
 		}
@@ -491,7 +523,7 @@ void USkeletalMeshComponent::OnRegister()
 	// so we need to force initialize them before we begin to tick.
 	InitAnim(true);
 
-	if (MeshComponentUpdateFlag == EMeshComponentUpdateFlag::OnlyTickPoseWhenRendered && !FApp::CanEverRender())
+	if (bRenderStatic || (VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered && !FApp::CanEverRender()))
 	{
 		SetComponentTickEnabled(false);
 	}
@@ -718,6 +750,11 @@ bool USkeletalMeshComponent::InitializeAnimScriptInstance(bool bForceReinit)
 					// otherwise, initialize with AnimationData
 					AnimationData.Initialize(Cast<UAnimSingleNodeInstance>(AnimScriptInstance));
 				}
+
+				if (AnimScriptInstance)
+				{
+					AnimScriptInstance->AddToCluster(this);
+				}
 			}
 		}
 
@@ -728,7 +765,7 @@ bool USkeletalMeshComponent::InitializeAnimScriptInstance(bool bForceReinit)
 			PostProcessAnimInstance = nullptr;
 		}
 
-		if(NeedToSpawnPostPhysicsInstance())
+		if(NeedToSpawnPostPhysicsInstance(bForceReinit))
 		{
 			PostProcessAnimInstance = NewObject<UAnimInstance>(this, *SkeletalMesh->PostProcessAnimBlueprint);
 
@@ -743,6 +780,10 @@ bool USkeletalMeshComponent::InitializeAnimScriptInstance(bool bForceReinit)
 
 				bInitializedPostInstance = true;
 			}
+		}
+		else if (!SkeletalMesh->PostProcessAnimBlueprint.Get())
+		{
+			PostProcessAnimInstance = nullptr;
 		}
 
 		if (AnimScriptInstance && !bInitializedMainInstance && bForceReinit)
@@ -947,7 +988,7 @@ bool USkeletalMeshComponent::ShouldOnlyTickMontages(const float DeltaTime) const
 {
 	// Ignore DeltaSeconds == 0.f, as that is used when we want to force an update followed by RefreshBoneTransforms.
 	// RefreshBoneTransforms will need an updated graph.
-	return (MeshComponentUpdateFlag == EMeshComponentUpdateFlag::OnlyTickMontagesWhenNotRendered)
+	return (VisibilityBasedAnimTickOption == EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered)
 		&& !bRecentlyRendered 
 		&& (DeltaTime > 0.f);
 }
@@ -993,13 +1034,33 @@ void USkeletalMeshComponent::TickAnimation(float DeltaTime, bool bNeedsValidRoot
 
 bool USkeletalMeshComponent::UpdateLODStatus()
 {
-	if ( Super::UpdateLODStatus() )
+	if (Super::UpdateLODStatus())
 	{
 		bRequiredBonesUpToDate = false;
 		return true;
 	}
 
 	return false;
+}
+
+void USkeletalMeshComponent::UpdateVisualizeLODString(FString& DebugString)
+{
+	Super::UpdateVisualizeLODString(DebugString);
+
+	uint32 NumVertices = 0;
+	if (SkeletalMesh)
+	{
+		if (FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering())
+		{
+			if (RenderData->LODRenderData.IsValidIndex(PredictedLODLevel))
+			{
+				NumVertices = RenderData->LODRenderData[PredictedLODLevel].GetNumVertices();
+			}
+		}
+	}
+
+	DebugString = DebugString + FString::Printf(TEXT("\nRequiredBones(%d) NumVerts(%d)"), 
+		RequiredBones.Num(), NumVertices);
 }
 
 bool USkeletalMeshComponent::ShouldUpdateTransform(bool bLODHasChanged) const
@@ -1054,7 +1115,7 @@ bool USkeletalMeshComponent::ShouldTickPose() const
 	const bool bShouldTickBasedOnAutonomousCheck = bIsAutonomousTickPose || (!bOnlyAllowAutonomousTickPose && !bAlreadyTickedThisFrame);
 	// When playing networked Root Motion Montages, we want these to play on dedicated servers and remote clients for networking and position correction purposes.
 	// So we force pose updates in that case to keep root motion and position in sync.
-	const bool bShouldTickBasedOnVisibility = ((MeshComponentUpdateFlag < EMeshComponentUpdateFlag::OnlyTickPoseWhenRendered) || bRecentlyRendered || IsPlayingNetworkedRootMotionMontage());
+	const bool bShouldTickBasedOnVisibility = ((VisibilityBasedAnimTickOption < EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered) || bRecentlyRendered || IsPlayingNetworkedRootMotionMontage());
 
 	return (bShouldTickBasedOnVisibility && bShouldTickBasedOnAutonomousCheck && IsRegistered() && (AnimScriptInstance || PostProcessAnimInstance) && !bPauseAnims && GetWorld()->AreActorsInitialized() && !bNoSkeletonUpdate);
 }
@@ -1161,6 +1222,8 @@ static TAutoConsoleVariable<int32> CVarHiPriSkinnedMeshesTicks(
 
 void USkeletalMeshComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
+	CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_AnimGameThread);
+
 	UpdateEndPhysicsTickRegisteredState();
 	UpdateClothTickRegisteredState();
 
@@ -1477,26 +1540,31 @@ void USkeletalMeshComponent::ComputeRequiredBones(TArray<FBoneIndexType>& OutReq
 	if (ShouldUpdateBoneVisibility())
 	{
 		check(BoneVisibilityStates.Num() == GetNumComponentSpaceTransforms());
+        
+		if (ensureMsgf(BoneVisibilityStates.Num() >= OutRequiredBones.Num(), 
+			TEXT("Skeletal Mesh asset '%s' has incorrect BoneVisibilityStates. # of BoneVisibilityStatese (%d), # of OutRequiredBones (%d)"), 
+			*SkeletalMesh->GetName(), BoneVisibilityStates.Num(), OutRequiredBones.Num()))
+        {
+            int32 VisibleBoneWriteIndex = 0;
+            for (int32 i = 0; i < OutRequiredBones.Num(); ++i)
+            {
+                FBoneIndexType CurBoneIndex = OutRequiredBones[i];
 
-		int32 VisibleBoneWriteIndex = 0;
-		for (int32 i = 0; i < OutRequiredBones.Num(); ++i)
-		{
-			FBoneIndexType CurBoneIndex = OutRequiredBones[i];
+                // Current bone visible?
+                if (BoneVisibilityStates[CurBoneIndex] == BVS_Visible)
+                {
+                    OutRequiredBones[VisibleBoneWriteIndex++] = CurBoneIndex;
+                }
+            }
 
-			// Current bone visible?
-			if (BoneVisibilityStates[CurBoneIndex] == BVS_Visible)
-			{
-				OutRequiredBones[VisibleBoneWriteIndex++] = CurBoneIndex;
-			}
-		}
-
-		// Remove any trailing junk in the OutRequiredBones array
-		const int32 NumBonesHidden = OutRequiredBones.Num() - VisibleBoneWriteIndex;
-		if (NumBonesHidden > 0)
-		{
-			OutRequiredBones.RemoveAt(VisibleBoneWriteIndex, NumBonesHidden);
-		}
-	}
+            // Remove any trailing junk in the OutRequiredBones array
+            const int32 NumBonesHidden = OutRequiredBones.Num() - VisibleBoneWriteIndex;
+            if (NumBonesHidden > 0)
+            {
+                OutRequiredBones.RemoveAt(VisibleBoneWriteIndex, NumBonesHidden);
+            }
+        }
+ 	}
 
 	// Add in any bones that may be required when mirroring.
 	// JTODO: This is only required if there are mirroring nodes in the tree, but hard to know...
@@ -1693,8 +1761,7 @@ void USkeletalMeshComponent::PerformAnimationProcessing(const USkeletalMesh* InS
 	ANIM_MT_SCOPE_CYCLE_COUNTER(PerformAnimEvaluation, IsRunningParallelEvaluation());
 
 	// Can't do anything without a SkeletalMesh
-	// Do nothing more if no bones in skeleton.
-	if (!InSkeletalMesh || OutSpaceBases.Num() == 0)
+	if (!InSkeletalMesh)
 	{
 		return;
 	}
@@ -1711,35 +1778,42 @@ void USkeletalMeshComponent::PerformAnimationProcessing(const USkeletalMesh* InS
 		PostProcessAnimInstance->ParallelUpdateAnimation();
 	}
 
-	if(bInDoEvaluation)
+	// Do nothing more if no bones in skeleton.
+	if(bInDoEvaluation && OutSpaceBases.Num() > 0)
 	{
-	FMemMark Mark(FMemStack::Get());
-	FCompactPose EvaluatedPose;
+		FMemMark Mark(FMemStack::Get());
+		FCompactPose EvaluatedPose;
 
-	// evaluate pure animations, and fill up BoneSpaceTransforms
-	EvaluateAnimation(InSkeletalMesh, InAnimInstance, OutBoneSpaceTransforms, OutRootBoneTranslation, OutCurve, EvaluatedPose);
-	EvaluatePostProcessMeshInstance(OutBoneSpaceTransforms, EvaluatedPose, OutCurve, InSkeletalMesh, OutRootBoneTranslation);
+		// evaluate pure animations, and fill up BoneSpaceTransforms
+		EvaluateAnimation(InSkeletalMesh, InAnimInstance, OutBoneSpaceTransforms, OutRootBoneTranslation, OutCurve, EvaluatedPose);
+		EvaluatePostProcessMeshInstance(OutBoneSpaceTransforms, EvaluatedPose, OutCurve, InSkeletalMesh, OutRootBoneTranslation);
 
-	// Finalize the transforms from the evaluation
-	FinalizePoseEvaluationResult(InSkeletalMesh, OutBoneSpaceTransforms, OutRootBoneTranslation, EvaluatedPose);
+		// Finalize the transforms from the evaluation
+		FinalizePoseEvaluationResult(InSkeletalMesh, OutBoneSpaceTransforms, OutRootBoneTranslation, EvaluatedPose);
 
-	// Fill SpaceBases from LocalAtoms
-	FillComponentSpaceTransforms(InSkeletalMesh, OutBoneSpaceTransforms, OutSpaceBases);
-}
+		// Fill SpaceBases from LocalAtoms
+		FillComponentSpaceTransforms(InSkeletalMesh, OutBoneSpaceTransforms, OutSpaceBases);
+	}
 }
 
 
 void USkeletalMeshComponent::EvaluatePostProcessMeshInstance(TArray<FTransform>& OutBoneSpaceTransforms, FCompactPose& InOutPose, FBlendedHeapCurve& OutCurve, const USkeletalMesh* InSkeletalMesh, FVector& OutRootBoneTranslation) const
 {
-	if(ShouldEvaluatePostProcessInstance())
+	if (ShouldEvaluatePostProcessInstance())
 	{
-		if (InOutPose.IsValid())
+		// Push the previous pose to any input nodes required
+		if (FAnimNode_SubInput* InputNode = PostProcessAnimInstance->GetSubInputNode())
 		{
-			// Push the previous pose to any input nodes required
-			if (FAnimNode_SubInput* InputNode = PostProcessAnimInstance->GetSubInputNode())
+			if (InOutPose.IsValid())
 			{
 				InputNode->InputPose.CopyBonesFrom(InOutPose);
 				InputNode->InputCurve.CopyFrom(OutCurve);
+			}
+			else
+			{
+				const FBoneContainer& RequiredBone = PostProcessAnimInstance->GetRequiredBonesOnAnyThread();
+				InputNode->InputPose.ResetToRefPose(RequiredBone);
+				InputNode->InputCurve.InitFrom(RequiredBone);
 			}
 		}
 
@@ -1781,6 +1855,10 @@ void USkeletalMeshComponent::UpdateClothSimulationContext(float InDeltaTime)
 		{
 			ClothTeleportMode = EClothingTeleportMode::Teleport;
 		}
+		else if(PendingTeleportType == ETeleportType::ResetPhysics)
+		{
+			ClothTeleportMode = EClothingTeleportMode::TeleportAndReset;
+		}
 
 		UpdateClothTransformImp();
 	}
@@ -1796,6 +1874,7 @@ void USkeletalMeshComponent::UpdateClothSimulationContext(float InDeltaTime)
 		}
 	}
 
+	PendingTeleportType = ETeleportType::None;
 	ClothTeleportMode = EClothingTeleportMode::None;
 }
 
@@ -1817,7 +1896,7 @@ void USkeletalMeshComponent::WritebackClothingSimulationData()
 		USkinnedMeshComponent* OverrideComponent = nullptr;
 		if(MasterPoseComponent.IsValid())
 		{
-			OverrideComponent = Cast<USkinnedMeshComponent>(MasterPoseComponent.Get());
+			OverrideComponent = MasterPoseComponent.Get();
 
 			// Check if our bone map is actually valid, if not there is no clothing data to build
 			if(MasterBoneMap.Num() == 0)
@@ -1877,19 +1956,21 @@ void USkeletalMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* 
 									 || (GetNumComponentSpaceTransforms() != CachedComponentSpaceTransforms.Num()));
 
 
-	TArray<SmartName::UID_Type> const* CurrentAnimCurveMappingNameUids = (AnimScriptInstance) ? &AnimScriptInstance->GetRequiredBones().GetAnimCurveNameUids() : nullptr;
-	const int32 CurrentCurveCount = (CurrentAnimCurveMappingNameUids) ? CurrentAnimCurveMappingNameUids->Num() : 0;
+	TArray<uint16> const* CurrentAnimCurveUIDFinder = (AnimScriptInstance) ? &AnimScriptInstance->GetRequiredBones().GetUIDToArrayLookupTable() : nullptr;
+	const int32 CurrentCurveCount = (CurrentAnimCurveUIDFinder) ? FBlendedCurve::GetValidElementCount(CurrentAnimCurveUIDFinder) : 0;
 
 	const bool bInvalidCachedCurve = bDoEvaluationRateOptimization && 
-									CurrentAnimCurveMappingNameUids != nullptr &&
-									(CachedCurve.UIDList != CurrentAnimCurveMappingNameUids || CachedCurve.Num() != CurrentCurveCount);
+									CurrentAnimCurveUIDFinder != nullptr &&
+									(CachedCurve.UIDToArrayIndexLUT != CurrentAnimCurveUIDFinder || CachedCurve.Num() != CurrentCurveCount);
 
 	const bool bShouldDoEvaluation = !bDoEvaluationRateOptimization || bInvalidCachedBones || bInvalidCachedCurve || !AnimUpdateRateParams->ShouldSkipEvaluation();
 
 	const bool bDoPAE = !!CVarUseParallelAnimationEvaluation.GetValueOnGameThread() && FApp::ShouldUseThreadingForPerformance();
 
-	const bool bDoParallelEvaluation = (AnimScriptInstance != nullptr) && AnimScriptInstance->CanRunParallelWork() && bDoPAE && bShouldDoEvaluation && TickFunction && (TickFunction->GetActualTickGroup() == TickFunction->TickGroup) && TickFunction->IsCompletionHandleValid();
-
+	const bool bMainInstanceValidForParallelWork = AnimScriptInstance == nullptr || AnimScriptInstance->CanRunParallelWork();
+	const bool bPostInstanceValidForParallelWork = PostProcessAnimInstance == nullptr || PostProcessAnimInstance->CanRunParallelWork();
+	const bool bHasValidInstanceForParallelWork = HasValidAnimationInstance() && bMainInstanceValidForParallelWork && bPostInstanceValidForParallelWork;
+	const bool bDoParallelEvaluation = bHasValidInstanceForParallelWork && bDoPAE && bShouldDoEvaluation && TickFunction && (TickFunction->GetActualTickGroup() == TickFunction->TickGroup) && TickFunction->IsCompletionHandleValid();
 	const bool bBlockOnTask = !bDoParallelEvaluation;  // If we aren't trying to do parallel evaluation then we
 															// will need to wait on an existing task.
 
@@ -1904,15 +1985,15 @@ void USkeletalMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* 
 	AnimEvaluationContext.SkeletalMesh = SkeletalMesh;
 	AnimEvaluationContext.AnimInstance = AnimScriptInstance;
 
-	if (CurrentAnimCurveMappingNameUids)
+	if (CurrentAnimCurveUIDFinder)
 	{
-		if ((AnimEvaluationContext.Curve.Num() != CurrentCurveCount) || (AnimEvaluationContext.Curve.UIDList != CurrentAnimCurveMappingNameUids))
+		if ((AnimEvaluationContext.Curve.Num() != CurrentCurveCount) || (AnimEvaluationContext.Curve.UIDToArrayIndexLUT != CurrentAnimCurveUIDFinder))
 		{
-			AnimEvaluationContext.Curve.InitFrom(CurrentAnimCurveMappingNameUids);
+			AnimEvaluationContext.Curve.InitFrom(CurrentAnimCurveUIDFinder);
 		}
-		if (AnimCurves.UIDList != CurrentAnimCurveMappingNameUids || AnimCurves.Num() != CurrentCurveCount)
+		if (AnimCurves.UIDToArrayIndexLUT != CurrentAnimCurveUIDFinder || AnimCurves.Num() != CurrentCurveCount)
 		{
-			AnimCurves.InitFrom(CurrentAnimCurveMappingNameUids);
+			AnimCurves.InitFrom(CurrentAnimCurveUIDFinder);
 		}
 	}
 	else
@@ -1923,9 +2004,9 @@ void USkeletalMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* 
 
 	AnimEvaluationContext.bDoEvaluation = bShouldDoEvaluation;
 	
-	AnimEvaluationContext.bDoInterpolation = bDoEvaluationRateOptimization && !bInvalidCachedBones && AnimUpdateRateParams->ShouldInterpolateSkippedFrames() && CurrentAnimCurveMappingNameUids != nullptr;
+	AnimEvaluationContext.bDoInterpolation = bDoEvaluationRateOptimization && !bInvalidCachedBones && AnimUpdateRateParams->ShouldInterpolateSkippedFrames() && CurrentAnimCurveUIDFinder != nullptr;
 	AnimEvaluationContext.bDuplicateToCacheBones = bInvalidCachedBones || (bDoEvaluationRateOptimization && AnimEvaluationContext.bDoEvaluation && !AnimEvaluationContext.bDoInterpolation);
-	AnimEvaluationContext.bDuplicateToCacheCurve = bInvalidCachedCurve || (bDoEvaluationRateOptimization && AnimEvaluationContext.bDoEvaluation && !AnimEvaluationContext.bDoInterpolation && CurrentAnimCurveMappingNameUids != nullptr);
+	AnimEvaluationContext.bDuplicateToCacheCurve = bInvalidCachedCurve || (bDoEvaluationRateOptimization && AnimEvaluationContext.bDoEvaluation && !AnimEvaluationContext.bDoInterpolation && CurrentAnimCurveUIDFinder != nullptr);
 	if (!bDoEvaluationRateOptimization)
 	{
 		//If we aren't optimizing clear the cached local atoms
@@ -1936,44 +2017,44 @@ void USkeletalMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* 
 
 	if (bShouldDoEvaluation)
 	{
-	// If we need to eval the graph, and we're not going to update it.
-	// make sure it's been ticked at least once!
-	{
-		bool bShouldTickAnimation = false;		
-		if (AnimScriptInstance && !AnimScriptInstance->NeedsUpdate())
+		// If we need to eval the graph, and we're not going to update it.
+		// make sure it's been ticked at least once!
 		{
-			bShouldTickAnimation = bShouldTickAnimation || !AnimScriptInstance->GetUpdateCounter().HasEverBeenUpdated();
-			for (const UAnimInstance* SubInstance : SubInstances)
+			bool bShouldTickAnimation = false;		
+			if (AnimScriptInstance && !AnimScriptInstance->NeedsUpdate())
 			{
-				bShouldTickAnimation = bShouldTickAnimation || (SubInstance && !SubInstance->GetUpdateCounter().HasEverBeenUpdated());
+				bShouldTickAnimation = bShouldTickAnimation || !AnimScriptInstance->GetUpdateCounter().HasEverBeenUpdated();
+				for (const UAnimInstance* SubInstance : SubInstances)
+				{
+					bShouldTickAnimation = bShouldTickAnimation || (SubInstance && !SubInstance->GetUpdateCounter().HasEverBeenUpdated());
+				}
+			}
+
+			bShouldTickAnimation = bShouldTickAnimation || (ShouldPostUpdatePostProcessInstance() && !PostProcessAnimInstance->GetUpdateCounter().HasEverBeenUpdated());
+
+			if (bShouldTickAnimation)
+			{
+				// We bypass TickPose() and call TickAnimation directly, so URO doesn't intercept us.
+				TickAnimation(0.f, false);
 			}
 		}
 
-		bShouldTickAnimation = bShouldTickAnimation || (ShouldPostUpdatePostProcessInstance() && !PostProcessAnimInstance->GetUpdateCounter().HasEverBeenUpdated());
-
-		if (bShouldTickAnimation)
-		{
-			// We bypass TickPose() and call TickAnimation directly, so URO doesn't intercept us.
-			TickAnimation(0.f, false);
-		}
-	}
-
 		// If we're going to evaluate animation, call PreEvaluateAnimation()
 		{
-	if(AnimScriptInstance)
-	{
-		AnimScriptInstance->PreEvaluateAnimation();
+			if(AnimScriptInstance)
+			{
+				AnimScriptInstance->PreEvaluateAnimation();
 
-		for(UAnimInstance* SubInstance : SubInstances)
-		{
-			SubInstance->PreEvaluateAnimation();
-		}
-	}
+				for(UAnimInstance* SubInstance : SubInstances)
+				{
+					SubInstance->PreEvaluateAnimation();
+				}
+			}
 
-	if(ShouldEvaluatePostProcessInstance())
-	{
-		PostProcessAnimInstance->PreEvaluateAnimation();
-	}
+			if(ShouldEvaluatePostProcessInstance())
+			{
+				PostProcessAnimInstance->PreEvaluateAnimation();
+			}
 		}
 	}
 
@@ -2037,6 +2118,8 @@ void USkeletalMeshComponent::DispatchParallelEvaluationTasks(FActorComponentTick
 {
 	if (SkeletalMesh && SkeletalMesh->RefSkeleton.GetNum() != AnimEvaluationContext.BoneSpaceTransforms.Num())
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_USkeletalMeshComponent_InitTaskArrays);
+
 		// Initialize Parallel Task arrays
 		AnimEvaluationContext.BoneSpaceTransforms.Reset();
 		AnimEvaluationContext.BoneSpaceTransforms.Append(BoneSpaceTransforms);
@@ -2155,7 +2238,7 @@ void USkeletalMeshComponent::PostAnimEvaluation(FAnimationEvaluationContext& Eva
 	if (EvaluationContext.bDuplicateToCacheCurve)
 	{
 		ensureAlwaysMsgf(AnimCurves.IsValid(), TEXT("Animation Curve is invalid (%s). TotalCount(%d) "),
-			*GetNameSafe(SkeletalMesh), (AnimCurves.UIDList) ? AnimCurves.UIDList->Num() : -1);
+			*GetNameSafe(SkeletalMesh), AnimCurves.NumValidCurveCount);
 		CachedCurve.CopyFrom(AnimCurves);
 	}
 	
@@ -2211,9 +2294,11 @@ void USkeletalMeshComponent::PostAnimEvaluation(FAnimationEvaluationContext& Eva
 		// curve update happens first
 		AnimScriptInstance->UpdateCurves(AnimCurves);
 
+		// this is same curves, and we don't have to process same for everything. 
+		// we just copy curves from main for the case where GetCurveValue works in that instance
 		for(UAnimInstance* SubInstance : SubInstances)
 		{
-			SubInstance->UpdateCurves(AnimCurves);
+			SubInstance->CopyCurveValues(*AnimScriptInstance);
 		}
 	}
 
@@ -2222,7 +2307,17 @@ void USkeletalMeshComponent::PostAnimEvaluation(FAnimationEvaluationContext& Eva
 
 	if(PostProcessAnimInstance)
 	{
-		PostProcessAnimInstance->UpdateCurves(AnimCurves);
+		if (AnimScriptInstance)
+		{
+			// this is same curves, and we don't have to process same for everything. 
+			// we just copy curves from main for the case where GetCurveValue works in that instance
+			PostProcessAnimInstance->CopyCurveValues(*AnimScriptInstance);
+		}
+		else
+		{
+			// if no main anim instance, we'll have to have post processor to handle it
+			PostProcessAnimInstance->UpdateCurves(AnimCurves);
+		}
 	}
 
 		// If we have actually evaluated animations, we need to call PostEvaluateAnimation now.
@@ -2306,7 +2401,15 @@ FBoxSphereBounds USkeletalMeshComponent::CalcBounds(const FTransform& LocalToWor
 	// No need to calculated that again, just use cached local bounds.
 	if (bCachedLocalBoundsUpToDate)
 	{
-		return CachedLocalBounds.TransformBy(LocalToWorld);
+		if (bIncludeComponentLocationIntoBounds)
+		{
+			const FVector ComponentLocation = GetComponentLocation();
+			return CachedLocalBounds.TransformBy(LocalToWorld) + FBoxSphereBounds(ComponentLocation, FVector(1.0f), 1.0f);
+		}
+		else
+		{
+			return CachedLocalBounds.TransformBy(LocalToWorld);
+		}
 	}
 	// Calculate new bounds
 	else
@@ -2333,7 +2436,7 @@ FBoxSphereBounds USkeletalMeshComponent::CalcBounds(const FTransform& LocalToWor
 		if (bIncludeComponentLocationIntoBounds)
 		{
 			const FVector ComponentLocation = GetComponentLocation();
-			NewBounds = NewBounds + FBoxSphereBounds(&ComponentLocation, 1);
+			NewBounds = NewBounds + FBoxSphereBounds(ComponentLocation, FVector(1.0f), 1.0f);
 		}
 
 #if WITH_APEX_CLOTHING
@@ -2349,10 +2452,24 @@ FBoxSphereBounds USkeletalMeshComponent::CalcBounds(const FTransform& LocalToWor
 
 void USkeletalMeshComponent::SetSkeletalMesh(USkeletalMesh* InSkelMesh, bool bReinitPose)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SetSkeletalMesh);
+	SCOPE_CYCLE_UOBJECT(This, this);
+
 	if (InSkelMesh == SkeletalMesh)
 	{
 		// do nothing if the input mesh is the same mesh we're already using.
 		return;
+	}
+
+	if(!bReinitPose)	// To stop double ticking when reusing the anim instance we need to make sure 
+						// we have completed animation parallel work before continuing with SetSkeletalMesh	
+	{
+		// We may be doing parallel evaluation on the current anim instance
+		// Calling this here with true will block this init till that thread completes
+		// and it is safe to continue
+		const bool bBlockOnTask = true; // wait on evaluation task so it is safe to continue with Init
+		const bool bPerformPostAnimEvaluation = true;
+		HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
 	}
 
 	UPhysicsAsset* OldPhysAsset = GetPhysicsAsset();
@@ -2388,6 +2505,9 @@ void USkeletalMeshComponent::SetSkeletalMesh(USkeletalMesh* InSkelMesh, bool bRe
 
 	// Mark cached material parameter names dirty
 	MarkCachedMaterialParameterNameIndicesDirty();
+
+	// Update this component streaming data.
+	IStreamingManager::Get().NotifyPrimitiveUpdated(this);
 }
 
 void USkeletalMeshComponent::SetSkeletalMeshWithoutResettingAnimation(USkeletalMesh* InSkelMesh)
@@ -2447,6 +2567,11 @@ void USkeletalMeshComponent::SetDisablePostProcessBlueprint(bool bInDisablePostP
 	bDisablePostProcessBlueprint = bInDisablePostProcess;
 }
 
+void USkeletalMeshComponent::K2_SetAnimInstanceClass(class UClass* NewClass)
+{
+	SetAnimInstanceClass(NewClass);
+}
+
 void USkeletalMeshComponent::SetAnimInstanceClass(class UClass* NewClass)
 {
 	if (NewClass != nullptr)
@@ -2480,6 +2605,42 @@ UAnimInstance* USkeletalMeshComponent::GetAnimInstance() const
 UAnimInstance* USkeletalMeshComponent::GetPostProcessInstance() const
 {
 	return PostProcessAnimInstance;
+}
+
+UAnimInstance* USkeletalMeshComponent::GetSubInstanceByName(FName InName) const
+{
+	for(UAnimInstance* SubInstance : SubInstances)
+	{
+		if(SubInstance->GetFName() == InName)
+		{
+			return SubInstance;
+		}
+	}
+
+	return nullptr;
+}
+
+bool USkeletalMeshComponent::HasValidAnimationInstance() const
+{
+	return AnimScriptInstance || PostProcessAnimInstance;
+}
+
+void USkeletalMeshComponent::ResetAnimInstanceDynamics(ETeleportType InTeleportType)
+{
+	if(AnimScriptInstance)
+	{
+		AnimScriptInstance->ResetDynamics(InTeleportType);
+	}
+
+	for(UAnimInstance* SubInstanceIter : SubInstances)
+	{
+		SubInstanceIter->ResetDynamics(InTeleportType);
+	}
+
+	if(PostProcessAnimInstance)
+	{
+		PostProcessAnimInstance->ResetDynamics(InTeleportType);
+	}
 }
 
 void USkeletalMeshComponent::NotifySkelControlBeyondLimit( USkelControlLookAt* LookAt ) {}
@@ -3216,7 +3377,7 @@ void USkeletalMeshComponent::ResumeClothingSimulation()
 	ForceClothNextUpdateTeleport();
 }
 
-bool USkeletalMeshComponent::IsClothingSimulationSuspended()
+bool USkeletalMeshComponent::IsClothingSimulationSuspended() const
 {
 	return bClothingSimulationSuspended;
 }
@@ -3299,7 +3460,25 @@ void USkeletalMeshComponent::FinalizeBoneTransform()
 
 void USkeletalMeshComponent::GetCurrentRefToLocalMatrices(TArray<FMatrix>& OutRefToLocals, int32 InLodIdx)
 {
-	UpdateRefToLocalMatrices(OutRefToLocals, this, SkeletalMesh->GetResourceForRendering(), InLodIdx, nullptr);
+	if(SkeletalMesh)
+	{
+		FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
+		if (ensureMsgf(RenderData->LODRenderData.IsValidIndex(InLodIdx),
+			TEXT("GetCurrentRefToLocalMatrices (SkelMesh :%s) input LODIndex (%d) doesn't match with render data size (%d)."),
+			*SkeletalMesh->GetPathName(), InLodIdx, RenderData->LODRenderData.Num()))
+		{
+			UpdateRefToLocalMatrices(OutRefToLocals, this, RenderData, InLodIdx, nullptr);
+		}
+		else
+		{
+			const FReferenceSkeleton& RefSkeleton = SkeletalMesh->RefSkeleton;
+			OutRefToLocals.AddUninitialized(RefSkeleton.GetNum());
+			for (int32 Index = 0; Index < OutRefToLocals.Num(); ++Index)
+			{
+				OutRefToLocals[Index] = FMatrix::Identity;
+			}
+		}
+	}
 }
 
 bool USkeletalMeshComponent::ShouldUpdatePostProcessInstance() const
@@ -3369,8 +3548,11 @@ bool USkeletalMeshComponent::MoveComponentImpl(const FVector& Delta, const FQuat
 #endif
 
 	bool bSuccess = Super::MoveComponentImpl(Delta, NewRotation, bSweep, OutHit, MoveFlags, Teleport);
-	if(bSuccess && Teleport == ETeleportType::TeleportPhysics)
+	if(bSuccess && Teleport != ETeleportType::None)
 	{
+		// If a skeletal mesh component recieves a teleport we should reset any other dynamic simulations
+		ResetAnimInstanceDynamics(Teleport);
+
 		OnSkelMeshPhysicsTeleported.Broadcast();
 	}
 

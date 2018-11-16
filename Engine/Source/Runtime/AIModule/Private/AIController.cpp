@@ -2,7 +2,7 @@
 
 #include "AIController.h"
 #include "CollisionQueryParams.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "NavigationSystem.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/PhysicsVolume.h"
 #include "Actions/PawnActionsComponent.h"
@@ -22,16 +22,8 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "GameplayTasksComponent.h"
 #include "Tasks/GameplayTask_ClaimResource.h"
+#include "NetworkingDistanceConstants.h"
 
-// mz@todo these need to be removed, legacy code
-#define CLOSEPROXIMITY					500.f
-#define NEARSIGHTTHRESHOLD				2000.f
-#define MEDSIGHTTHRESHOLD				3162.f
-#define FARSIGHTTHRESHOLD				8000.f
-#define CLOSEPROXIMITYSQUARED			(CLOSEPROXIMITY*CLOSEPROXIMITY)
-#define NEARSIGHTTHRESHOLDSQUARED		(NEARSIGHTTHRESHOLD*NEARSIGHTTHRESHOLD)
-#define MEDSIGHTTHRESHOLDSQUARED		(MEDSIGHTTHRESHOLD*MEDSIGHTTHRESHOLD)
-#define FARSIGHTTHRESHOLDSQUARED		(FARSIGHTTHRESHOLD*FARSIGHTTHRESHOLD)
 
 //----------------------------------------------------------------------//
 // AAIController
@@ -75,11 +67,12 @@ void AAIController::PostInitializeComponents()
 	}
 
 #if ENABLE_VISUAL_LOG
-	TInlineComponentArray<UActorComponent*> ComponentSet;
-	GetComponents(ComponentSet);
-	for (auto Component : ComponentSet)
+	for (UActorComponent* Component : GetComponents())
 	{
-		REDIRECT_OBJECT_TO_VLOG(Component, this);
+		if (Component)
+		{
+			REDIRECT_OBJECT_TO_VLOG(Component, this);
+		}
 	}
 #endif // ENABLE_VISUAL_LOG
 }
@@ -476,12 +469,8 @@ void AAIController::Possess(APawn* InPawn)
 		return;
 	}
 
-	// no point in doing navigation setup if pawn has no movement component
-	const UPawnMovementComponent* MovementComp = InPawn->GetMovementComponent();
-	if (MovementComp != NULL)
-	{
-		UpdateNavigationComponents();
-	}
+	// not calling UpdateNavigationComponents() anymore. The PathFollowingComponent 
+	// is now observing newly possessed pawns (via OnNewPawn)
 
 	if (PathFollowingComponent)
 	{
@@ -560,11 +549,6 @@ void AAIController::SetPawn(APawn* InPawn)
 			}
 		}
 	}
-}
-
-void AAIController::InitNavigationControl(UPathFollowingComponent*& PathFollowingComp)
-{
-	PathFollowingComp = PathFollowingComponent;
 }
 
 EPathFollowingRequestResult::Type AAIController::MoveToActor(AActor* Goal, float AcceptanceRadius, bool bStopOnOverlap, bool bUsePathfinding, bool bCanStrafe, TSubclassOf<UNavigationQueryFilter> FilterClass, bool bAllowPartialPaths)
@@ -647,7 +631,7 @@ FPathFollowingRequestResult AAIController::MoveTo(const FAIMoveRequest& MoveRequ
 		// fail if projection to navigation is required but it failed
 		if (bCanRequestMove && MoveRequest.IsProjectingGoal())
 		{
-			UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(GetWorld());
+			UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 			const FNavAgentProperties& AgentProps = GetNavAgentPropertiesRef();
 			FNavLocation ProjectedLocation;
 
@@ -753,7 +737,7 @@ bool AAIController::BuildPathfindingQuery(const FAIMoveRequest& MoveRequest, FPa
 {
 	bool bResult = false;
 
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(GetWorld());
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	const ANavigationData* NavData = (NavSys == nullptr) ? nullptr :
 		MoveRequest.IsUsingPathfinding() ? NavSys->GetNavDataForProps(GetNavAgentPropertiesRef()) :
 		NavSys->GetAbstractNavData();
@@ -798,7 +782,7 @@ void AAIController::FindPathForMoveRequest(const FAIMoveRequest& MoveRequest, FP
 {
 	SCOPE_CYCLE_COUNTER(STAT_AI_Overall);
 
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(GetWorld());
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	if (NavSys)
 	{
 		FPathFindingResult PathResult = NavSys->FindPathSync(Query);
@@ -1076,6 +1060,17 @@ void AAIController::OnGameplayTaskResourcesClaimed(FGameplayResourceSet NewlyCla
 			BrainComponent->ClearResourceLock(EAIRequestPriority::Logic);
 		}
 	}
+}
+
+void AAIController::SetPathFollowingComponent(UPathFollowingComponent* NewPFComponent)
+{ 
+	PathFollowingComponent = NewPFComponent; 
+#if ENABLE_VISUAL_LOG
+	if (NewPFComponent)
+	{
+		REDIRECT_OBJECT_TO_VLOG(NewPFComponent, this);
+	}
+#endif // ENABLE_VISUAL_LOG
 }
 
 //----------------------------------------------------------------------//

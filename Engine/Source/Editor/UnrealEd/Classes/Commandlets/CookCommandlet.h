@@ -13,7 +13,7 @@
 #include "Templates/ScopedPointer.h"
 #include "Misc/PackageName.h"
 #include "Commandlets/Commandlet.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 #include "IPlatformFileSandboxWrapper.h"
 #include "CookCommandlet.generated.h"
 
@@ -38,8 +38,6 @@ class UCookCommandlet
 	bool bCookAll;
 	/** Skip saving any packages in Engine/Content/Editor* UNLESS TARGET HAS EDITORONLY DATA (in which case it will save those anyway) */
 	bool bSkipEditorContent;
-	/** Test for UObject leaks */
-	bool bLeakTest;  
 	/** Save all cooked packages without versions. These are then assumed to be current version on load. This is dangerous but results in smaller patch sizes. */
 	bool bUnversioned;
 	/** Generate manifests for building streaming install packages */

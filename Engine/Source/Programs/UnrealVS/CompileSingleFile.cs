@@ -177,7 +177,7 @@ namespace UnrealVS
 			// Spawn the new process
 			ChildProcess = new System.Diagnostics.Process();
 			ChildProcess.StartInfo.FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe");
-			ChildProcess.StartInfo.Arguments = String.Format("/C {0} -singlefile=\"{1}\"", BuildCommandLine, FileToCompile);
+			ChildProcess.StartInfo.Arguments = String.Format("/C \"{0} -singlefile=\"{1}\"\"", BuildCommandLine, FileToCompile);
 			ChildProcess.StartInfo.WorkingDirectory = Path.GetDirectoryName(StartupProject.FullName);
 			ChildProcess.StartInfo.UseShellExecute = false;
 			ChildProcess.StartInfo.RedirectStandardOutput = true;

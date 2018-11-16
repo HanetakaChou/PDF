@@ -8,6 +8,7 @@
 #include "Misc/CoreStats.h"
 #include "Misc/App.h"
 #include "Misc/SingleThreadEvent.h"
+#include "Misc/CoreDelegates.h"
 
 #include <emscripten/emscripten.h>
 
@@ -43,13 +44,13 @@ void FHTML5PlatformProcess::SleepNoStats(float Seconds)
 {
 	if ( FPlatformProcess::SupportsMultithreading() )
 	{
-		EM_ASM_({
-			console.log("FHTML5PlatformProcess::SleepNoStats(" + $0 + ")");
-		}, Seconds);
+//		EM_ASM_({
+//			console.log("FHTML5PlatformProcess::SleepNoStats(" + $0 + ")");
+//		}, Seconds);
 		emscripten_sleep_with_yield(Seconds*1000.0f);
 	}
 	else {
-		EM_ASM({console.log("FHTML5PlatformProcess::SleepNoStats( SKIPPING )");});
+//		EM_ASM({console.log("FHTML5PlatformProcess::SleepNoStats( SKIPPING )");});
 	}
 }
 
@@ -63,7 +64,7 @@ void FHTML5PlatformProcess::SleepInfinite()
 	}); // =)
 }
 
-#include "HTML5PlatformRunnableThread.h"
+#include "HTML5/HTML5PlatformRunnableThread.h"
 
 FRunnableThread* FHTML5PlatformProcess::CreateRunnableThread()
 {
@@ -83,6 +84,15 @@ bool FHTML5PlatformProcess::SupportsMultithreading()
 
 void FHTML5PlatformProcess::LaunchURL(const TCHAR* URL, const TCHAR* Parms, FString* Error)
 {
+	if (FCoreDelegates::ShouldLaunchUrl.IsBound() && !FCoreDelegates::ShouldLaunchUrl.Execute(URL))
+	{
+		if (Error)
+		{
+			*Error = TEXT("LaunchURL cancelled by delegate");
+		}
+		return;
+	}
+
 	auto TmpURL = StringCast<ANSICHAR>(URL);
 	EM_ASM_ARGS({var InUrl = Pointer_stringify($0); console.log("Opening "+InUrl); window.open(InUrl);}, (ANSICHAR*)TmpURL.Get());
 }

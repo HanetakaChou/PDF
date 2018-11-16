@@ -9,6 +9,7 @@
 #include "Input/Reply.h"
 #include "Input/NavigationReply.h"
 #include "Input/PopupMethodReply.h"
+#include "RenderingCommon.generated.h"
 
 class FSlateInstanceBufferUpdate;
 class FWidgetStyle;
@@ -124,6 +125,18 @@ enum class ESlateLineJoinType : uint8
 	Simple = 1,
 };
 
+
+/**
+ * Enumerates color vision deficiency types.
+ */
+UENUM()
+enum class EColorVisionDeficiency : uint8
+{
+	NormalVision UMETA(DisplayName="Normal Vision"),
+	Deuteranope UMETA(DisplayName="Deuteranope (green weak/blind) (7% of males, 0.4% of females)"),
+	Protanope UMETA(DisplayName="Protanope (red weak/blind) (2% of males, 0.01% of females)"),
+	Tritanope UMETA(DisplayName="Tritanope (blue weak/bind) (0.0003% of males)"),
+};
 
 
 enum class ESlateVertexRounding : uint8
@@ -549,6 +562,26 @@ public:
 	 * @param ControllerEvent	The controller event generated
 	 */
 	virtual FReply OnTouchEnded( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent )
+	{
+		return FReply::Unhandled();
+	}
+
+	/**
+	 * Called when a touchpad touch force changes, but may or may not have moved
+	 * 
+	 * @param ControllerEvent	The controller event generated
+	 */
+	virtual FReply OnTouchForceChanged( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent )
+	{
+		return FReply::Unhandled();
+	}
+
+	/**
+	 * Called when a touchpad touch has first moved after initial press
+	 * 
+	 * @param ControllerEvent	The controller event generated
+	 */
+	virtual FReply OnTouchFirstMove( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent )
 	{
 		return FReply::Unhandled();
 	}

@@ -7,12 +7,13 @@
 #include "Math/UnrealMathUtility.h"
 #include "UnrealEngine.h"
 #include "Engine/GameViewportClient.h"
-#include "ARsystem.h"
+#include "AppleARKitAvailability.h"
+#include "ARSystem.h"
 
 // ARKit
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-#import <ARKit/ARKit.h>
-#endif // ARKIT_SUPPORT
+#if SUPPORTS_ARKIT_1_0
+	#import <ARKit/ARKit.h>
+#endif
 
 #include "AppleARKitCamera.generated.h"
 
@@ -40,10 +41,15 @@ struct APPLEARKIT_API FAppleARKitCamera
 	
 	// Default constructor
 	FAppleARKitCamera()
-	: Orientation(EForceInit::ForceInit)
+		: TrackingQuality(EARTrackingQuality::NotTracking)
+		, Orientation(ForceInit)
+		, Translation(ForceInitToZero)
+		, ImageResolution(ForceInitToZero)
+		, FocalLength(ForceInitToZero)
+		, PrincipalPoint(ForceInitToZero)
 	{};
 
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
+#if SUPPORTS_ARKIT_1_0
 
 	/** 
 	 * This is a conversion copy-constructor that takes a raw ARCamera and fills this structs members
@@ -51,7 +57,7 @@ struct APPLEARKIT_API FAppleARKitCamera
 	 */ 
 	FAppleARKitCamera( ARCamera* InARCamera );
 
-#endif // #ARKIT_SUPPORT
+#endif
 
 	/**
 	 * The tracking quality of the camera.

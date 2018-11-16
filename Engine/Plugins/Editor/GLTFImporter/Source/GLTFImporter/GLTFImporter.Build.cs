@@ -13,7 +13,6 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					"Editor/GLTFImporter/Private",
 				}
 				);
 
@@ -30,7 +29,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"UnrealEd",
-					"RawMesh",
+					"MeshDescription",
 					"MeshUtilities",
                     "MessageLog",
 					"Json",

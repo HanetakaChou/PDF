@@ -2,12 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "FbxImporter.h"
+#include "Curves/RichCurve.h"
 
 namespace UnFbx {
 
 	FbxNode* GetNodeFromName(const FString& NodeName, FbxNode* NodeToQuery)
 	{
-		if ( !FCString::Strcmp(*NodeName, UTF8_TO_TCHAR(NodeToQuery->GetName())))
+		if (!FCString::Strcmp(*NodeName, UTF8_TO_TCHAR(NodeToQuery->GetName())))
 		{
 			return NodeToQuery;
 		}
@@ -27,7 +28,7 @@ namespace UnFbx {
 
 	FbxNode* GetNodeFromUniqueID(uint64 UniqueID, FbxNode* NodeToQuery)
 	{
-		if ( UniqueID == NodeToQuery->GetUniqueID())
+		if (UniqueID == NodeToQuery->GetUniqueID())
 		{
 			return NodeToQuery;
 		}
@@ -44,7 +45,7 @@ namespace UnFbx {
 
 		return nullptr;
 	}
-	
+
 	void FFbxCurvesAPI::GetAllNodeNameArray(TArray<FString> &AllNodeNames) const
 	{
 		AllNodeNames.Empty(TransformData.Num());
@@ -65,7 +66,7 @@ namespace UnFbx {
 			AnimatedNodeNames.Add(AnimNodeKvp.Value.Name);
 		}
 	}
-	
+
 	void FFbxCurvesAPI::GetNodeAnimatedPropertyNameArray(const FString &NodeName, TArray<FString> &AnimatedPropertyNames) const
 	{
 		AnimatedPropertyNames.Empty();
@@ -162,6 +163,7 @@ namespace UnFbx {
 		}
 	}
 
+	//deprecated
 	void FFbxCurvesAPI::GetCurveData(const FFbxAnimCurveHandle &CurveHandle, FInterpCurveFloat& CurveData, bool bNegative) const
 	{
 		if (CurveHandle.AnimCurve == nullptr)
@@ -206,6 +208,145 @@ namespace UnFbx {
 		}
 	}
 
+	//Similar to function UnFbx::FFbxImporter::ImportCurve in SkeletalMeshEdit but with weighted tangent support.
+	void FFbxCurvesAPI::GetCurveData(const FFbxAnimCurveHandle &CurveHandle, FRichCurve& RichCurve, bool bNegative) const
+	{
+		static float DefaultCurveWeight = FbxAnimCurveDef::sDEFAULT_WEIGHT;
+		FbxAnimCurve* FbxCurve = CurveHandle.AnimCurve;
+		if (FbxCurve)
+		{
+			RichCurve.Reset();
+			for (int32 KeyIndex = 0; KeyIndex < FbxCurve->KeyGetCount(); ++KeyIndex)
+			{
+				FbxAnimCurveKey Key = FbxCurve->KeyGet(KeyIndex);
+				FbxTime KeyTime = Key.GetTime();
+				float Value = bNegative ? -Key.GetValue() : Key.GetValue();
+				FKeyHandle NewKeyHandle = RichCurve.AddKey(KeyTime.GetSecondDouble(), Value, false);
+
+				FbxAnimCurveDef::ETangentMode KeyTangentMode = Key.GetTangentMode();
+				FbxAnimCurveDef::EInterpolationType KeyInterpMode = Key.GetInterpolation();
+				FbxAnimCurveDef::EWeightedMode KeyTangentWeightMode = Key.GetTangentWeightMode();
+
+				ERichCurveInterpMode NewInterpMode = RCIM_Linear;
+				ERichCurveTangentMode NewTangentMode = RCTM_Auto;
+				ERichCurveTangentWeightMode NewTangentWeightMode = RCTWM_WeightedNone;
+
+				float LeaveTangent = 0.f;
+				float ArriveTangent = 0.f;
+				float LeaveTangentWeight = 0.f;
+				float ArriveTangentWeight = 0.f;
+				float ArriveTimeDiff = 0.f;
+				float LeaveTimeDiff = 0.f;
+
+				switch (KeyInterpMode)
+				{
+				case FbxAnimCurveDef::eInterpolationConstant://! Constant value until next key.
+					NewInterpMode = RCIM_Constant;
+					break;
+				case FbxAnimCurveDef::eInterpolationLinear://! Linear progression to next key.
+					NewInterpMode = RCIM_Linear;
+					break;
+				case FbxAnimCurveDef::eInterpolationCubic://! Cubic progression to next key.
+					NewInterpMode = RCIM_Cubic;
+					// get tangents
+					{
+						FbxAnimCurveKey CurKey = CurveHandle.AnimCurve->KeyGet(KeyIndex);
+						float LeftTangent = FbxCurve->KeyGetLeftDerivative(KeyIndex);
+						float RightTangent = FbxCurve->KeyGetRightDerivative(KeyIndex);
+						
+						if (KeyIndex > 0)
+						{
+							ArriveTimeDiff = CurKey.GetTime().GetSecondDouble() - FbxCurve->KeyGetTime(KeyIndex - 1).GetSecondDouble();
+							ArriveTangent = LeftTangent * (ArriveTimeDiff);
+						}
+
+						if (KeyIndex < FbxCurve->KeyGetCount() - 1)
+						{
+							LeaveTimeDiff = FbxCurve->KeyGetTime(KeyIndex + 1).GetSecondDouble() - CurKey.GetTime().GetSecondDouble();
+							LeaveTangent = RightTangent * (LeaveTimeDiff);
+						}
+					}
+					break;
+				}
+				if (KeyTangentMode & FbxAnimCurveDef::eTangentGenericBreak)
+				{
+				 	NewTangentMode = RCTM_Break;
+				}
+				else if (KeyTangentMode &  FbxAnimCurveDef::eTangentAuto) //break and auto are exclusive
+				{
+					NewTangentMode = RCTM_Auto;
+				}
+				else
+				{
+				 	NewTangentMode = RCTM_User;
+				}
+
+				switch (KeyTangentWeightMode)
+				{
+				case FbxAnimCurveDef::eWeightedNone://! Tangent has default weights of 0.333; we define this state as not weighted.
+					LeaveTangentWeight = ArriveTangentWeight = DefaultCurveWeight;
+					NewTangentWeightMode = RCTWM_WeightedNone;
+					break;
+				case FbxAnimCurveDef::eWeightedRight: //! Right tangent is weighted.
+					NewTangentWeightMode = RCTWM_WeightedLeave;
+					LeaveTangentWeight = Key.GetDataFloat(FbxAnimCurveDef::eRightWeight);
+					ArriveTangentWeight = DefaultCurveWeight;
+					break;
+				case FbxAnimCurveDef::eWeightedNextLeft://! Left tangent is weighted.
+					NewTangentWeightMode = RCTWM_WeightedArrive;
+					LeaveTangentWeight = DefaultCurveWeight;
+					if (KeyIndex > 0)
+					{
+						FbxAnimCurveKey PrevKey = FbxCurve->KeyGet(KeyIndex - 1);
+						ArriveTangentWeight = PrevKey.GetDataFloat(FbxAnimCurveDef::eNextLeftWeight);              
+					}
+					else
+					{
+						ArriveTangentWeight = 0.f;
+					}
+					break;
+				case FbxAnimCurveDef::eWeightedAll://! Both left and right tangents are weighted.
+					NewTangentWeightMode = RCTWM_WeightedBoth;
+					LeaveTangentWeight = Key.GetDataFloat(FbxAnimCurveDef::eRightWeight);
+					if (KeyIndex > 0)
+					{
+ 						FbxAnimCurveKey PrevKey = FbxCurve->KeyGet(KeyIndex - 1);
+						ArriveTangentWeight = PrevKey.GetDataFloat(FbxAnimCurveDef::eNextLeftWeight);
+					}
+					else
+				 	{
+						ArriveTangentWeight = 0.f;
+					}
+					break;
+				}
+				RichCurve.SetKeyInterpMode(NewKeyHandle, NewInterpMode);
+				RichCurve.SetKeyTangentMode(NewKeyHandle, NewTangentMode);
+				RichCurve.SetKeyTangentWeightMode(NewKeyHandle, NewTangentWeightMode);
+
+				FRichCurveKey& NewKey = RichCurve.GetKey(NewKeyHandle);
+				NewKey.ArriveTangent = ArriveTangent;
+				NewKey.LeaveTangent = LeaveTangent;
+				//Tangent Weights in FBX/Maya are normalized X (Time) values.
+				//Our weights are the length of hypontenuse. So here we do the
+				//conversion. Note that Specificed Tangent is already Tangent * Time_Difference;
+				//so we just need to scale it by the normalized weight value.
+				if (!FMath::IsNearlyZero(ArriveTangentWeight))
+				{
+					const float Y = ArriveTangent * ArriveTangentWeight;
+					ArriveTangentWeight = FMath::Sqrt(Y*Y + ArriveTimeDiff * ArriveTimeDiff);
+				}
+				NewKey.ArriveTangentWeight = ArriveTangentWeight;
+				if (!FMath::IsNearlyZero(LeaveTangentWeight))
+				{
+					const float Y = LeaveTangent * LeaveTangentWeight;
+					LeaveTangentWeight = FMath::Sqrt(Y*Y + LeaveTimeDiff * LeaveTimeDiff);
+				}
+				NewKey.LeaveTangentWeight = LeaveTangentWeight;
+			}
+		}
+	}
+
+
 	void FFbxCurvesAPI::GetBakeCurveData(const FFbxAnimCurveHandle &CurveHandle, TArray<float>& CurveData, float PeriodTime, float StartTime /*= 0.0f*/, float StopTime /*= -1.0f*/, bool bNegative /*= false*/) const
 	{
 		//Make sure the parameter are ok
@@ -232,17 +373,34 @@ namespace UnFbx {
 		}
 	}
 
+	//deprecrated
 	void FFbxCurvesAPI::GetCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FInterpCurveFloat& CurveData, bool bNegative) const
 	{
 		FFbxAnimCurveHandle CurveHandle;
 		GetCurveHandle(NodeName, PropertyName, ChannelIndex, CompositeIndex, CurveHandle);
 		if (CurveHandle.AnimCurve != nullptr)
 		{
+#pragma warning(disable : 4996) // 'function' was declared deprecated
 			GetCurveData(CurveHandle, CurveData, bNegative);
+#pragma warning(default : 4996) // 'function' was declared deprecated
 		}
 		else
 		{
 			CurveData.Reset();
+		}
+	}
+
+	void FFbxCurvesAPI::GetCurveData(const FString& NodeName, const FString& PropertyName, int32 ChannelIndex, int32 CompositeIndex, FRichCurve& RichCurve, bool bNegative) const
+	{
+		FFbxAnimCurveHandle CurveHandle;
+		GetCurveHandle(NodeName, PropertyName, ChannelIndex, CompositeIndex, CurveHandle);
+		if (CurveHandle.AnimCurve != nullptr)
+		{
+			GetCurveData(CurveHandle, RichCurve, bNegative);
+		}
+		else
+		{
+			RichCurve.Reset();
 		}
 	}
 
@@ -360,6 +518,8 @@ namespace UnFbx {
 					}
 				}
 
+#pragma warning(disable : 4996) // 'function' was declared deprecated
+
 				GetCurveData(TransformCurves[0], TranslationX, false);
 				GetCurveData(TransformCurves[1], TranslationY, true);
 				GetCurveData(TransformCurves[2], TranslationZ, false);
@@ -371,7 +531,7 @@ namespace UnFbx {
 				GetCurveData(TransformCurves[6], ScaleX, false);
 				GetCurveData(TransformCurves[7], ScaleY, false);
 				GetCurveData(TransformCurves[8], ScaleZ, false);
-
+#pragma warning(default : 4996) // 'function' was declared deprecated
 				if (bIsCamera || bIsLight)
 				{
 					int32 CurvePointNum = FMath::Min3<int32>(EulerRotationX.Points.Num(), EulerRotationY.Points.Num(), EulerRotationZ.Points.Num());
@@ -441,6 +601,138 @@ namespace UnFbx {
 		{	
 			DefaultTransform = TransformData[Node->GetUniqueID()];
 		}
+	}
+
+
+
+	void FFbxCurvesAPI::GetConvertedTransformCurveData(const FString& NodeName, FRichCurve& TranslationX, FRichCurve& TranslationY, FRichCurve& TranslationZ,
+		FRichCurve& EulerRotationX, FRichCurve& EulerRotationY, FRichCurve& EulerRotationZ,
+		FRichCurve& ScaleX, FRichCurve& ScaleY, FRichCurve& ScaleZ,
+		FTransform& DefaultTransform) const
+	{
+
+		for (TPair< uint64, FFbxAnimNodeHandle> AnimNodeKvp : CurvesData)
+		{
+			const FFbxAnimNodeHandle& AnimNodeHandle = AnimNodeKvp.Value;
+			if (AnimNodeHandle.Name.Compare(NodeName) == 0)
+			{
+				bool bIsCamera = AnimNodeHandle.AttributeType == FbxNodeAttribute::eCamera;
+				bool bIsLight = AnimNodeHandle.AttributeType == FbxNodeAttribute::eLight;
+				FFbxAnimCurveHandle TransformCurves[9];
+				for (auto NodePropertyKvp : AnimNodeHandle.NodeProperties)
+				{
+					FFbxAnimPropertyHandle& AnimPropertyHandle = NodePropertyKvp.Value;
+					for (FFbxAnimCurveHandle& CurveHandle : AnimPropertyHandle.CurveHandles)
+					{
+						if (CurveHandle.CurveType != FFbxAnimCurveHandle::NotTransform)
+						{
+							TransformCurves[(int32)(CurveHandle.CurveType)] = CurveHandle;
+						}
+					}
+				}
+
+				GetCurveData(TransformCurves[0], TranslationX, false);
+				GetCurveData(TransformCurves[1], TranslationY, true);
+				GetCurveData(TransformCurves[2], TranslationZ, false);
+
+				GetCurveData(TransformCurves[3], EulerRotationX, false);
+				GetCurveData(TransformCurves[4], EulerRotationY, true);
+				GetCurveData(TransformCurves[5], EulerRotationZ, true);
+
+				GetCurveData(TransformCurves[6], ScaleX, false);
+				GetCurveData(TransformCurves[7], ScaleY, false);
+				GetCurveData(TransformCurves[8], ScaleZ, false);
+
+				if (bIsCamera || bIsLight)
+				{
+					{//extra scope since we can't reset Key Iterators
+						//need to convert rotations to unreal space.  Uses previous FInterpCurvePoint implementation that goes through the minimal number
+						//of curve keys and sets them together. Obviously if the keys are not at the same times exactly this won't work.
+						auto EulerRotXIt = EulerRotationX.GetKeyHandleIterator();
+						auto EulerRotYIt = EulerRotationY.GetKeyHandleIterator();
+						auto EulerRotZIt = EulerRotationZ.GetKeyHandleIterator();
+
+
+						while (EulerRotXIt && EulerRotYIt && EulerRotZIt)
+						{
+							float Pitch = EulerRotationY.GetKeyValue(EulerRotYIt.Key());
+							float Yaw = EulerRotationZ.GetKeyValue(EulerRotZIt.Key());
+							float Roll = EulerRotationX.GetKeyValue(EulerRotXIt.Key());;
+							ConvertRotationToUnreal(Roll, Pitch, Yaw, bIsCamera, bIsLight);
+							EulerRotationX.SetKeyValue(EulerRotXIt.Key(), Roll, false);
+							EulerRotationY.SetKeyValue(EulerRotYIt.Key(), Pitch, false);
+							EulerRotationZ.SetKeyValue(EulerRotZIt.Key(), Yaw, false);
+
+							++EulerRotXIt;
+							++EulerRotYIt;
+							++EulerRotZIt;
+						}
+					}
+				}
+				if (bIsCamera)
+				{
+					// The RichCurve code doesn't differentiate between angles and other data, so an interpolation from 179 to -179
+					// will cause the camera to rotate all the way around through 0 degrees.  So here we make a second pass over the 
+					// Euler track to convert the angles into a more interpolation-friendly format.  
+					float CurrentAngleOffset[3] = { 0.f, 0.f, 0.f };
+				
+					auto EulerRotXIt = EulerRotationX.GetKeyHandleIterator();
+					auto EulerRotYIt = EulerRotationY.GetKeyHandleIterator();
+					auto EulerRotZIt = EulerRotationZ.GetKeyHandleIterator();
+
+					FVector PreviousOutVal;
+					FVector CurrentOutVal;
+					bool bFirst = true;
+					while (EulerRotXIt && EulerRotYIt && EulerRotZIt)
+					{
+						float X = EulerRotationX.GetKeyValue(EulerRotXIt.Key());;
+						float Y = EulerRotationY.GetKeyValue(EulerRotYIt.Key());
+						float Z = EulerRotationZ.GetKeyValue(EulerRotZIt.Key());
+
+						if (!bFirst)
+						{
+							PreviousOutVal = CurrentOutVal;
+							CurrentOutVal = FVector(X, Y, Z);
+						}
+						else
+						{
+							CurrentOutVal = FVector(X, Y, Z);
+							bFirst = false;
+						}
+						
+						for (int32 AxisIndex = 0; AxisIndex < 3; ++AxisIndex)
+						{
+							float DeltaAngle = (CurrentOutVal[AxisIndex] + CurrentAngleOffset[AxisIndex]) - PreviousOutVal[AxisIndex];
+
+							if (DeltaAngle >= 180)
+							{
+								CurrentAngleOffset[AxisIndex] -= 360;
+							}
+							else if (DeltaAngle <= -180)
+							{
+								CurrentAngleOffset[AxisIndex] += 360;
+							}
+
+							CurrentOutVal[AxisIndex] += CurrentAngleOffset[AxisIndex];
+						}
+						EulerRotationX.SetKeyValue(EulerRotXIt.Key(), CurrentOutVal.X, false);
+						EulerRotationY.SetKeyValue(EulerRotYIt.Key(), CurrentOutVal.Y, false);
+						EulerRotationZ.SetKeyValue(EulerRotZIt.Key(), CurrentOutVal.Z, false);
+
+						++EulerRotXIt;
+						++EulerRotYIt;
+						++EulerRotZIt;
+					}
+				}
+			}
+		}
+
+		FbxNode* Node = GetNodeFromName(NodeName, Scene->GetRootNode());
+		if (Node)
+		{
+			DefaultTransform = TransformData[Node->GetUniqueID()];
+		}
+		
 	}
 	
 	//////////////////////////////////////////////////////////////////////////
@@ -696,62 +988,39 @@ namespace UnFbx {
 		CurvesAPI.TransformData.Add(AnimNodeHandle.UniqueId, Transform);
 	}
 
+	//This function now clears out all pivots, post and pre rotations and set's the
+	//RotationOrder to XYZ.
+	//Updated per the latest documentation
+	//https://help.autodesk.com/view/FBX/2017/ENU/?guid=__files_GUID_C35D98CB_5148_4B46_82D1_51077D8970EE_htm
 	void FFbxImporter::SetupTransformForNode(FbxNode *Node)
 	{
-		FbxVector4 ZeroVector(0, 0, 0);
+
+		// Activate pivot converting 
 		Node->SetPivotState(FbxNode::eSourcePivot, FbxNode::ePivotActive);
 		Node->SetPivotState(FbxNode::eDestinationPivot, FbxNode::ePivotActive);
 
-		EFbxRotationOrder RotationOrder;
-		Node->GetRotationOrder(FbxNode::eSourcePivot, RotationOrder);
-		Node->SetRotationOrder(FbxNode::eDestinationPivot, RotationOrder);
+		FbxVector4 Zero(0, 0, 0);
 
-		// For cameras and lights (without targets) let's compensate the postrotation.
-		if (Node->GetCamera() || Node->GetLight())
-		{
-			// Point light do not need to be adjusted (since they radiate in all the directions).
-			if (Node->GetLight() && Node->GetLight()->LightType.Get() == FbxLight::ePoint)
-			{
-				Node->SetPostRotation(FbxNode::eSourcePivot, FbxVector4(0, 0, 0, 0));
-			}
+		// We want to set all these to 0 and bake them into the transforms. 
+		Node->SetPostRotation(FbxNode::eDestinationPivot, Zero);
+		Node->SetPreRotation(FbxNode::eDestinationPivot, Zero);
+		Node->SetRotationOffset(FbxNode::eDestinationPivot, Zero);
+		Node->SetScalingOffset(FbxNode::eDestinationPivot, Zero);
+		Node->SetRotationPivot(FbxNode::eDestinationPivot, Zero);
+		Node->SetScalingPivot(FbxNode::eDestinationPivot, Zero);
 
-			// apply Pre rotations only on bones / end of chains
-			if ((Node->GetNodeAttribute() && Node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eSkeleton)
-				|| (Node->GetMarker() && Node->GetMarker()->GetType() == FbxMarker::eEffectorFK)
-				|| (Node->GetMarker() && Node->GetMarker()->GetType() == FbxMarker::eEffectorIK))
-			{
-				Node->SetPreRotation(FbxNode::eDestinationPivot, Node->GetPreRotation(FbxNode::eSourcePivot));
+		Node->SetRotationOrder(FbxNode::eDestinationPivot, eEulerXYZ);
+		//When  we support other orders do this.
+		//EFbxRotationOrder ro;
+		//Node->GetRotationOrder(FbxNode::eSourcePivot, ro);
+		//Node->SetRotationOrder(FbxNode::eDestinationPivot, ro);
 
-				// No pivots on bones
-				Node->SetRotationPivot(FbxNode::eDestinationPivot, ZeroVector);
-				Node->SetScalingPivot(FbxNode::eDestinationPivot, ZeroVector);
-				Node->SetRotationOffset(FbxNode::eDestinationPivot, ZeroVector);
-				Node->SetScalingOffset(FbxNode::eDestinationPivot, ZeroVector);
-			}
-			else
-			{
-				// any other type: no pre-rotation support but...
-				Node->SetPreRotation(FbxNode::eDestinationPivot, ZeroVector);
-
-				// support for rotation and scaling pivots.
-				Node->SetRotationPivot(FbxNode::eDestinationPivot, Node->GetRotationPivot(FbxNode::eSourcePivot));
-				Node->SetScalingPivot(FbxNode::eDestinationPivot, Node->GetScalingPivot(FbxNode::eSourcePivot));
-				// Rotation and scaling offset are supported
-				Node->SetRotationOffset(FbxNode::eDestinationPivot, Node->GetRotationOffset(FbxNode::eSourcePivot));
-				Node->SetScalingOffset(FbxNode::eDestinationPivot, Node->GetScalingOffset(FbxNode::eSourcePivot));
-				//
-				// If we supported scaling pivots, we could simply do:
-				// Node->SetRotationPivot(FbxNode::eDESTINATION_SET, ZeroVector);
-				// Node->SetScalingPivot(FbxNode::eDESTINATION_SET, ZeroVector);
-			}
-		}
-
-		// Recursively convert the animation data according to pivot settings.
-		Node->ConvertPivotAnimationRecursive(
-			NULL,																// Use the first animation stack by default
-			FbxNode::eDestinationPivot,											// Convert from Source set to Destination set
-			FbxTime::GetFrameRate(Scene->GetGlobalSettings().GetTimeMode()),	// Resampling frame rate in frames per second
-			false);																// Do not apply key reducing filter
+		//Most DCC's don't have this but 3ds Max does
+		Node->SetGeometricTranslation(FbxNode::eDestinationPivot, Zero);
+		Node->SetGeometricRotation(FbxNode::eDestinationPivot, Zero);
+		Node->SetGeometricScaling(FbxNode::eDestinationPivot, Zero);
+		//NOTE THAT ConvertPivotAnimationRecursive did not seem to work when getting the local transform values!!!
+		Node->ResetPivotSetAndConvertAnimation(FbxTime::GetFrameRate(Scene->GetGlobalSettings().GetTimeMode()));
 	}
 
 } // namespace UnFBX

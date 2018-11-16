@@ -1,6 +1,8 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorFloatingText.h"
+#include "VREditorMode.h"
+#include "VREditorAssetContainer.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "Components/StaticMeshComponent.h"
@@ -16,150 +18,12 @@
 
 AFloatingText::AFloatingText()
 {
-	if (UNLIKELY(IsRunningDedicatedServer()))
-	{
-		return;
-	}
-
 	// Create root default scene component
 	{
-		SceneComponent = CreateDefaultSubobject<USceneComponent>( TEXT( "SceneComponent" ) );
-		check( SceneComponent != nullptr );
+		SceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SceneComponent"));
+		check(SceneComponent != nullptr);
 
 		RootComponent = SceneComponent;
-	}
-
-	UStaticMesh* LineSegmentCylinderMesh = nullptr;
-	{
-		static ConstructorHelpers::FObjectFinder<UStaticMesh> ObjectFinder( TEXT( "/Engine/VREditor/FloatingText/LineSegmentCylinder" ) );
-		LineSegmentCylinderMesh = ObjectFinder.Object;
-		check( LineSegmentCylinderMesh != nullptr );
-	}
-
-	UStaticMesh* JointSphereMesh = nullptr;
-	{
-		static ConstructorHelpers::FObjectFinder<UStaticMesh> ObjectFinder( TEXT( "/Engine/VREditor/FloatingText/JointSphere" ) );
-		JointSphereMesh = ObjectFinder.Object;
-		check( JointSphereMesh != nullptr );
-	}
-
-	{
-		static ConstructorHelpers::FObjectFinder<UMaterial> ObjectFinder( TEXT( "/Engine/VREditor/FloatingText/LineMaterial" ) );
-		LineMaterial = ObjectFinder.Object;
-		check( LineMaterial != nullptr );
-	}
-
-
-
-	// @todo vreditor: Tweak
-	const bool bAllowTextLighting = false;
-	const float TextSize = 1.5f;
-
-	{
-		FirstLineComponent = CreateDefaultSubobject<UStaticMeshComponent>( TEXT( "FirstLine" ) );
-		check( FirstLineComponent != nullptr );
-
-		FirstLineComponent->SetStaticMesh( LineSegmentCylinderMesh );
-		FirstLineComponent->SetMobility( EComponentMobility::Movable );
-		FirstLineComponent->SetupAttachment( SceneComponent );
-		
-		FirstLineComponent->SetCollisionEnabled( ECollisionEnabled::NoCollision );
-
-		FirstLineComponent->bGenerateOverlapEvents = false;
-		FirstLineComponent->SetCanEverAffectNavigation( false );
-		FirstLineComponent->bCastDynamicShadow = bAllowTextLighting;
-		FirstLineComponent->bCastStaticShadow = false;
-		FirstLineComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
-		FirstLineComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
-	}
-
-	{
-		JointSphereComponent = CreateDefaultSubobject<UStaticMeshComponent>( TEXT( "JointSphere" ) );
-		check( JointSphereComponent != nullptr );
-
-		JointSphereComponent->SetStaticMesh( JointSphereMesh );
-		JointSphereComponent->SetMobility( EComponentMobility::Movable );
-		JointSphereComponent->SetupAttachment( SceneComponent );
-
-		JointSphereComponent->SetCollisionEnabled( ECollisionEnabled::NoCollision );
-
-		JointSphereComponent->bGenerateOverlapEvents = false;
-		JointSphereComponent->SetCanEverAffectNavigation( false );
-		JointSphereComponent->bCastDynamicShadow = bAllowTextLighting;
-		JointSphereComponent->bCastStaticShadow = false;
-		JointSphereComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
-		JointSphereComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
-		
-	}
-
-	{
-		SecondLineComponent = CreateDefaultSubobject<UStaticMeshComponent>( TEXT( "SecondLine" ) );
-		check( SecondLineComponent != nullptr );
-
-		SecondLineComponent->SetStaticMesh( LineSegmentCylinderMesh );
-		SecondLineComponent->SetMobility( EComponentMobility::Movable );
-		SecondLineComponent->SetupAttachment( SceneComponent );
-
-		SecondLineComponent->SetCollisionEnabled( ECollisionEnabled::NoCollision );
-
-		SecondLineComponent->bGenerateOverlapEvents = false;
-		SecondLineComponent->SetCanEverAffectNavigation( false );
-		SecondLineComponent->bCastDynamicShadow = bAllowTextLighting;
-		SecondLineComponent->bCastStaticShadow = false;
-		SecondLineComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
-		SecondLineComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
-
-	}
-
-	{
-		static ConstructorHelpers::FObjectFinder<UMaterial> ObjectFinder( TEXT( "/Engine/VREditor/Fonts/VRTextMaterial" ) );
-		MaskedTextMaterial = ObjectFinder.Object;
-		check( MaskedTextMaterial != nullptr );
-	}
-
-	{
-		static ConstructorHelpers::FObjectFinder<UMaterialInstance> ObjectFinder( TEXT( "/Engine/VREditor/Fonts/TranslucentVRTextMaterial" ) );
-		TranslucentTextMaterial = ObjectFinder.Object;
-		check( TranslucentTextMaterial != nullptr );
-	}
-
-	UFont* TextFont = nullptr;
-	{
-		static ConstructorHelpers::FObjectFinder<UFont> ObjectFinder( TEXT( "/Engine/VREditor/Fonts/VRText_RobotoLarge" ) );
-		TextFont = ObjectFinder.Object;
-		check( TextFont != nullptr );
-	}
-
-	{
-		TextComponent = CreateDefaultSubobject<UTextRenderComponent>( TEXT( "Text" ) );
-		check( TextComponent != nullptr );
-
-		TextComponent->SetMobility( EComponentMobility::Movable );
-		TextComponent->SetupAttachment( SceneComponent );
-
-		TextComponent->SetCollisionProfileName( UCollisionProfile::NoCollision_ProfileName );
-
-		TextComponent->bGenerateOverlapEvents = false;
-		TextComponent->SetCanEverAffectNavigation( false );
-		TextComponent->bCastDynamicShadow = bAllowTextLighting;
-		TextComponent->bCastStaticShadow = false;
-		TextComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
-		TextComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
-
-
-		TextComponent->SetWorldSize( TextSize );
-
-		// Use a custom font.  The text will be visible up close.	   
-		TextComponent->SetFont( TextFont );
-
-		// Assign our custom text rendering material.
-		TextComponent->SetTextMaterial( MaskedTextMaterial );
-
-		TextComponent->SetTextRenderColor( FLinearColor::White.ToFColor( false ) );
-
-		// Left justify the text
-		TextComponent->SetHorizontalAlignment( EHTA_Left );
-
 	}
 }
 
@@ -168,13 +32,115 @@ void AFloatingText::PostActorCreated()
 {
 	Super::PostActorCreated();
 
-	// Create an MID so that we can change parameters on the fly (fading)
-	check( LineMaterial != nullptr );
-	this->LineMaterialMID = UMaterialInstanceDynamic::Create( LineMaterial, this );
+	// @todo vreditor: Tweak
+	const bool bAllowTextLighting = false;
+	const float TextSize = 1.5f;
 
-	FirstLineComponent->SetMaterial( 0, LineMaterialMID );
-	JointSphereComponent->SetMaterial( 0, LineMaterialMID );
-	SecondLineComponent->SetMaterial( 0, LineMaterialMID );
+	const UVREditorAssetContainer& AssetContainer = UVREditorMode::LoadAssetContainer();
+
+	{
+		FirstLineComponent = NewObject<UStaticMeshComponent>(this, TEXT("FirstLine"));
+		check(FirstLineComponent != nullptr);
+
+		FirstLineComponent->SetStaticMesh(AssetContainer.LineSegmentCylinderMesh);
+		FirstLineComponent->SetMobility(EComponentMobility::Movable);
+		FirstLineComponent->SetupAttachment(SceneComponent);
+		FirstLineComponent->RegisterComponent();
+		FirstLineComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		FirstLineComponent->SetGenerateOverlapEvents(false);
+		FirstLineComponent->SetCanEverAffectNavigation(false);
+		FirstLineComponent->bCastDynamicShadow = bAllowTextLighting;
+		FirstLineComponent->bCastStaticShadow = false;
+		FirstLineComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
+		FirstLineComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
+	}
+
+	{
+		JointSphereComponent = NewObject<UStaticMeshComponent>(this, TEXT("JointSphere"));
+		check(JointSphereComponent != nullptr);
+
+		JointSphereComponent->SetStaticMesh(AssetContainer.JointSphereMesh);
+		JointSphereComponent->SetMobility(EComponentMobility::Movable);
+		JointSphereComponent->SetupAttachment(SceneComponent);
+		JointSphereComponent->RegisterComponent();
+		JointSphereComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		JointSphereComponent->SetGenerateOverlapEvents(false);
+		JointSphereComponent->SetCanEverAffectNavigation(false);
+		JointSphereComponent->bCastDynamicShadow = bAllowTextLighting;
+		JointSphereComponent->bCastStaticShadow = false;
+		JointSphereComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
+		JointSphereComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
+
+	}
+
+	{
+		SecondLineComponent = NewObject<UStaticMeshComponent>(this, TEXT("SecondLine"));
+		check(SecondLineComponent != nullptr);
+
+		SecondLineComponent->SetStaticMesh(AssetContainer.LineSegmentCylinderMesh);
+		SecondLineComponent->SetMobility(EComponentMobility::Movable);
+		SecondLineComponent->SetupAttachment(SceneComponent);
+		SecondLineComponent->RegisterComponent();
+		SecondLineComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		SecondLineComponent->SetGenerateOverlapEvents(false);
+		SecondLineComponent->SetCanEverAffectNavigation(false);
+		SecondLineComponent->bCastDynamicShadow = bAllowTextLighting;
+		SecondLineComponent->bCastStaticShadow = false;
+		SecondLineComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
+		SecondLineComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
+
+	}
+
+	LineMaterial = AssetContainer.LineMaterial;
+	MaskedTextMaterial = AssetContainer.TextMaterial;
+	TranslucentTextMaterial = AssetContainer.TranslucentTextMaterial;
+
+	{
+		TextComponent = NewObject<UTextRenderComponent>(this, TEXT("Text"));
+		check(TextComponent != nullptr);
+
+		TextComponent->SetMobility(EComponentMobility::Movable);
+		TextComponent->SetupAttachment(SceneComponent);
+		TextComponent->RegisterComponent();
+		TextComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+
+		TextComponent->SetGenerateOverlapEvents(false);
+		TextComponent->SetCanEverAffectNavigation(false);
+		TextComponent->bCastDynamicShadow = bAllowTextLighting;
+		TextComponent->bCastStaticShadow = false;
+		TextComponent->bAffectDistanceFieldLighting = bAllowTextLighting;
+		TextComponent->bAffectDynamicIndirectLighting = bAllowTextLighting;
+
+
+		TextComponent->SetWorldSize(TextSize);
+
+		// Use a custom font.  The text will be visible up close.	   
+		TextComponent->SetFont(AssetContainer.TextFont);
+
+		if (MaskedTextMaterial != nullptr)
+		{
+			// Assign our custom text rendering material.
+			TextComponent->SetTextMaterial(MaskedTextMaterial);
+		}
+		TextComponent->SetTextRenderColor(FLinearColor::White.ToFColor(false));
+
+		// Left justify the text
+		TextComponent->SetHorizontalAlignment(EHTA_Left);
+
+	}
+
+	// Create an MID so that we can change parameters on the fly (fading)
+	if (LineMaterial != nullptr)
+	{
+		this->LineMaterialMID = UMaterialInstanceDynamic::Create(LineMaterial, this);
+
+		FirstLineComponent->SetMaterial(0, LineMaterialMID);
+		JointSphereComponent->SetMaterial(0, LineMaterialMID);
+		SecondLineComponent->SetMaterial(0, LineMaterialMID);
+	}
 }
 
 

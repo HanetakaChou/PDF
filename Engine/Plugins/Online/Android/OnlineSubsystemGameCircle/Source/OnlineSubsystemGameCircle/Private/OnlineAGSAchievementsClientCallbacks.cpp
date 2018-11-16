@@ -5,7 +5,7 @@
 #include "Async/TaskGraphInterfaces.h"
 
 FOnlineGetAchievementsCallback::FOnlineGetAchievementsCallback(FOnlineSubsystemGameCircle *const InSubsystem, 
-															   const FUniqueNetIdString& InUserID, 
+															   const FUniqueNetIdGameCircle& InUserID,
 															   const FOnQueryAchievementsCompleteDelegate& InDelegate)
 	: GameCircleSubsystem(InSubsystem)
 	, UserID(InUserID)
@@ -56,7 +56,7 @@ void FOnlineUpdateProgressCallback::onUpdateProgressCb(
 {
 	if(AmazonGames::ErrorCode::NO_ERROR != errorCode)
 	{
-		UE_LOG(LogOnline, Error, TEXT("FOnlineUpdateProgressCallback Returned ErrorCode %d"), errorCode);
+		UE_LOG_ONLINE(Error, TEXT("FOnlineUpdateProgressCallback Returned ErrorCode %d"), errorCode);
 	}
 
 	GameCircleSubsystem->GetCallbackManager()->CallbackCompleted(this);

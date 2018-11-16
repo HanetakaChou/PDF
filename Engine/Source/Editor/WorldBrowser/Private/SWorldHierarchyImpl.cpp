@@ -45,6 +45,11 @@ SWorldHierarchyImpl::~SWorldHierarchyImpl()
 	WorldModel->CollectionChanged.RemoveAll(this);
 	WorldModel->PreLevelsUnloaded.RemoveAll(this);
 
+	if (SearchBoxLevelFilter.IsValid())
+	{
+		WorldModel->RemoveFilter(SearchBoxLevelFilter.ToSharedRef());
+	}
+
 	if (FLevelFolders::IsAvailable())
 	{
 		FLevelFolders& LevelFolders = FLevelFolders::Get();
@@ -857,7 +862,7 @@ void SWorldHierarchyImpl::RepopulateEntireTree()
 {
 	EmptyTreeItems();
 
-	for (const TSharedPtr<FLevelModel>& Level : WorldModel->GetAllLevels())
+	for (const TSharedPtr<FLevelModel>& Level : WorldModel->GetFilteredLevels())
 	{
 		if (Level.IsValid())
 		{

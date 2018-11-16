@@ -54,7 +54,7 @@
 #include "NativeClassHierarchy.h"
 #include "AddToProjectConfig.h"
 #include "GameProjectGenerationModule.h"
-#include "GlobalEditorCommonCommands.h"
+#include "Toolkits/GlobalEditorCommonCommands.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -433,7 +433,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 			+ SSplitter::Slot()
 			.Value(0.25f)
 			[
-				SNew(SSplitter)
+				SAssignNew(PathFavoriteSplitterPtr, SSplitter)
 				.Orientation(EOrientation::Orient_Vertical)
 				.MinimumSlotHeight(70.0f)
 				.Visibility( this, &SContentBrowser::GetSourcesViewVisibility )
@@ -706,6 +706,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 						.CanShowCollections(true)
 						.CanShowFavorites(true)
 						.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserAssets")))
+						.OnSearchOptionsChanged(this, &SContentBrowser::HandleAssetViewSearchOptionsChanged)
 					]
 				]
 			]
@@ -882,11 +883,19 @@ void SContentBrowser::ToggleFolderFavorite(const TArray<FString>& FolderPaths)
 		FavoritePathViewPtr->SetSelectedPaths(FolderPaths);
 		if (GetFavoriteFolderVisibility() == EVisibility::Collapsed)
 		{
-			GetMutableDefault<UContentBrowserSettings>()->SetDisplayFavorites(true);
+			UContentBrowserSettings* Settings = GetMutableDefault<UContentBrowserSettings>();
+			Settings->SetDisplayFavorites(true);
+			Settings->SaveConfig();
 		}
 	}
 }
 
+void SContentBrowser::HandleAssetViewSearchOptionsChanged()
+{
+	TextFilter->SetIncludeClassName(AssetViewPtr->IsIncludingClassNames());
+	TextFilter->SetIncludeAssetPath(AssetViewPtr->IsIncludingAssetPaths());
+	TextFilter->SetIncludeCollectionNames(AssetViewPtr->IsIncludingCollectionNames());
+}
 
 FText SContentBrowser::GetHighlightedText() const
 {
@@ -1118,6 +1127,20 @@ void SContentBrowser::GetSelectedAssets(TArray<FAssetData>& SelectedAssets)
 	SelectedAssets = AssetViewPtr->GetSelectedAssets();
 }
 
+void SContentBrowser::GetSelectedFolders(TArray<FString>& SelectedFolders)
+{
+	// Make sure the asset data is up to date
+	AssetViewPtr->ProcessRecentlyLoadedOrChangedAssets();
+
+	SelectedFolders = AssetViewPtr->GetSelectedFolders();
+}
+
+TArray<FString> SContentBrowser::GetSelectedPathViewFolders()
+{
+	check(PathViewPtr.IsValid());
+	return PathViewPtr->GetSelectedPaths();
+}
+
 void SContentBrowser::SaveSettings() const
 {
 	const FString& SettingsString = InstanceName.ToString();
@@ -1135,6 +1158,12 @@ void SContentBrowser::SaveSettings() const
 	{
 		float SplitterSize = PathCollectionSplitterPtr->SlotAt(SlotIndex).SizeValue.Get();
 		GConfig->SetFloat(*SettingsIniSection, *(SettingsString + FString::Printf(TEXT(".HorizontalSplitter.SlotSize%d"), SlotIndex)), SplitterSize, GEditorPerProjectIni);
+	}
+
+	for (int32 SlotIndex = 0; SlotIndex < PathFavoriteSplitterPtr->GetChildren()->Num(); SlotIndex++)
+	{
+		float SplitterSize = PathFavoriteSplitterPtr->SlotAt(SlotIndex).SizeValue.Get();
+		GConfig->SetFloat(*SettingsIniSection, *(SettingsString + FString::Printf(TEXT(".FavoriteSplitter.SlotSize%d"), SlotIndex)), SplitterSize, GEditorPerProjectIni);
 	}
 
 	// Save all our data using the settings string as a key in the user settings ini
@@ -1269,6 +1298,13 @@ void SContentBrowser::LoadSettings(const FName& InInstanceName)
 		float SplitterSize = PathCollectionSplitterPtr->SlotAt(SlotIndex).SizeValue.Get();
 		GConfig->GetFloat(*SettingsIniSection, *(SettingsString + FString::Printf(TEXT(".HorizontalSplitter.SlotSize%d"), SlotIndex)), SplitterSize, GEditorPerProjectIni);
 		PathCollectionSplitterPtr->SlotAt(SlotIndex).SizeValue = SplitterSize;
+	}
+
+	for (int32 SlotIndex = 0; SlotIndex < PathFavoriteSplitterPtr->GetChildren()->Num(); SlotIndex++)
+	{
+		float SplitterSize = PathFavoriteSplitterPtr->SlotAt(SlotIndex).SizeValue.Get();
+		GConfig->GetFloat(*SettingsIniSection, *(SettingsString + FString::Printf(TEXT(".FavoriteSplitter.SlotSize%d"), SlotIndex)), SplitterSize, GEditorPerProjectIni);
+		PathFavoriteSplitterPtr->SlotAt(SlotIndex).SizeValue = SplitterSize;
 	}
 
 	// Save all our data using the settings string as a key in the user settings ini
@@ -1535,6 +1571,9 @@ void SContentBrowser::NewAssetRequested(const FString& SelectedPath, TWeakObject
 	if ( ensure(SelectedPath.Len() > 0) && ensure(FactoryClass.IsValid()) )
 	{
 		UFactory* NewFactory = NewObject<UFactory>(GetTransientPackage(), FactoryClass.Get());
+		// This factory may get gc'd as a side effect of various delegates potentially calling CollectGarbage so protect against it from being gc'd out from under us
+		NewFactory->AddToRoot();
+
 		FEditorDelegates::OnConfigureNewAssetProperties.Broadcast(NewFactory);
 		if ( NewFactory->ConfigureProperties() )
 		{
@@ -1546,6 +1585,7 @@ void SContentBrowser::NewAssetRequested(const FString& SelectedPath, TWeakObject
 			AssetToolsModule.Get().CreateUniqueAssetName(SelectedPath + TEXT("/") + NewFactory->GetDefaultNewAssetName(), TEXT(""), PackageNameToUse, DefaultAssetName);
 			CreateNewAsset(DefaultAssetName, SelectedPath, NewFactory->GetSupportedClass(), NewFactory);
 		}
+		NewFactory->RemoveFromRoot();
 	}
 }
 
@@ -1938,7 +1978,7 @@ TSharedRef<SWidget> SContentBrowser::MakeAddNewContextMenu(bool bShowGetContent,
 		);
 
 	FDisplayMetrics DisplayMetrics;
-	FSlateApplication::Get().GetDisplayMetrics( DisplayMetrics );
+	FSlateApplication::Get().GetCachedDisplayMetrics( DisplayMetrics );
 
 	const FVector2D DisplaySize(
 		DisplayMetrics.PrimaryDisplayWorkAreaRect.Right - DisplayMetrics.PrimaryDisplayWorkAreaRect.Left,

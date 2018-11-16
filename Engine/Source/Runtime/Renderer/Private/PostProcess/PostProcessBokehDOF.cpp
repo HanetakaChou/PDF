@@ -44,7 +44,7 @@ class PostProcessVisualizeDOFPS : public FGlobalShader
 
 public:
 	FPostProcessPassParameters PostprocessParameter;
-	FDeferredPixelShaderParameters DeferredParameters;
+	FSceneTextureShaderParameters SceneTextureParameters;
 	FShaderParameter DepthOfFieldParams;
 	FShaderParameter VisualizeColors;
 	FShaderParameter CursorPos;
@@ -55,7 +55,7 @@ public:
 		: FGlobalShader(Initializer)
 	{
 		PostprocessParameter.Bind(Initializer.ParameterMap);
-		DeferredParameters.Bind(Initializer.ParameterMap);
+		SceneTextureParameters.Bind(Initializer);
 		DepthOfFieldParams.Bind(Initializer.ParameterMap, TEXT("DepthOfFieldParams"));
 		MiniFontTexture.Bind(Initializer.ParameterMap, TEXT("MiniFontTexture"));
 		VisualizeColors.Bind(Initializer.ParameterMap, TEXT("VisualizeColors"));
@@ -66,7 +66,7 @@ public:
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << DeferredParameters << MiniFontTexture << DepthOfFieldParams << VisualizeColors << CursorPos;
+		Ar << PostprocessParameter << SceneTextureParameters << MiniFontTexture << DepthOfFieldParams << VisualizeColors << CursorPos;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -77,7 +77,7 @@ public:
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 
-		DeferredParameters.Set(RHICmdList, ShaderRHI, Context.View, MD_PostProcess);
+		SceneTextureParameters.Set(RHICmdList, ShaderRHI, Context.View.FeatureLevel, ESceneTextureSetupMode::All);
 
 		PostprocessParameter.SetPS(RHICmdList, ShaderRHI, Context, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI());
 
@@ -97,11 +97,13 @@ public:
 		{
 			// a negative values disables the cross hair feature
 			FIntPoint CursorPosValue(-100,-100);
-			
+
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if(Context.View.FinalPostProcessSettings.DepthOfFieldMethod == DOFM_CircleDOF)
 			{
 				CursorPosValue = Context.View.CursorPos;
 			}
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			SetShaderValue(RHICmdList, ShaderRHI, CursorPos, CursorPosValue);
 		}
@@ -223,10 +225,13 @@ void FRCPassPostProcessVisualizeDOF::Process(FRenderingCompositePassContext& Con
 		Canvas.DrawShadowedString(20, Y += YStep, *Line, GetStatsFont(), FLinearColor(1, 1, 0));
 		Y += YStep;
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		EDepthOfFieldMethod MethodId = View.FinalPostProcessSettings.DepthOfFieldMethod;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if(MethodId == DOFM_BokehDOF)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			Line = FString::Printf(TEXT("Method: BokehDOF (blue is far, green is near, black is in focus)"));
 			Canvas.DrawShadowedString(X, Y += YStep, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
 			Y += YStep;
@@ -249,6 +254,7 @@ void FRCPassPostProcessVisualizeDOF::Process(FRenderingCompositePassContext& Con
 			Canvas.DrawShadowedString(X, Y += YStep, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
 			Line = FString::Printf(TEXT("Occlusion: %.2f"), View.FinalPostProcessSettings.DepthOfFieldOcclusion);
 			Canvas.DrawShadowedString(X, Y += YStep, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		else if(MethodId == DOFM_Gaussian)
 		{
@@ -313,7 +319,7 @@ void FRCPassPostProcessVisualizeDOF::Process(FRenderingCompositePassContext& Con
 		Canvas.Flush_RenderThread(Context.RHICmdList);
 	}
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 }
 
 FPooledRenderTargetDesc FRCPassPostProcessVisualizeDOF::ComputeOutputDesc(EPassOutputId InPassOutputId) const
@@ -343,7 +349,7 @@ class PostProcessBokehDOFSetupPS : public FGlobalShader
 
 public:
 	FPostProcessPassParameters PostprocessParameter;
-	FDeferredPixelShaderParameters DeferredParameters;
+	FSceneTextureShaderParameters SceneTextureParameters;
 	FShaderParameter DepthOfFieldParams;
 
 	/** Initialization constructor. */
@@ -351,7 +357,7 @@ public:
 		: FGlobalShader(Initializer)
 	{
 		PostprocessParameter.Bind(Initializer.ParameterMap);
-		DeferredParameters.Bind(Initializer.ParameterMap);
+		SceneTextureParameters.Bind(Initializer);
 		DepthOfFieldParams.Bind(Initializer.ParameterMap,TEXT("DepthOfFieldParams"));
 	}
 
@@ -359,7 +365,7 @@ public:
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << DeferredParameters << DepthOfFieldParams;
+		Ar << PostprocessParameter << SceneTextureParameters << DepthOfFieldParams;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -369,7 +375,7 @@ public:
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(Context.RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 		
-		DeferredParameters.Set(Context.RHICmdList, ShaderRHI, Context.View, MD_PostProcess);
+		SceneTextureParameters.Set(Context.RHICmdList, ShaderRHI, Context.View.FeatureLevel, ESceneTextureSetupMode::All);
 		PostprocessParameter.SetPS(Context.RHICmdList, ShaderRHI, Context, TStaticSamplerState<SF_Point,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI());
 
 		{
@@ -419,7 +425,7 @@ class FRCPassPostProcessBokehDOFSetupCS : public FGlobalShader
 
 public:
 	FPostProcessPassParameters PostprocessParameter;
-	FDeferredPixelShaderParameters DeferredParameters;
+	FSceneTextureShaderParameters SceneTextureParameters;
 	FShaderParameter BokehDOFSetupComputeParams;
 	FShaderParameter OutComputeTex;
 
@@ -428,7 +434,7 @@ public:
 		: FGlobalShader(Initializer)
 	{
 		PostprocessParameter.Bind(Initializer.ParameterMap);
-		DeferredParameters.Bind(Initializer.ParameterMap);
+		SceneTextureParameters.Bind(Initializer);
 		BokehDOFSetupComputeParams.Bind(Initializer.ParameterMap,TEXT("BokehDOFSetupComputeParams"));
 		OutComputeTex.Bind(Initializer.ParameterMap, TEXT("OutComputeTex"));
 	}
@@ -437,7 +443,7 @@ public:
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << DeferredParameters << BokehDOFSetupComputeParams << OutComputeTex;
+		Ar << PostprocessParameter << SceneTextureParameters << BokehDOFSetupComputeParams << OutComputeTex;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -447,7 +453,7 @@ public:
 		const FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 
-		DeferredParameters.Set(RHICmdList, ShaderRHI, Context.View, MD_PostProcess);
+		SceneTextureParameters.Set(RHICmdList, ShaderRHI, Context.View.FeatureLevel, ESceneTextureSetupMode::All);
 		PostprocessParameter.SetCS(ShaderRHI, Context, RHICmdList, TStaticSamplerState<SF_Point,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI());
 		RHICmdList.SetUAVParameter(ShaderRHI, OutComputeTex.GetBaseIndex(), DestUAV);
 
@@ -510,10 +516,13 @@ void FRCPassPostProcessBokehDOFSetup::Process(FRenderingCompositePassContext& Co
 		// Set the view family's render target/viewport.
 		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
 	
-		// can be optimized (don't clear areas we overwrite, don't clear when full screen),
-		// needed when a camera (matinee) has black borders or with multiple viewports
-		// focal distance depth is stored in the alpha channel to avoid DOF artifacts
-		DrawClearQuad(Context.RHICmdList, true, FLinearColor(0, 0, 0, View.FinalPostProcessSettings.DepthOfFieldFocalDistance), false, 0, false, 0, DestSize, DestRect);
+		if (View.StereoPass == eSSP_FULL)
+		{
+			// can be optimized (don't clear areas we overwrite, don't clear when full screen),
+			// needed when a camera (matinee) has black borders or with multiple viewports
+			// focal distance depth is stored in the alpha channel to avoid DOF artifacts
+			DrawClearQuad(Context.RHICmdList, true, FLinearColor(0, 0, 0, View.FinalPostProcessSettings.DepthOfFieldFocalDistance), false, 0, false, 0, DestSize, DestRect);
+		}
 
 		Context.SetViewportAndCallRHI(0, 0, 0.0f, DestSize.X, DestSize.Y, 1.0f );
 
@@ -554,7 +563,7 @@ void FRCPassPostProcessBokehDOFSetup::Process(FRenderingCompositePassContext& Co
 			Context.HasHmdMesh(),
 			EDRF_UseTriangleOptimization);
 
-		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 	}
 }
 
@@ -619,7 +628,7 @@ public:
 	FShaderParameter KernelSize;
 	FShaderParameter DepthOfFieldParams;
 	FShaderParameter DepthOfFieldThresholds;
-	FDeferredPixelShaderParameters DeferredParameters;
+	FSceneTextureShaderParameters SceneTextureParameters;
 
 	/** Initialization constructor. */
 	FPostProcessBokehDOFVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -630,14 +639,14 @@ public:
 		KernelSize.Bind(Initializer.ParameterMap, TEXT("KernelSize"));
 		DepthOfFieldParams.Bind(Initializer.ParameterMap,TEXT("DepthOfFieldParams"));
 		DepthOfFieldThresholds.Bind(Initializer.ParameterMap,TEXT("DepthOfFieldThresholds"));		
-		DeferredParameters.Bind(Initializer.ParameterMap);
+		SceneTextureParameters.Bind(Initializer);
 	}
 
 	// FShader interface.
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << TileCountAndSize << KernelSize << DepthOfFieldParams << DepthOfFieldThresholds << DeferredParameters;
+		Ar << PostprocessParameter << TileCountAndSize << KernelSize << DepthOfFieldParams << DepthOfFieldThresholds << SceneTextureParameters;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -647,7 +656,7 @@ public:
 		const FVertexShaderRHIParamRef ShaderRHI = GetVertexShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(Context.RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
-		DeferredParameters.Set(Context.RHICmdList, ShaderRHI, Context.View, MD_PostProcess);
+		SceneTextureParameters.Set(Context.RHICmdList, ShaderRHI, Context.View.FeatureLevel, ESceneTextureSetupMode::All);
 		PostprocessParameter.SetVS(ShaderRHI, Context, TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI());
 //		PostprocessParameter.SetVS(ShaderRHI, Context, TStaticSamplerState<SF_Point,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI());
 
@@ -662,7 +671,7 @@ public:
 
 			SetShaderValue(Context.RHICmdList, ShaderRHI, KernelSize, KernelSizeValue);
 		}
-
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		{
 			FVector4 Value(
 				Context.View.FinalPostProcessSettings.DepthOfFieldColorThreshold,
@@ -670,6 +679,7 @@ public:
 
 			SetShaderValue(Context.RHICmdList, ShaderRHI, DepthOfFieldThresholds, Value);
 		}
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		{
 			FVector4 DepthOfFieldParamValues[2];
@@ -748,10 +758,12 @@ public:
 				TextureRHI = GEngine->DefaultBokehTexture->Resource->TextureRHI;
 			}
 
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if(Context.View.FinalPostProcessSettings.DepthOfFieldBokehShape)
 			{
 				TextureRHI = Context.View.FinalPostProcessSettings.DepthOfFieldBokehShape->Resource->TextureRHI;
 			}
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			SetTextureParameter(Context.RHICmdList, ShaderRHI, LensTexture, LensTextureSampler, TStaticSamplerState<SF_Trilinear, AM_Border, AM_Border, AM_Clamp>::GetRHI(), TextureRHI);
 		}
@@ -814,9 +826,11 @@ void FRCPassPostProcessBokehDOF::ComputeDepthOfFieldParams(const FRenderingCompo
 		Context.View.FinalPostProcessSettings.DepthOfFieldOcclusion);
 
 	FIntPoint ViewSize = Context.View.ViewRect.Size();
-
-	float MaxBokehSizeInPixel = FMath::Max(0.0f, Context.View.FinalPostProcessSettings.DepthOfFieldMaxBokehSize) / 100.0f * ViewSize.X;
 	
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	float MaxBokehSizeInPixel = FMath::Max(0.0f, Context.View.FinalPostProcessSettings.DepthOfFieldMaxBokehSize) / 100.0f * ViewSize.X;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	// Scale and offset to put two views in one texture with safety border
 	float UsedYDivTextureY = HalfRes / (float)BokehLayerSizeY;
 	float YOffsetInPixel = HalfRes + SafetyBorder;
@@ -884,7 +898,9 @@ void FRCPassPostProcessBokehDOF::Process(FRenderingCompositePassContext& Context
 
 	FIntPoint TileCount = LocalViewSize / TileSize;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	float PixelKernelSize = Context.View.FinalPostProcessSettings.DepthOfFieldMaxBokehSize / 100.0f * LocalViewSize.X;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FIntPoint LeftTop = LocalViewRect.Min;
 	
@@ -910,7 +926,7 @@ void FRCPassPostProcessBokehDOF::Process(FRenderingCompositePassContext& Context
 	Context.RHICmdList.SetStreamSource(0, NULL, 0);
 	Context.RHICmdList.DrawIndexedPrimitive(GBokehIndexBuffer.IndexBufferRHI, PT_TriangleList, 0, 0, 4 * GBokehDOFQuadsPerInstance, 0, 2 * GBokehDOFQuadsPerInstance, FMath::DivideAndRoundUp(TileCount.X * TileCount.Y, GBokehDOFQuadsPerInstance));
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 }
 
 FPooledRenderTargetDesc FRCPassPostProcessBokehDOF::ComputeOutputDesc(EPassOutputId InPassOutputId) const

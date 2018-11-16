@@ -9,6 +9,7 @@ public class ActorSequenceEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"ActorSequence",
+				"BlueprintGraph",
 				"Core",
 				"CoreUObject",
 				"Engine",
@@ -21,6 +22,7 @@ public class ActorSequenceEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"UnrealEd",
+				"TimeManagement"
 			}
 		);
 

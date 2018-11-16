@@ -1,12 +1,13 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
-#include "MovieSceneEvaluationCustomVersion.h"
+#include "Evaluation/MovieSceneEvaluationCustomVersion.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "Compilation/MovieSceneCompilerRules.h"
 #include "Evaluation/MovieSceneEvaluationTrack.h"
 #include "Evaluation/MovieSceneSkeletalAnimationTemplate.h"
 #include "Compilation/IMovieSceneTemplateGenerator.h"
+#include "MovieScene.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneSkeletalAnimationTrack"
 
@@ -20,6 +21,7 @@ UMovieSceneSkeletalAnimationTrack::UMovieSceneSkeletalAnimationTrack(const FObje
 {
 #if WITH_EDITORONLY_DATA
 	TrackTint = FColor(124, 15, 124, 65);
+	bSupportsDefaultSections = false;
 #endif
 
 	SupportedBlendTypes.Add(EMovieSceneBlendType::Absolute);
@@ -31,19 +33,22 @@ UMovieSceneSkeletalAnimationTrack::UMovieSceneSkeletalAnimationTrack(const FObje
 /* UMovieSceneSkeletalAnimationTrack interface
  *****************************************************************************/
 
-void UMovieSceneSkeletalAnimationTrack::AddNewAnimation(float KeyTime, UAnimSequenceBase* AnimSequence)
+UMovieSceneSection* UMovieSceneSkeletalAnimationTrack::AddNewAnimationOnRow(FFrameNumber KeyTime, UAnimSequenceBase* AnimSequence, int32 RowIndex)
 {
 	UMovieSceneSkeletalAnimationSection* NewSection = Cast<UMovieSceneSkeletalAnimationSection>(CreateNewSection());
 	{
-		NewSection->InitialPlacement(AnimationSections, KeyTime, KeyTime + AnimSequence->SequenceLength, SupportsMultipleRows());
+		FFrameTime AnimationLength = AnimSequence->SequenceLength * GetTypedOuter<UMovieScene>()->GetTickResolution();
+		NewSection->InitialPlacementOnRow(AnimationSections, KeyTime, AnimationLength.FrameNumber.Value, RowIndex);
 		NewSection->Params.Animation = AnimSequence;
 	}
 
 	AddSection(*NewSection);
+
+	return NewSection;
 }
 
 
-TArray<UMovieSceneSection*> UMovieSceneSkeletalAnimationTrack::GetAnimSectionsAtTime(float Time)
+TArray<UMovieSceneSection*> UMovieSceneSkeletalAnimationTrack::GetAnimSectionsAtTime(FFrameNumber Time)
 {
 	TArray<UMovieSceneSection*> Sections;
 	for (auto Section : AnimationSections)
@@ -85,7 +90,7 @@ bool UMovieSceneSkeletalAnimationTrack::SupportsMultipleRows() const
 
 UMovieSceneSection* UMovieSceneSkeletalAnimationTrack::CreateNewSection()
 {
-	return NewObject<UMovieSceneSkeletalAnimationSection>(this);
+	return NewObject<UMovieSceneSkeletalAnimationSection>(this, NAME_None, RF_Transactional);
 }
 
 
@@ -116,19 +121,6 @@ void UMovieSceneSkeletalAnimationTrack::RemoveSection(UMovieSceneSection& Sectio
 bool UMovieSceneSkeletalAnimationTrack::IsEmpty() const
 {
 	return AnimationSections.Num() == 0;
-}
-
-
-TRange<float> UMovieSceneSkeletalAnimationTrack::GetSectionBoundaries() const
-{
-	TArray<TRange<float>> Bounds;
-
-	for (auto Section : AnimationSections)
-	{
-		Bounds.Add(Section->GetRange());
-	}
-
-	return TRange<float>::Hull(Bounds);
 }
 
 #if WITH_EDITORONLY_DATA

@@ -6,7 +6,7 @@
 #include "Misc/FileHelper.h"
 #if WITH_EDITOR
 #include "EditorFramework/AssetImportData.h"
-#include "BlueprintEditorUtils.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #endif
 
 /////////////////////////////////////////////////////
@@ -48,8 +48,6 @@ UClass* UScriptBlueprint::GetBlueprintClass() const
 
 bool UScriptBlueprint::ValidateGeneratedClass(const UClass* InClass)
 {
-	bool Result = Super::ValidateGeneratedClass(InClass);
-
 	const UScriptBlueprintGeneratedClass* GeneratedClass = Cast<const UScriptBlueprintGeneratedClass>(InClass);
 	if ( !ensure(GeneratedClass) )
 	{
@@ -61,7 +59,7 @@ bool UScriptBlueprint::ValidateGeneratedClass(const UClass* InClass)
 		return false;
 	}
 
-	return Result;
+	return true;
 }
 
 bool UScriptBlueprint::IsCodeDirty() const

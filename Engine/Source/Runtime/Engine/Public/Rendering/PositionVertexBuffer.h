@@ -38,21 +38,23 @@ public:
 	* Initializes the buffer with the given vertices, used to convert legacy layouts.
 	* @param InVertices - The vertices to initialize the buffer with.
 	*/
-	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices);
+	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bNeedsCPUAccess = true);
 
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
 	* @param InVertexBuffer - The vertex buffer to initialize from.
 	*/
-	void Init(const FPositionVertexBuffer& InVertexBuffer);
+	void Init(const FPositionVertexBuffer& InVertexBuffer, bool bNeedsCPUAccess = true);
 
-	ENGINE_API void Init(const TArray<FVector>& InPositions);
+	ENGINE_API void Init(const TArray<FVector>& InPositions, bool bNeedsCPUAccess = true);
 
 	/**
-	* Removes the cloned vertices used for extruding shadow volumes.
-	* @param NumVertices - The real number of static mesh vertices which should remain in the buffer upon return.
-	*/
-	void RemoveLegacyShadowVolumeVertices(uint32 InNumVertices);
+	 * Appends the specified vertices to the end of the buffer
+	 *
+	 * @param	Vertices	The vertex data to be appended.  Must not be nullptr.
+	 * @param	NumVerticesToAppend		How many vertices should be added
+	 */
+	ENGINE_API void AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend );
 
 	/**
 	* Serializer
@@ -115,6 +117,8 @@ private:
 
 	/** The cached number of vertices. */
 	uint32 NumVertices;
+
+	bool NeedsCPUAccess = true;
 
 	/** Allocates the vertex data storage type. */
 	void AllocateData(bool bNeedsCPUAccess = true);

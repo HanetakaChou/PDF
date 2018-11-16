@@ -137,21 +137,23 @@ namespace mtlpp
     }
     MTLPP_AVAILABLE(10_11, 8_0);
 
-	class Type : public ns::Object<MTLType*>
+	class MTLPP_EXPORT Type : public ns::Object<MTLType*>
 	{
 	public:
 		Type();
-		Type(MTLType* handle) : ns::Object<MTLType*>(handle) { }
+		Type(ns::Ownership const retain) : ns::Object<MTLType*>(retain) {}
+		Type(MTLType* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLType*>(handle, retain) { }
 		
 		DataType   GetDataType() const;
 	}
 	MTLPP_AVAILABLE(10_13, 11_0);
 	
-	class TextureReferenceType : public ns::Object<MTLTextureReferenceType*>
+	class MTLPP_EXPORT TextureReferenceType : public ns::Object<MTLTextureReferenceType*>
 	{
 	public:
 		TextureReferenceType();
-		TextureReferenceType(MTLTextureReferenceType* handle) : ns::Object<MTLTextureReferenceType*>(handle) { }
+		TextureReferenceType(ns::Ownership const retain) : ns::Object<MTLTextureReferenceType*>(retain) {}
+		TextureReferenceType(MTLTextureReferenceType* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLTextureReferenceType*>(handle, retain) { }
 		
 		DataType   GetTextureDataType() const;
 		TextureType   GetTextureType() const;
@@ -160,11 +162,12 @@ namespace mtlpp
 	}
 	MTLPP_AVAILABLE(10_13, 11_0);
 	
-	class PointerType : public ns::Object<MTLPointerType*>
+	class MTLPP_EXPORT PointerType : public ns::Object<MTLPointerType*>
 	{
 	public:
 		PointerType();
-		PointerType(MTLPointerType* handle) : ns::Object<MTLPointerType*>(handle) { }
+		PointerType(ns::Ownership const retain) : ns::Object<MTLPointerType*>(retain) {}
+		PointerType(MTLPointerType* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLPointerType*>(handle, retain) { }
 		
 		DataType   GetElementType() const;
 		ArgumentAccess GetAccess() const;
@@ -172,66 +175,70 @@ namespace mtlpp
 		NSUInteger GetDataSize() const;
 		bool GetElementIsArgumentBuffer() const;
 		
-		StructType GetElementStructType();
-		ArrayType GetElementArrayType();
+		ns::AutoReleased<StructType> GetElementStructType();
+		ns::AutoReleased<ArrayType> GetElementArrayType();
 	}
 	MTLPP_AVAILABLE(10_13, 11_0);
 	
-    class StructMember : public ns::Object<MTLStructMember*>
+    class MTLPP_EXPORT StructMember : public ns::Object<MTLStructMember*>
     {
     public:
         StructMember();
-        StructMember(MTLStructMember* handle) : ns::Object<MTLStructMember*>(handle) { }
+		StructMember(ns::Ownership const retain) : ns::Object<MTLStructMember*>(retain) {}
+        StructMember(MTLStructMember* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLStructMember*>(handle, retain) { }
 
-        ns::String GetName() const;
+        ns::AutoReleased<ns::String> GetName() const;
         NSUInteger   GetOffset() const;
         DataType   GetDataType() const;
 
-        StructType GetStructType() const;
-        ArrayType  GetArrayType() const;
+        ns::AutoReleased<StructType> GetStructType() const;
+        ns::AutoReleased<ArrayType>  GetArrayType() const;
 		
-		TextureReferenceType GetTextureReferenceType() const MTLPP_AVAILABLE(10_13, 11_0);
-		PointerType GetPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
+		ns::AutoReleased<TextureReferenceType> GetTextureReferenceType() const MTLPP_AVAILABLE(10_13, 11_0);
+		ns::AutoReleased<PointerType> GetPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
 		uint64_t GetArgumentIndex() const MTLPP_AVAILABLE(10_13, 11_0);
     }
     MTLPP_AVAILABLE(10_11, 8_0);
 
-    class StructType : public ns::Object<MTLStructType*>
+    class MTLPP_EXPORT StructType : public ns::Object<MTLStructType*>
     {
     public:
         StructType();
-        StructType(MTLStructType* handle) : ns::Object<MTLStructType*>(handle) { }
+		StructType(ns::Ownership const retain) : ns::Object<MTLStructType*>(retain) {}
+        StructType(MTLStructType* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLStructType*>(handle, retain) { }
 
         const ns::Array<StructMember> GetMembers() const;
-        StructMember                  GetMember(const ns::String& name) const;
+        ns::AutoReleased<StructMember> GetMember(const ns::String& name) const;
     }
     MTLPP_AVAILABLE(10_11, 8_0);
 
-    class ArrayType : public ns::Object<MTLArrayType*>
+    class MTLPP_EXPORT ArrayType : public ns::Object<MTLArrayType*>
     {
     public:
         ArrayType();
-        ArrayType(MTLArrayType* handle) : ns::Object<MTLArrayType*>(handle) { }
+		ArrayType(ns::Ownership const retain) : ns::Object<MTLArrayType*>(retain) {}
+        ArrayType(MTLArrayType* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLArrayType*>(handle, retain) { }
 
         NSUInteger   GetArrayLength() const;
         DataType   GetElementType() const;
         NSUInteger   GetStride() const;
-        StructType GetElementStructType() const;
-        ArrayType  GetElementArrayType() const;
+        ns::AutoReleased<StructType> GetElementStructType() const;
+        ns::AutoReleased<ArrayType>  GetElementArrayType() const;
 		
 		uint64_t GetArgumentIndexStride() const MTLPP_AVAILABLE(10_13, 11_0);
-		TextureReferenceType GetElementTextureReferenceType() const MTLPP_AVAILABLE(10_13, 11_0);
-		PointerType GetElementPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
+		ns::AutoReleased<TextureReferenceType> GetElementTextureReferenceType() const MTLPP_AVAILABLE(10_13, 11_0);
+		ns::AutoReleased<PointerType> GetElementPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
     }
     MTLPP_AVAILABLE(10_11, 8_0);
 
-    class Argument : public ns::Object<MTLArgument*>
+    class MTLPP_EXPORT Argument : public ns::Object<MTLArgument*>
     {
     public:
         Argument();
-        Argument(MTLArgument* handle) : ns::Object<MTLArgument*>(handle) { }
+		Argument(ns::Ownership const retain) : ns::Object<MTLArgument*>(retain) {}
+        Argument(MTLArgument* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLArgument*>(handle, retain) { }
 
-        ns::String     GetName() const;
+        ns::AutoReleased<ns::String>     GetName() const;
         ArgumentType   GetType() const;
         ArgumentAccess GetAccess() const;
         NSUInteger       GetIndex() const;
@@ -241,8 +248,8 @@ namespace mtlpp
         NSUInteger       GetBufferAlignment() const;
         NSUInteger       GetBufferDataSize() const;
         DataType       GetBufferDataType() const;
-        StructType     GetBufferStructType() const;
-		PointerType	   GetBufferPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
+        ns::AutoReleased<StructType>     GetBufferStructType() const;
+		ns::AutoReleased<PointerType>	   GetBufferPointerType() const MTLPP_AVAILABLE(10_13, 11_0);
 
         NSUInteger       GetThreadgroupMemoryAlignment() const;
         NSUInteger       GetThreadgroupMemoryDataSize() const;

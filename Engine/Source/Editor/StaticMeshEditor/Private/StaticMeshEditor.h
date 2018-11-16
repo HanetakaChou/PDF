@@ -21,6 +21,7 @@ class IDecomposeMeshToHullsAsync;
 #endif
 
 class FStaticMeshDetails;
+class FEditorViewportClient;
 class IDetailsView;
 class SAdvancedPreviewDetailsTab;
 class SConvexDecomposition;
@@ -30,6 +31,7 @@ class UStaticMesh;
 class UStaticMeshComponent;
 class UStaticMeshSocket;
 struct FPropertyChangedEvent;
+struct FTabSpawnerEntry;
 
 /**
  * StaticMesh Editor class
@@ -42,6 +44,7 @@ public:
 		, MinPrimSize(0.5f)
 		, OverlapNudge(10.0f)
 		, CurrentViewedUVChannel(0)
+		, SecondaryToolbarEntry(nullptr)
 	{}
 
 	~FStaticMeshEditor();
@@ -113,11 +116,18 @@ public:
 	virtual int32 GetCurrentLODLevel() override;
 	virtual int32 GetCurrentLODIndex() override;
 
+	virtual int32 GetCustomData(const int32 Key) const override;
+	virtual void SetCustomData(const int32 Key, const int32 CustomData) override;
+
 	virtual void RefreshTool() override;
 	virtual void RefreshViewport() override;
 	virtual void DoDecomp(uint32 InHullCount, int32 InMaxHullVerts, uint32 InHullPrecision) override;
 
 	virtual TSet< int32 >& GetSelectedEdges() override;
+
+	virtual FEditorViewportClient& GetViewportClient() override;
+
+	virtual void SetSecondaryToolbarDisplayName(FText DisplayName) override;
 	// End of IStaticMeshEditor
 
 	/** Extends the toolbar menu to include static mesh editor options */
@@ -161,9 +171,6 @@ public:
 		}
 	}
 
-	class FStaticMeshEditorViewportClient& GetViewportClient();
-	const class FStaticMeshEditorViewportClient& GetViewportClient() const;
-
 	/** For asynchronous convex decomposition support, this class is tickable in the editor to be able to confirm
 	that the process is completed */
 	virtual bool IsTickableInEditor() const final
@@ -192,6 +199,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_SocketManager(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Collision(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PreviewSceneSettings(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_SecondaryToolbar(const FSpawnTabArgs& Args);
 
 private:
 	/** Binds commands associated with the Static Mesh Editor. */
@@ -210,6 +218,12 @@ private:
 
 	/** A general callback for the combo boxes in the Static Mesh Editor to force a viewport refresh when a selection changes. */
 	void ComboBoxSelectionChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo);
+
+	/* Callback to reimport the base mesh*/
+	void HandleReimportMesh();
+	
+	/* Callback to reimport the base mesh and also all custom LODs*/
+	void HandleReimportAllMesh();
 
 	/**
 	 *	Sets the editor's current mesh and refreshes various settings to correspond with the new data.
@@ -327,6 +341,16 @@ private:
 
 	ECheckBoxState GetUVChannelCheckState(int32 TestUVChannel) const;
 
+	/** Callbacks for UV edition */
+	bool CanRemoveUVChannel();
+	void RemoveCurrentUVChannel();
+
+	/** Adds or removes extenders to the secondary toolbar */
+	void AddSecondaryToolbarExtender(TSharedPtr<FExtender> Extender);
+	void RemoveSecondaryToolbarExtender(TSharedPtr<FExtender> Extender);
+
+	void GenerateSecondaryToolbar();
+
 private:
 	/** List of open tool panels; used to ensure only one exists at any one time */
 	TMap< FName, TWeakPtr<class SDockableTab> > SpawnedToolPanels;
@@ -359,7 +383,7 @@ private:
 	TArray<int32> NumUVChannels;
 
 	/** Delegates called after an undo operation for child widgets to refresh */
-	FOnPostUndoMulticaster OnPostUndo;	
+	FOnPostUndoMulticaster OnPostUndo;
 
 	/** Information on the selected collision primitives */
 	TArray<FPrimData> SelectedPrims;
@@ -389,4 +413,23 @@ private:
 	static const FName SocketManagerTabId;
 	static const FName CollisionTabId;
 	static const FName PreviewSceneSettingsTabId;
+	static const FName SecondaryToolbarTabId;
+
+	/** Allow custom data for this editor */
+	TMap<int32, int32> CustomEditorData;
+
+	/** Static Mesh Editor Secondary Toolbar */
+	TSharedPtr<SWidget> SecondaryToolbar;
+
+	/** The widget that will house the secondary toolbar widget */
+	TSharedPtr<SBorder> SecondaryToolbarWidgetContent;
+
+	/** The extenders to populate the secondary toolbar with */
+	TArray<TSharedPtr<FExtender>> SecondaryToolbarExtenders;
+
+	/** Spawner entry for the secondary toolbar tab */
+	FTabSpawnerEntry* SecondaryToolbarEntry;
+
+	/** The text display name to override the default display name of the secondary toolbar*/
+	FText SecondaryToolbarDisplayName;
 };

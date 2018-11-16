@@ -4,14 +4,14 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
 #include "DesktopPlatformModule.h"
-#include "Regex.h"
-#include "FileHelper.h"
-#include "JsonReader.h"
-#include "JsonObject.h"
-#include "JsonSerializer.h"
+#include "Internationalization/Regex.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/JsonReader.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
 
 #if PLATFORM_WINDOWS
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "CLionSourceCodeAccessor"
@@ -47,12 +47,18 @@ bool FCLionSourceCodeAccessor::CanAccessSourceCode() const
 
 bool FCLionSourceCodeAccessor::DoesSolutionExist() const
 {
-	const FString Path = FPaths::Combine(*FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), TEXT("CMakeLists.txt"));
-	if (!FPaths::FileExists(Path))
+	FString Path = FPaths::Combine(*FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), TEXT("CMakeLists.txt"));
+	if (FPaths::FileExists(Path))
 	{
-		return false;
+		return true;
 	}
-	return true;
+	// Check for this project being included as part of the engine one
+	Path = FPaths::Combine(*FPaths::ConvertRelativePathToFull(FPaths::RootDir()), TEXT("CMakeLists.txt"));
+	if (FPaths::FileExists(Path))
+	{
+		return true;
+	}
+	return false;
 }
 
 FText FCLionSourceCodeAccessor::GetDescriptionText() const
@@ -111,7 +117,21 @@ bool FCLionSourceCodeAccessor::OpenSolutionAtPath(const FString& InSolutionPath)
 		return false;
 	}
 
-	return FPlatformProcess::CreateProc(*ExecutablePath, *InSolutionPath, true, true, false, nullptr, 0, nullptr, nullptr).IsValid();
+	FString CorrectSolutionPath = InSolutionPath;
+	if (InSolutionPath.EndsWith(TEXT("UE4")))
+	{
+		CorrectSolutionPath = CorrectSolutionPath.Left(CorrectSolutionPath.Len() - 3);
+	}
+	// UE4 passes the project folder and name, so strip the name off
+	int32 LastPathIndex = CorrectSolutionPath.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+	if (LastPathIndex > -1)
+	{
+		CorrectSolutionPath = CorrectSolutionPath.Left(LastPathIndex + 1);
+	}
+	// Make sure the path is wrapped in "" properly
+	CorrectSolutionPath = FString::Printf(TEXT("\"%sCMakeLists.txt\""), *CorrectSolutionPath);
+
+	return FPlatformProcess::CreateProc(*ExecutablePath, *CorrectSolutionPath, true, true, false, nullptr, 0, nullptr, nullptr).IsValid();
 }
 
 bool FCLionSourceCodeAccessor::OpenSourceFiles(const TArray<FString>& AbsoluteSourcePaths)

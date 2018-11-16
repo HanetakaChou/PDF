@@ -50,9 +50,11 @@ ASceneCapture::ASceneCapture(const FObjectInitializer& ObjectInitializer)
 ASceneCapture2D::ASceneCapture2D(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+#if WITH_EDITOR
 	DrawFrustum = CreateDefaultSubobject<UDrawFrustumComponent>(TEXT("DrawFrust0"));
-	DrawFrustum->bIsEditorOnly = true;
+	DrawFrustum->SetIsVisualizationComponent(true);
 	DrawFrustum->SetupAttachment(GetMeshComp());
+#endif
 
 	CaptureComponent2D = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("NewSceneCaptureComponent2D"));
 	CaptureComponent2D->SetupAttachment(GetMeshComp());
@@ -63,6 +65,7 @@ void ASceneCapture2D::OnInterpToggle(bool bEnable)
 	CaptureComponent2D->SetVisibility(bEnable);
 }
 
+#if WITH_EDITOR
 void ASceneCapture2D::UpdateDrawFrustum()
 {
 	if(DrawFrustum && CaptureComponent2D)
@@ -83,7 +86,6 @@ void ASceneCapture2D::PostActorCreated()
 	Super::PostActorCreated();
 
 	// no need load the editor mesh when there is no editor
-#if WITH_EDITOR
 	if(GetMeshComp())
 	{
 		if (!IsRunningCommandlet())
@@ -95,19 +97,21 @@ void ASceneCapture2D::PostActorCreated()
 			}
 		}
 	}
-#endif
 
 	// Sync component with CameraActor frustum settings.
 	UpdateDrawFrustum();
 }
+#endif
 // -----------------------------------------------
 
 ASceneCaptureCube::ASceneCaptureCube(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+#if WITH_EDITOR
 	DrawFrustum = CreateDefaultSubobject<UDrawFrustumComponent>(TEXT("DrawFrust0"));
-	DrawFrustum->bIsEditorOnly = true;
+	DrawFrustum->SetIsVisualizationComponent(true);
 	DrawFrustum->SetupAttachment(GetMeshComp());
+#endif
 
 	CaptureComponentCube = CreateDefaultSubobject<USceneCaptureComponentCube>(TEXT("NewSceneCaptureComponentCube"));
 	CaptureComponentCube->SetupAttachment(GetMeshComp());
@@ -118,6 +122,7 @@ void ASceneCaptureCube::OnInterpToggle(bool bEnable)
 	CaptureComponentCube->SetVisibility(bEnable);
 }
 
+#if WITH_EDITOR
 void ASceneCaptureCube::UpdateDrawFrustum()
 {
 	if(DrawFrustum && CaptureComponentCube)
@@ -137,7 +142,6 @@ void ASceneCaptureCube::PostActorCreated()
 	Super::PostActorCreated();
 
 	// no need load the editor mesh when there is no editor
-#if WITH_EDITOR
 	if(GetMeshComp())
 	{
 		if (!IsRunningCommandlet())
@@ -149,12 +153,10 @@ void ASceneCaptureCube::PostActorCreated()
 			}
 		}
 	}
-#endif
 
 	// Sync component with CameraActor frustum settings.
 	UpdateDrawFrustum();
 }
-#if WITH_EDITOR
 
 void ASceneCaptureCube::PostEditMove(bool bFinished)
 {
@@ -216,7 +218,8 @@ void USceneCaptureComponent::HideComponent(UPrimitiveComponent* InComponent)
 {
 	if (InComponent)
 	{
-		HiddenComponents.AddUnique(InComponent);
+		TWeakObjectPtr<UPrimitiveComponent> WeakComponent(InComponent);
+		HiddenComponents.AddUnique(WeakComponent);
 	}
 }
 
@@ -224,11 +227,13 @@ void USceneCaptureComponent::HideActorComponents(AActor* InActor)
 {
 	if (InActor)
 	{
-		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-		InActor->GetComponents(PrimitiveComponents);
-		for (int32 ComponentIndex = 0, NumComponents = PrimitiveComponents.Num(); ComponentIndex < NumComponents; ++ComponentIndex)
+		for (UActorComponent* Component : InActor->GetComponents())
 		{
-			HiddenComponents.AddUnique(PrimitiveComponents[ComponentIndex]);
+			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
+			{
+				TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
+				HiddenComponents.AddUnique(WeakComponent);
+			}
 		}
 	}
 }
@@ -250,29 +255,33 @@ void USceneCaptureComponent::ShowOnlyActorComponents(AActor* InActor)
 		// Backward compatibility - set PrimitiveRenderMode to PRM_UseShowOnlyList if BP / game code tries to add a ShowOnlyComponent
 		PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
 
-		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-		InActor->GetComponents(PrimitiveComponents);
-		for (int32 ComponentIndex = 0, NumComponents = PrimitiveComponents.Num(); ComponentIndex < NumComponents; ++ComponentIndex)
-		{
-			ShowOnlyComponents.Add(PrimitiveComponents[ComponentIndex]);
+		for (UActorComponent* Component : InActor->GetComponents())
+			{
+			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
+			{
+				ShowOnlyComponents.Add(PrimComp);
+			}
 		}
 	}
 }
 
 void USceneCaptureComponent::RemoveShowOnlyComponent(UPrimitiveComponent* InComponent)
 {
-	ShowOnlyComponents.Remove(InComponent);
+	TWeakObjectPtr<UPrimitiveComponent> WeakComponent(InComponent);
+	ShowOnlyComponents.Remove(WeakComponent);
 }
 
 void USceneCaptureComponent::RemoveShowOnlyActorComponents(AActor* InActor)
 {
 	if (InActor)
 	{
-		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-		InActor->GetComponents(PrimitiveComponents);
-		for (int32 ComponentIndex = 0, NumComponents = PrimitiveComponents.Num(); ComponentIndex < NumComponents; ++ComponentIndex)
+		for (UActorComponent* Component : InActor->GetComponents())
 		{
-			ShowOnlyComponents.Remove(PrimitiveComponents[ComponentIndex]);
+			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
+			{
+				TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
+				ShowOnlyComponents.Remove(WeakComponent);
+			}
 		}
 	}
 }
@@ -294,9 +303,9 @@ void USceneCaptureComponent::SetCaptureSortPriority(int32 NewCaptureSortPriority
 
 FSceneViewStateInterface* USceneCaptureComponent::GetViewState(int32 ViewIndex)
 {
-	if (ViewIndex >= ViewStates.Num())
+	while (ViewIndex >= ViewStates.Num())
 	{
-		ViewStates.AddZeroed(ViewIndex - ViewStates.Num() + 1);
+		ViewStates.Add(new FSceneViewStateReference());
 	}
 
 	FSceneViewStateInterface* ViewStateInterface = ViewStates[ViewIndex].GetReference();
@@ -442,6 +451,7 @@ USceneCaptureComponent2D::USceneCaptureComponent2D(const FObjectInitializer& Obj
 	bAutoActivate = true;
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_DuringPhysics;
+	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
 	// Tick in the editor so that bCaptureEveryFrame preview works
 	bTickInEditor = true;
 	// previous behavior was to capture from raw scene color 
@@ -477,7 +487,7 @@ void USceneCaptureComponent2D::OnRegister()
 
 void USceneCaptureComponent2D::SendRenderTransform_Concurrent()
 {	
-	if (bCaptureOnMovement)
+	if (bCaptureOnMovement && !bCaptureEveryFrame)
 	{
 		CaptureSceneDeferred();
 	}
@@ -515,7 +525,7 @@ void USceneCaptureComponent2D::CaptureScene()
 	{
 		// We must push any deferred render state recreations before causing any rendering to happen, to make sure that deleted resource references are updated
 		World->SendAllEndOfFrameUpdates();
-		World->Scene->UpdateSceneCaptureContents(this);
+		UpdateSceneCaptureContents(World->Scene);
 	}	
 
 	if (bCaptureEveryFrame)
@@ -590,7 +600,9 @@ void USceneCaptureComponent2D::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
+#if WITH_EDITORONLY_DATA
 		PostProcessSettings.OnAfterLoad();
+#endif
 
 		if (Ar.CustomVer(FRenderingObjectVersion::GUID) < FRenderingObjectVersion::MotionBlurAndTAASupportInSceneCapture2d)
 		{
@@ -719,6 +731,7 @@ UPlanarReflectionComponent::UPlanarReflectionComponent(const FObjectInitializer&
 	bCaptureEveryFrame = true;
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_DuringPhysics;
+	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
 	// Tick in the editor so that bCaptureEveryFrame preview works
 	bTickInEditor = true;
 	RenderTarget = NULL;
@@ -766,7 +779,7 @@ void UPlanarReflectionComponent::CreateRenderState_Concurrent()
 
 	if (ShouldComponentAddToScene() && ShouldRender())
 	{
-		SceneProxy = new FPlanarReflectionSceneProxy(this, RenderTarget);
+		SceneProxy = new FPlanarReflectionSceneProxy(this);
 		GetWorld()->Scene->AddPlanarReflection(this);
 	}
 }
@@ -862,7 +875,9 @@ USceneCaptureComponentCube::USceneCaptureComponentCube(const FObjectInitializer&
 	bAutoActivate = true;
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_DuringPhysics;
+	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
 	bTickInEditor = true;
+	IPD = 6.2f;
 }
 
 void USceneCaptureComponentCube::OnRegister()
@@ -877,7 +892,7 @@ void USceneCaptureComponentCube::OnRegister()
 
 void USceneCaptureComponentCube::SendRenderTransform_Concurrent()
 {	
-	if (bCaptureOnMovement)
+	if (bCaptureOnMovement && !bCaptureEveryFrame)
 	{
 		CaptureSceneDeferred();
 	}
@@ -915,7 +930,7 @@ void USceneCaptureComponentCube::CaptureScene()
 	{
 		// We must push any deferred render state recreations before causing any rendering to happen, to make sure that deleted resource references are updated
 		World->SendAllEndOfFrameUpdates();
-		World->Scene->UpdateSceneCaptureContents(this);
+		UpdateSceneCaptureContents(World->Scene);
 	}	
 
 	if (bCaptureEveryFrame)

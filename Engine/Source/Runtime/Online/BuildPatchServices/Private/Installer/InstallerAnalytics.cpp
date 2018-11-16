@@ -4,7 +4,9 @@
 #include "HttpServiceTracker.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
+#include "Misc/Guid.h"
 #include "Misc/ScopeLock.h"
+#include "Stats/Stats.h"
 
 #define ERROR_EVENT_SEND_LIMIT 20
 
@@ -45,6 +47,7 @@ namespace BuildPatchServices
 		virtual void RecordConstructionError(const FString& Filename, int32 LastError, const FString& ErrorString) override;
 		virtual void RecordPrereqInstallationError(const FString& AppName, const FString& AppVersion, const FString& Filename, const FString& CommandLine, int32 ErrorCode, const FString& ErrorString) override;
 		virtual void TrackRequest(const FHttpRequestPtr& Request) override;
+		virtual void Flush() override;
 		// IInstallerAnalytics interface end.
 
 	private:
@@ -150,14 +153,12 @@ namespace BuildPatchServices
 		}
 	}
 
-	void FInstallerAnalytics::QueueAnalyticsEvent(FString EventName, TArray<FAnalyticsEventAttribute> Attributes)
+	void FInstallerAnalytics::Flush()
 	{
-		FScopeLock ScopeLock(&AnalyticsEventQueueCS);
-		AnalyticsEventQueue.Emplace(MoveTemp(EventName), MoveTemp(Attributes));
-	}
+		check(IsInGameThread());
 
-	bool FInstallerAnalytics::Tick(float Delta)
-	{
+        QUICK_SCOPE_CYCLE_COUNTER(STAT_FInstallerAnalytics_Tick);
+
 		if (Analytics != nullptr)
 		{
 			// Process the Analytics Event queue
@@ -168,6 +169,17 @@ namespace BuildPatchServices
 			}
 			AnalyticsEventQueue.Reset();
 		}
+	}
+
+	void FInstallerAnalytics::QueueAnalyticsEvent(FString EventName, TArray<FAnalyticsEventAttribute> Attributes)
+	{
+		FScopeLock ScopeLock(&AnalyticsEventQueueCS);
+		AnalyticsEventQueue.Emplace(MoveTemp(EventName), MoveTemp(Attributes));
+	}
+
+	bool FInstallerAnalytics::Tick(float Delta)
+	{
+		Flush();
 		return true;
 	}
 

@@ -32,6 +32,7 @@ void SVirtualKeyboardEntry::Construct( const FArguments& InArgs )
 	OnTextCommitted = InArgs._OnTextCommitted;
 	MinDesiredWidth = InArgs._MinDesiredWidth;
 	KeyboardType = InArgs._KeyboardType;
+	VirtualKeyboardOptions = InArgs._VirtualKeyboardOptions;
 }
 
 void SVirtualKeyboardEntry::SetText(const TAttribute< FText >& InNewText)
@@ -67,6 +68,11 @@ void SVirtualKeyboardEntry::SetTextFromVirtualKeyboard(const FText& InNewText, E
 		// fired on the game thread in Tick.
 		bNeedsUpdate = true;
 	}
+}
+
+void SVirtualKeyboardEntry::SetSelectionFromVirtualKeyboard(int InSelStart, int InSelEnd)
+{
+	//Nothing to do for widgets without a cursor
 }
 
 /**

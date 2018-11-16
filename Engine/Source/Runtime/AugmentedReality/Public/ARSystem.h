@@ -10,8 +10,12 @@
 class UARPin;
 class UARTrackedGeometry;
 class UARSessionConfig;
+class UARTextureCameraImage;
+class UARTextureCameraDepth;
 struct FARTraceResult;
 
+DECLARE_MULTICAST_DELEGATE(FARSystemOnSessionStarted);
+DECLARE_MULTICAST_DELEGATE_OneParam(FARSystemOnAlignmentTransformUpdated, const FTransform&);
 
 /**
  * Implement IARSystemSupport for any platform that wants to be an Unreal Augmented Reality System. e.g. AppleARKit, GoogleARCore.
@@ -109,6 +113,30 @@ public:
 	 * The component in question will continue to track with the world, but will not get updates specific to a TrackedGeometry.
 	 */
 	virtual void OnRemovePin(UARPin* PinToRemove) = 0;
+
+	/** @return the last camera image the AR system has seen */
+	virtual UARTextureCameraImage* OnGetCameraImage() = 0;
+
+	/** @return the last camera depth information the AR system has seen */
+	virtual UARTextureCameraDepth* OnGetCameraDepth() = 0;
+
+	/** Tells the ARSystem to generate a capture probe at the specified location if supported */
+	virtual bool OnAddManualEnvironmentCaptureProbe(FVector Location, FVector Extent) = 0;
+	
+	/** Generates a UARCandidateObject from the point cloud data within the location and its extent using an async task */
+	virtual TSharedPtr<FARGetCandidateObjectAsyncTask, ESPMode::ThreadSafe> OnGetCandidateObject(FVector Location, FVector Extent) const = 0;
+
+	/** Saves the AR world to a byte array using an async task */
+	virtual TSharedPtr<FARSaveWorldAsyncTask, ESPMode::ThreadSafe> OnSaveWorld() const = 0;
+	
+	/** @return the current mapping status */
+	virtual EARWorldMappingState OnGetWorldMappingStatus() const = 0;
+	
+	/** @return The list of supported video formats for this device and session type */
+	virtual TArray<FARVideoFormat> OnGetSupportedVideoFormats(EARSessionType SessionType) const = 0;
+	
+	/** @return the current point cloud data for the ar scene */
+	virtual TArray<FVector> OnGetPointCloud() const = 0;
 	
 public:
 	virtual ~IARSystemSupport(){}
@@ -165,6 +193,20 @@ public:
 	TArray<UARTrackedGeometry*> GetAllTrackedGeometries() const;
 	/** \see UARBlueprintLibrary::GetAllPins() */
 	TArray<UARPin*> GetAllPins() const;
+	/** \see UARBlueprintLibrary::GetCameraImage() */
+	UARTextureCameraImage* GetCameraImage();
+	/** \see UARBlueprintLibrary::GetCameraDepth() */
+	UARTextureCameraDepth* GetCameraDepth();
+	/**\see UARBlueprintLibrary::IsEnvironmentCaptureSupported() */
+	bool IsEnvironmentCaptureSupported() const;
+	/**\see UARBlueprintLibrary::AddEnvironmentCaptureProbe() */
+	bool AddManualEnvironmentCaptureProbe(FVector Location, FVector Extent);
+	/** Creates an async task that will perform the work in the background */
+	TSharedPtr<FARGetCandidateObjectAsyncTask, ESPMode::ThreadSafe> GetCandidateObject(FVector Location, FVector Extent) const;
+	/** Creates an async task that will perform the work in the background */
+	TSharedPtr<FARSaveWorldAsyncTask, ESPMode::ThreadSafe> SaveWorld() const;
+	/** @return the current mapping status */
+	EARWorldMappingState GetWorldMappingStatus() const;
 
 	/** \see UARBlueprintLibrary::GetCurrentLightEstimate() */
 	UARLightEstimate* GetCurrentLightEstimate() const;
@@ -175,11 +217,23 @@ public:
 	UARPin* PinComponent( USceneComponent* ComponentToPin, const FARTraceResult& HitResult, const FName DebugName = NAME_None );
 	/** \see UARBlueprintLibrary::RemovePin() */
 	void RemovePin( UARPin* PinToRemove );
+
+	/** \see UARBlueprintLibrary::GetSupportedVideoFormats() */
+	TArray<FARVideoFormat> GetSupportedVideoFormats(EARSessionType SessionType = EARSessionType::World) const;
+	
+	/** \see UARBlueprintLibrary::GetPointCloud() */
+	TArray<FVector> GetPointCloud() const;
+
+	virtual void* GetARSessionRawPointer() = 0;
+	virtual void* GetGameThreadARFrameRawPointer() = 0;
 	
 public:
 	const FTransform& GetAlignmentTransform() const;
 	const UARSessionConfig& GetSessionConfig() const;
 	UARSessionConfig& AccessSessionConfig();
+
+	FARSystemOnSessionStarted OnARSessionStarted;
+	FARSystemOnAlignmentTransformUpdated OnAlignmentTransformUpdated;
 
 protected:
 	void SetAlignmentTransform_Internal(const FTransform& NewAlignmentTransform);

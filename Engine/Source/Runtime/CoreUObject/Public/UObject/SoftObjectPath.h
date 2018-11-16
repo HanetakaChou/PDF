@@ -24,6 +24,13 @@ struct COREUOBJECT_API FSoftObjectPath
 	{
 	}
 
+	/** Construct from a moveable soft object path */
+	FSoftObjectPath(FSoftObjectPath&& Other)
+		: AssetPathName(Other.AssetPathName)
+		, SubPathString(MoveTemp(Other.SubPathString))
+	{
+	}
+
 	/** Construct from a path string */
 	FSoftObjectPath(FString PathString)
 	{
@@ -33,7 +40,7 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Construct from an asset FName and subobject pair */
 	FSoftObjectPath(FName InAssetPathName, FString InSubPathString)
 		: AssetPathName(InAssetPathName)
-		, SubPathString(InSubPathString)
+		, SubPathString(MoveTemp(InSubPathString))
 	{}
 	
 	/** Construct from an existing object in memory */
@@ -62,7 +69,7 @@ struct COREUOBJECT_API FSoftObjectPath
 	}
 
 	/** Returns the sub path, which is often empty */
-	FORCEINLINE FString GetSubPathString() const
+	FORCEINLINE const FString& GetSubPathString() const
 	{
 		return SubPathString;
 	}
@@ -133,27 +140,34 @@ struct COREUOBJECT_API FSoftObjectPath
 
 	/** Struct overrides */
 	bool Serialize(FArchive& Ar);
+	bool Serialize(FStructuredArchive::FSlot Slot);
 	bool operator==(FSoftObjectPath const& Other) const;
 	bool operator!=(FSoftObjectPath const& Other) const
 	{
 		return !(*this == Other);
 	}
-	FSoftObjectPath& operator=(FSoftObjectPath const& Other);
+	FSoftObjectPath& operator=(FSoftObjectPath Other);
 	bool ExportTextItem(FString& ValueStr, FSoftObjectPath const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const;
 	bool ImportTextItem( const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText );
-	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot);
 
 	/** Serializes the internal path and also handles save/PIE fixups. Call this from the archiver overrides */
 	void SerializePath(FArchive& Ar);
 
 	/** Fixes up string asset reference for saving, call if saving with a method that skips SerializePath. This can modify the path, it will return true if it was modified */
-	bool PreSavePath();
+	bool PreSavePath(bool* bReportSoftObjectPathRedirects = nullptr);
 
 	/** Handles when a string asset reference has been loaded, call if loading with a method that skips SerializePath. This does not modify path but might call callbacks */
 	void PostLoadPath() const;
 
-	/** Fixes up this SoftObjectPath to add or remove the PIE prefix depending on what is currently active */
-	void FixupForPIE();
+	/** Fixes up this SoftObjectPath to add the PIE prefix depending on what is currently active, returns true if it was modified. The overload that takes an explicit PIE instance is preferred, if it's available. */
+	bool FixupForPIE();
+
+	/** Fixes up this SoftObjectPath to add the PIE prefix for the given PIEInstance index, returns true if it was modified */
+	bool FixupForPIE(int32 PIEInstance);
+
+	/** Fixes soft object path for CoreRedirects to handle renamed native objects, returns true if it was modified */
+	bool FixupCoreRedirects();
 
 	FORCEINLINE friend uint32 GetTypeHash(FSoftObjectPath const& This)
 	{
@@ -194,7 +208,7 @@ private:
 	/** Package names currently being duplicated, needed by FixupForPIE */
 	static TSet<FName> PIEPackageNames;
 
-	friend COREUOBJECT_API UScriptStruct* Z_Construct_UScriptStruct_FSoftObjectPath();
+	friend struct Z_Construct_UScriptStruct_FSoftObjectPath_Statics;
 };
 
 /**
@@ -244,7 +258,7 @@ struct COREUOBJECT_API FSoftClassPath : public FSoftObjectPath
 	 */
 	UClass* ResolveClass() const;
 
-	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
 
 	static FSoftClassPath GetOrCreateIDForClass(const UClass *InClass);
 
@@ -311,8 +325,9 @@ public:
 	 * @param OutPackageName Package that this string asset belongs to
 	 * @param OutPropertyName Property that this string asset reference belongs to
 	 * @param OutCollectType Type of collecting that should be done
+	 * @param Archive The FArchive that is serializing this path if known. If null it will check FUObjectThreadContext
 	 */
-	bool GetSerializationOptions(FName& OutPackageName, FName& OutPropertyName, ESoftObjectPathCollectType& OutCollectType, ESoftObjectPathSerializeType& OutSerializeType) const;
+	bool GetSerializationOptions(FName& OutPackageName, FName& OutPropertyName, ESoftObjectPathCollectType& OutCollectType, ESoftObjectPathSerializeType& OutSerializeType, FArchive* Archive = nullptr) const;
 };
 
 /** Helper class to set and restore serialization options for string asset references */

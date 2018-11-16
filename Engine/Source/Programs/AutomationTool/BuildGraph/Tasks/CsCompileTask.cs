@@ -35,6 +35,12 @@ namespace AutomationTool.Tasks
 		public string Platform;
 
 		/// <summary>
+		/// The target to build
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public string Target;
+
+		/// <summary>
 		/// Additional options to pass to the compiler
 		/// </summary>
 		[TaskParameter(Optional = true)]
@@ -103,7 +109,7 @@ namespace AutomationTool.Tasks
 			}
 
 			// Get the default properties
-			Dictionary<string, string> Properties = new Dictionary<string,string>(StringComparer.InvariantCultureIgnoreCase);
+			Dictionary<string, string> Properties = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
 			if(!String.IsNullOrEmpty(Parameters.Platform))
 			{
 				Properties["Platform"] = Parameters.Platform;
@@ -112,7 +118,7 @@ namespace AutomationTool.Tasks
 			{
 				Properties["Configuration"] = Parameters.Configuration;
 			}
-	
+
 			// Build the arguments and run the build
 			if(!Parameters.EnumerateOnly)
 			{
@@ -125,6 +131,10 @@ namespace AutomationTool.Tasks
 				{
 					Arguments.Add(Parameters.Arguments);
 				}
+				if(!String.IsNullOrEmpty(Parameters.Target))
+				{
+					Arguments.Add(String.Format("/target:{0}", CommandUtils.MakePathSafeToUseWithCommandLine(Parameters.Target)));
+				}
 				Arguments.Add("/verbosity:minimal");
 				Arguments.Add("/nologo");
 				foreach(FileReference ProjectFile in ProjectFiles)
@@ -136,7 +146,7 @@ namespace AutomationTool.Tasks
 			// Try to figure out the output files
 			HashSet<FileReference> ProjectBuildProducts;
 			HashSet<FileReference> ProjectReferences;
-			FindBuildProducts(ProjectFiles, Properties, out ProjectBuildProducts, out ProjectReferences);
+			FindBuildProductsAndReferences(ProjectFiles, Properties, out ProjectBuildProducts, out ProjectReferences);
 
 			// Apply the optional tag to the produced archive
 			foreach(string TagName in FindTagNamesFromList(Parameters.Tag))
@@ -144,9 +154,9 @@ namespace AutomationTool.Tasks
 				FindOrAddTagSet(TagNameToFileSet, TagName).UnionWith(ProjectBuildProducts);
 			}
 
+			// Apply the optional tag to any references
 			if (!String.IsNullOrEmpty(Parameters.TagReferences))
 			{
-				// Apply the optional tag to any references
 				foreach (string TagName in FindTagNamesFromList(Parameters.TagReferences))
 				{
 					FindOrAddTagSet(TagNameToFileSet, TagName).UnionWith(ProjectReferences);
@@ -155,6 +165,7 @@ namespace AutomationTool.Tasks
 
 			// Merge them into the standard set of build products
 			BuildProducts.UnionWith(ProjectBuildProducts);
+			BuildProducts.UnionWith(ProjectReferences);
 		}
 
 		/// <summary>
@@ -198,65 +209,41 @@ namespace AutomationTool.Tasks
 		/// <param name="InitialProperties">Mapping of property name to value</param>
 		/// <param name="OutBuildProducts">Receives a set of build products on success</param>
 		/// <param name="OutReferences">Receives a set of non-private references on success</param>
-		/// <returns>True if the build products were found, false otherwise.</returns>
-		static void FindBuildProducts(HashSet<FileReference> ProjectFiles, Dictionary<string, string> InitialProperties, out HashSet<FileReference> OutBuildProducts, out HashSet<FileReference> OutReferences)
+		static void FindBuildProductsAndReferences(HashSet<FileReference> ProjectFiles, Dictionary<string, string> InitialProperties, out HashSet<FileReference> OutBuildProducts, out HashSet<FileReference> OutReferences)
 		{
+			// Find all the build products and references
+			OutBuildProducts = new HashSet<FileReference>();
+			OutReferences = new HashSet<FileReference>();
+
 			// Read all the project information into a dictionary
-			Dictionary<FileReference, CsProjectInfo> FileToProjectInfo = new Dictionary<FileReference,CsProjectInfo>();
+			Dictionary<FileReference, CsProjectInfo> FileToProjectInfo = new Dictionary<FileReference, CsProjectInfo>();
 			foreach(FileReference ProjectFile in ProjectFiles)
 			{
+				// Read all the projects
 				ReadProjectsRecursively(ProjectFile, InitialProperties, FileToProjectInfo);
-			}
 
-			// Find all the build products and references
-			HashSet<FileReference> BuildProducts = new HashSet<FileReference>();
-			HashSet<FileReference> References = new HashSet<FileReference>();
-			foreach(KeyValuePair<FileReference, CsProjectInfo> Pair in FileToProjectInfo)
-			{
-				CsProjectInfo ProjectInfo = Pair.Value;
-
-				// Add the standard build products
-				DirectoryReference OutputDir = ProjectInfo.GetOutputDir(Pair.Key.Directory);
-				ProjectInfo.AddBuildProducts(OutputDir, BuildProducts);
-
-				// Add the referenced assemblies
-				foreach(KeyValuePair<FileReference, bool> Reference in ProjectInfo.References)
+				// Find all the outputs for each project
+				foreach(KeyValuePair<FileReference, CsProjectInfo> Pair in FileToProjectInfo)
 				{
-					FileReference OtherAssembly = Reference.Key;
-					if (Reference.Value)
-					{
-						// Add reference from the output dir
-						FileReference OutputFile = FileReference.Combine(OutputDir, OtherAssembly.GetFileName());
-						BuildProducts.Add(OutputFile);
+					CsProjectInfo ProjectInfo = Pair.Value;
 
-						FileReference OutputSymbolFile = OutputFile.ChangeExtension(".pdb");
-						if(FileReference.Exists(OutputSymbolFile))
-						{
-							BuildProducts.Add(OutputSymbolFile);
-						}
-					}
-					else
+					// Add all the build projects from this project
+					DirectoryReference OutputDir = ProjectInfo.GetOutputDir(Pair.Key.Directory);
+					ProjectInfo.FindBuildProducts(OutputDir, OutBuildProducts, FileToProjectInfo);
+
+					// Add any files which are only referenced
+					foreach (KeyValuePair<FileReference, bool> Reference in ProjectInfo.References)
 					{
-						// Add reference directly
-						References.Add(OtherAssembly);
-						FileReference SymbolFile = OtherAssembly.ChangeExtension(".pdb");
-						if(FileReference.Exists(SymbolFile))
+						if(!Reference.Value)
 						{
-							References.Add(SymbolFile);
+							CsProjectInfo.AddReferencedAssemblyAndSupportFiles(Reference.Key, OutReferences);
 						}
 					}
 				}
-
-				// Add build products from all the referenced projects. MSBuild only copy the directly referenced build products, not recursive references or other assemblies.
-				foreach(CsProjectInfo OtherProjectInfo in ProjectInfo.ProjectReferences.Where(x => x.Value).Select(x => FileToProjectInfo[x.Key]))
-				{
-					OtherProjectInfo.AddBuildProducts(OutputDir, BuildProducts);
-				}
 			}
 
-			// Update the output set
-			OutBuildProducts = BuildProducts;
-			OutReferences = References;
+			OutBuildProducts.RemoveWhere(x => !FileReference.Exists(x));
+			OutReferences.RemoveWhere(x => !FileReference.Exists(x));
 		}
 
 		/// <summary>

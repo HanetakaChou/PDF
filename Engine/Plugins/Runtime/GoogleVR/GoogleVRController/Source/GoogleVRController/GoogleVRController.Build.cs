@@ -10,14 +10,14 @@ namespace UnrealBuildTool.Rules
 		{
 			bFasterWithoutUnity = true;
 
-			string GoogleVRSDKDir = Target.UEThirdPartySourceDirectory + "GoogleVR/";
+//			string GoogleVRSDKDir = Target.UEThirdPartySourceDirectory + "GoogleVR/";
 			PrivateIncludePaths.AddRange(
 				new string[] {
 					"GoogleVRController/Private",
-					"GoogleVRController/Private/ArmModel",
+					"GoogleVRController/Private/ArmModel"
 					// ... add other private include paths required here ...
-					GoogleVRSDKDir + "include",
-					GoogleVRSDKDir + "include/vr/gvr/capi/include",
+//					GoogleVRSDKDir + "include",
+//					GoogleVRSDKDir + "include/vr/gvr/capi/include",
 				}
 				);
 
@@ -34,13 +34,19 @@ namespace UnrealBuildTool.Rules
 					"GoogleVRHMD",
 					"UMG",
 					"Slate",
-					"SlateCore"
+					"SlateCore",
 				}
 				);
 
 			if (Target.Platform == UnrealTargetPlatform.Android)
 			{
-				PrivateDependencyModuleNames.Add("Launch");
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"Launch",
+						"AndroidRuntimeSettings",
+					}
+					);
 			}
 
 			if (Target.bBuildEditor == true)

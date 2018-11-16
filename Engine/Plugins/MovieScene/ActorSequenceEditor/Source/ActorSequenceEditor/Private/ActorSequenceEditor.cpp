@@ -5,18 +5,20 @@
 #include "BlueprintEditorModule.h"
 #include "BlueprintEditorTabs.h"
 #include "ActorSequenceComponentCustomization.h"
+#include "MovieSceneSequenceEditor_ActorSequence.h"
 #include "ActorSequenceEditorStyle.h"
 #include "ActorSequenceEditorTabSummoner.h"
-#include "LayoutExtender.h"
+#include "Framework/Docking/LayoutExtender.h"
 #include "LevelEditor.h"
 #include "MovieSceneToolsProjectSettings.h"
 #include "PropertyEditorModule.h"
 #include "Styling/SlateStyle.h"
-#include "WorkflowTabManager.h"
+#include "WorkflowOrientedApp/WorkflowTabManager.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "ISettingsModule.h"
 #include "SequencerSettings.h"
+#include "ISequencerModule.h"
 
 
 #define LOCTEXT_NAMESPACE "ActorSequenceEditor"
@@ -120,6 +122,9 @@ public:
 		RegisterCustomizations();
 		RegisterSettings();
 		OnInitializeSequenceHandle = UActorSequence::OnInitializeSequence().AddStatic(FActorSequenceEditorModule::OnInitializeSequence);
+
+		ISequencerModule& SequencerModule = FModuleManager::Get().LoadModuleChecked<ISequencerModule>("Sequencer");
+		SequenceEditorHandle = SequencerModule.RegisterSequenceEditor(UActorSequence::StaticClass(), MakeUnique<FMovieSceneSequenceEditor_ActorSequence>());
 	}
 	
 	virtual void ShutdownModule() override
@@ -127,13 +132,25 @@ public:
 		UActorSequence::OnInitializeSequence().Remove(OnInitializeSequenceHandle);
 		UnregisterCustomizations();
 		UnregisterSettings();
+
+		ISequencerModule* SequencerModule = FModuleManager::Get().GetModulePtr<ISequencerModule>("Sequencer");
+		if (SequencerModule)
+		{
+			SequencerModule->UnregisterSequenceEditor(SequenceEditorHandle);
+		}
+
 		BlueprintEditorTabBinding = nullptr;
 	}
 
 	static void OnInitializeSequence(UActorSequence* Sequence)
 	{
 		auto* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
-		Sequence->GetMovieScene()->SetPlaybackRange(ProjectSettings->DefaultStartTime, ProjectSettings->DefaultStartTime + ProjectSettings->DefaultDuration);
+		UMovieScene* MovieScene = Sequence->GetMovieScene();
+		
+		FFrameNumber StartFrame = (ProjectSettings->DefaultStartTime * MovieScene->GetTickResolution()).RoundToFrame();
+		int32        Duration   = (ProjectSettings->DefaultDuration * MovieScene->GetTickResolution()).RoundToFrame().Value;
+
+		MovieScene->SetPlaybackRange(StartFrame, Duration);
 	}
 
 	/** Register details view customizations. */
@@ -190,6 +207,7 @@ public:
 		}
 	}
 
+	FDelegateHandle SequenceEditorHandle;
 	FDelegateHandle OnInitializeSequenceHandle;
 	TSharedPtr<FActorSequenceEditorTabBinding> BlueprintEditorTabBinding;
 	FName ActorSequenceComponentName;

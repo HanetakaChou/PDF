@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
-#include "SlateRect.h"
+#include "Layout/SlateRect.h"
 #include "Rendering/RenderingCommon.h"
 #include "Clipping.generated.h"
 
@@ -142,6 +142,14 @@ public:
 			BottomRight == Other.BottomRight;
 	}
 
+	uint32 ComputeHash() const
+	{
+		return HashCombine(
+			HashCombine(GetTypeHash(TopLeft), GetTypeHash(TopRight)),
+			HashCombine(GetTypeHash(BottomLeft), GetTypeHash(BottomRight))
+		);
+	}
+
 private:
 	void InitializeFromArbitraryPoints(const FVector2D& InTopLeft, const FVector2D& InTopRight, const FVector2D& InBottomLeft, const FVector2D& InBottomRight);
 
@@ -153,6 +161,11 @@ private:
 	/** Should this clipping zone always clip, even if another zone wants to ignore intersection? */
 	bool bAlwaysClip : 1;
 };
+
+FORCEINLINE uint32 GetTypeHash(const FSlateClippingZone& Zone)
+{
+	return Zone.ComputeHash();
+}
 
 template<> struct TIsPODType<FSlateClippingZone> { enum { Value = true }; };
 
@@ -166,20 +179,58 @@ enum class EClippingMethod : uint8
 };
 
 /**
+ * Indicates the method of clipping that should be used on the GPU.
+ */
+enum class EClippingFlags : uint8
+{
+	None		= 0,
+	/** If the clipping state is always clip, we cache it at a higher level. */
+	AlwaysClip	= 1 << 0
+};
+
+ENUM_CLASS_FLAGS(EClippingFlags)
+
+/**
  * Captures everything about a single draw calls clipping state.
  */
 class SLATECORE_API FSlateClippingState
 {
 public:
-	FSlateClippingState(bool InAlwaysClips);
+	FSlateClippingState(EClippingFlags InFlags = EClippingFlags::None);
 	
 	/** Is a point inside the clipping state? */
 	bool IsPointInside(const FVector2D& Point) const;
 
-	FORCEINLINE void SetStateIndex(int32 InStateIndex) { StateIndex = InStateIndex; }
-	FORCEINLINE int32 GetStateIndex() const { return StateIndex; }
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	/** Set the state index that this clipping state originated from.  We just do this for debugging purposes. */
+	FORCEINLINE void SetDebuggingStateIndex(int32 InStateIndex) const
+	{
+		Debugging_StateIndex = InStateIndex;
+		Debugging_StateIndexFromFrame = GFrameNumber;
+	}
+#endif
 
-	FORCEINLINE bool GetAlwaysClip() const { return bAlwaysClips; }
+	FORCEINLINE bool GetAlwaysClip() const { return EnumHasAllFlags(Flags, EClippingFlags::AlwaysClip); }
+
+	FORCEINLINE bool GetShouldIntersectParent() const
+	{
+		if (GetClippingMethod() == EClippingMethod::Scissor)
+		{
+			return ScissorRect->GetShouldIntersectParent();
+		}
+		else
+		{
+			for (const FSlateClippingZone& Stencil : StencilQuads)
+			{
+				if (!Stencil.GetShouldIntersectParent())
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
 
 	/**
 	 * Gets the type of clipping that is required by this clipping state.  The simpler clipping is
@@ -201,28 +252,34 @@ public:
 			return ScissorRect->HasZeroArea();
 		}
 
+		// Assume that stenciled clipping state has some area, don't bother computing it.
 		return false;
 	}
 
 	bool operator==(const FSlateClippingState& Other) const
 	{
-		return StateIndex == Other.StateIndex &&
-			bAlwaysClips == Other.bAlwaysClips &&
+		return Flags == Other.Flags &&
 			ScissorRect == Other.ScissorRect &&
 			StencilQuads == Other.StencilQuads;
 	}
 
-private:
-	/** For a given frame, this is a unique index into a state array of clipping zones that have been registered for a window being drawn. */
-	int32 StateIndex;
-	/** If the clipping state is always clip, we cache it at a higher level. */
-	bool bAlwaysClips;
-
 public:
-	/** If this is an axis aligned clipping state, this will be filled. */
-	TOptional<FSlateClippingZone> ScissorRect;
 	/** If this is a more expensive stencil clipping zone, this will be filled. */
 	TArray<FSlateClippingZone> StencilQuads;
+
+	/** If this is an axis aligned clipping state, this will be filled. */
+	TOptional<FSlateClippingZone> ScissorRect;
+
+private:
+
+	/** The specialized flags needed for this clipping state. */
+	EClippingFlags Flags;
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	/** For a given frame, this is a unique index into a state array of clipping zones that have been registered for a window being drawn. */
+	mutable int32 Debugging_StateIndex;
+	mutable int32 Debugging_StateIndexFromFrame;
+#endif
 };
 
 
@@ -235,19 +292,28 @@ public:
 	FSlateClippingManager();
 
 	int32 PushClip(const FSlateClippingZone& InClippingZone);
-	int32 PushClippingState(FSlateClippingState& InClipState);
+	int32 PushClippingState(const FSlateClippingState& InClipState);
+	int32 PushAndMergePartialClippingState(const FSlateClippingState& NewPartialClippingState);
 	int32 GetClippingIndex() const;
+	TOptional<FSlateClippingState> GetActiveClippingState() const;
 	const TArray< FSlateClippingState >& GetClippingStates() const;
 	void PopClip();
 
-	int32 MergeClippingStates(const TArray< FSlateClippingState >& States);
+	int32 MergePartialClippingStates(const TArray< FSlateClippingState >& States);
 
 	void ResetClippingState();
+
+	void CopyClippingStateTo( FSlateClippingManager& Other) const;
+
+private:
+	FSlateClippingState MergePartialClippingState(const FSlateClippingState& State) const;
+	const FSlateClippingState* GetPreviousClippnigState(bool bWillIntersectWithParent) const;
+	FSlateClippingState CreateClippingState(const FSlateClippingZone& InClipRect) const;
 
 private:
 	/** Maintains the current clipping stack, with the indexes in the array of clipping states.  Pushed and popped throughout the drawing process. */
 	TArray< int32 > ClippingStack;
 
-	/** The authoratitive list of clipping states used when rendering.  Any time a clipping state is needed, it's added here. */
+	/** The authoritative list of clipping states used when rendering.  Any time a clipping state is needed, it's added here. */
 	TArray< FSlateClippingState > ClippingStates;
 };

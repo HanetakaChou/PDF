@@ -8,7 +8,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ThreadSafeBool.h"
+#include "HAL/ThreadSafeBool.h"
 #include "Installer/Controllable.h"
 #include "BuildPatchState.h"
 
@@ -56,12 +56,6 @@ namespace BuildPatchServices
 		 * @return The current progress state
 		 */
 		virtual EBuildPatchState GetState() const;
-
-		/**
-		 * Gets the text for the current progress state
-		 * @return The display text for the current progress state
-		 */
-		virtual const FText& GetStateText() const;
 
 		/**
 		 * Gets the current overall progress

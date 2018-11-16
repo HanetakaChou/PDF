@@ -13,6 +13,8 @@ namespace BuildPatchServices
 	struct FManifestDetails
 	{
 	public:
+		// The feature level support the manifest should be serialised as.
+		EFeatureLevel FeatureLevel;
 		// The ID of the app of this build
 		uint32 AppId;
 		// The name of the app of this build
@@ -41,7 +43,7 @@ namespace BuildPatchServices
 	{
 	public:
 		virtual void AddChunkMatch(const FGuid& ChunkGuid, const FBlockStructure& Structure) = 0;
-		virtual bool FinalizeData(const TArray<FFileSpan>& FileSpans, TArray<FChunkInfoData> ChunkInfo) = 0;
+		virtual bool FinalizeData(const TArray<FFileSpan>& FileSpans, TArray<FChunkInfo> ChunkInfo) = 0;
 		virtual bool SaveToFile(const FString& Filename) = 0;
 	};
 

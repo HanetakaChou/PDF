@@ -8,13 +8,34 @@
 
 #include "VulkanMemory.h"
 
-class FOLDVulkanDescriptorPool;
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
+class FVulkanDescriptorPool;
 class FVulkanDescriptorPoolsManager;
-#endif
-class FVulkanCommandListContext;
+class FVulkanCommandListContextImmediate;
+#if VULKAN_USE_NEW_QUERIES
 class FVulkanOcclusionQueryPool;
+#else
 class FOLDVulkanQueryPool;
+#endif
+
+struct FOptionalVulkanDeviceExtensions
+{
+	uint32 HasKHRMaintenance1 : 1;
+	uint32 HasKHRMaintenance2 : 1;
+	uint32 HasMirrorClampToEdge : 1;
+	uint32 HasKHRExternalMemoryCapabilities : 1;
+	uint32 HasKHRGetPhysicalDeviceProperties2 : 1;
+	uint32 HasKHRDedicatedAllocation : 1;
+	uint32 HasEXTValidationCache : 1;
+	uint32 HasAMDBufferMarker : 1;
+	uint32 HasNVDiagnosticCheckpoints : 1;
+	uint32 HasGoogleDisplayTiming : 1;
+	uint32 HasYcbcrSampler : 1;
+
+	inline bool HasGPUCrashDumpExtensions() const
+	{
+		return HasAMDBufferMarker || HasNVDiagnosticCheckpoints;
+	}
+};
 
 class FVulkanDevice
 {
@@ -34,6 +55,27 @@ public:
 	void Destroy();
 
 	void WaitUntilIdle();
+
+	inline bool HasAsyncComputeQueue() const
+	{
+		return bAsyncComputeQueue;
+	}
+
+	inline bool CanPresentOnComputeQueue() const
+	{
+		return bPresentOnComputeQueue;
+	}
+
+	inline bool IsRealAsyncComputeContext(const FVulkanCommandListContext* InContext) const
+	{
+		if (bAsyncComputeQueue)
+		{
+			ensure((FVulkanCommandListContext*)ImmediateContext != ComputeContext);
+			return InContext == ComputeContext;
+		}
+	
+		return false;
+	}
 
 	inline FVulkanQueue* GetGraphicsQueue()
 	{
@@ -78,9 +120,16 @@ public:
 	}
 #endif
 
-	inline const VkPhysicalDeviceFeatures& GetFeatures() const
+#if VULKAN_SUPPORTS_VALIDATION_CACHE
+	inline VkValidationCacheEXT GetValidationCache() const
 	{
-		return Features;
+		return ValidationCache;
+	}
+#endif
+
+	inline const VkPhysicalDeviceFeatures& GetPhysicalFeatures() const
+	{
+		return PhysicalFeatures;
 	}
 
 	inline bool HasUnifiedMemory() const
@@ -88,13 +137,17 @@ public:
 		return MemoryManager.HasUnifiedMemory();
 	}
 
+	inline uint64 GetTimestampValidBitsMask() const
+	{
+		return TimestampValidBitsMask;
+	}
+
 	bool IsFormatSupported(VkFormat Format) const;
 
 	const VkComponentMapping& GetFormatComponentMapping(EPixelFormat UEFormat) const;
-	
-	inline VkDevice GetInstanceHandle()
+
+	inline VkDevice GetInstanceHandle() const
 	{
-		check(Device != VK_NULL_HANDLE);
 		return Device;
 	}
 
@@ -138,17 +191,22 @@ public:
 		return FenceManager;
 	}
 
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
 	inline FVulkanDescriptorPoolsManager& GetDescriptorPoolsManager()
 	{
 		return *DescriptorPoolsManager;
 	}
-#endif
 
-	inline FVulkanCommandListContext& GetImmediateContext()
+	inline TMap<uint32, FSamplerStateRHIRef>& GetSamplerMap()
 	{
-		return *ImmediateContext;
+		return SamplerMap;
 	}
+
+	inline FVulkanShaderFactory& GetShaderFactory()
+	{
+		return ShaderFactory;
+	}
+
+	FVulkanCommandListContextImmediate& GetImmediateContext();
 
 	inline FVulkanCommandListContext& GetImmediateComputeContext()
 	{
@@ -159,74 +217,79 @@ public:
 	void NotifyDeletedImage(VkImage Image);
 
 #if VULKAN_ENABLE_DRAW_MARKERS
-	PFN_vkCmdDebugMarkerBeginEXT GetCmdDbgMarkerBegin() const
+	inline PFN_vkCmdDebugMarkerBeginEXT GetCmdDbgMarkerBegin() const
 	{
-		return CmdDbgMarkerBegin;
+		return DebugMarkers.CmdBegin;
 	}
 
-	PFN_vkCmdDebugMarkerEndEXT GetCmdDbgMarkerEnd() const
+	inline PFN_vkCmdDebugMarkerEndEXT GetCmdDbgMarkerEnd() const
 	{
-		return CmdDbgMarkerEnd;
+		return DebugMarkers.CmdEnd;
 	}
 
-	PFN_vkDebugMarkerSetObjectNameEXT GetDebugMarkerSetObjectName() const
+	inline PFN_vkDebugMarkerSetObjectNameEXT GetDebugMarkerSetObjectName() const
 	{
-		return DebugMarkerSetObjectName;
+		return DebugMarkers.CmdSetObjectName;
 	}
+
+#if 0//VULKAN_SUPPORTS_DEBUG_UTILS
+	inline PFN_vkCmdBeginDebugUtilsLabelEXT GetCmdBeginDebugLabel() const
+	{
+		return DebugMarkers.CmdBeginDebugLabel;
+	}
+
+	inline PFN_vkCmdEndDebugUtilsLabelEXT GetCmdEndDebugLabel() const
+	{
+		return DebugMarkers.CmdEndDebugLabel;
+	}
+
+	inline PFN_vkSetDebugUtilsObjectNameEXT GetSetDebugName() const
+	{
+		return DebugMarkers.SetDebugName;
+	}
+#endif
+
 #endif
 
 	void PrepareForCPURead();
 
 	void SubmitCommandsAndFlushGPU();
 
-	inline FOLDVulkanBufferedQueryPool& FindAvailableQueryPool(TArray<FOLDVulkanBufferedQueryPool*>& Pools, VkQueryType QueryType)
-	{
-		// First try to find An available one
-		for (int32 Index = 0; Index < Pools.Num(); ++Index)
-		{
-			FOLDVulkanBufferedQueryPool* Pool = Pools[Index];
-			if (Pool->HasRoom())
-			{
-				return *Pool;
-			}
-		}
+	FVulkanOcclusionQueryPool* AcquireOcclusionQueryPool(uint32 NumQueries);
 
-		// None found, so allocate new Pool
-		FOLDVulkanBufferedQueryPool* Pool = new FOLDVulkanBufferedQueryPool(this, QueryType == VK_QUERY_TYPE_OCCLUSION ? NUM_OCCLUSION_QUERIES_PER_POOL : NUM_TIMESTAMP_QUERIES_PER_POOL, QueryType);
-		Pools.Add(Pool);
-		return *Pool;
-	}
-	inline FOLDVulkanBufferedQueryPool& FindAvailableOcclusionQueryPool()
-	{
-		return FindAvailableQueryPool(OcclusionQueryPools, VK_QUERY_TYPE_OCCLUSION);
-	}
-
-	inline FOLDVulkanBufferedQueryPool& FindAvailableTimestampQueryPool()
-	{
-		return FindAvailableQueryPool(TimestampQueryPools, VK_QUERY_TYPE_TIMESTAMP);
-	}
-
-	inline class FVulkanPipelineStateCache* GetPipelineStateCache()
+	inline class FVulkanPipelineStateCacheManager* GetPipelineStateCache()
 	{
 		return PipelineStateCache;
 	}
 
-	void NotifyDeletedGfxPipeline(class FVulkanGraphicsPipelineState* Pipeline);
+	void NotifyDeletedGfxPipeline(class FVulkanRHIGraphicsPipelineState* Pipeline);
 	void NotifyDeletedComputePipeline(class FVulkanComputePipeline* Pipeline);
 
 	FVulkanCommandListContext* AcquireDeferredContext();
 	void ReleaseDeferredContext(FVulkanCommandListContext* InContext);
 
-	struct FOptionalVulkanDeviceExtensions
+	inline const FOptionalVulkanDeviceExtensions& GetOptionalExtensions() const
 	{
-		uint32 HasKHRMaintenance1 : 1;
-		uint32 HasMirrorClampToEdge : 1;
-		uint32 HasKHRExternalMemoryCapabilities : 1;
-		uint32 HasKHRGetPhysicalDeviceProperties2 : 1;
-	};
-	inline const FOptionalVulkanDeviceExtensions& GetOptionalExtensions() const { return OptionalDeviceExtensions;  }
+		return OptionalDeviceExtensions;
+	}
 
-	void SetupPresentQueue(const VkSurfaceKHR& Surface);
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+	VkBuffer GetCrashMarkerBuffer() const
+	{
+		return CrashMarker.Buffer;
+	}
+
+	void* GetCrashMarkerMappedPointer() const
+	{
+		return CrashMarker.Allocation->GetMappedPointer();
+	}
+#endif
+
+	void SetupPresentQueue(VkSurfaceKHR Surface);
+
+#if VULKAN_SUPPORTS_COLOR_CONVERSIONS
+	VkSamplerYcbcrConversion CreateSamplerColorConversion(const VkSamplerYcbcrConversionCreateInfo& CreateInfo);
+#endif
 
 private:
 	void MapFormatSupport(EPixelFormat UEFormat, VkFormat VulkanFormat);
@@ -235,13 +298,7 @@ private:
 
 	void SubmitCommands(FVulkanCommandListContext* Context);
 
-	VkPhysicalDevice Gpu;
-	VkPhysicalDeviceProperties GpuProps;
-#if VULKAN_ENABLE_DESKTOP_HMD_SUPPORT
-	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
-#endif
-	VkPhysicalDeviceFeatures Features;
-	
+
 	VkDevice Device;
 
 	VulkanRHI::FDeviceMemoryManager MemoryManager;
@@ -254,47 +311,84 @@ private:
 
 	VulkanRHI::FFenceManager FenceManager;
 
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
 	FVulkanDescriptorPoolsManager* DescriptorPoolsManager = nullptr;
-#endif
+
+	FVulkanShaderFactory ShaderFactory;
 
 	FVulkanSamplerState* DefaultSampler;
 	FVulkanSurface* DefaultImage;
 	VkImageView DefaultImageView;
+
+	VkPhysicalDevice Gpu;
+	VkPhysicalDeviceProperties GpuProps;
+#if VULKAN_ENABLE_DESKTOP_HMD_SUPPORT
+	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
+#endif
+	VkPhysicalDeviceFeatures PhysicalFeatures;
 
 	TArray<VkQueueFamilyProperties> QueueFamilyProps;
 	VkFormatProperties FormatProperties[VK_FORMAT_RANGE_SIZE];
 	// Info for formats that are not in the core Vulkan spec (i.e. extensions)
 	mutable TMap<VkFormat, VkFormatProperties> ExtensionFormatProperties;
 
-	TArray<FOLDVulkanBufferedQueryPool*> OcclusionQueryPools;
-	TArray<FOLDVulkanBufferedQueryPool*> TimestampQueryPools;
+	TArray<FVulkanOcclusionQueryPool*> UsedOcclusionQueryPools;
+	TArray<FVulkanOcclusionQueryPool*> FreeOcclusionQueryPools;
+
+	uint64 TimestampValidBitsMask = 0;
 
 	FVulkanQueue* GfxQueue;
 	FVulkanQueue* ComputeQueue;
 	FVulkanQueue* TransferQueue;
 	FVulkanQueue* PresentQueue;
+	bool bAsyncComputeQueue = false;
+	bool bPresentOnComputeQueue = false;
+
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+	struct
+	{
+		VkBuffer Buffer = VK_NULL_HANDLE;
+		VulkanRHI::FDeviceMemoryAllocation* Allocation = nullptr;
+	} CrashMarker;
+#endif
 
 	VkComponentMapping PixelFormatComponentMapping[PF_MAX];
 
-	FVulkanCommandListContext* ImmediateContext;
+	TMap<uint32, FSamplerStateRHIRef> SamplerMap;
+
+	FVulkanCommandListContextImmediate* ImmediateContext;
 	FVulkanCommandListContext* ComputeContext;
 	TArray<FVulkanCommandListContext*> CommandContexts;
+#if VULKAN_SUPPORTS_COLOR_CONVERSIONS
+	TMap<uint32, VkSamplerYcbcrConversion> SamplerColorConversionMap;
+#endif
 
-	void GetDeviceExtensions(TArray<const ANSICHAR*>& OutDeviceExtensions, TArray<const ANSICHAR*>& OutDeviceLayers, bool& bOutDebugMarkers);
+	void GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDeviceExtensions, TArray<const ANSICHAR*>& OutDeviceLayers, bool& bOutDebugMarkers);
 
 	void ParseOptionalDeviceExtensions(const TArray<const ANSICHAR*>& DeviceExtensions);
 	FOptionalVulkanDeviceExtensions OptionalDeviceExtensions;
 
 	void SetupFormats();
 
+#if VULKAN_SUPPORTS_VALIDATION_CACHE
+	VkValidationCacheEXT ValidationCache = VK_NULL_HANDLE;
+#endif
+
 #if VULKAN_ENABLE_DRAW_MARKERS
-	PFN_vkCmdDebugMarkerBeginEXT CmdDbgMarkerBegin;
-	PFN_vkCmdDebugMarkerEndEXT CmdDbgMarkerEnd;
-	PFN_vkDebugMarkerSetObjectNameEXT DebugMarkerSetObjectName;
+	struct
+	{
+		PFN_vkCmdDebugMarkerBeginEXT		CmdBegin = nullptr;
+		PFN_vkCmdDebugMarkerEndEXT			CmdEnd = nullptr;
+		PFN_vkDebugMarkerSetObjectNameEXT	CmdSetObjectName = nullptr;
+
+#if 0//VULKAN_SUPPORTS_DEBUG_UTILS
+		PFN_vkCmdBeginDebugUtilsLabelEXT	CmdBeginDebugLabel = nullptr;
+		PFN_vkCmdEndDebugUtilsLabelEXT		CmdEndDebugLabel = nullptr;
+		PFN_vkSetDebugUtilsObjectNameEXT	SetDebugName = nullptr;
+#endif
+	} DebugMarkers;
 	friend class FVulkanCommandListContext;
 #endif
 
-	class FVulkanPipelineStateCache* PipelineStateCache;
+	class FVulkanPipelineStateCacheManager* PipelineStateCache;
 	friend class FVulkanDynamicRHI;
 };

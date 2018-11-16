@@ -11,159 +11,149 @@
 #include "VulkanContext.h"
 #include "VulkanPendingState.h"
 #include "VulkanPipeline.h"
+#include "VulkanLLM.h"
 
 enum
 {
 	NumAllocationsPerPool = 8,
 };
 
-FVulkanComputePipelineState::FVulkanComputePipelineState(FVulkanDevice* InDevice, FVulkanComputePipeline* InComputePipeline)
-	: FVulkanCommonPipelineState(InDevice)
+
+extern TAutoConsoleVariable<int32> GDynamicGlobalUBs;
+
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+static TAutoConsoleVariable<int32> GAlwaysWriteDS(
+	TEXT("r.Vulkan.AlwaysWriteDS"),
+	0,
+	TEXT(""),
+	ECVF_RenderThreadSafe
+);
+#endif
+
+static bool ShouldAlwaysWriteDescriptors()
+{
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+	return (GAlwaysWriteDS.GetValueOnAnyThread() != 0);
+#else
+	return false;
+#endif
+}
+
+FVulkanComputePipelineDescriptorState::FVulkanComputePipelineDescriptorState(FVulkanDevice* InDevice, FVulkanComputePipeline* InComputePipeline)
+	: FVulkanCommonPipelineDescriptorState(InDevice)
 	, PackedUniformBuffersMask(0)
 	, PackedUniformBuffersDirty(0)
+	, HasDescriptorsInSetMask(0)
 	, ComputePipeline(InComputePipeline)
 {
-	PackedUniformBuffers.Init(&InComputePipeline->GetShaderCodeHeader(), PackedUniformBuffersMask, UniformBuffersWithDataMask);
+	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
+	check(InComputePipeline);
+	const FVulkanShaderHeader& CodeHeader = InComputePipeline->GetShaderCodeHeader();
+	PackedUniformBuffers.Init(CodeHeader, PackedUniformBuffersMask);
+
+	DescriptorSetsLayout = &InComputePipeline->GetLayout().GetDescriptorSetsLayout();
 
 	CreateDescriptorWriteInfos();
 	InComputePipeline->AddRef();
+
+	PipelineDescriptorInfo = &InComputePipeline->GetComputeLayout().GetComputePipelineDescriptorInfo();
 }
 
-void FVulkanComputePipelineState::CreateDescriptorWriteInfos()
+void FVulkanComputePipelineDescriptorState::CreateDescriptorWriteInfos()
 {
 	check(DSWriteContainer.DescriptorWrites.Num() == 0);
 
-	const FVulkanCodeHeader& CodeHeader = ComputePipeline->GetShaderCodeHeader();
+	int32 LastSet = -1;
+	ensure(DescriptorSetsLayout->RemappingInfo.SetInfos.Num() == 0 || DescriptorSetsLayout->RemappingInfo.SetInfos.Num() == 1);
+	for (int32 Index = 0; Index < DescriptorSetsLayout->RemappingInfo.SetInfos.Num(); ++Index)
+	{
+		const FDescriptorSetRemappingInfo::FSetInfo& SetInfo = DescriptorSetsLayout->RemappingInfo.SetInfos[Index];
+		DSWriteContainer.DescriptorWrites.AddZeroed(SetInfo.Types.Num());
+		DSWriteContainer.DescriptorImageInfo.AddZeroed(SetInfo.NumImageInfos);
+		DSWriteContainer.DescriptorBufferInfo.AddZeroed(SetInfo.NumBufferInfos);
 
-	DSWriteContainer.DescriptorWrites.AddZeroed(CodeHeader.NEWDescriptorInfo.DescriptorTypes.Num());
-	DSWriteContainer.DescriptorImageInfo.AddZeroed(CodeHeader.NEWDescriptorInfo.NumImageInfos);
-	DSWriteContainer.DescriptorBufferInfo.AddZeroed(CodeHeader.NEWDescriptorInfo.NumBufferInfos);
+		checkf(SetInfo.Types.Num() < 255, TEXT("Need more bits for BindingToDynamicOffsetMap (currently 8)! Requires %d descriptor bindings in a set!"), SetInfo.Types.Num());
+		DSWriteContainer.BindingToDynamicOffsetMap.AddUninitialized(SetInfo.Types.Num());
+		FMemory::Memset(DSWriteContainer.BindingToDynamicOffsetMap.GetData(), 255, DSWriteContainer.BindingToDynamicOffsetMap.Num());
+
+		LastSet = FMath::Max(LastSet, Index);
+		UsedSetsMask = UsedSetsMask | (1 << Index);
+	}
+
+	check(LastSet == -1 || (UsedSetsMask <= (uint32)((1 << (uint32)(LastSet + 1)) - 1)));
+	check(DSWriter.Num() == 0);
+	int32 NumSets = LastSet + 1;
+	DSWriter.AddDefaulted(NumSets);
 
 	VkSampler DefaultSampler = Device->GetDefaultSampler();
 	VkImageView DefaultImageView = Device->GetDefaultImageView();
-	for (int32 Index = 0; Index < DSWriteContainer.DescriptorImageInfo.Num(); ++Index)
+	for (int32 Set = 0; Set < DSWriteContainer.DescriptorImageInfo.Num(); ++Set)
 	{
 		// Texture.Load() still requires a default sampler...
-		DSWriteContainer.DescriptorImageInfo[Index].sampler = DefaultSampler;
-		DSWriteContainer.DescriptorImageInfo[Index].imageView = DefaultImageView;
-		DSWriteContainer.DescriptorImageInfo[Index].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		DSWriteContainer.DescriptorImageInfo[Set].sampler = DefaultSampler;
+		DSWriteContainer.DescriptorImageInfo[Set].imageView = DefaultImageView;
+		DSWriteContainer.DescriptorImageInfo[Set].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 
 	VkWriteDescriptorSet* CurrentDescriptorWrite = DSWriteContainer.DescriptorWrites.GetData();
 	VkDescriptorImageInfo* CurrentImageInfo = DSWriteContainer.DescriptorImageInfo.GetData();
 	VkDescriptorBufferInfo* CurrentBufferInfo = DSWriteContainer.DescriptorBufferInfo.GetData();
+	uint8* CurrentBindingToDynamicOffsetMap = DSWriteContainer.BindingToDynamicOffsetMap.GetData();
+	TArray<uint32> DynamicOffsetsStart;
+	DynamicOffsetsStart.AddZeroed(NumSets);
+	uint32 TotalNumDynamicOffsets = 0;
 
-	DSWriter.SetupDescriptorWrites(CodeHeader.NEWDescriptorInfo, CurrentDescriptorWrite, CurrentImageInfo, CurrentBufferInfo);
+	for (int32 Set = 0; Set < NumSets; ++Set)
+	{
+		if (UsedSetsMask & (1 << Set))
+		{
+			const FDescriptorSetRemappingInfo::FSetInfo& SetInfo = DescriptorSetsLayout->RemappingInfo.SetInfos[Set];
 
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	DescriptorSetHandles.AddZeroed(ComputePipeline->GetLayout().GetDescriptorSetsLayout().GetHandles().Num());
-#endif
+			DynamicOffsetsStart[Set] = TotalNumDynamicOffsets;
+
+			uint32 NumDynamicOffsets = DSWriter[Set].SetupDescriptorWrites(SetInfo.Types, CurrentDescriptorWrite, CurrentImageInfo, CurrentBufferInfo, CurrentBindingToDynamicOffsetMap);
+			TotalNumDynamicOffsets += NumDynamicOffsets;
+
+			CurrentDescriptorWrite += SetInfo.Types.Num();
+			CurrentImageInfo += SetInfo.NumImageInfos;
+			CurrentBufferInfo += SetInfo.NumBufferInfos;
+			CurrentBindingToDynamicOffsetMap += SetInfo.Types.Num();
+		}
+	}
+
+	DynamicOffsets.AddZeroed(TotalNumDynamicOffsets);
+	for (int32 Set = 0; Set < NumSets; ++Set)
+	{
+		DSWriter[Set].DynamicOffsets = DynamicOffsetsStart[Set] + DynamicOffsets.GetData();
+	}
+
+	DescriptorSetHandles.AddZeroed(NumSets);
+	HasDescriptorsInSetMask = UsedSetsMask;
 }
 
-#if VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-TArrayView<VkDescriptorSet> FVulkanComputePipelineState::UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer, FVulkanGlobalUniformPool* GlobalUniformPool)
+template<bool bUseDynamicGlobalUBs>
+bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer)
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateDescriptorSets);
 #endif
-	int32 WriteIndex = 0;
-/*
-	DSRingBuffer.CurrDescriptorSets = DSRingBuffer.RequestDescriptorSets(CmdListContext, CmdBuffer, ComputePipeline->GetLayout());
-	if (!DSRingBuffer.CurrDescriptorSets)
-	{
-		return false;
-	}
-*/
-	TArrayView<VkDescriptorSet> DescriptorSetHandles = CmdBuffer->AllocateDescriptorSets(ComputePipeline->GetLayout());
-	if (DescriptorSetHandles.Num() == 0)
-	{
-		return DescriptorSetHandles;
-	}
-	int32 DescriptorSetIndex = 0;
-
-	FVulkanUniformBufferUploader* UniformBufferUploader = CmdListContext->GetUniformBufferUploader();
-	uint8* CPURingBufferBase = (uint8*)UniformBufferUploader->GetCPUMappedPointer();
-
-	const VkDescriptorSet DescriptorSet = DescriptorSetHandles[DescriptorSetIndex];
-	++DescriptorSetIndex;
-
-	bool bRequiresPackedUBUpdate = (PackedUniformBuffersDirty != 0);
-	if (bRequiresPackedUBUpdate)
-	{
-		SCOPE_CYCLE_COUNTER(STAT_VulkanApplyDSUniformBuffers);
-		UpdatePackedUniformBuffers(Device->GetLimits().minUniformBufferOffsetAlignment, ComputePipeline->GetShaderCodeHeader(), PackedUniformBuffers, DSWriter, UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty);
-		PackedUniformBuffersDirty = 0;
-	}
-
-	bool bRequiresNonPackedUBUpdate = (DSWriter.DirtyMask != 0);
-	if (!bRequiresNonPackedUBUpdate && !bRequiresPackedUBUpdate)
-	{
-		//#todo-rco: Skip this desc set writes and only call update for the modified ones!
-		//continue;
-		int x = 0;
-	}
-
-	DSWriter.SetDescriptorSet(DescriptorSet);
-
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
-	INC_DWORD_STAT_BY(STAT_VulkanNumDescSets, DescriptorSetIndex);
-#endif
-
-	{
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-		SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
-#endif
-		VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
-	}
-
-	return DescriptorSetHandles;
-}
-#else
-bool FVulkanComputePipelineState::UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer, FVulkanGlobalUniformPool* GlobalUniformPool)
-{
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateDescriptorSets);
-#endif
-	int32 WriteIndex = 0;
-
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	const FVulkanDescriptorSetsLayout& DescriptorSetLayout = ComputePipeline->GetLayout().GetDescriptorSetsLayout();
 
 	// Early exit
-	if (DescriptorSetLayout.GetHandles().Num() == 0)
+	if (!HasDescriptorsInSetMask)
 	{
 		return false;
 	}
 
-	// No current descriptor pools set - acquire one and reset
-	if (CmdBuffer->CurrentDescriptorPoolSet == nullptr)
-	{
-		CmdBuffer->CurrentDescriptorPoolSet = &Device->GetDescriptorPoolsManager().AcquirePoolSet();
-	}
-
-	if (CurrentDescriptorPoolSet == nullptr || CurrentDescriptorPoolSet->GetOwner() != CmdBuffer->CurrentDescriptorPoolSet)
-	{
-		CurrentDescriptorPoolSet = CmdBuffer->CurrentDescriptorPoolSet->AcquirePoolSet(DescriptorSetLayout);
-	}
-
-	if (!CurrentDescriptorPoolSet->AllocateDescriptorSets(DescriptorSetLayout, DescriptorSetHandles.GetData()))
-	{
-		return false;
-	}
-#else
-	DSRingBuffer.CurrDescriptorSets = DSRingBuffer.RequestDescriptorSets(CmdListContext, CmdBuffer, ComputePipeline->GetLayout());
-	if (!DSRingBuffer.CurrDescriptorSets)
+	if (!CmdBuffer->AcquirePoolSetAndDescriptorsIfNeeded(*DescriptorSetsLayout, true, DescriptorSetHandles.GetData()))
 	{
 		return false;
 	}
 
-	const FOLDVulkanDescriptorSets::FDescriptorSetArray& DescriptorSetHandles = DSRingBuffer.CurrDescriptorSets->GetHandles();
-#endif
 	int32 DescriptorSetIndex = 0;
 
 	FVulkanUniformBufferUploader* UniformBufferUploader = CmdListContext->GetUniformBufferUploader();
 	uint8* CPURingBufferBase = (uint8*)UniformBufferUploader->GetCPUMappedPointer();
+	const VkDeviceSize UBOffsetAlignment = Device->GetLimits().minUniformBufferOffsetAlignment;
 
 	const VkDescriptorSet DescriptorSet = DescriptorSetHandles[DescriptorSetIndex];
 	++DescriptorSetIndex;
@@ -171,28 +161,19 @@ bool FVulkanComputePipelineState::UpdateDescriptorSets(FVulkanCommandListContext
 	bool bRequiresPackedUBUpdate = (PackedUniformBuffersDirty != 0);
 	if (bRequiresPackedUBUpdate)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_VulkanApplyDSUniformBuffers);
-		UpdatePackedUniformBuffers(Device->GetLimits().minUniformBufferOffsetAlignment, ComputePipeline->GetShaderCodeHeader(), PackedUniformBuffers, DSWriter, UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty);
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
+		SCOPE_CYCLE_COUNTER(STAT_VulkanApplyPackedUniformBuffers);
+#endif
+		UpdatePackedUniformBuffers<bUseDynamicGlobalUBs>(UBOffsetAlignment, PipelineDescriptorInfo->RemappingInfo->StageInfos[0].PackedUBBindingIndices.GetData(), PackedUniformBuffers, DSWriter[0], UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty, CmdBuffer);
 		PackedUniformBuffersDirty = 0;
 	}
 
-	bool bRequiresNonPackedUBUpdate = (DSWriter.DirtyMask != 0);
-	if (!bRequiresNonPackedUBUpdate && !bRequiresPackedUBUpdate)
-	{
-		//#todo-rco: Skip this desc set writes and only call update for the modified ones!
-		//continue;
-		int x = 0;
-	}
-
-	DSWriter.SetDescriptorSet(DescriptorSet);
-
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
-	INC_DWORD_STAT_BY(STAT_VulkanNumDescSets, DescriptorSetIndex);
-#endif
+	DSWriter[0].SetDescriptorSet(DescriptorSet);
 
 	{
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
+		INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
+		INC_DWORD_STAT(STAT_VulkanNumDescSets);
 		SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
 #endif
 		VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
@@ -200,30 +181,64 @@ bool FVulkanComputePipelineState::UpdateDescriptorSets(FVulkanCommandListContext
 
 	return true;
 }
-#endif
 
-FVulkanGfxPipelineState::FVulkanGfxPipelineState(FVulkanDevice* InDevice, FVulkanGraphicsPipelineState* InGfxPipeline, FVulkanBoundShaderState* InBSS)
-	: FVulkanCommonPipelineState(InDevice)
+
+FVulkanGraphicsPipelineDescriptorState::FVulkanGraphicsPipelineDescriptorState(FVulkanDevice* InDevice, FVulkanRHIGraphicsPipelineState* InGfxPipeline)
+	: FVulkanCommonPipelineDescriptorState(InDevice)
 	, GfxPipeline(InGfxPipeline)
-	, BSS(InBSS)
 {
+	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
 	FMemory::Memzero(PackedUniformBuffersMask);
 	FMemory::Memzero(PackedUniformBuffersDirty);
+	FMemory::Memzero(ResourcesDirtyPerSet);
+	FMemory::Memzero(ResourcesDirtyPerSetMask);
 
-	PackedUniformBuffers[SF_Vertex].Init(&BSS->GetVertexShader()->GetCodeHeader(), PackedUniformBuffersMask[SF_Vertex], UniformBuffersWithDataMask[SF_Vertex]);
+	check(InGfxPipeline);
+	check(InGfxPipeline->Pipeline);
+	DescriptorSetsLayout = &InGfxPipeline->Pipeline->GetLayout().GetDescriptorSetsLayout();
+	PipelineDescriptorInfo = &InGfxPipeline->Pipeline->GetGfxLayout().GetGfxPipelineDescriptorInfo();
 
-	if (BSS->GetPixelShader())
+	UsedSetsMask = PipelineDescriptorInfo->HasDescriptorsInSetMask;
+
+	PackedUniformBuffers[ShaderStage::Vertex].Init(InGfxPipeline->GetShader(SF_Vertex)->GetCodeHeader(), PackedUniformBuffersMask[ShaderStage::Vertex]);
+	UsedStagesMask |= 1 << ShaderStage::Vertex;
+	HasDescriptorsPerStageMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Vertex].IsEmpty() ? 0 : (1 << ShaderStage::Vertex);
+	UsedPackedUBStagesMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Vertex].PackedUBBindingIndices.Num() > 0 ? (1 << ShaderStage::Vertex) : 0;
+
+	if (InGfxPipeline->GetShader(SF_Pixel))
 	{
-		PackedUniformBuffers[SF_Pixel].Init(&BSS->GetPixelShader()->GetCodeHeader(), PackedUniformBuffersMask[SF_Pixel], UniformBuffersWithDataMask[SF_Pixel]);
+		PackedUniformBuffers[ShaderStage::Pixel].Init(InGfxPipeline->GetShader(SF_Pixel)->GetCodeHeader(), PackedUniformBuffersMask[ShaderStage::Pixel]);
+		UsedStagesMask |= 1 << ShaderStage::Pixel;
+		HasDescriptorsPerStageMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Pixel].IsEmpty() ? 0 : (1 << ShaderStage::Pixel);
+		UsedPackedUBStagesMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Pixel].PackedUBBindingIndices.Num() > 0 ? (1 << ShaderStage::Pixel) : 0;
 	}
-	if (BSS->GetGeometryShader())
+	if (InGfxPipeline->GetShader(SF_Geometry))
 	{
-		PackedUniformBuffers[SF_Geometry].Init(&BSS->GetGeometryShader()->GetCodeHeader(), PackedUniformBuffersMask[SF_Geometry], UniformBuffersWithDataMask[SF_Geometry]);
+#if VULKAN_SUPPORTS_GEOMETRY_SHADERS
+		PackedUniformBuffers[ShaderStage::Geometry].Init(InGfxPipeline->GetShader(SF_Geometry)->GetCodeHeader(), PackedUniformBuffersMask[ShaderStage::Geometry]);
+		UsedStagesMask |= 1 << ShaderStage::Geometry;
+		HasDescriptorsPerStageMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Geometry].IsEmpty() ? 0 : (1 << ShaderStage::Geometry);
+		UsedPackedUBStagesMask |= DescriptorSetsLayout->RemappingInfo.StageInfos[ShaderStage::Geometry].PackedUBBindingIndices.Num() > 0 ? (1 << ShaderStage::Geometry) : 0;
+#else
+		ensureMsgf(0, TEXT("Geometry not supported!"));
+#endif
 	}
-	if (BSS->GetHullShader())
+	if (InGfxPipeline->GetShader(SF_Hull))
 	{
-		PackedUniformBuffers[SF_Domain].Init(&BSS->GetDomainShader()->GetCodeHeader(), PackedUniformBuffersMask[SF_Domain], UniformBuffersWithDataMask[SF_Domain]);
-		PackedUniformBuffers[SF_Hull].Init(&BSS->GetHullShader()->GetCodeHeader(), PackedUniformBuffersMask[SF_Hull], UniformBuffersWithDataMask[SF_Hull]);
+		ensureMsgf(0, TEXT("Tessellation not supported yet!"));
+/*
+		PackedUniformBuffers[ShaderStage::Domain].Init(CodeHeaderPerStage[ShaderStage::Domain], PackedUniformBuffersMask[ShaderStage::Domain], UniformBuffersWithDataMask[ShaderStage::Domain], ResourcesDirtyMask[ShaderStage::Domain]);
+		PackedUniformBuffers[ShaderStage::Hull].Init(CodeHeaderPerStage[ShaderStage::Hull], PackedUniformBuffersMask[ShaderStage::Hull], UniformBuffersWithDataMask[ShaderStage::Hull], ResourcesDirtyMask[ShaderStage::Domain]);
+		UsedStagesMask |= (1 << ShaderStage::Hull) | (1 << ShaderStage::Domain);
+*/
+	}
+
+	//checkf(PipelineDescriptorInfo->DescriptorSets.Num() <= DescriptorSet::NumGfxStages, TEXT("Update ResourcesDirty & ResourcesDirtyMask!"));
+	for (int32 Index = 0; Index < PipelineDescriptorInfo->RemappingInfo->SetInfos.Num(); ++Index)
+	{
+		const FDescriptorSetRemappingInfo::FSetInfo& SetInfo = PipelineDescriptorInfo->RemappingInfo->SetInfos[Index];
+		uint64 Value = ((uint64)1 << (uint64)SetInfo.Types.Num()) - 1;
+		ResourcesDirtyPerSetMask[Index] = Value;
 	}
 
 	CreateDescriptorWriteInfos();
@@ -234,256 +249,187 @@ FVulkanGfxPipelineState::FVulkanGfxPipelineState(FVulkanDevice* InDevice, FVulka
 	//UE_LOG(LogVulkanRHI, Warning, TEXT("GfxPSOState %p For PSO %p Writes:%d"), this, InGfxPipeline, DSWriteContainer.DescriptorWrites.Num());
 
 	InGfxPipeline->AddRef();
-	BSS->AddRef();
 }
 
-void FVulkanGfxPipelineState::CreateDescriptorWriteInfos()
+void FVulkanGraphicsPipelineDescriptorState::CreateDescriptorWriteInfos()
 {
 	check(DSWriteContainer.DescriptorWrites.Num() == 0);
 
-	static_assert(SF_Geometry + 1 == SF_Compute, "Loop assumes compute is after gfx stages!");
-
-	for (uint32 Stage = 0; Stage < SF_Compute; Stage++)
+	int32 LastSet = -1;
+	for (int32 Index = 0; Index < DescriptorSetsLayout->RemappingInfo.SetInfos.Num(); ++Index)
 	{
-		const FVulkanShader* StageShader = BSS->GetShader((EShaderFrequency)Stage);
-		if (!StageShader)
-		{
-			continue;
-		}
+		const FDescriptorSetRemappingInfo::FSetInfo& SetInfo = DescriptorSetsLayout->RemappingInfo.SetInfos[Index];
+		DSWriteContainer.DescriptorWrites.AddZeroed(SetInfo.Types.Num());
+		DSWriteContainer.DescriptorImageInfo.AddZeroed(SetInfo.NumImageInfos);
+		DSWriteContainer.DescriptorBufferInfo.AddZeroed(SetInfo.NumBufferInfos);
 
-		const FVulkanCodeHeader& CodeHeader = StageShader->GetCodeHeader();
-		DSWriteContainer.DescriptorWrites.AddZeroed(CodeHeader.NEWDescriptorInfo.DescriptorTypes.Num());
-		DSWriteContainer.DescriptorImageInfo.AddZeroed(CodeHeader.NEWDescriptorInfo.NumImageInfos);
-		DSWriteContainer.DescriptorBufferInfo.AddZeroed(CodeHeader.NEWDescriptorInfo.NumBufferInfos);
+		checkf(SetInfo.Types.Num() < 255, TEXT("Need more bits for BindingToDynamicOffsetMap (currently 8)! Requires %d descriptor bindings in a set!"), SetInfo.Types.Num());
+		DSWriteContainer.BindingToDynamicOffsetMap.AddUninitialized(SetInfo.Types.Num());
+		FMemory::Memset(DSWriteContainer.BindingToDynamicOffsetMap.GetData(), 255, DSWriteContainer.BindingToDynamicOffsetMap.Num());
+
+		LastSet = FMath::Max(LastSet, Index);
+		UsedSetsMask = UsedSetsMask | (1 << Index);
 	}
+
+	check(LastSet == -1 || (UsedSetsMask <= (uint32)((1 << (uint32)(LastSet + 1)) - 1)));
+	check(DSWriter.Num() == 0);
+	int32 NumSets = LastSet + 1;
+	DSWriter.AddDefaulted(NumSets);
 
 	VkSampler DefaultSampler = Device->GetDefaultSampler();
 	VkImageView DefaultImageView = Device->GetDefaultImageView();
-	for (int32 Index = 0; Index < DSWriteContainer.DescriptorImageInfo.Num(); ++Index)
+	for (int32 Set = 0; Set < DSWriteContainer.DescriptorImageInfo.Num(); ++Set)
 	{
 		// Texture.Load() still requires a default sampler...
-		DSWriteContainer.DescriptorImageInfo[Index].sampler = DefaultSampler;
-		DSWriteContainer.DescriptorImageInfo[Index].imageView = DefaultImageView;
-		DSWriteContainer.DescriptorImageInfo[Index].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		DSWriteContainer.DescriptorImageInfo[Set].sampler = DefaultSampler;
+		DSWriteContainer.DescriptorImageInfo[Set].imageView = DefaultImageView;
+		DSWriteContainer.DescriptorImageInfo[Set].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 
 	VkWriteDescriptorSet* CurrentDescriptorWrite = DSWriteContainer.DescriptorWrites.GetData();
 	VkDescriptorImageInfo* CurrentImageInfo = DSWriteContainer.DescriptorImageInfo.GetData();
 	VkDescriptorBufferInfo* CurrentBufferInfo = DSWriteContainer.DescriptorBufferInfo.GetData();
+	uint8* CurrentBindingToDynamicOffsetMap = DSWriteContainer.BindingToDynamicOffsetMap.GetData();
+	TArray<uint32> DynamicOffsetsStart;
+	DynamicOffsetsStart.AddZeroed(NumSets);
+	uint32 TotalNumDynamicOffsets = 0;
 
-	for (uint32 Stage = 0; Stage < SF_Compute; Stage++)
+	for (int32 Set = 0; Set < NumSets; ++Set)
 	{
-		const FVulkanShader* StageShader = BSS->GetShader((EShaderFrequency)Stage);
-		if (!StageShader)
+		if (UsedSetsMask & (1 << Set))
 		{
-			continue;
+			const FDescriptorSetRemappingInfo::FSetInfo& SetInfo = DescriptorSetsLayout->RemappingInfo.SetInfos[Set];
+
+			DynamicOffsetsStart[Set] = TotalNumDynamicOffsets;
+
+			uint32 NumDynamicOffsets = DSWriter[Set].SetupDescriptorWrites(SetInfo.Types, CurrentDescriptorWrite, CurrentImageInfo, CurrentBufferInfo, CurrentBindingToDynamicOffsetMap);
+			TotalNumDynamicOffsets += NumDynamicOffsets;
+
+			CurrentDescriptorWrite += SetInfo.Types.Num();
+			CurrentImageInfo += SetInfo.NumImageInfos;
+			CurrentBufferInfo += SetInfo.NumBufferInfos;
+			CurrentBindingToDynamicOffsetMap += SetInfo.Types.Num();
 		}
-
-		const FVulkanCodeHeader& CodeHeader = StageShader->GetCodeHeader();
-		DSWriter[Stage].SetupDescriptorWrites(CodeHeader.NEWDescriptorInfo, CurrentDescriptorWrite, CurrentImageInfo, CurrentBufferInfo);
-
-		CurrentDescriptorWrite += CodeHeader.NEWDescriptorInfo.DescriptorTypes.Num();
-		CurrentImageInfo += CodeHeader.NEWDescriptorInfo.NumImageInfos;
-		CurrentBufferInfo += CodeHeader.NEWDescriptorInfo.NumBufferInfos;
 	}
 
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	DescriptorSetHandles.AddZeroed(GfxPipeline->Pipeline->GetLayout().GetDescriptorSetsLayout().GetHandles().Num());
-#endif
+	DynamicOffsets.AddZeroed(TotalNumDynamicOffsets);
+	for (int32 Set = 0; Set < NumSets; ++Set)
+	{
+		DSWriter[Set].DynamicOffsets = DynamicOffsetsStart[Set] + DynamicOffsets.GetData();
+	}
+
+	DescriptorSetHandles.AddZeroed(NumSets);
 }
 
-#if VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-TArrayView<VkDescriptorSet> FVulkanGfxPipelineState::UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer, FVulkanGlobalUniformPool* GlobalUniformPool)
+template<bool bUseDynamicGlobalUBs>
+bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer)
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateDescriptorSets);
 #endif
 
-	check(GlobalUniformPool);
-
-	int32 WriteIndex = 0;
-
-	const TArrayView<VkDescriptorSet> DescriptorSetHandles = CmdBuffer->AllocateDescriptorSets(GfxPipeline->Pipeline->GetLayout());
-	if (DescriptorSetHandles.Num() == 0)
-	{
-		return DescriptorSetHandles;
-	}
-	
-	int32 DescriptorSetIndex = 0;
-
-	FVulkanUniformBufferUploader* UniformBufferUploader = CmdListContext->GetUniformBufferUploader();
-	uint8* CPURingBufferBase = (uint8*)UniformBufferUploader->GetCPUMappedPointer();
-
-	static_assert(SF_Geometry + 1 == SF_Compute, "Loop assumes compute is after gfx stages!");
-	for (uint32 Stage = 0; Stage < SF_Compute; Stage++)
-	{
-		const FVulkanShader* StageShader = BSS->GetShader((EShaderFrequency)Stage);
-		if (!StageShader)
-		{
-			++DescriptorSetIndex;
-			continue;
-		}
-
-		const FVulkanCodeHeader& CodeHeader = StageShader->GetCodeHeader();
-		if (CodeHeader.NEWDescriptorInfo.DescriptorTypes.Num() == 0)
-		{
-			// Empty set, still has its own index
-			++DescriptorSetIndex;
-			continue;
-		}
-
-		const VkDescriptorSet DescriptorSet = DescriptorSetHandles[DescriptorSetIndex];
-		++DescriptorSetIndex;
-
-		bool bRequiresPackedUBUpdate = (PackedUniformBuffersDirty[Stage] != 0);
-		if (bRequiresPackedUBUpdate)
-		{
-			SCOPE_CYCLE_COUNTER(STAT_VulkanApplyDSUniformBuffers);
-			UpdatePackedUniformBuffers(Device->GetLimits().minUniformBufferOffsetAlignment, CodeHeader, PackedUniformBuffers[Stage], DSWriter[Stage], UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty[Stage]);
-			PackedUniformBuffersDirty[Stage] = 0;
-		}
-
-		bool bRequiresNonPackedUBUpdate = (DSWriter[Stage].DirtyMask != 0);
-		if (!bRequiresNonPackedUBUpdate && !bRequiresPackedUBUpdate)
-		{
-			//#todo-rco: Skip this desc set writes and only call update for the modified ones!
-			//continue;
-			int x = 0;
-		}
-
-		DSWriter[Stage].SetDescriptorSet(DescriptorSet);
-	}
-
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
-	INC_DWORD_STAT_BY(STAT_VulkanNumDescSets, DescriptorSetIndex);
-#endif
-
-	{
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-		SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
-#endif
-		VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
-	}
-
-	return DescriptorSetHandles;
-}
-#else
-bool FVulkanGfxPipelineState::UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer, FVulkanGlobalUniformPool* GlobalUniformPool)
-{
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateDescriptorSets);
-#endif
-
-	check(GlobalUniformPool);
-
-	int32 WriteIndex = 0;
-
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	const FVulkanDescriptorSetsLayout& DescriptorSetLayout = GfxPipeline->Pipeline->GetLayout().GetDescriptorSetsLayout();
-
+	const uint32 HasDescriptorsInSetMask = PipelineDescriptorInfo->HasDescriptorsInSetMask;
 	// Early exit
-	if (DescriptorSetLayout.GetHandles().Num() == 0)
+	if (!HasDescriptorsInSetMask)
 	{
 		return false;
 	}
 
-	// No current descriptor pools set - acquire one and reset
-	if (CmdBuffer->CurrentDescriptorPoolSet == nullptr)
+	bool bNeedsWrite = ShouldAlwaysWriteDescriptors();
+	if (!bNeedsWrite)
 	{
-		CmdBuffer->CurrentDescriptorPoolSet = &Device->GetDescriptorPoolsManager().AcquirePoolSet();
+		for (int32 Index = 0; Index < ShaderStage::NumStages; ++Index)
+		{
+			bNeedsWrite = bNeedsWrite || ResourcesDirtyPerSet[Index];
+		}
 	}
-
-	if (CurrentDescriptorPoolSet == nullptr || CurrentDescriptorPoolSet->GetOwner() != CmdBuffer->CurrentDescriptorPoolSet)
-	{
-		CurrentDescriptorPoolSet = CmdBuffer->CurrentDescriptorPoolSet->AcquirePoolSet(DescriptorSetLayout);
-	}
-
-	if (!CurrentDescriptorPoolSet->AllocateDescriptorSets(DescriptorSetLayout, DescriptorSetHandles.GetData()))
-	{
-		return false;
-	}
-#else
-	DSRingBuffer.CurrDescriptorSets = DSRingBuffer.RequestDescriptorSets(CmdListContext, CmdBuffer, GfxPipeline->Pipeline->GetLayout());
-	if (!DSRingBuffer.CurrDescriptorSets)
-	{
-		return false;
-	}
-
-	const FOLDVulkanDescriptorSets::FDescriptorSetArray& DescriptorSetHandles = DSRingBuffer.CurrDescriptorSets->GetHandles();
-#endif
-	int32 DescriptorSetIndex = 0;
 
 	FVulkanUniformBufferUploader* UniformBufferUploader = CmdListContext->GetUniformBufferUploader();
 	uint8* CPURingBufferBase = (uint8*)UniformBufferUploader->GetCPUMappedPointer();
+	const VkDeviceSize UBOffsetAlignment = Device->GetLimits().minUniformBufferOffsetAlignment;
 
-	static_assert(SF_Geometry + 1 == SF_Compute, "Loop assumes compute is after gfx stages!");
-	for (uint32 Stage = 0; Stage < SF_Compute; Stage++)
+	const FDescriptorSetRemappingInfo* RESTRICT RemappingInfo = PipelineDescriptorInfo->RemappingInfo;
+
+	// Process updates
 	{
-		const FVulkanShader* StageShader = BSS->GetShader((EShaderFrequency)Stage);
-		if (!StageShader)
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
+		SCOPE_CYCLE_COUNTER(STAT_VulkanApplyPackedUniformBuffers);
+#endif
+		uint32 RemainingPackedUBStagesMask = UsedPackedUBStagesMask;
+		int32 Stage = 0;
+		while (RemainingPackedUBStagesMask > 0)
 		{
-			++DescriptorSetIndex;
-			continue;
+			if (RemainingPackedUBStagesMask & 1)
+			{
+				bool bPackedUBChanged = false;
+				uint32 DescriptorSet = RemappingInfo->StageInfos[Stage].PackedUBDescriptorSet;
+				if (PackedUniformBuffersDirty[Stage] != 0)
+				{
+					bPackedUBChanged = UpdatePackedUniformBuffers<bUseDynamicGlobalUBs>(UBOffsetAlignment, RemappingInfo->StageInfos[Stage].PackedUBBindingIndices.GetData(), PackedUniformBuffers[Stage], DSWriter[DescriptorSet], UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty[Stage], CmdBuffer);
+				}
+				bNeedsWrite = bNeedsWrite || bPackedUBChanged;
+			}
+
+			RemainingPackedUBStagesMask >>= 1;
+			++Stage;
 		}
-
-		const FVulkanCodeHeader& CodeHeader = StageShader->GetCodeHeader();
-		if (CodeHeader.NEWDescriptorInfo.DescriptorTypes.Num() == 0)
-		{
-			// Empty set, still has its own index
-			++DescriptorSetIndex;
-			continue;
-		}
-
-		const VkDescriptorSet DescriptorSet = DescriptorSetHandles[DescriptorSetIndex];
-		++DescriptorSetIndex;
-
-		bool bRequiresPackedUBUpdate = (PackedUniformBuffersDirty[Stage] != 0);
-		if (bRequiresPackedUBUpdate)
-		{
-			SCOPE_CYCLE_COUNTER(STAT_VulkanApplyDSUniformBuffers);
-			UpdatePackedUniformBuffers(Device->GetLimits().minUniformBufferOffsetAlignment, CodeHeader, PackedUniformBuffers[Stage], DSWriter[Stage], UniformBufferUploader, CPURingBufferBase, PackedUniformBuffersDirty[Stage]);
-			PackedUniformBuffersDirty[Stage] = 0;
-		}
-
-		bool bRequiresNonPackedUBUpdate = (DSWriter[Stage].DirtyMask != 0);
-		if (!bRequiresNonPackedUBUpdate && !bRequiresPackedUBUpdate)
-		{
-			//#todo-rco: Skip this desc set writes and only call update for the modified ones!
-			//continue;
-			int x = 0;
-		}
-
-		DSWriter[Stage].SetDescriptorSet(DescriptorSet);
 	}
 
-#if VULKAN_ENABLE_AGGRESSIVE_STATS
-	INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
-	INC_DWORD_STAT_BY(STAT_VulkanNumDescSets, DescriptorSetIndex);
-#endif
-
+	// Allocate sets based on what changed
+	if (CmdBuffer->AcquirePoolSetAndDescriptorsIfNeeded(*DescriptorSetsLayout, bNeedsWrite, DescriptorSetHandles.GetData()))
 	{
+		uint32 RemainingSetsMask = HasDescriptorsInSetMask;
+		uint32 Set = 0;
+		uint32 NumSets = 0;
+		while (RemainingSetsMask)
+		{
+			if (RemainingSetsMask & 1)
+			{
+				const VkDescriptorSet DescriptorSet = DescriptorSetHandles[Set];
+				DSWriter[Set].SetDescriptorSet(DescriptorSet);
+				++NumSets;
+			}
+
+			++Set;
+			RemainingSetsMask >>= 1;
+		}
+
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
+		INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
+		INC_DWORD_STAT_BY(STAT_VulkanNumDescSets, NumSets);
 		SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
 #endif
 		VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
+
+		FMemory::Memzero(ResourcesDirtyPerSet);
+		FMemory::Memzero(PackedUniformBuffersDirty);
 	}
 
 	return true;
 }
-#endif
+
+
 void FVulkanCommandListContext::RHISetGraphicsPipelineState(FGraphicsPipelineStateRHIParamRef GraphicsState)
 {
-	FVulkanGraphicsPipelineState* Pipeline = ResourceCast(GraphicsState);
+	FVulkanRHIGraphicsPipelineState* Pipeline = ResourceCast(GraphicsState);
 	
+#if VULKAN_ENABLE_LRU_CACHE
+	if (!Pipeline)
+	{
+		return; // this happens when we immediately evict an cached PSO...the thing is never actually created
+	}
+	FVulkanPipelineStateCacheManager* PipelineStateCache = Device->GetPipelineStateCache();
+	PipelineStateCache->PipelineLRU.Touch(Pipeline);
+#endif
+	check(Pipeline);
+
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
 	if (PendingGfxState->SetGfxPipeline(Pipeline) || !CmdBuffer->bHasPipeline)
 	{
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
 		SCOPE_CYCLE_COUNTER(STAT_VulkanPipelineBind);
-#if VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-		CmdBuffer->SetDescriptorSetsFence(Pipeline->Pipeline->GetLayout());
 #endif
-		PendingGfxState->CurrentPipeline->Pipeline->Bind(CmdBuffer->GetHandle());
+		PendingGfxState->Bind(CmdBuffer->GetHandle(), TransitionAndLayoutManager.CurrentFramebuffer);
 		CmdBuffer->bHasPipeline = true;
 		PendingGfxState->MarkNeedsDynamicStates();
 		PendingGfxState->StencilRef = 0;
@@ -493,7 +439,13 @@ void FVulkanCommandListContext::RHISetGraphicsPipelineState(FGraphicsPipelineSta
 	{
 		for (int32 Index = 0; Index < PendingPixelUAVs.Num(); ++Index)
 		{
-			PendingGfxState->SetUAV(SF_Pixel, PendingPixelUAVs[Index].BindIndex, PendingPixelUAVs[Index].UAV);
+			PendingGfxState->SetUAVForStage(ShaderStage::Pixel, PendingPixelUAVs[Index].BindIndex, PendingPixelUAVs[Index].UAV);
 		}
 	}
 }
+
+
+template bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets<true>(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer);
+template bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets<false>(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer);
+template bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSets<true>(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer);
+template bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSets<false>(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer);

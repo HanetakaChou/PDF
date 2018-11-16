@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "AssetData.h"
 #include "ISourceControlProvider.h"
+#include "UObject/TextProperty.h"
 #include "FileHelpers.generated.h"
 
 class ULevel;
@@ -153,6 +154,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Loading and Saving")
 	static UNREALED_API void ExportScene(bool bExportSelectedActorsOnly);
+
+	/**
+	* Unloads a list of packages
+	*
+	* @param PackagesToUnload Array of packages to unload.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Loading and Saving")
+	static UNREALED_API void UnloadPackages(const TArray<UPackage*>& PackagesToUnload, bool& bOutAnyPackagesUnloaded, FText& OutErrorMessage);
 };
 
 
@@ -477,7 +486,7 @@ public:
 
 	/**
 	 * Checks to see if a filename is valid for saving.
-	 * A filename must be under MAX_UNREAL_FILENAME_LENGTH to be saved
+	 * A filename must be under FPlatformMisc::GetMaxPathLength() to be saved
 	 *
 	 * @param Filename	Filename, with or without path information, to check.
 	 * @param OutError	If an error occurs, this is the reason why

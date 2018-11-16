@@ -30,6 +30,18 @@ public:
 	 * @return Placeholder animation.
 	 */
 	static UMG_API UWidgetAnimation* GetNullAnimation();
+
+	/** @return The friendly name of the animation */
+	UMG_API const FString& GetDisplayLabel() const
+	{
+		return DisplayLabel;
+	}
+
+	/** Sets the friendly name of the animation to display in the editor */
+	UMG_API void SetDisplayLabel(const FString& InDisplayLabel);
+
+	/** Returns the DisplayLabel if set, otherwise the object name */
+	UMG_API virtual FText GetDisplayName() const override;
 #endif
 
 	/**
@@ -67,10 +79,23 @@ public:
 	virtual UObject* GetParentObject(UObject* Object) const override;
 	virtual void UnbindPossessableObjects(const FGuid& ObjectId) override;
 	virtual void LocateBoundObjects(const FGuid& ObjectId, UObject* Context, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
+	virtual UObject* CreateDirectorInstance(IMovieScenePlayer& Player) override;
 	// ~UMovieSceneAnimation overrides
+
+	//~ Begin UObject Interface. 
+	virtual bool IsPostLoadThreadSafe() const override;
+	//~ End UObject Interface
 
 	/** Get Animation bindings of the animation */
 	const TArray<FWidgetAnimationBinding>& GetBindings() const { return AnimationBindings; }
+
+	/** Whether to finish evaluation on stop */
+	bool GetLegacyFinishOnStop() const { return bLegacyFinishOnStop; }
+
+protected:
+
+	/** Called after this object has been deserialized */
+	virtual void PostLoad() override;
 
 public:
 
@@ -81,4 +106,14 @@ public:
 	/**  */
 	UPROPERTY()
 	TArray<FWidgetAnimationBinding> AnimationBindings;
+
+private:
+
+	/** Whether to finish evaluation on stop. This legacy value is to preserve existing asset behavior to NOT finish on stop since content was created with this bug. If this is removed, evaluation should always finish on stop. */
+	UPROPERTY()
+	bool bLegacyFinishOnStop;
+
+	/** The friendly name for this animation displayed in the designer. */
+	UPROPERTY()
+	FString DisplayLabel;
 };

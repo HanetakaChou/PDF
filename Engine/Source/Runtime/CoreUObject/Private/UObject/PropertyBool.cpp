@@ -20,7 +20,7 @@ UBoolProperty::UBoolProperty( const FObjectInitializer& ObjectInitializer )
 	SetBoolSize( 1, false, 1 );
 }
 
-UBoolProperty::UBoolProperty(ECppProperty, int32 InOffset, uint64 InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool)
+UBoolProperty::UBoolProperty(ECppProperty, int32 InOffset, EPropertyFlags InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool)
 	: UProperty(FObjectInitializer::Get(), EC_CppProperty, InOffset, InFlags | CPF_HasGetValueTypeHash)
 	, FieldSize(0)
 	, ByteOffset(0)
@@ -30,7 +30,7 @@ UBoolProperty::UBoolProperty(ECppProperty, int32 InOffset, uint64 InFlags, uint3
 	SetBoolSize(InElementSize, bIsNativeBool, InBitMask);
 }
 
-UBoolProperty::UBoolProperty( const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, uint64 InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool )
+UBoolProperty::UBoolProperty( const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, EPropertyFlags InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool )
 : UProperty( ObjectInitializer, EC_CppProperty, InOffset, InFlags | CPF_HasGetValueTypeHash)
 , FieldSize(0)
 , ByteOffset(0)
@@ -191,10 +191,10 @@ FString UBoolProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 }
 
 template<typename T>
-void LoadFromType(UBoolProperty* Property, const FPropertyTag& Tag, FArchive& Ar, uint8* Data)
+void LoadFromType(UBoolProperty* Property, const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data)
 {
 	T IntValue;
-	Ar << IntValue;
+	Slot << IntValue;
 
 	if (IntValue != 0)
 	{
@@ -212,25 +212,23 @@ void LoadFromType(UBoolProperty* Property, const FPropertyTag& Tag, FArchive& Ar
 	}
 }
 
-bool UBoolProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, bool& bOutAdvanceProperty)
+EConvertFromTypeResult UBoolProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
 {
-	bOutAdvanceProperty = true;
-
 	if (Tag.Type == NAME_IntProperty)
 	{
-		LoadFromType<int32>(this, Tag, Ar, Data);
+		LoadFromType<int32>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_Int8Property)
 	{
-		LoadFromType<int8>(this, Tag, Ar, Data);
+		LoadFromType<int8>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_Int16Property)
 	{
-		LoadFromType<int16>(this, Tag, Ar, Data);
+		LoadFromType<int16>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_Int64Property)
 	{
-		LoadFromType<int64>(this, Tag, Ar, Data);
+		LoadFromType<int64>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_ByteProperty)
 	{
@@ -238,39 +236,36 @@ bool UBoolProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8
 		if (Tag.EnumName == NAME_None)
 		{
 			// If we're a nested property the EnumName tag got lost, don't allow this
-			UProperty* const PropertyOwner = Cast<UProperty>(GetOuterUField());
-
-			if (PropertyOwner)
+			if (GetOuterUField()->IsA<UProperty>())
 			{
-				bOutAdvanceProperty = false;
-				return bOutAdvanceProperty;
+				return EConvertFromTypeResult::UseSerializeItem;
 			}
 
-			LoadFromType<uint8>(this, Tag, Ar, Data);
+			LoadFromType<uint8>(this, Tag, Slot, Data);
 		}
 		else
 		{
-			bOutAdvanceProperty = false;
+			return EConvertFromTypeResult::UseSerializeItem;
 		}
 	}
 	else if (Tag.Type == NAME_UInt16Property)
 	{
-		LoadFromType<uint16>(this, Tag, Ar, Data);
+		LoadFromType<uint16>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_UInt32Property)
 	{
-		LoadFromType<uint32>(this, Tag, Ar, Data);
+		LoadFromType<uint32>(this, Tag, Slot, Data);
 	}
 	else if (Tag.Type == NAME_UInt64Property)
 	{
-		LoadFromType<uint64>(this, Tag, Ar, Data);
+		LoadFromType<uint64>(this, Tag, Slot, Data);
 	}
 	else
 	{
-		bOutAdvanceProperty = false;
+		return EConvertFromTypeResult::UseSerializeItem;
 	}
-			
-	return bOutAdvanceProperty;
+
+	return EConvertFromTypeResult::Converted;
 }
 
 void UBoolProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
@@ -324,12 +319,12 @@ bool UBoolProperty::Identical( const void* A, const void* B, uint32 PortFlags ) 
 	return ((*ByteValueA ^ (B ? *ByteValueB : 0)) & FieldMask) == 0;
 }
 
-void UBoolProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaults ) const
+void UBoolProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults ) const
 {
 	check(FieldSize != 0);
 	uint8* ByteValue = (uint8*)Value + ByteOffset;
 	uint8 B = (*ByteValue & FieldMask) ? 1 : 0;
-	Ar << B;
+	Slot << B;
 	*ByteValue = ((*ByteValue) & ~FieldMask) | (B ? ByteMask : 0);
 }
 

@@ -4,7 +4,7 @@
 #include "IOculusInputModule.h"
 
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
-#include "IInputInterface.h"
+#include "GenericPlatform/IInputInterface.h"
 #include "XRMotionControllerBase.h"
 #include "IHapticDevice.h"
 #include "OculusInputState.h"
@@ -65,10 +65,15 @@ public:
 	virtual void GetHapticFrequencyRange(float& MinFrequency, float& MaxFrequency) const override;
 	virtual float GetHapticAmplitudeScale() const override;
 
+	uint32 GetNumberOfTouchControllers() const;
+
 private:
 
 	/** Applies force feedback settings to the controller */
 	void UpdateForceFeedback( const FOculusTouchControllerPair& ControllerPair, const EControllerHand Hand );
+
+	bool OnControllerButtonPressed( const FOculusButtonState& ButtonState, int32 ControllerId, bool IsRepeat );
+	bool OnControllerButtonReleased( const FOculusButtonState& ButtonState, int32 ControllerId, bool IsRepeat );
 
 private:
 
@@ -81,6 +86,8 @@ private:
 	TArray< FOculusTouchControllerPair > ControllerPairs;
 
 	FOculusRemoteControllerState Remote;
+
+	FOculusTouchpadState Touchpad;
 
 	/** Threshold for treating trigger pulls as button presses, from 0.0 to 1.0 */
 	static float TriggerThreshold;

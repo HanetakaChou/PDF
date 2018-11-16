@@ -55,7 +55,18 @@ public:
 	 * @param ProfileName - The profile name to find.
 	 * @return The found profile.
 	 */
-	UDeviceProfile* FindProfile( const FString& ProfileName );
+	UDeviceProfile* FindProfile( const FString& ProfileName, bool bCreateProfileOnFail = true );
+
+	/**
+	* Overrides the device profile. The original profile can be restored with RestoreDefaultDeviceProfile
+	*/
+	void SetOverrideDeviceProfile(UDeviceProfile* DeviceProfile);
+
+	/**
+	* Restore the device profile to the default for this device
+	*/
+	void RestoreDefaultDeviceProfile();
+
 
 	/**
 	 * Get the device profile .ini name.
@@ -103,6 +114,10 @@ public:
 	* @return The selected profile.
 	*/
 	static const FString GetActiveProfileName();
+	
+	/** Retrieves the value of a scalability group cvar if it was set by the active device profile. */
+	static bool GetScalabilityCVar(const FString& CvarName, int32& OutValue);
+	static bool GetScalabilityCVar(const FString& CvarName, float& OutValue);
 
 private:
 	/**
@@ -150,4 +165,7 @@ private:
 
 	// values of CVars set in HandleDeviceProfileOverrideChange, to be popped later
 	TMap<FString, FString> PushedSettings;
+
+	// Stores any scalability group settings set by the active device profile.
+	static TMap<FString, FString> DeviceProfileScalabilityCVars;
 };

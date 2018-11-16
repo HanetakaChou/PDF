@@ -1,4 +1,4 @@
-// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -361,7 +361,14 @@ namespace AutomationTool
 					}
 					else
 					{
-						File.Copy(SourceName, TargetName, overwrite: true);
+						if(File.Exists(SourceName))
+						{
+							File.Copy(SourceName, TargetName, overwrite: true);
+						}
+						else
+						{
+							Log.TraceWarning("Skip copying file {0} because it doesn't exist.", SourceName);
+						}
 					}
 					Retry = !File.Exists(TargetName);
 					if (!Retry)
@@ -688,30 +695,39 @@ namespace AutomationTool
 		}
 
 		/// <summary>
+		/// Returns true/false based on whether this is the only instance
+		/// running (checked at startup).
+		/// </summary>
+		public static bool IsSoleInstance { get; private set; }
+
+		/// <summary>
 		/// Runs the specified delegate checking if this is the only instance of the application.
 		/// </summary>
 		/// <param name="Main"></param>
 		/// <param name="Param"></param>
-		public static ExitCode RunSingleInstance(Func<object, ExitCode> Main, object Param)
+		public static ExitCode RunSingleInstance(Func<ExitCode> Main)
 		{
-			if (Environment.GetEnvironmentVariable("uebp_UATMutexNoWait") == "1")
-			{
-				return Main(Param);
-			}
+			bool AllowMultipleInsances = (Environment.GetEnvironmentVariable("uebp_UATMutexNoWait") == "1");
+	
 			var bCreatedMutex = false;
             var EntryAssemblyLocation = Assembly.GetEntryAssembly().GetOriginalLocation();
 			var LocationHash = EntryAssemblyLocation.GetHashCode();
             var MutexName = "Global/" + Path.GetFileNameWithoutExtension(EntryAssemblyLocation) + "_" + LocationHash.ToString() + "_Mutex";
 			using (Mutex SingleInstanceMutex = new Mutex(true, MutexName, out bCreatedMutex))
 			{
-				if (!bCreatedMutex)
-				{
-                    throw new AutomationException("A conflicting instance of AutomationTool is already running. Curent location: {0}. A process manager may be used to determine the conflicting process and what tool may have launched it", EntryAssemblyLocation);
+				IsSoleInstance = bCreatedMutex;
+
+				if (!IsSoleInstance && AllowMultipleInsances == false)
+				{ 
+					throw new AutomationException("A conflicting instance of AutomationTool is already running. Curent location: {0}. A process manager may be used to determine the conflicting process and what tool may have launched it", EntryAssemblyLocation);
 				}
 
-				ExitCode Result = Main(Param);
+				ExitCode Result = Main();
 
-				SingleInstanceMutex.ReleaseMutex();
+				if (IsSoleInstance)
+				{
+					SingleInstanceMutex.ReleaseMutex();
+				}
 
 				return Result;
 			}
@@ -729,7 +745,7 @@ namespace AutomationTool
 	                if (Retry > 0)
 	                {
                         //@todo: These retries should be reported so we can track how often they are occurring.
-                        CommandUtils.Log("*** Mac temp storage retry {0}", OutputFileName);
+                        CommandUtils.LogInformation("*** Mac temp storage retry {0}", OutputFileName);
 	                    System.Threading.Thread.Sleep(1000);
 	                }
 	                bCopied = CommandUtils.CopyFile_NoExceptions(InputFileName, OutputFileName, true);
@@ -759,7 +775,7 @@ namespace AutomationTool
 	                while (!bFound && Retry < 60)
 	                {
                         //@todo: These retries should be reported so we can track how often they are occurring.
-                        CommandUtils.Log("*** Mac temp storage retry {0}", Filename);
+                        CommandUtils.LogInformation("*** Mac temp storage retry {0}", Filename);
 	                    System.Threading.Thread.Sleep(10000);
 	                    bFound = CommandUtils.FileExists_NoExceptions(bQuiet, Filename);
 	                    Retry++;
@@ -784,7 +800,7 @@ namespace AutomationTool
 	                while (!bFound && Retry < 60)
 	                {
                         //@todo: These retries should be reported so we can track how often they are occurring.
-                        CommandUtils.Log("*** Mac temp storage retry {0}", Directoryname);
+                        CommandUtils.LogInformation("*** Mac temp storage retry {0}", Directoryname);
 	                    System.Threading.Thread.Sleep(10000);
 	                    bFound = CommandUtils.DirectoryExists_NoExceptions(Directoryname);
 	                    Retry++;
@@ -815,7 +831,7 @@ namespace AutomationTool
 	                while (!bFound && Retry < NumRetries)
 	                {
                         //@todo: These retries should be reported so we can track how often they are occurring.
-                        CommandUtils.Log("*** Mac temp storage retry {0}", Directoryname);
+                        CommandUtils.LogInformation("*** Mac temp storage retry {0}", Directoryname);
 	                    System.Threading.Thread.Sleep(1000);
 	                    bFound = CommandUtils.DirectoryExistsAndIsWritable_NoExceptions(Directoryname);
 	                    Retry++;
@@ -917,7 +933,7 @@ namespace AutomationTool
             {
                 throw new AutomationException("Failed to find MAJOR, MINOR, and PATCH fields from version file {0}", Filename);
             }
-			CommandUtils.Log("Read {0}.{1}.{2} from {3}", foundElements["MAJOR"], foundElements["MINOR"], foundElements["PATCH"], Filename);
+			CommandUtils.LogInformation("Read {0}.{1}.{2} from {3}", foundElements["MAJOR"], foundElements["MINOR"], foundElements["PATCH"], Filename);
             return new Version(foundElements["MAJOR"], foundElements["MINOR"], foundElements["PATCH"]);
         }
 

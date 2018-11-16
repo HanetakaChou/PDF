@@ -147,14 +147,17 @@ int64 FD3D12Resource::NoStateTrackingResourceCount = 0;
 #endif
 
 FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
-	GPUNodeMask VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	ID3D12Resource* InResource,
 	D3D12_RESOURCE_STATES InitialState,
 	D3D12_RESOURCE_DESC const& InDesc,
 	FD3D12Heap* InHeap,
 	D3D12_HEAP_TYPE InHeapType)
-	: Resource(InResource)
+	: FD3D12DeviceChild(ParentDevice)
+	, FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes)
+	, Resource(InResource)
 	, Heap(InHeap)
+	, ResidencyHandle()
 	, Desc(InDesc)
 	, PlaneCount(::GetPlaneCount(Desc.Format))
 	, SubresourceCount(0)
@@ -165,9 +168,6 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	, HeapType(InHeapType)
 	, GPUVirtualAddress(0)
 	, ResourceBaseAddress(nullptr)
-	, ResidencyHandle()
-	, FD3D12DeviceChild(ParentDevice)
-	, FD3D12MultiNodeGPUObject(ParentDevice->GetNodeMask(), VisibleNodes)
 	// NVCHANGE_BEGIN: Add VXGI
 	, bEnableUAVBarriers(true)
 	, bFirstUAVBarrierPlaced(false)
@@ -177,7 +177,7 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	FPlatformAtomics::InterlockedIncrement(&TotalResourceCount);
 #endif
 
-	if (Resource && Desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+	if (Resource)
 	{
 		GPUVirtualAddress = Resource->GetGPUVirtualAddress();
 	}
@@ -225,10 +225,10 @@ void FD3D12Resource::UpdateResidency(FD3D12CommandListHandle& CommandList)
 //	FD3D12 Heap
 /////////////////////////////////////////////////////////////////////
 
-FD3D12Heap::FD3D12Heap(FD3D12Device* Parent, GPUNodeMask VisibleNodes) :
-	ResidencyHandle(),
+FD3D12Heap::FD3D12Heap(FD3D12Device* Parent, FRHIGPUMask VisibleNodes) :
 	FD3D12DeviceChild(Parent),
-	FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibleNodes)
+	FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibleNodes),
+	ResidencyHandle()
 {
 }
 
@@ -286,55 +286,7 @@ HRESULT FD3D12Adapter::CreateCommittedResource(const D3D12_RESOURCE_DESC& InDesc
 	if (SUCCEEDED(hr))
 	{
 		// Set the output pointer
-		*ppOutResource = new FD3D12Resource(GetDevice(HeapProps.CreationNodeMask), HeapProps.VisibleNodeMask, pResource, InitialUsage, InDesc, nullptr, HeapProps.Type);
-		(*ppOutResource)->AddRef();
-
-		// Only track resources that cannot be accessed on the CPU.
-		if (IsCPUInaccessible(HeapProps.Type))
-		{
-			(*ppOutResource)->StartTrackingForResidency();
-		}
-	}
-
-	return hr;
-}
-
-HRESULT FD3D12Adapter::CreatePlacedResourceWithHeap(const D3D12_RESOURCE_DESC& InDesc, const D3D12_HEAP_PROPERTIES& HeapProps, const D3D12_RESOURCE_STATES& InitialUsage, const D3D12_CLEAR_VALUE* ClearValue, FD3D12Resource** ppOutResource)
-{
-	if (!ppOutResource)
-	{
-		return E_POINTER;
-	}
-
-	TRefCountPtr<ID3D12Resource> pResource;
-	FD3D12Heap* Heap = nullptr;
-	HRESULT hr;
-	TRefCountPtr<ID3D12Heap> D3DHeap;
-	D3D12_RESOURCE_ALLOCATION_INFO ResInfo = RootDevice->GetResourceAllocationInfo(HeapProps.VisibleNodeMask, 1, &InDesc);
-	D3D12_HEAP_DESC HeapDesc = {};
-	HeapDesc.Properties = HeapProps;
-	HeapDesc.SizeInBytes = ResInfo.SizeInBytes;
-	HeapDesc.Alignment = 0;
-	HeapDesc.Flags = D3D12_HEAP_FLAG_NONE;
-
-	if (InDesc.Flags & D3D12RHI_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER) //-V616
-	{
-		HeapDesc.Flags |= D3D12RHI_HEAP_FLAG_ALLOW_INDIRECT_BUFFERS; //-V616
-	}
-	hr = RootDevice->CreateHeap(&HeapDesc, IID_PPV_ARGS(D3DHeap.GetInitReference()));
-	check(SUCCEEDED(hr));
-	if (SUCCEEDED(hr))
-	{
-		hr = RootDevice->CreatePlacedResource(D3DHeap, 0, &InDesc, InitialUsage, ClearValue, IID_PPV_ARGS(pResource.GetInitReference()));
-		Heap = new FD3D12Heap(GetDevice(), HeapProps.VisibleNodeMask);
-		Heap->SetHeap(D3DHeap);
-		check(SUCCEEDED(hr));
-	}
-
-	if (SUCCEEDED(hr))
-	{
-		// Set the output pointer
-		*ppOutResource = new FD3D12Resource(GetDevice(HeapProps.CreationNodeMask), HeapProps.VisibleNodeMask, pResource, InitialUsage, InDesc, Heap, HeapProps.Type);
+		*ppOutResource = new FD3D12Resource(GetDevice(FRHIGPUMask(HeapProps.CreationNodeMask).ToIndex()), FRHIGPUMask(HeapProps.VisibleNodeMask), pResource, InitialUsage, InDesc, nullptr, HeapProps.Type);
 		(*ppOutResource)->AddRef();
 
 		// Only track resources that cannot be accessed on the CPU.
@@ -380,9 +332,9 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const D3D12_RESOURCE_DESC& InDesc, F
 	return hr;
 }
 
-HRESULT FD3D12Adapter::CreateBuffer(D3D12_HEAP_TYPE HeapType, GPUNodeMask CreationNode, GPUNodeMask VisibleNodes, uint64 HeapSize, FD3D12Resource** ppOutResource, D3D12_RESOURCE_FLAGS Flags)
+HRESULT FD3D12Adapter::CreateBuffer(D3D12_HEAP_TYPE HeapType, FRHIGPUMask CreationNode, FRHIGPUMask VisibleNodes, uint64 HeapSize, FD3D12Resource** ppOutResource, D3D12_RESOURCE_FLAGS Flags)
 {
-	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(HeapType, CreationNode, VisibleNodes);
+	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(HeapType, (uint32)CreationNode, (uint32)VisibleNodes);
 	return CreateBuffer(HeapProps, HeapSize, ppOutResource, Flags);
 }
 
@@ -408,15 +360,15 @@ HRESULT FD3D12Adapter::CreateBuffer(const D3D12_HEAP_PROPERTIES& HeapProps, uint
 /////////////////////////////////////////////////////////////////////
 
 FD3D12ResourceLocation::FD3D12ResourceLocation(FD3D12Device* Parent)
-	: Type(ResourceLocationType::eUndefined)
+	: FD3D12DeviceChild(Parent)
+	, Type(ResourceLocationType::eUndefined)
 	, UnderlyingResource(nullptr)
+	, ResidencyHandle(nullptr)
+	, Allocator(nullptr)
 	, MappedBaseAddress(nullptr)
 	, GPUVirtualAddress(0)
-	, ResidencyHandle(nullptr)
-	, Size(0)
 	, OffsetFromBaseOfResource(0)
-	, Allocator(nullptr)
-	, FD3D12DeviceChild(Parent)
+	, Size(0)
 	, bTransient(false)
 {
 	FMemory::Memzero(AllocatorData);
@@ -458,10 +410,6 @@ void FD3D12ResourceLocation::InternalClear()
 
 void FD3D12ResourceLocation::TransferOwnership(FD3D12ResourceLocation& Destination, FD3D12ResourceLocation& Source)
 {
-	// Skip if source and dest are the same
-	if (&Source == &Destination)
-		return;
-
 	// Clear out the destination
 	Destination.Clear();
 
@@ -485,13 +433,28 @@ void FD3D12ResourceLocation::Alias(FD3D12ResourceLocation & Destination, FD3D12R
 	Source.GetResource()->AddRef();
 }
 
+void FD3D12ResourceLocation::ReferenceNode(FD3D12Device* DestinationDevice, FD3D12ResourceLocation& Destination, FD3D12ResourceLocation& Source)
+{
+	check(Source.GetResource() != nullptr);
+	Destination.Clear();
+
+	FMemory::Memmove(&Destination, &Source, sizeof(FD3D12ResourceLocation));
+	Destination.SetType(ResourceLocationType::eNodeReference);
+
+	Destination.Parent = DestinationDevice;
+
+	// Addref the source as another resource location references it
+	Source.GetResource()->AddRef();
+}
+
 void FD3D12ResourceLocation::ReleaseResource()
 {
 	switch (Type)
 	{
 	case ResourceLocationType::eStandAlone:
 	{
-		check(UnderlyingResource->GetRefCount() == 1);
+		// Multi-GPU support : because of references, several GPU nodes can refrence the same stand-alone resource.
+		check(UnderlyingResource->GetRefCount() == 1 || GNumExplicitGPUsForRendering > 1);
 		
 		if (UnderlyingResource->ShouldDeferDelete())
 		{
@@ -509,6 +472,7 @@ void FD3D12ResourceLocation::ReleaseResource()
 		Allocator->Deallocate(*this);
 		break;
 	}
+	case ResourceLocationType::eNodeReference:
 	case ResourceLocationType::eAliased:
 	{
 		if (UnderlyingResource->ShouldDeferDelete() && UnderlyingResource->GetRefCount() == 1)
@@ -547,6 +511,11 @@ void FD3D12ResourceLocation::SetResource(FD3D12Resource* Value)
 	check(UnderlyingResource == nullptr);
 	check(ResidencyHandle == nullptr);
 
+	if (Type == ResourceLocationType::eStandAlone)
+	{
+		GPUVirtualAddress = Value->GetGPUVirtualAddress();
+	}
+
 	UnderlyingResource = Value;
 	ResidencyHandle = UnderlyingResource->GetResidencyHandle();
 }
@@ -556,8 +525,8 @@ void FD3D12ResourceLocation::SetResource(FD3D12Resource* Value)
 /////////////////////////////////////////////////////////////////////
 
 FD3D12DynamicBuffer::FD3D12DynamicBuffer(FD3D12Device* InParent)
-	: ResourceLocation(InParent)
-	, FD3D12DeviceChild(InParent)
+	: FD3D12DeviceChild(InParent)
+	, ResourceLocation(InParent)
 {
 }
 
@@ -569,7 +538,7 @@ void* FD3D12DynamicBuffer::Lock(uint32 Size)
 {
 	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
 
-	return 	Adapter->GetUploadHeapAllocator().AllocUploadResource(Size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, ResourceLocation);
+	return 	Adapter->GetUploadHeapAllocator(GetParentDevice()->GetGPUIndex()).AllocUploadResource(Size, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, ResourceLocation);
 }
 
 FD3D12ResourceLocation* FD3D12DynamicBuffer::Unlock()

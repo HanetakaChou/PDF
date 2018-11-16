@@ -9,10 +9,11 @@
 #include "DetailMultiTopLevelObjectRootNode.h"
 #include "ObjectEditorUtils.h"
 
-FDetailLayoutBuilderImpl::FDetailLayoutBuilderImpl(TSharedPtr<FComplexPropertyNode>& InRootNode, FClassToPropertyMap& InPropertyMap, const TSharedRef< class IPropertyUtilities >& InPropertyUtilities, const TSharedPtr< IDetailsViewPrivate >& InDetailsView, bool bIsExternal)
+FDetailLayoutBuilderImpl::FDetailLayoutBuilderImpl(TSharedPtr<FComplexPropertyNode>& InRootNode, FClassToPropertyMap& InPropertyMap, const TSharedRef<IPropertyUtilities>& InPropertyUtilities, const TSharedRef<IPropertyGenerationUtilities>& InPropertyGenerationUtilities, const TSharedPtr< IDetailsViewPrivate >& InDetailsView, bool bIsExternal)
 	: RootNode( InRootNode )
 	, PropertyMap( InPropertyMap )
 	, PropertyDetailsUtilities( InPropertyUtilities )
+	, PropertyGenerationUtilities( InPropertyGenerationUtilities )
 	, DetailsView( InDetailsView.Get() )
 	, CurrentCustomizationClass( nullptr )
 {
@@ -483,6 +484,40 @@ TSharedRef<IPropertyHandle> FDetailLayoutBuilderImpl::GetPropertyHandle( TShared
 void FDetailLayoutBuilderImpl::AddExternalRootPropertyNode(TSharedRef<FComplexPropertyNode> InExternalRootNode)
 {
 	ExternalRootPropertyNodes.Add(InExternalRootNode);
+	if (GetDetailsView())
+	{
+		GetDetailsView()->RestoreExpandedItems(InExternalRootNode);
+	}
+}
+
+void FDetailLayoutBuilderImpl::RemoveExternalRootPropertyNode(TSharedRef<FComplexPropertyNode> InExternalRootNode)
+{
+	ExternalRootPropertyNodes.RemoveAll([InExternalRootNode](TSharedPtr<FComplexPropertyNode> ExternalRootPropertyNode)
+	{
+		return ExternalRootPropertyNode == InExternalRootNode;
+	});
+}
+
+FDelegateHandle FDetailLayoutBuilderImpl::AddNodeVisibilityChangedHandler(FSimpleMulticastDelegate::FDelegate InOnNodeVisibilityChanged)
+{
+	return OnNodeVisibilityChanged.Add(InOnNodeVisibilityChanged);
+}
+
+void FDetailLayoutBuilderImpl::RemoveNodeVisibilityChangedHandler(FDelegateHandle DelegateHandle)
+{
+	OnNodeVisibilityChanged.Remove(DelegateHandle);
+}
+
+void FDetailLayoutBuilderImpl::NotifyNodeVisibilityChanged()
+{
+	OnNodeVisibilityChanged.Broadcast();
+}
+
+IPropertyGenerationUtilities& FDetailLayoutBuilderImpl::GetPropertyGenerationUtilities() const
+{
+	TSharedPtr<IPropertyGenerationUtilities> PropertyGenerationUtilitiesPinned = PropertyGenerationUtilities.Pin();
+	checkf(PropertyGenerationUtilitiesPinned.IsValid(), TEXT("Property generation utilities were destroyed while the layout builder was still in use."));
+	return *PropertyGenerationUtilitiesPinned.Get();
 }
 
 TSharedPtr<FAssetThumbnailPool> FDetailLayoutBuilderImpl::GetThumbnailPool() const

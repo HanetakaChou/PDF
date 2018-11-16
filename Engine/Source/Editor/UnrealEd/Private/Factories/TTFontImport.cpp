@@ -27,13 +27,13 @@
 #endif // WITH_FREETYPE
 
 #if PLATFORM_WINDOWS
-#include "WindowsHWrapper.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 namespace TTFConstants
 {
 	uint32 WIN_SRCCOPY = SRCCOPY;
 }
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif // PLATFORM_WINDOWS
 
 #define USE_FREETYPE (!PLATFORM_WINDOWS && WITH_FREETYPE) // @todo: Enable for Windows when support for bitmap fonts is fixed
@@ -1644,8 +1644,8 @@ void* UTrueTypeFontFactory::LoadFontFace( void* FTLibrary, int32 Height, FFeedba
 
 	if( FontPath )
 	{
-		ANSICHAR AnsiPath[MAX_PATH];
-		if( CFStringGetFileSystemRepresentation( FontPath, AnsiPath, MAX_PATH ) )
+		ANSICHAR AnsiPath[MAC_MAX_PATH];
+		if( CFStringGetFileSystemRepresentation( FontPath, AnsiPath, MAC_MAX_PATH ) )
 		{
 			int32 Error = FT_New_Face( (FT_Library)FTLibrary, AnsiPath, 0, &Face );
 			if( Error != 0 )

@@ -74,6 +74,9 @@ public:
 	UPROPERTY()
 	uint8 bAllowTemplate:1;
 
+	UPROPERTY()
+	uint8 bAllowDynamicCreation:1;
+
 private:
 
 	UPROPERTY()
@@ -84,6 +87,10 @@ private:
 
 	UPROPERTY(Transient)
 	uint8 bCookedTemplate:1;
+
+	/** The classes native parent requires a native tick */
+	UPROPERTY()
+	uint8 bClassRequiresNativeTick:1;
 
 public:
 	UPROPERTY()
@@ -106,7 +113,6 @@ public:
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 	virtual void Serialize(FArchive& Ar) override;
 
-	virtual UObject* CreateDefaultObject() override;
 	virtual void PostLoad() override;
 	virtual bool NeedsLoadForServer() const override;
 	// End UObject interface
@@ -124,11 +130,16 @@ public:
 
 	static void InitializeWidgetStatic(UUserWidget* UserWidget
 		, const UClass* InClass
-		, bool InCanTemplate
+		, bool InHasTemplate
+		, bool InAllowDynamicCreation
 		, UWidgetTree* InWidgetTree
 		, const TArray< UWidgetAnimation* >& InAnimations
 		, const TArray< FDelegateRuntimeBinding >& InBindings);
 
+	bool ClassRequiresNativeTick() const { return bClassRequiresNativeTick; }
+#if WITH_EDITOR
+	void SetClassRequiresNativeTick(bool InClassRequiresNativeTick);
+#endif
 private:
 	void InitializeTemplate(const ITargetPlatform* TargetPlatform);
 

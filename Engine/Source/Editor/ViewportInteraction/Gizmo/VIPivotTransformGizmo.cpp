@@ -43,6 +43,7 @@ APivotTransformGizmo::APivotTransformGizmo() :
 	{
 		return;
 	}
+	bIsEditorOnlyActor = true;
 
 	const UViewportInteractionAssetContainer& AssetContainer = UViewportWorldInteraction::LoadAssetContainer(); 
 	UMaterialInterface* GizmoMaterial = AssetContainer.TransformGizmoMaterial;
@@ -530,7 +531,7 @@ void UPivotRotationGizmoHandleGroup::SetupIndicator(USceneComponent* RootCompone
 	IndicatorMeshComponent->SetupAttachment(RootComponent);
 	IndicatorMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	IndicatorMeshComponent->SetVisibility(false);
-	IndicatorMeshComponent->bGenerateOverlapEvents = false;
+	IndicatorMeshComponent->SetGenerateOverlapEvents(false);
 	IndicatorMeshComponent->SetCanEverAffectNavigation(false);
 	IndicatorMeshComponent->bCastDynamicShadow = true;
 	IndicatorMeshComponent->bCastStaticShadow = false;

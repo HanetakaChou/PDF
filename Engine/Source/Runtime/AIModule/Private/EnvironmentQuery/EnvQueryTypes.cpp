@@ -3,8 +3,8 @@
 #include "EnvironmentQuery/EnvQueryTypes.h"
 #include "UObject/Package.h"
 #include "AI/Navigation/NavAgentInterface.h"
-#include "AI/Navigation/NavigationSystem.h"
-#include "AI/Navigation/RecastNavMesh.h"
+#include "NavigationSystem.h"
+#include "NavMesh/RecastNavMesh.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_VectorBase.h"
 #include "EnvironmentQuery/Items/EnvQueryItemType_ActorBase.h"
 #include "BehaviorTree/BTNode.h"
@@ -268,7 +268,7 @@ namespace FEQSHelpers
 {
 	const ANavigationData* FindNavigationDataForQuery(FEnvQueryInstance& QueryInstance)
 	{
-		const UNavigationSystem* NavSys = QueryInstance.World->GetNavigationSystem();
+		const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(QueryInstance.World);
 		
 		if (NavSys == nullptr)
 		{
@@ -283,7 +283,7 @@ namespace FEQSHelpers
 			return NavSys->GetNavDataForProps(NavAgentProps);
 		}
 
-		return NavSys->GetMainNavData();
+		return NavSys->GetDefaultNavDataInstance();
 	}
 }
 
@@ -363,7 +363,10 @@ void FAIDynamicParam::GenerateConfigurableParamsFromNamedValues(UObject &QueryOw
 // FEQSQueryExecutionParams
 //----------------------------------------------------------------------//
 FEQSParametrizedQueryExecutionRequest::FEQSParametrizedQueryExecutionRequest()
-	: bInitialized(false)
+	: QueryTemplate(nullptr)
+	, RunMode(EEnvQueryRunMode::SingleResult)
+	, bUseBBKeyForQueryTemplate(false)
+	, bInitialized(false)
 {
 	//EQSQueryBlackboardKey.AddObjectFilter(this, GET_MEMBER_NAME_CHECKED(FEQSQueryExecutionParams, EQSQueryBlackboardKey), UEnvQuery::StaticClass());
 }

@@ -60,10 +60,10 @@ IMPLEMENT_SHADER_TYPE(, FMediaShadersVS, TEXT("/Engine/Private/MediaShaders.usf"
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FAYUVConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, Sampler)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, Sampler)
 END_UNIFORM_BUFFER_STRUCT(FAYUVConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FAYUVConvertUB, TEXT("AYUVConvertUB"));
@@ -89,10 +89,10 @@ void FAYUVConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FR
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FBMPConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FVector2D, UVScale)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, Sampler)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, Sampler)
 END_UNIFORM_BUFFER_STRUCT(FBMPConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FBMPConvertUB, TEXT("BMPConvertUB"));
@@ -118,13 +118,13 @@ void FBMPConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRH
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FNV12ConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, OutputWidth)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FVector2D, UVScale)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerB)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerP)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, OutputWidth)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerB)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerP)
 END_UNIFORM_BUFFER_STRUCT(FNV12ConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FNV12ConvertUB, TEXT("NV12ConvertUB"));
@@ -153,13 +153,13 @@ void FNV12ConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FR
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FNV21ConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, OutputWidth)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FVector2D, UVScale)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerB)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerP)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, OutputWidth)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerB)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerP)
 END_UNIFORM_BUFFER_STRUCT(FNV21ConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FNV21ConvertUB, TEXT("NV21ConvertUB"));
@@ -188,20 +188,22 @@ void FNV21ConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FR
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FRGBConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FVector2D, UVScale)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, Sampler)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, Sampler)
 END_UNIFORM_BUFFER_STRUCT(FRGBConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FRGBConvertUB, TEXT("RGBConvertUB"));
 IMPLEMENT_SHADER_TYPE(, FRGBConvertPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("RGBConvertPS"), SF_Pixel);
 
 
-void FRGBConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> RGBTexture, const FIntPoint& OutputDimensions)
+void FRGBConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> RGBTexture, const FIntPoint& OutputDimensions, bool bSrgbToLinear)
 {
 	FRGBConvertUB UB;
 	{
 		UB.Sampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+		UB.SrgbToLinear = bSrgbToLinear;
 		UB.Texture = RGBTexture;
 		UB.UVScale = FVector2D((float)OutputDimensions.X / (float)RGBTexture->GetSizeX(), (float)OutputDimensions.Y / (float)RGBTexture->GetSizeY());
 	}
@@ -215,12 +217,12 @@ void FRGBConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRH
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FYCbCrConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, LumaTexture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, CbCrTexture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, LumaSampler)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, CbCrSampler)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER_TEXTURE(Texture2D, LumaTexture)
+UNIFORM_MEMBER_TEXTURE(Texture2D, CbCrTexture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, LumaSampler)
+UNIFORM_MEMBER_SAMPLER(SamplerState, CbCrSampler)
 END_UNIFORM_BUFFER_STRUCT(FYCbCrConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FYCbCrConvertUB, TEXT("YCbCrConvertUB"));
@@ -249,12 +251,12 @@ void FYCbCrConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<F
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FUYVYConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, Width)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerB)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerP)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(uint32, Width)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerB)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerP)
 END_UNIFORM_BUFFER_STRUCT(FUYVYConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FUYVYConvertUB, TEXT("UYVYConvertUB"));
@@ -282,21 +284,22 @@ void FUYVYConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FR
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FYUVConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, YTexture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, UTexture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, VTexture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, YSampler)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, USampler)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, VSampler)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER_TEXTURE(Texture2D, YTexture)
+UNIFORM_MEMBER_TEXTURE(Texture2D, UTexture)
+UNIFORM_MEMBER_TEXTURE(Texture2D, VTexture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, YSampler)
+UNIFORM_MEMBER_SAMPLER(SamplerState, USampler)
+UNIFORM_MEMBER_SAMPLER(SamplerState, VSampler)
 END_UNIFORM_BUFFER_STRUCT(FYUVConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FYUVConvertUB, TEXT("YUVConvertUB"));
 IMPLEMENT_SHADER_TYPE(, FYUVConvertPS, TEXT("/Engine/Private/MediaShaders.usf"), TEXT("YUVConvertPS"), SF_Pixel);
 
 
-void FYUVConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> YTexture, TRefCountPtr<FRHITexture2D> UTexture, TRefCountPtr<FRHITexture2D> VTexture, const FMatrix& ColorTransform, bool SrgbToLinear)
+void FYUVConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRHITexture2D> YTexture, TRefCountPtr<FRHITexture2D> UTexture, TRefCountPtr<FRHITexture2D> VTexture, const FIntPoint& OutputDimensions, const FMatrix& ColorTransform, bool SrgbToLinear)
 {
 	FYUVConvertUB UB;
 	{
@@ -308,6 +311,7 @@ void FYUVConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRH
 		UB.YSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 		UB.USampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 		UB.VSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+		UB.UVScale = FVector2D((float) OutputDimensions.X / (float) YTexture->GetSizeX(), (float) OutputDimensions.Y / (float) YTexture->GetSizeY());
 	}
 
 	TUniformBufferRef<FYUVConvertUB> Data = TUniformBufferRef<FYUVConvertUB>::CreateUniformBufferImmediate(UB, UniformBuffer_SingleFrame);
@@ -319,13 +323,13 @@ void FYUVConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FRH
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FYUY2ConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, OutputWidth)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FVector2D, UVScale)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerB)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerP)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, OutputWidth)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(FVector2D, UVScale)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerB)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerP)
 END_UNIFORM_BUFFER_STRUCT(FYUY2ConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FYUY2ConvertUB, TEXT("YUY2ConvertUB"));
@@ -354,12 +358,12 @@ void FYUY2ConvertPS::SetParameters(FRHICommandList& CommandList, TRefCountPtr<FR
  *****************************************************************************/
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FYVYUConvertUB, )
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(FMatrix, ColorTransform)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, SrgbToLinear)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER(uint32, Width)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_TEXTURE(Texture2D, Texture)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerB)
-DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER_SAMPLER(SamplerState, SamplerP)
+UNIFORM_MEMBER(FMatrix, ColorTransform)
+UNIFORM_MEMBER(uint32, SrgbToLinear)
+UNIFORM_MEMBER(uint32, Width)
+UNIFORM_MEMBER_TEXTURE(Texture2D, Texture)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerB)
+UNIFORM_MEMBER_SAMPLER(SamplerState, SamplerP)
 END_UNIFORM_BUFFER_STRUCT(FYVYUConvertUB)
 
 IMPLEMENT_UNIFORM_BUFFER_STRUCT(FYVYUConvertUB, TEXT("YVYUConvertUB"));

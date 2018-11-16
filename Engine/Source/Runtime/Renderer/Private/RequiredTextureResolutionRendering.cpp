@@ -16,7 +16,8 @@ void FRequiredTextureResolutionPS::SetParameters(
 	const FShader* OriginalPS, 
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const FMaterial& Material,
-	const FSceneView& View
+	const FSceneView& View,
+	const FDrawingPolicyRenderState& DrawRenderState
 	)
 {
 	const int32 NumEngineColors = FMath::Min<int32>(GEngine->StreamingAccuracyColors.Num(), NumStreamingAccuracyColors);
@@ -93,7 +94,7 @@ void FRequiredTextureResolutionPS::SetParameters(
 
 	SetShaderValue(RHICmdList, FMeshMaterialShader::GetPixelShader(), AnalysisParamsParameter, FIntVector4(AnalysisIndex, TextureResolution, 0, 0));
 
-	FMeshMaterialShader::SetParameters(RHICmdList, FMeshMaterialShader::GetPixelShader(), MaterialRenderProxy, Material, View, View.ViewUniformBuffer, ESceneRenderTargetsMode::SetTextures);
+	FMeshMaterialShader::SetParameters(RHICmdList, FMeshMaterialShader::GetPixelShader(), MaterialRenderProxy, Material, View, DrawRenderState.GetViewUniformBuffer(), DrawRenderState.GetPassUniformBuffer());
 }
 
 void FRequiredTextureResolutionPS::SetMesh(

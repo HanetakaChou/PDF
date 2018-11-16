@@ -53,6 +53,7 @@ public:
 	virtual FVector2D GetSoftwareCursorPosition() const override { return SoftwareCursorPosition; }
 	virtual FCanvas* GetDebugCanvas() override;
 	virtual float GetDisplayGamma() const override;
+	virtual void EnqueueEndRenderFrame(const bool bLockToVsync, const bool bShouldPresent) override;
 
 	/** Gets the proper RenderTarget based on the current thread*/
 	virtual const FTexture2DRHIRef& GetRenderTargetTexture() const;
@@ -124,7 +125,7 @@ public:
 	TWeakPtr<SViewport> GetViewportWidget() const { return ViewportWidget; }
 
 	/** Called before BeginRenderFrame is enqueued */
-	virtual void EnqueueBeginRenderFrame() override;
+	virtual void EnqueueBeginRenderFrame(const bool bShouldPresent) override;
 
 	/** Called when a frame starts to render */
 	virtual void BeginRenderFrame(FRHICommandListImmediate& RHICmdList) override;
@@ -225,7 +226,9 @@ public:
 	virtual FReply OnTouchStarted( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchMoved( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchEnded( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
-	virtual FReply OnTouchGesture( const FGeometry& MyGeometry, const FPointerEvent& InGestureEvent ) override;
+	virtual FReply OnTouchForceChanged(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent) override;
+	virtual FReply OnTouchFirstMove(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent) override;
+	virtual FReply OnTouchGesture(const FGeometry& MyGeometry, const FPointerEvent& InGestureEvent) override;
 	virtual FReply OnMotionDetected( const FGeometry& MyGeometry, const FMotionEvent& InMotionEvent ) override;
 	virtual FPopupMethodReply OnQueryPopupMethod() const override;
 	virtual bool HandleNavigation(const uint32 InUserIndex, TSharedPtr<SWidget> InDestination) override;
@@ -245,6 +248,7 @@ public:
 	virtual FIntPoint GetSize() const override { return GetSizeXY(); }
 	
 	void SetViewportSize(uint32 NewSizeX,uint32 NewSizeY);
+	void SetFixedViewportSize(uint32 NewSizeX, uint32 NewSizeY);
 	TSharedPtr<SWindow> FindWindow();
 
 	/** Should return true, if stereo rendering is allowed in this viewport */
@@ -258,12 +262,17 @@ public:
 	/** Get the cached viewport geometry. */
 	const FGeometry& GetCachedGeometry() const { return CachedGeometry; }
 
-
 	/** Set an optional display gamma to use for this viewport */
 	void SetGammaOverride(const float InGammaOverride)
 	{
 		ViewportGammaOverride = InGammaOverride;
 	};
+
+	/** Sets the debug canvas used to display FCanvas on top of this viewport */
+	void SetDebugCanvas(TSharedPtr<class SDebugCanvas> InDebugCanvas);
+
+	/** Adds a draw element for the debug canvas.  Called externally by a widget that manages where the debug canvas draws */
+	void PaintDebugCanvas(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
 
 private:
 	/**
@@ -308,7 +317,7 @@ private:
 	 * @param InGeometry	The geometry of the viewport to convert to local space
 	 * @param InMouseEvent	The mouse event containing the position of the mouse in absolute space
 	 */
-	void UpdateCachedMousePos( const FGeometry& InGeometry, const FPointerEvent& InMouseEvent );
+	void UpdateCachedCursorPos( const FGeometry& InGeometry, const FPointerEvent& InMouseEvent );
 
 	/**
 	 * Updates the cached viewport geometry
@@ -371,11 +380,11 @@ private:
 	/** A mapping of key names to their pressed state */
 	TMap<FKey,bool> KeyStateMap;
 	/** The last known mouse position in local space, -1, -1 if unknown */
-	FIntPoint CachedMousePos;
+	FIntPoint CachedCursorPos;
 	/** The last known geometry info */
 	FGeometry CachedGeometry;
 	/** Mouse position before the latest capture */
-	FIntPoint PreCaptureMousePos;
+	FIntPoint PreCaptureCursorPos;
 	/**	The current position of the software cursor */
 	FVector2D SoftwareCursorPosition;
 	/**	Whether the software cursor should be drawn in the viewport */
@@ -384,6 +393,8 @@ private:
 	TSharedPtr<class FDebugCanvasDrawer, ESPMode::ThreadSafe> DebugCanvasDrawer;
 	/** The Slate viewport widget where this viewport is drawn */
 	TWeakPtr<SViewport> ViewportWidget;
+	/** Debug canvas widget we invalidate if our FCanvas has draw elements */
+	TWeakPtr<SDebugCanvas> DebugCanvas;
 	/** The number of input samples in X since input was was last processed */
 	int32 NumMouseSamplesX;
 	/** The number of input samples in Y since input was was last processed */
@@ -402,6 +413,8 @@ private:
 	bool bForceSeparateRenderTarget;
 	/** Whether or not we are currently resizing */
 	bool bIsResizing;
+	/** Do not resize the RenderTarget when resizing */
+	bool bForceViewportSize;
 	/** Delegate that is fired off in ResizeFrame after ResizeViewport */
 	FOnSceneViewportResize OnSceneViewportResizeDel;
 	/** Whether the PIE viewport is currently in simulate in editor mode */

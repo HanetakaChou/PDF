@@ -38,15 +38,6 @@ namespace ETangentOptions
 	};
 };
 
-enum class ELightmapUVVersion : int32
-{
-	BitByBit = 0,
-	Segments = 1,
-	SmallChartPacking = 2,
-	ScaleChartsOrderingFix = 3,
-	Latest = ScaleChartsOrderingFix
-};
-
 /**
 *	Contains the vertices that are most dominated by that bone. Vertices are in Bone space.
 *	Not used at runtime, but useful for fitting physics assets etc.
@@ -57,6 +48,8 @@ struct FBoneVertInfo
 	TArray<FVector>	Positions;
 	TArray<FVector>	Normals;
 };
+
+struct FOverlappingCorners;
 
 class IMeshUtilities : public IModuleInterface
 {
@@ -144,10 +137,12 @@ public:
 	*
 	* @param RawMesh - Raw Mesh to generate UV coordinates for
 	* @param TextureResolution - Texture resolution to take into account while generating the UVs
+	* @param bMergeIdenticalMaterials - Whether faces with identical materials can be treated as one in the resulting set of unique UVs
 	* @param OutTexCoords - New set of UV coordinates
 	* @return bool - whether or not generating the UVs succeeded
 	*/
 	virtual bool GenerateUniqueUVsForStaticMesh(const FRawMesh& RawMesh, int32 TextureResolution, TArray<FVector2D>& OutTexCoords) const = 0;
+	virtual bool GenerateUniqueUVsForStaticMesh(const FRawMesh& RawMesh, int32 TextureResolution, bool bMergeIdenticalMaterials, TArray<FVector2D>& OutTexCoords) const = 0;
 	
 	/** Returns the mesh reduction plugin if available. */
 	virtual IMeshReduction* GetStaticMeshReductionInterface() = 0;
@@ -176,7 +171,7 @@ public:
 		TArray<TArray<uint32> >& OutPerSectionIndices,
 		TArray<int32>& OutWedgeMap,
 		const FRawMesh& RawMesh,
-		const TMultiMap<int32, int32>& OverlappingCorners,
+		const FOverlappingCorners& OverlappingCorners,
 		const TMap<uint32, uint32>& MaterialToSectionMapping,
 		float ComparisonThreshold,
 		FVector BuildScale,
@@ -229,9 +224,9 @@ public:
 	virtual bool BuildSkeletalMesh( 
 		FSkeletalMeshLODModel& LODModel,
 		const FReferenceSkeleton& RefSkeleton,
-		const TArray<FVertInfluence>& Influences, 
-		const TArray<FMeshWedge>& Wedges, 
-		const TArray<FMeshFace>& Faces, 
+		const TArray<SkeletalMeshImportData::FVertInfluence>& Influences,
+		const TArray<SkeletalMeshImportData::FMeshWedge>& Wedges,
+		const TArray<SkeletalMeshImportData::FMeshFace>& Faces,
 		const TArray<FVector>& Points,
 		const TArray<int32>& PointToOriginalMap,
 		const MeshBuildOptions& BuildOptions = MeshBuildOptions(),
@@ -332,12 +327,12 @@ public:
 	 * @param InVertices Vertices that make up the mesh
 	 * @param InIndices Indices for the Vertex array
 	 * @param bIgnoreDegenerateTriangles Indicates if we should skip degenerate triangles
-	 * @param OutOverlappingCorners MultiMap to hold the overlapping corners. For a vertex, lists all the overlapping vertices.
+	 * @param OutOverlappingCorners Container to hold the overlapping corners. For a vertex, lists all the overlapping vertices.
 	 */
-	virtual void CalculateOverlappingCorners(const TArray<FVector>& InVertices, const TArray<uint32>& InIndices, bool bIgnoreDegenerateTriangles, TMultiMap<int32, int32>& OutOverlappingCorners) const = 0;
+	virtual void CalculateOverlappingCorners(const TArray<FVector>& InVertices, const TArray<uint32>& InIndices, bool bIgnoreDegenerateTriangles, FOverlappingCorners& OutOverlappingCorners) const = 0;
 
 	virtual void RecomputeTangentsAndNormalsForRawMesh(bool bRecomputeTangents, bool bRecomputeNormals, const FMeshBuildSettings& InBuildSettings, FRawMesh &OutRawMesh) const = 0;
-	virtual void RecomputeTangentsAndNormalsForRawMesh(bool bRecomputeTangents, bool bRecomputeNormals, const FMeshBuildSettings& InBuildSettings, const TMultiMap<int32, int32>& InOverlappingCorners, FRawMesh &OutRawMesh) const = 0;
+	virtual void RecomputeTangentsAndNormalsForRawMesh(bool bRecomputeTangents, bool bRecomputeNormals, const FMeshBuildSettings& InBuildSettings, const FOverlappingCorners& InOverlappingCorners, FRawMesh &OutRawMesh) const = 0;
 
-	virtual void FindOverlappingCorners(TMultiMap<int32, int32>& OutOverlappingCorners, const TArray<FVector>& InVertices, const TArray<uint32>& InIndices, float ComparisonThreshold) const = 0;
+	virtual void FindOverlappingCorners(FOverlappingCorners& OutOverlappingCorners, const TArray<FVector>& InVertices, const TArray<uint32>& InIndices, float ComparisonThreshold) const = 0;
 };

@@ -47,6 +47,7 @@ public:
 	FShaderResourceParameter MiniFontTexture;
 	FShaderParameter InverseGamma;
 	FShaderParameter HistogramParams;
+	FShaderParameter ViewportCenterUV;
 
 	FShaderParameter ColorMatrixR_ColorCurveCd1;
 	FShaderParameter ColorMatrixG_ColorCurveCd3Cm3;
@@ -67,7 +68,8 @@ public:
 		EyeAdaptationParams.Bind(Initializer.ParameterMap, TEXT("EyeAdaptationParams"));
 		MiniFontTexture.Bind(Initializer.ParameterMap, TEXT("MiniFontTexture"));
 		InverseGamma.Bind(Initializer.ParameterMap,TEXT("InverseGamma"));
-		HistogramParams.Bind(Initializer.ParameterMap,TEXT("HistogramParams"));
+		HistogramParams.Bind(Initializer.ParameterMap, TEXT("HistogramParams"));
+		ViewportCenterUV.Bind(Initializer.ParameterMap, TEXT("ViewportCenterUV"));
 
 		ColorMatrixR_ColorCurveCd1.Bind(Initializer.ParameterMap, TEXT("ColorMatrixR_ColorCurveCd1"));
 		ColorMatrixG_ColorCurveCd3Cm3.Bind(Initializer.ParameterMap, TEXT("ColorMatrixG_ColorCurveCd3Cm3"));
@@ -126,6 +128,16 @@ public:
 		}
 
 		{
+			FIntPoint CenterPixelCoord = Context.SceneColorViewRect.Min + Context.SceneColorViewRect.Size() / 2;
+
+			FVector2D Value;
+			Value.X = (CenterPixelCoord.X + 0.5f) / float(Context.ReferenceBufferSize.X);
+			Value.Y = (CenterPixelCoord.Y + 0.5f) / float(Context.ReferenceBufferSize.Y);
+
+			SetShaderValue(RHICmdList, ShaderRHI, ViewportCenterUV, Value);
+		}
+
+		{
 			FIntPoint GatherExtent = FRCPassPostProcessHistogram::ComputeGatherExtent(Context);
 
 			uint32 TexelPerThreadGroupX = FRCPassPostProcessHistogram::ThreadGroupSizeX * FRCPassPostProcessHistogram::LoopCountX;
@@ -144,7 +156,11 @@ public:
 
 		{
 			FVector4 Constants[8];
-			FilmPostSetConstants(Constants, ~0, &Context.View.FinalPostProcessSettings, false);
+			FilmPostSetConstants(Constants, &Context.View.FinalPostProcessSettings,
+				/* bMobile = */ false,
+				/* UseColorMatrix = */ true,
+				/* UseShadowTint = */ true,
+				/* UseContrast = */ true);
 			SetShaderValue(RHICmdList, ShaderRHI, ColorMatrixR_ColorCurveCd1, Constants[0]);
 			SetShaderValue(RHICmdList, ShaderRHI, ColorMatrixG_ColorCurveCd3Cm3, Constants[1]);
 			SetShaderValue(RHICmdList, ShaderRHI, ColorMatrixB_ColorCurveCm2, Constants[2]);
@@ -160,7 +176,7 @@ public:
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << EyeAdaptationParams << MiniFontTexture << InverseGamma << HistogramParams
+		Ar << PostprocessParameter << EyeAdaptationParams << MiniFontTexture << InverseGamma << HistogramParams << ViewportCenterUV
 			<< ColorMatrixR_ColorCurveCd1 << ColorMatrixG_ColorCurveCd3Cm3 << ColorMatrixB_ColorCurveCm2 << ColorCurve_Cm0Cd0_Cd2_Ch0Cm1_Ch3 
 			<< ColorCurve_Ch1_Ch2 << ColorShadow_Luma << ColorShadow_Tint1 << ColorShadow_Tint2 << EyeAdaptationTexture;
 		return bShaderHasOutdatedParameters;
@@ -181,6 +197,16 @@ FString LogToString(float LogValue)
 	}
 }
 
+FORCEINLINE float LuminanceToEV100(float Luminance)
+{
+	return FMath::Log2(Luminance / 1.2f);
+}
+
+FORCEINLINE float Log2ToEV100(float Log2)
+{
+	return Log2 - 0.263f; // Where .263 is log2(1.2)
+}
+
 void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_DRAW_EVENT(Context.RHICmdList, PostProcessVisualizeHDR);
@@ -192,15 +218,19 @@ void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Con
 		return;
 	}
 
+	static const auto VarDefaultAutoExposureExtendDefaultLuminanceRange = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+	const bool bExtendedLuminanceRange = VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnRenderThread() == 1;
+
 	const FViewInfo& View = Context.View;
 	const FViewInfo& ViewInfo = Context.View;
 	const FSceneViewFamily& ViewFamily = *(View.Family);
-	
-	FIntRect SrcRect = Context.SceneColorViewRect;
-	FIntRect DestRect = Context.SceneColorViewRect;
-	FIntPoint SrcSize = InputDesc->Extent;
+	const EAutoExposureMethod AutoExposureMethod = GetAutoExposureMethod(ViewInfo);
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
+
+	FIntRect SrcRect = Context.SceneColorViewRect;
+	FIntRect DestRect = Context.GetSceneColorDestRect(DestRenderTarget);
+	FIntPoint SrcSize = InputDesc->Extent;
 
 	// Set the view family's render target/viewport.
 	SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
@@ -227,7 +257,7 @@ void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Con
 	// Draw a quad mapping scene color to the view's render target
 	DrawRectangle(
 		Context.RHICmdList,
-		DestRect.Min.X, DestRect.Min.Y,
+		0, 0,
 		DestRect.Width(), DestRect.Height(),
 		SrcRect.Min.X, SrcRect.Min.Y,
 		SrcRect.Width(), SrcRect.Height(),
@@ -239,36 +269,38 @@ void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Con
 	FRenderTargetTemp TempRenderTarget(View, (const FTexture2DRHIRef&)DestRenderTarget.TargetableTexture);
 	FCanvas Canvas(&TempRenderTarget, NULL, ViewFamily.CurrentRealTime, ViewFamily.CurrentWorldTime, ViewFamily.DeltaWorldTime, Context.GetFeatureLevel());
 
-	float X = 30;
-	float Y = 28;
+	float X = DestRect.Min.X + 30;
+	float Y = DestRect.Min.Y + 28;
 	const float YStep = 14;
 	const float ColumnWidth = 250;
 
 	FString Line;
 
-	Line = FString::Printf(TEXT("HDR Histogram (Logarithmic, max of RGB)"));
+	Line = FString::Printf(TEXT("HDR Histogram (EV100, max of RGB)"));
 	Canvas.DrawShadowedString( X, Y += YStep, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
-	
 	
 	Y += 160;
 
-	float MinX = 64 + 10;
-	float MaxY = SrcRect.Max.Y - 64;
-	float SizeX = SrcRect.Size().X - 64 * 2 - 20;
+	float MinX = DestRect.Min.X + 64 + 10;
+	float MaxY = DestRect.Max.Y - 64;
+	float SizeX = DestRect.Size().X - 64 * 2 - 20;
 
 	for(uint32 i = 0; i <= 4; ++i)
 	{
 		int XAdd = (int)(i * SizeX / 4);
 		float HistogramPosition =  i / 4.0f;
-		float LogValue = FMath::Lerp(View.FinalPostProcessSettings.HistogramLogMin, View.FinalPostProcessSettings.HistogramLogMax, HistogramPosition);
+		float EV100Value = FMath::Lerp(View.FinalPostProcessSettings.HistogramLogMin, View.FinalPostProcessSettings.HistogramLogMax, HistogramPosition);
+		if (!bExtendedLuminanceRange)
+		{	
+			// In this case the post process settings are actually Log2 values.
+			EV100Value = Log2ToEV100(EV100Value);
+		}
 
-		Line = FString::Printf(TEXT("%.2g"), LogValue);
-		Canvas.DrawShadowedString( MinX + XAdd - 5, MaxY, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
-		Line = LogToString(LogValue);
-		Canvas.DrawShadowedString( MinX + XAdd - 5, MaxY + YStep, *Line, GetStatsFont(), FLinearColor(0.3f, 0.3f, 1));
+		Line = FString::Printf(TEXT("%.2g"), EV100Value);
+		Canvas.DrawShadowedString( MinX + XAdd - 5, MaxY + YStep, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
 	}
 	Y += 3 * YStep;
-	if (GetAutoExposureMethod(ViewInfo) == EAutoExposureMethod::AEM_Basic)
+	if (AutoExposureMethod == EAutoExposureMethod::AEM_Basic)
 	{
 		Line = FString::Printf(TEXT("Basic"));
 	} 
@@ -283,31 +315,45 @@ void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Con
 	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Percent Low/High:"), GetStatsFont(), FLinearColor(1, 1, 1));
 	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
 
-	Line = FString::Printf(TEXT("%g .. %g"), View.FinalPostProcessSettings.AutoExposureMinBrightness, View.FinalPostProcessSettings.AutoExposureMaxBrightness);
-	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Brightness Min/Max:"), GetStatsFont(), FLinearColor(1, 1, 1));
+	if (bExtendedLuminanceRange)
+	{
+		Line = FString::Printf(TEXT("%.1f .. %.1f"), View.FinalPostProcessSettings.AutoExposureMinBrightness, View.FinalPostProcessSettings.AutoExposureMaxBrightness);
+	}
+	else
+	{
+		Line = FString::Printf(TEXT("%.1f .. %.1f"), LuminanceToEV100(View.FinalPostProcessSettings.AutoExposureMinBrightness), LuminanceToEV100(View.FinalPostProcessSettings.AutoExposureMaxBrightness));
+	}
+	Canvas.DrawShadowedString( X, Y += YStep, TEXT("EV100 Min/Max"), GetStatsFont(), FLinearColor(1, 1, 1));
 	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(0.3f, 0.3f, 1));
 
 	Line = FString::Printf(TEXT("%g / %g"), View.FinalPostProcessSettings.AutoExposureSpeedUp, View.FinalPostProcessSettings.AutoExposureSpeedDown);
 	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Speed Up/Down:"), GetStatsFont(), FLinearColor(1, 1, 1));
 	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 1, 1));
 
-	Line = FString::Printf(TEXT("%g"), View.FinalPostProcessSettings.AutoExposureBias);
-	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Exposure Bias: "), GetStatsFont(), FLinearColor(1, 1, 1));
+	Line = FString::Printf(TEXT("%.2g"), View.FinalPostProcessSettings.AutoExposureBias);
+	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Exposure Compensation: "), GetStatsFont(), FLinearColor(1, 1, 1));
 	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
 
-	Line = FString::Printf(TEXT("%g"), View.FinalPostProcessSettings.AutoExposureCalibrationConstant);
-	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Calibration Constant: "), GetStatsFont(), FLinearColor(1, 1, 1));
-	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
+	if (AutoExposureMethod == AEM_Basic || AutoExposureMethod == AEM_Histogram)
+	{
+		Line = FString::Printf(TEXT("%g%%"), AutoExposureMethod == AEM_Basic ? View.FinalPostProcessSettings.AutoExposureCalibrationConstant : 100.f);
+		Canvas.DrawShadowedString( X, Y += YStep, TEXT("Calibration Constant: "), GetStatsFont(), FLinearColor(1, 1, 1));
+		Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
+	}
 
-	Line = FString::Printf(TEXT("%g .. %g (log2)"),
-		View.FinalPostProcessSettings.HistogramLogMin, View.FinalPostProcessSettings.HistogramLogMax);
-	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Log Min/Max:"), GetStatsFont(), FLinearColor(1, 1, 1));
-	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(1, 0.3f, 0.3f));
-	Line = FString::Printf(TEXT("%s .. %s (Value)"),
-		*LogToString(View.FinalPostProcessSettings.HistogramLogMin), *LogToString(View.FinalPostProcessSettings.HistogramLogMax));
-	Canvas.DrawShadowedString( X + ColumnWidth, Y+= YStep, *Line, GetStatsFont(), FLinearColor(0.3f, 0.3f, 1));
+	if (bExtendedLuminanceRange)
+	{
+		Line = FString::Printf(TEXT("%.1f .. %.1f"), View.FinalPostProcessSettings.HistogramLogMin, View.FinalPostProcessSettings.HistogramLogMax);
+	}
+	else
+	{
+		Line = FString::Printf(TEXT("%.1f .. %.1f"), Log2ToEV100(View.FinalPostProcessSettings.HistogramLogMin), Log2ToEV100(View.FinalPostProcessSettings.HistogramLogMax));
+	}
 
-	if (GetAutoExposureMethod(ViewInfo) == EAutoExposureMethod::AEM_Basic)
+	Canvas.DrawShadowedString( X, Y += YStep, TEXT("Histogram EV100 Min/Max:"), GetStatsFont(), FLinearColor(1, 1, 1));
+	Canvas.DrawShadowedString( X + ColumnWidth, Y, *Line, GetStatsFont(), FLinearColor(0.3f, 0.3f, 1));
+
+	if (AutoExposureMethod == EAutoExposureMethod::AEM_Basic)
 	{
 		Line = FString::Printf(TEXT("%g"), GetBasicAutoExposureFocus());
 		Canvas.DrawShadowedString(X, Y += YStep, TEXT("Weighting Focus: "), GetStatsFont(), FLinearColor(1, 1, 1));
@@ -316,7 +362,7 @@ void FRCPassPostProcessVisualizeHDR::Process(FRenderingCompositePassContext& Con
 
 	Canvas.Flush_RenderThread(Context.RHICmdList);
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 }
 
 FPooledRenderTargetDesc FRCPassPostProcessVisualizeHDR::ComputeOutputDesc(EPassOutputId InPassOutputId) const

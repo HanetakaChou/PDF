@@ -7,17 +7,22 @@ public class OnlineSubsystemNull : ModuleRules
 {
 	public OnlineSubsystemNull(ReadOnlyTargetRules Target) : base(Target)
     {
-		PublicDefinitions.Add("ONLINESUBSYSTEMNULL_PACKAGE=1");
+		PrivateDefinitions.Add("ONLINESUBSYSTEMNULL_PACKAGE=1");
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PrivateDependencyModuleNames.AddRange(
+        PublicDependencyModuleNames.AddRange(
+            new string[] {
+                "OnlineSubsystemUtils"
+            }
+            );
+
+        PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core", 
 				"CoreUObject", 
 				"Engine", 
 				"Sockets", 
 				"OnlineSubsystem", 
-				"OnlineSubsystemUtils",
 				"Json"
 			}
 			);

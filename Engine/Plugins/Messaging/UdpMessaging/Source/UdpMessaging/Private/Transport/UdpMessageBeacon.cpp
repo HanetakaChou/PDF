@@ -21,7 +21,7 @@ const FTimespan FUdpMessageBeacon::MinimumInterval = FTimespan::FromMilliseconds
 /* FUdpMessageHelloSender structors
  *****************************************************************************/
 
-FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint)
+FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint, const TArray<FIPv4Endpoint>& InStaticEndpoints)
 	: BeaconInterval(MinimumInterval)
 	, LastEndpointCount(1)
 	, LastHelloSent(FDateTime::MinValue())
@@ -32,6 +32,10 @@ FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId,
 {
 	EndpointLeftEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	MulticastAddress = InMulticastEndpoint.ToInternetAddr();
+	for (const FIPv4Endpoint& Endpoint : InStaticEndpoints)
+	{
+		StaticAddresses.Add(Endpoint.ToInternetAddr());
+	}
 
 	Thread = FRunnableThread::Create(this, TEXT("FUdpMessageBeacon"), 128 * 1024, TPri_AboveNormal, FPlatformAffinity::GetPoolThreadMask());
 }
@@ -46,6 +50,7 @@ FUdpMessageBeacon::~FUdpMessageBeacon()
 	}
 
 	MulticastAddress = nullptr;
+	StaticAddresses.Empty();
 
 	FPlatformProcess::ReturnSynchEventToPool(EndpointLeftEvent);
 	EndpointLeftEvent = nullptr;
@@ -76,6 +81,12 @@ void FUdpMessageBeacon::SetEndpointCount(int32 EndpointCount)
 /* FRunnable interface
  *****************************************************************************/
 
+FSingleThreadRunnable* FUdpMessageBeacon::GetSingleThreadInterface()
+{
+	return this;
+}
+
+
 bool FUdpMessageBeacon::Init()
 {
 	return true;
@@ -87,20 +98,13 @@ uint32 FUdpMessageBeacon::Run()
 	while (!Stopping)
 	{
 		FDateTime CurrentTime = FDateTime::UtcNow();
-
-		if (CurrentTime >= NextHelloTime)
-		{
-			// calculate the next send interval
-			BeaconInterval = FMath::Max(MinimumInterval, IntervalPerEndpoint * LastEndpointCount);
-			NextHelloTime = CurrentTime + BeaconInterval;
-
-			SendSegment(EUdpMessageSegments::Hello);
-		}
-
-		EndpointLeftEvent->Wait(NextHelloTime - CurrentTime);
+		Update(CurrentTime, BeaconInterval);
+		// Clamp the wait time to a positive value
+		uint32 WaitTimeMs = (uint32)FMath::Max((NextHelloTime - CurrentTime).GetTotalMilliseconds(), 0.0);
+		EndpointLeftEvent->Wait(WaitTimeMs);
 	}
 
-	SendSegment(EUdpMessageSegments::Bye);
+	SendSegment(EUdpMessageSegments::Bye, BeaconInterval);
 
 	return 0;
 }
@@ -115,7 +119,7 @@ void FUdpMessageBeacon::Stop()
 /* FUdpMessageHelloSender implementation
  *****************************************************************************/
 
-void FUdpMessageBeacon::SendSegment(EUdpMessageSegments SegmentType)
+bool FUdpMessageBeacon::SendSegment(EUdpMessageSegments SegmentType, const FTimespan& SocketWaitTime)
 {
 	FUdpMessageSegment::FHeader Header;
 	{
@@ -132,6 +136,78 @@ void FUdpMessageBeacon::SendSegment(EUdpMessageSegments SegmentType)
 
 	int32 Sent;
 
-	Socket->Wait(ESocketWaitConditions::WaitForWrite, BeaconInterval);
-	Socket->SendTo(Writer.GetData(), Writer.Num(), Sent, *MulticastAddress);
+	if (!Socket->Wait(ESocketWaitConditions::WaitForWrite, SocketWaitTime))
+	{
+		return false; // socket not ready for sending
+	}
+
+	if (!Socket->SendTo(Writer.GetData(), Writer.Num(), Sent, *MulticastAddress))
+	{
+		return false; // send failed
+	}
+
+	return true;
+}
+
+
+bool FUdpMessageBeacon::SendPing(const FTimespan& SocketWaitTime)
+{
+	FUdpMessageSegment::FHeader Header;
+	{
+		Header.SenderNodeId = NodeId;
+		// Pings were introduced at ProtocolVersion 11 and those messages needs to be send with that header to allow backward and forward discoverability
+		Header.ProtocolVersion = 11;
+		Header.SegmentType = EUdpMessageSegments::Ping;
+	}
+	uint8 ActualProtocolVersion = UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION;
+
+	FArrayWriter Writer;
+	{
+		Writer << Header;
+		Writer << NodeId;
+		Writer << ActualProtocolVersion; // Send our actual Protocol version as part of the ping message
+	}
+
+
+	if (!Socket->Wait(ESocketWaitConditions::WaitForWrite, SocketWaitTime))
+	{
+		return false; // socket not ready for sending
+	}
+
+	int32 Sent;
+	for (const auto& StaticAddress : StaticAddresses)
+	{
+		if (!Socket->SendTo(Writer.GetData(), Writer.Num(), Sent, *StaticAddress))
+		{
+			return false; // send failed
+		}
+
+	}
+	return true;
+}
+
+
+void FUdpMessageBeacon::Update(const FDateTime& CurrentTime, const FTimespan& SocketWaitTime)
+{
+	if (CurrentTime < NextHelloTime)
+	{
+		return;
+	}
+
+	BeaconInterval = FMath::Max(MinimumInterval, IntervalPerEndpoint * LastEndpointCount);
+
+	if (SendSegment(EUdpMessageSegments::Hello, SocketWaitTime))
+	{
+		NextHelloTime = CurrentTime + BeaconInterval;
+	}
+	SendPing(SocketWaitTime);
+}
+
+
+/* FSingleThreadRunnable interface
+ *****************************************************************************/
+
+void FUdpMessageBeacon::Tick()
+{
+	Update(FDateTime::UtcNow(), FTimespan::Zero());
 }

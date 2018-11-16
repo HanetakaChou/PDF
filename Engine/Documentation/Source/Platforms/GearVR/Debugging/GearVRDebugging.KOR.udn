@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3740976
+﻿INTSourceChangelist:3810467
 Availability:Public
 Crumbs: %ROOT%
 Title:삼성 기어 VR 디버깅
@@ -21,7 +21,7 @@ prereq: Platforms\GearVR\Prerequisites
 
 [TOC(start:2 end:3)]
 
-타겟 디바이스에서 프로젝트를 디버깅할 수 있다면, 퍼포먼스 문제나 프로젝트를 깨뜨릴 수 있는 기타 오류를 추적하는 데 매우 중요하게 쓰일 것입니다.
+타깃 디바이스에서 프로젝트를 디버깅할 수 있다면, 퍼포먼스 문제나 프로젝트를 깨뜨릴 수 있는 기타 오류를 추적하는 데 매우 중요하게 쓰일 것입니다.
 여기서는 기어 VR 프로젝트 디버깅에 도움이 되는 툴은 무엇인지, 그리고 그 사용법에 대해 배워보도록 하겠습니다.
 
 ### 기어 VR 개발자 모드 켜기
@@ -224,7 +224,7 @@ PC 에서 콘솔에 **DumpConsoleCommands** 를 입력하면 사용가능한 콘
 	로그 출력을 실시간으로 확인하려는 경우, **>logoutput.txt** 부분을 빼고 입력하면 명령줄 창에 모든 로그 업데이트가 이루어집니다.
 	[/region]
 
-1. 로그 캡처를 완료하려면 키보드의 **CTRL + C** 를 누르고, 완료되면 윈도우의 **Users** 폴더에 ** logoutput.txt** 라는 이름으로 저장된 로그 파일이 생겨있을 것입니다.
+1. 로그 캡처를 완료하려면 키보드의 **CTRL + C** 를 누르고, 완료되면 윈도우의 **Users** 폴더에 **logoutput.txt** 라는 이름으로 저장된 로그 파일이 생겨있을 것입니다.
 
     [REGION:lightbox]
     [![](T_ADB_Log_Location.png)(w:500)](T_ADB_Log_Location.png)

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -19,8 +19,9 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
 using Microsoft.Win32;
-
-using EventWaitHandle = System.Threading.EventWaitHandle;
+using System.Threading;
+using System.Drawing.Imaging;
+using System.Web.Script.Serialization;
 
 namespace UnrealGameSync
 {
@@ -33,8 +34,8 @@ namespace UnrealGameSync
 
 	interface IWorkspaceControlOwner
 	{
-		void BrowseForProject(WorkspaceControl Workspace);
-		void RequestProjectChange(WorkspaceControl Workspace, string ProjectFileName);
+		void EditSelectedProject(WorkspaceControl Workspace);
+		void RequestProjectChange(WorkspaceControl Workspace, UserSelectedProjectSettings Project, bool bModal);
 		void ShowAndActivate();
 		void StreamChanged(WorkspaceControl Workspace);
 		void SetTabNames(TabLabels TabNames);
@@ -44,6 +45,70 @@ namespace UnrealGameSync
 
 	partial class WorkspaceControl : UserControl, IMainWindowTabPanel
 	{
+		enum HorizontalAlignment
+		{
+			Left,
+			Center,
+			Right
+		}
+
+		enum VerticalAlignment
+		{
+			Top,
+			Middle,
+			Bottom
+		}
+
+		class BadgeInfo
+		{
+			public string Label;
+			public string Group;
+			public string UniqueId;
+			public int Offset;
+			public int Width;
+			public int Height;
+			public Color BackgroundColor;
+			public Color HoverBackgroundColor;
+			public object UserData;
+			public string ToolTip;
+
+			public BadgeInfo(string Label, string Group, Color BadgeColor)
+				: this(Label, Group, null, BadgeColor, BadgeColor)
+			{
+			}
+
+			public BadgeInfo(string Label, string Group, string UniqueId, Color BackgroundColor, Color HoverBackgroundColor, object UserData = null)
+			{
+				this.Label = Label;
+				this.Group = Group;
+				this.UniqueId = UniqueId;
+				this.BackgroundColor = BackgroundColor;
+				this.HoverBackgroundColor = HoverBackgroundColor;
+				this.UserData = UserData;
+			}
+
+			public BadgeInfo(BadgeInfo Other)
+				: this(Other.Label, Other.Group, Other.UniqueId, Other.BackgroundColor, Other.HoverBackgroundColor, Other.UserData)
+			{
+				this.Offset = Other.Offset;
+				this.Width = Other.Width;
+				this.Height = Other.Height;
+			}
+
+			public Rectangle GetBounds(Point ListLocation)
+			{
+				return new Rectangle(ListLocation.X + Offset, ListLocation.Y, Width, Height);
+			}
+		}
+
+		class ChangeLayoutInfo
+		{
+			public List<BadgeInfo> DescriptionBadges;
+			public List<BadgeInfo> TypeBadges;
+			public List<BadgeInfo> BuildBadges;
+			public Dictionary<string, List<BadgeInfo>> CustomBadges;
+		}
+
 		static Rectangle GoodBuildIcon = new Rectangle(0, 0, 16, 16);
 		static Rectangle MixedBuildIcon = new Rectangle(16, 0, 16, 16);
 		static Rectangle BadBuildIcon = new Rectangle(32, 0, 16, 16);
@@ -59,6 +124,10 @@ namespace UnrealGameSync
 		static Rectangle DisabledFrownIcon = new Rectangle(208, 0, 16, 16);
 		static Rectangle PreviousSyncIcon = new Rectangle(224, 0, 16, 16);
 		static Rectangle AdditionalSyncIcon = new Rectangle(240, 0, 16, 16);
+		static Rectangle BisectPassIcon = new Rectangle(256, 0, 16, 16);
+		static Rectangle BisectFailIcon = new Rectangle(273, 0, 16, 16);
+		static Rectangle BisectImplicitPassIcon = new Rectangle(290, 0, 16, 16);
+		static Rectangle BisectImplicitFailIcon = new Rectangle(307, 0, 16, 16);
 
 		[DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
 		static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
@@ -66,13 +135,19 @@ namespace UnrealGameSync
 		const string EditorArchiveType = "Editor";
 
 		IWorkspaceControlOwner Owner;
-		string SqlConnectionString;
+		string ApiUrl;
 		string DataFolder;
-		BoundedLogWriter Log;
+		LineBasedTextWriter Log;
 
 		UserSettings Settings;
 		UserWorkspaceSettings WorkspaceSettings;
 		UserProjectSettings ProjectSettings;
+
+		public UserSelectedProjectSettings SelectedProject
+		{
+			get;
+			private set;
+		}
 
 		public string SelectedFileName
 		{
@@ -100,15 +175,20 @@ namespace UnrealGameSync
 			private set;
 		}
 
+		SynchronizationContext MainThreadSynchronizationContext;
+		bool bIsDisposing;
+
 		string EditorTargetName;
+		bool bIsEnterpriseProject;
 		PerforceMonitor PerforceMonitor;
 		Workspace Workspace;
 		EventMonitor EventMonitor;
-		Timer UpdateTimer;
+		System.Windows.Forms.Timer UpdateTimer;
 		HashSet<int> PromotedChangeNumbers = new HashSet<int>();
 		List<int> ListIndexToChangeIndex = new List<int>();
 		List<int> SortedChangeNumbers = new List<int>();
 		Dictionary<int, string> ChangeNumberToArchivePath = new Dictionary<int,string>();
+		Dictionary<int, ChangeLayoutInfo> ChangeNumberToLayoutInfo = new Dictionary<int, ChangeLayoutInfo>();
 		List<ToolStripMenuItem> CustomToolMenuItems = new List<ToolStripMenuItem>();
 		int NumChanges;
 		int PendingSelectedChangeNumber = -1;
@@ -118,18 +198,15 @@ namespace UnrealGameSync
 
 		TimeSpan ServerTimeZone;
 
-		int HoverItem = -1;
-		BuildData HoverBadge;
+		string HoverBadgeUniqueId = null;
 		bool bHoverSync;
 		PerforceChangeSummary ContextMenuChange;
-		VisualStyleRenderer SelectedItemRenderer;
-		VisualStyleRenderer TrackedItemRenderer;
 		Font BuildFont;
 		Font SelectedBuildFont;
 		Font BadgeFont;
-		bool bUnstable;
-
-		bool bRestoreStateOnLoad;
+		List<KeyValuePair<string, string>> BadgeNameAndGroupPairs = new List<KeyValuePair<string, string>>();
+		Dictionary<string, Size> BadgeLabelToSize = new Dictionary<string, Size>();
+		List<KeyValuePair<string, BuildData>> ServiceBadges = new List<KeyValuePair<string, BuildData>>();
 
 		string OriginalExecutableFileName;
 
@@ -141,22 +218,29 @@ namespace UnrealGameSync
 			private set;
 		}
 
-		public WorkspaceControl(IWorkspaceControlOwner InOwner, string InSqlConnectionString, string InDataFolder, bool bInRestoreStateOnLoad, string InOriginalExecutableFileName, string InProjectFileName, bool bInUnstable, DetectProjectSettingsTask DetectSettings, BoundedLogWriter InLog, UserSettings InSettings)
+		int BuildListWidth;
+		float[] ColumnWidths;
+		float[] ColumnWeights;
+		int[] MinColumnWidths;
+		int[] DesiredColumnWidths;
+		string LastColumnSettings;
+		List<ColumnHeader> CustomColumns;
+		int MaxBuildBadgeChars;
+
+		bool bUpdateBuildListPosted;
+		bool bUpdateBuildMetadataPosted;
+		bool bUpdateReviewsPosted;
+
+		public WorkspaceControl(IWorkspaceControlOwner InOwner, string InApiUrl, string InOriginalExecutableFileName, DetectProjectSettingsTask DetectSettings, LineBasedTextWriter InLog, UserSettings InSettings)
 		{
 			InitializeComponent();
 
-            if (Application.RenderWithVisualStyles) 
-            { 
-				SelectedItemRenderer = new VisualStyleRenderer("Explorer::ListView", 1, 3);
-				TrackedItemRenderer = new VisualStyleRenderer("Explorer::ListView", 1, 2); 
-			}
+			MainThreadSynchronizationContext = SynchronizationContext.Current;
 
 			Owner = InOwner;
-			SqlConnectionString = InSqlConnectionString;
-			DataFolder = InDataFolder;
-			bRestoreStateOnLoad = bInRestoreStateOnLoad;
+			ApiUrl = InApiUrl;
+			DataFolder = DetectSettings.DataFolder;
 			OriginalExecutableFileName = InOriginalExecutableFileName;
-			bUnstable = bInUnstable;
 			Log = InLog;
 			Settings = InSettings;
 			WorkspaceSettings = InSettings.FindOrAddWorkspace(DetectSettings.BranchClientPath);
@@ -174,31 +258,13 @@ namespace UnrealGameSync
 
 			Splitter.OnVisibilityChanged += Splitter_OnVisibilityChanged;
 
-			UpdateTimer = new Timer();
+			UpdateTimer = new System.Windows.Forms.Timer();
 			UpdateTimer.Interval = 30;
 			UpdateTimer.Tick += TimerCallback;
 
 			UpdateCheckedBuildConfig();
 
 			UpdateSyncActionCheckboxes();
-
-			if(Settings.bHasWindowSettings)
-			{
-				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
-				{
-					string ColumnName = BuildList.Columns[Idx].Text;
-					if(String.IsNullOrEmpty(ColumnName))
-					{
-						ColumnName = String.Format("Column{0}", Idx);
-					}
-
-					int ColumnWidth;
-					if(Settings.ColumnWidths.TryGetValue(ColumnName, out ColumnWidth))
-					{
-						BuildList.Columns[Idx].Width = ColumnWidth;
-					}
-				}
-			}
 
 			// Set the project logo on the status panel and notification window
 			NotificationWindow = new NotificationWindow(Properties.Resources.DefaultNotificationLogo);
@@ -208,36 +274,43 @@ namespace UnrealGameSync
 			// Commit all the new project info
 			PerforceConnection PerforceClient = DetectSettings.PerforceClient;
 			ClientName = PerforceClient.ClientName;
-			SelectedFileName = InProjectFileName;
+			SelectedProject = DetectSettings.SelectedProject;
 			SelectedProjectIdentifier = DetectSettings.NewSelectedProjectIdentifier;
+			SelectedFileName = DetectSettings.NewSelectedFileName;
 			EditorTargetName = DetectSettings.NewProjectEditorTarget;
+			bIsEnterpriseProject = DetectSettings.bIsEnterpriseProject;
 			StreamName = DetectSettings.StreamName;
 			ServerTimeZone = DetectSettings.ServerTimeZone;
 
 			// Update the branch directory
-			BranchDirectoryName = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(DetectSettings.BaseEditorTargetPath), "..", ".."));
+			BranchDirectoryName = DetectSettings.BranchDirectoryName;
 
 			// Check if we've the project we've got open in this workspace is the one we're actually synced to
 			int CurrentChangeNumber = -1;
+			string CurrentSyncFilterHash = null;
 			if(String.Compare(WorkspaceSettings.CurrentProjectIdentifier, SelectedProjectIdentifier, true) == 0)
 			{
 				CurrentChangeNumber = WorkspaceSettings.CurrentChangeNumber;
+				CurrentSyncFilterHash = WorkspaceSettings.CurrentSyncFilterHash;
 			}
-
-			string ProjectLogBaseName = Path.Combine(DataFolder, String.Format("{0}@{1}", PerforceClient.ClientName, DetectSettings.BranchClientPath.Replace("//" + PerforceClient.ClientName + "/", "").Trim('/').Replace("/", "$")));
 
 			string TelemetryProjectIdentifier = PerforceUtils.GetClientOrDepotDirectoryName(DetectSettings.NewSelectedProjectIdentifier);
 
-			Workspace = new Workspace(PerforceClient, BranchDirectoryName, SelectedFileName, DetectSettings.BranchClientPath, DetectSettings.NewSelectedClientFileName, CurrentChangeNumber, WorkspaceSettings.LastBuiltChangeNumber, TelemetryProjectIdentifier, new LogControlTextWriter(SyncLog));
+			Workspace = new Workspace(PerforceClient, BranchDirectoryName, SelectedFileName, DetectSettings.BranchClientPath, DetectSettings.NewSelectedClientFileName, CurrentChangeNumber, CurrentSyncFilterHash, WorkspaceSettings.LastBuiltChangeNumber, TelemetryProjectIdentifier, DetectSettings.bIsEnterpriseProject, new LogControlTextWriter(SyncLog));
 			Workspace.OnUpdateComplete += UpdateCompleteCallback;
 
-			PerforceMonitor = new PerforceMonitor(PerforceClient, DetectSettings.BranchClientPath, DetectSettings.NewSelectedClientFileName, DetectSettings.NewSelectedFileName, SelectedProjectIdentifier, ProjectLogBaseName + ".p4.log");
+			string ProjectLogBaseName = Path.Combine(DataFolder, String.Format("{0}@{1}", PerforceClient.ClientName, DetectSettings.BranchClientPath.Replace("//" + PerforceClient.ClientName + "/", "").Trim('/').Replace("/", "$")));
+
+			PerforceMonitor = new PerforceMonitor(PerforceClient, DetectSettings.BranchClientPath, DetectSettings.NewSelectedClientFileName, DetectSettings.NewSelectedProjectIdentifier, ProjectLogBaseName + ".p4.log", DetectSettings.bIsEnterpriseProject, DetectSettings.LatestProjectConfigFile, DetectSettings.LocalConfigFiles);
 			PerforceMonitor.OnUpdate += UpdateBuildListCallback;
 			PerforceMonitor.OnUpdateMetadata += UpdateBuildMetadataCallback;
-			PerforceMonitor.OnStreamChange += StreamChangedCallbackAsync;
+			PerforceMonitor.OnStreamChange += StreamChangedCallback;
+			PerforceMonitor.OnLoginExpired += LoginExpiredCallback;
 
-			EventMonitor = new EventMonitor(SqlConnectionString, PerforceUtils.GetClientOrDepotDirectoryName(SelectedProjectIdentifier), DetectSettings.PerforceClient.UserName, ProjectLogBaseName + ".review.log");
+			EventMonitor = new EventMonitor(ApiUrl, PerforceUtils.GetClientOrDepotDirectoryName(SelectedProjectIdentifier), DetectSettings.PerforceClient.UserName, ProjectLogBaseName + ".review.log");
 			EventMonitor.OnUpdatesReady += UpdateReviewsCallback;
+
+			UpdateColumnSettings();
 
 			string LogFileName = Path.Combine(DataFolder, ProjectLogBaseName + ".sync.log");
 			SyncLog.OpenFile(LogFileName);
@@ -249,10 +322,159 @@ namespace UnrealGameSync
 			UpdateBuildSteps();
 			UpdateSyncActionCheckboxes();
 			UpdateStatusPanel();
+			UpdateServiceBadges();
 
 			if(CurrentChangeNumber != -1)
 			{
 				SelectChange(CurrentChangeNumber);
+			}
+
+			PerforceMonitor.Start();
+			EventMonitor.Start();
+		}
+
+		private void UpdateColumnSettings()
+		{
+			string NextColumnSettings;
+			TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "Columns", out NextColumnSettings);
+
+			if(CustomColumns == null || NextColumnSettings != LastColumnSettings)
+			{
+				LastColumnSettings = NextColumnSettings;
+
+				if(CustomColumns != null)
+				{
+					foreach(ColumnHeader CustomColumn in CustomColumns)
+					{
+						BuildList.Columns.Remove(CustomColumn);
+					}
+				}
+
+				Dictionary<string, ColumnHeader> NameToColumn = new Dictionary<string, ColumnHeader>();
+				foreach(ColumnHeader Column in BuildList.Columns)
+				{
+					NameToColumn[Column.Text] = Column;
+					Column.Tag = null;
+				}
+
+				CustomColumns = new List<ColumnHeader>();
+				if(NextColumnSettings != null)
+				{
+					foreach(string CustomColumn in NextColumnSettings.Split('\n'))
+					{
+						ConfigObject ColumnConfig = new ConfigObject(CustomColumn);
+
+						string Name = ColumnConfig.GetValue("Name", null);
+						if(Name != null)
+						{
+							ColumnHeader Column;
+							if(NameToColumn.TryGetValue(Name, out Column))
+							{
+								Column.Tag = ColumnConfig;
+							}
+							else
+							{
+								int Index = ColumnConfig.GetValue("Index", -1);
+								if(Index < 0 || Index > BuildList.Columns.Count)
+								{
+									Index = ((CustomColumns.Count > 0)? CustomColumns[CustomColumns.Count - 1].Index : CISColumn.Index) + 1;
+								}
+
+								Column = new ColumnHeader();
+								Column.Text = Name;
+								Column.Tag = ColumnConfig;
+								BuildList.Columns.Insert(Index, Column);
+
+								CustomColumns.Add(Column);
+							}
+						}
+					}
+				}
+
+				ColumnWidths = new float[BuildList.Columns.Count];
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					ColumnWidths[Idx] = BuildList.Columns[Idx].Width;
+				}
+
+				using(Graphics Graphics = Graphics.FromHwnd(IntPtr.Zero))
+				{
+					float DpiScaleX = Graphics.DpiX / 96.0f;
+
+					MinColumnWidths = Enumerable.Repeat(32, BuildList.Columns.Count).ToArray();
+					MinColumnWidths[IconColumn.Index] = (int)(50 * DpiScaleX);
+					MinColumnWidths[TypeColumn.Index] = (int)(100 * DpiScaleX);
+					MinColumnWidths[TimeColumn.Index] = (int)(75 * DpiScaleX);
+					MinColumnWidths[ChangeColumn.Index] = (int)(75 * DpiScaleX);
+					MinColumnWidths[CISColumn.Index] = (int)(200 * DpiScaleX);
+
+					DesiredColumnWidths = Enumerable.Repeat(65536, BuildList.Columns.Count).ToArray();
+					DesiredColumnWidths[IconColumn.Index] = MinColumnWidths[IconColumn.Index];
+					DesiredColumnWidths[TypeColumn.Index] = MinColumnWidths[TypeColumn.Index];
+					DesiredColumnWidths[TimeColumn.Index] = MinColumnWidths[TimeColumn.Index];
+					DesiredColumnWidths[ChangeColumn.Index] = MinColumnWidths[ChangeColumn.Index];
+					DesiredColumnWidths[AuthorColumn.Index] = (int)(120 * DpiScaleX);
+					DesiredColumnWidths[CISColumn.Index] = (int)(200 * DpiScaleX);
+					DesiredColumnWidths[StatusColumn.Index] = (int)(300 * DpiScaleX);
+				}
+
+				ColumnWeights = Enumerable.Repeat(1.0f, BuildList.Columns.Count).ToArray();
+				ColumnWeights[IconColumn.Index] = 3.0f;
+				ColumnWeights[TypeColumn.Index] = 3.0f;
+				ColumnWeights[TimeColumn.Index] = 3.0f;
+				ColumnWeights[ChangeColumn.Index] = 3.0f;
+				ColumnWeights[DescriptionColumn.Index] = 1.25f;
+				ColumnWeights[CISColumn.Index] = 1.5f;
+
+				foreach(ColumnHeader Column in BuildList.Columns)
+				{
+					ConfigObject ColumnConfig = (ConfigObject)Column.Tag;
+					if(ColumnConfig != null)
+					{
+						MinColumnWidths[Column.Index] = ColumnConfig.GetValue("MinWidth", MinColumnWidths[Column.Index]);
+						DesiredColumnWidths[Column.Index] = ColumnConfig.GetValue("DesiredWidth", DesiredColumnWidths[Column.Index]);
+						ColumnWeights[Column.Index] = ColumnConfig.GetValue("Weight", MinColumnWidths[Column.Index]);
+					}
+				}
+
+				ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					if(!String.IsNullOrEmpty(BuildList.Columns[Idx].Text))
+					{
+						string StringValue;
+						if(TryGetProjectSetting(ProjectConfigFile, String.Format("ColumnWidth_{0}", BuildList.Columns[Idx].Text), out StringValue))
+						{
+							int IntValue;
+							if(Int32.TryParse(StringValue, out IntValue))
+							{
+								DesiredColumnWidths[Idx] = IntValue;
+							}
+						}
+					}
+				}
+
+				if(ColumnWidths != null)
+				{
+					ResizeColumns(ColumnWidths.Sum());
+				}
+			}
+		}
+
+		private void UpdateServiceBadges()
+		{
+			string[] ServiceBadgeNames;
+			if(!TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "ServiceBadges", out ServiceBadgeNames))
+			{
+				ServiceBadgeNames = new string[0];
+			}
+
+			ServiceBadges.Clear();
+			foreach(string ServiceBadgeName in ServiceBadgeNames)
+			{
+				BuildData LatestBuild;
+				EventMonitor.TryGetLatestBuild(ServiceBadgeName, out LatestBuild);
+				ServiceBadges.Add(new KeyValuePair<string, BuildData>(ServiceBadgeName, LatestBuild));
 			}
 		}
 
@@ -260,8 +482,24 @@ namespace UnrealGameSync
 		{
 			base.OnLoad(e);
 
-			PerforceMonitor.Start();
-			EventMonitor.Start();
+			BuildListWidth = BuildList.Width;
+
+			// Find the default widths 
+			ColumnWidths = new float[BuildList.Columns.Count];
+			for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+			{
+				if(DesiredColumnWidths[Idx] > 0)
+				{
+					ColumnWidths[Idx] = DesiredColumnWidths[Idx];
+				}
+				else
+				{
+					ColumnWidths[Idx] = BuildList.Columns[Idx].Width;
+				}
+			}
+
+			// Resize them to fit the size of the window
+			ResizeColumns(BuildList.Width - 32);
 		}
 
 		/// <summary>
@@ -270,13 +508,35 @@ namespace UnrealGameSync
 		/// <param name="disposing">true if managed resources should be disposed; otherwise, false.</param>
 		protected override void Dispose(bool disposing)
 		{
+			bIsDisposing = true;
+
 			if (disposing && (components != null))
 			{
 				components.Dispose();
 			}
 
-			CloseProject();
+			UpdateTimer.Stop();
 
+			if(NotificationWindow != null)
+			{
+				NotificationWindow.Dispose();
+				NotificationWindow = null;
+			}
+			if(PerforceMonitor != null)
+			{
+				PerforceMonitor.Dispose();
+				PerforceMonitor = null;
+			}
+			if(Workspace != null)
+			{
+				Workspace.Dispose();
+				Workspace = null;
+			}
+			if(EventMonitor != null)
+			{
+				EventMonitor.Dispose();
+				EventMonitor = null;
+			}
 			if(BuildFont != null)
 			{
 				BuildFont.Dispose();
@@ -316,11 +576,6 @@ namespace UnrealGameSync
 			UpdateStatusPanel();
 		}
 
-		private void MainWindow_FormClosed(object sender, FormClosedEventArgs e)
-		{
-			CloseProject();
-		}
-
 		private void ShowErrorDialog(string Format, params object[] Args)
 		{
 			string Message = String.Format(Format, Args);
@@ -334,7 +589,7 @@ namespace UnrealGameSync
 			return !Workspace.IsBusy();
 		}
 
-		private void StreamChangedCallback()
+		private void StreamChanged()
 		{
 			Owner.StreamChanged(this);
 /*
@@ -349,66 +604,30 @@ namespace UnrealGameSync
 			StatusPanel.ResumeDisplay();*/
 		}
 
-		private void StreamChangedCallbackAsync()
+		private void StreamChangedCallback()
 		{
-			BeginInvoke(new MethodInvoker(StreamChangedCallback));
+			MainThreadSynchronizationContext.Post((o) => StreamChanged(), null);
 		}
 
-		private void CloseProject()
+		private void LoginExpired()
 		{
-			UpdateTimer.Stop();
-
-			BuildList.Items.Clear();
-			BuildList.Groups.Clear();
-
-			SelectedFileName = null;
-			SelectedProjectIdentifier = null;
-			BranchDirectoryName = null;
-			EditorTargetName = null;
-
-			if(NotificationWindow != null)
+			if(!bIsDisposing)
 			{
-				NotificationWindow.Dispose();
-				NotificationWindow = null;
+				Log.WriteLine("Login has expired. Requesting project to be closed.");
+				Owner.RequestProjectChange(this, SelectedProject, false);
 			}
-			if(PerforceMonitor != null)
-			{
-				PerforceMonitor.Dispose();
-				PerforceMonitor = null;
-			}
-			if(Workspace != null)
-			{
-				Workspace.Dispose();
-				Workspace = null;
-			}
-			if(EventMonitor != null)
-			{
-				EventMonitor.Dispose();
-				EventMonitor = null;
-			}
-
-			ListIndexToChangeIndex = new List<int>();
-			SortedChangeNumbers = new List<int>();
-			NumChanges = 0;
-			ContextMenuChange = null;
-			HoverItem = -1;
-			PendingSelectedChangeNumber = -1;
-			NotifiedBuildTypeToChangeNumber = new Dictionary<string,int>();
-
-			SyncLog.CloseFile();
-			SyncLog.Clear();
-
-			UpdateBuildSteps();
-
-			StatusPanel.SetProjectLogo(null, false);
-
-			DesiredTaskbarState = Tuple.Create(TaskbarState.NoProgress, 0.0f);
 		}
 
-		private void UpdateSyncConfig(int ChangeNumber)
+		private void LoginExpiredCallback()
+		{
+			MainThreadSynchronizationContext.Post((o) => LoginExpired(), null);
+		}
+
+		private void UpdateSyncConfig(int ChangeNumber, string SyncFilterHash)
 		{
 			WorkspaceSettings.CurrentProjectIdentifier = SelectedProjectIdentifier;
 			WorkspaceSettings.CurrentChangeNumber = ChangeNumber;
+			WorkspaceSettings.CurrentSyncFilterHash = SyncFilterHash;
 			if(ChangeNumber == -1 || ChangeNumber != WorkspaceSettings.CurrentChangeNumber)
 			{ 
 				WorkspaceSettings.AdditionalChangeNumbers.Clear();
@@ -426,7 +645,7 @@ namespace UnrealGameSync
 		{
 			if(PerforceMonitor != null)
 			{
-				if(OnlyShowReviewedCheckBox.Checked)
+				if(!Settings.bShowUnreviewedChanges)
 				{
 					PerforceMonitor.PendingMaxChanges = 1000;
 				}
@@ -490,20 +709,35 @@ namespace UnrealGameSync
 			{
 				Options |= WorkspaceUpdateOptions.OpenSolutionAfterSync;
 			}
+			if(WorkspaceSettings.bSyncAllProjects ?? Settings.bSyncAllProjects)
+			{
+				Options |= WorkspaceUpdateOptions.SyncAllProjects;
+			}
 			StartWorkspaceUpdate(ChangeNumber, Options);
 		}
 
 		void StartWorkspaceUpdate(int ChangeNumber, WorkspaceUpdateOptions Options)
 		{
-			if((Options & (WorkspaceUpdateOptions.Sync | WorkspaceUpdateOptions.Build)) != 0 && IsEditorRunning(GetEditorBuildConfig()))
+			if((Options & (WorkspaceUpdateOptions.Sync | WorkspaceUpdateOptions.Build)) != 0 && GetProcessesRunningInWorkspace().Length > 0)
 			{
-				MessageBox.Show("Please close the editor before trying to sync/build.", "Editor Open");
-				return;
+				if((Options & WorkspaceUpdateOptions.ScheduledBuild) != 0)
+				{
+					SyncLog.Clear();
+					SyncLog.AppendLine("Editor is open; scheduled sync has been aborted.");
+					return;
+				}
+				else
+				{
+					if(!WaitForProgramsToFinish())
+					{
+						return;
+					}
+				}
 			}
 
-			string[] CombinedSyncFilter = UserSettings.GetCombinedSyncFilter(Workspace.GetSyncCategories(), Settings.SyncView, Settings.SyncExcludedCategories, WorkspaceSettings.SyncView, WorkspaceSettings.SyncExcludedCategories);
+			string[] CombinedSyncFilter = UserSettings.GetCombinedSyncFilter(Workspace.GetSyncCategories(), Settings.SyncView, Settings.SyncExcludedCategories, WorkspaceSettings.SyncView, WorkspaceSettings.SyncIncludedCategories, WorkspaceSettings.SyncExcludedCategories);
 
-			WorkspaceUpdateContext Context = new WorkspaceUpdateContext(ChangeNumber, Options, CombinedSyncFilter, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, null, GetWorkspaceVariables());
+			WorkspaceUpdateContext Context = new WorkspaceUpdateContext(ChangeNumber, Options, CombinedSyncFilter, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, null, GetWorkspaceVariables(ChangeNumber));
 			if(Options.HasFlag(WorkspaceUpdateOptions.SyncArchives))
 			{
 				string EditorArchivePath = null;
@@ -527,7 +761,6 @@ namespace UnrealGameSync
 			Context.StartTime = DateTime.UtcNow;
 			Context.PerforceSyncOptions = (PerforceSyncOptions)Settings.SyncOptions.Clone();
 
-			Log.WriteLine();
 			Log.WriteLine("Updating workspace at {0}...", Context.StartTime.ToLocalTime().ToString());
 			Log.WriteLine("  ChangeNumber={0}", Context.ChangeNumber);
 			Log.WriteLine("  Options={0}", Context.Options.ToString());
@@ -535,7 +768,7 @@ namespace UnrealGameSync
 
 			if(Context.Options.HasFlag(WorkspaceUpdateOptions.Sync))
 			{
-				UpdateSyncConfig(-1);
+				UpdateSyncConfig(-1, Workspace.CurrentSyncFilterHash);
 				EventMonitor.PostEvent(Context.ChangeNumber, EventType.Syncing);
 			}
 
@@ -581,7 +814,7 @@ namespace UnrealGameSync
 
 				UpdateSyncActionCheckboxes();
 				Refresh();
-				UpdateSyncConfig(Workspace.CurrentChangeNumber);
+				UpdateSyncConfig(Workspace.CurrentChangeNumber, Workspace.CurrentSyncFilterHash);
 				UpdateStatusPanel();
 				DesiredTaskbarState = Tuple.Create(TaskbarState.NoProgress, 0.0f);
 				Owner.UpdateProgress();
@@ -590,14 +823,14 @@ namespace UnrealGameSync
 
 		void UpdateCompleteCallback(WorkspaceUpdateContext Context, WorkspaceUpdateResult Result, string ResultMessage)
 		{
-			Invoke(new MethodInvoker(() => UpdateComplete(Context, Result, ResultMessage)));
+			MainThreadSynchronizationContext.Post((o) => UpdateComplete(Context, Result, ResultMessage), null);
 		}
 
 		void UpdateComplete(WorkspaceUpdateContext Context, WorkspaceUpdateResult Result, string ResultMessage)
 		{
 			UpdateTimer.Stop();
 
-			UpdateSyncConfig(Workspace.CurrentChangeNumber);
+			UpdateSyncConfig(Workspace.CurrentChangeNumber, Workspace.CurrentSyncFilterHash);
 
 			if(Result == WorkspaceUpdateResult.Success && Context.Options.HasFlag(WorkspaceUpdateOptions.SyncSingleChange))
 			{
@@ -617,10 +850,22 @@ namespace UnrealGameSync
 			WorkspaceSettings.LastSyncDurationSeconds = (int)(WorkspaceSettings.LastSyncTime.Value - Context.StartTime).TotalSeconds;
 			WorkspaceSettings.LastBuiltChangeNumber = Workspace.LastBuiltChangeNumber;
 			Settings.Save();
-			
+
 			if(Result == WorkspaceUpdateResult.FilesToResolve)
 			{
 				MessageBox.Show("You have files to resolve after syncing your workspace. Please check P4.");
+			}
+			else if(Result == WorkspaceUpdateResult.FilesToDelete)
+			{
+				DesiredTaskbarState = Tuple.Create(TaskbarState.Paused, 0.0f);
+				Owner.UpdateProgress();
+
+				DeleteWindow Window = new DeleteWindow(Context.DeleteFiles);
+				if(Window.ShowDialog(this) == DialogResult.OK)
+				{
+					StartWorkspaceUpdate(Context);
+					return;
+				}
 			}
 			else if(Result == WorkspaceUpdateResult.FilesToClobber)
 			{
@@ -661,20 +906,41 @@ namespace UnrealGameSync
 			Refresh();
 			UpdateStatusPanel();
 			UpdateSyncActionCheckboxes();
+
+			// Do this last because it may result in the control being disposed
+			if(Result == WorkspaceUpdateResult.FailedToSyncLoginExpired)
+			{
+				LoginExpired();
+			}
 		}
 
 		void UpdateBuildListCallback()
 		{
-			Invoke(new MethodInvoker(UpdateBuildList));
+			if(!bUpdateBuildListPosted)
+			{
+				bUpdateBuildListPosted = true;
+				MainThreadSynchronizationContext.Post((o) => { bUpdateBuildListPosted = false; if(!bIsDisposing) { UpdateBuildList(); } }, null);
+			}
 		}
 
 		void UpdateBuildList()
 		{
 			if(SelectedFileName != null)
 			{
+				List<int> SelectedChanges = new List<int>();
+				foreach(ListViewItem SelectedItem in BuildList.SelectedItems)
+				{
+					PerforceChangeSummary Change = (PerforceChangeSummary)SelectedItem.Tag;
+					if(Change != null)
+					{
+						SelectedChanges.Add(Change.Number);
+					}
+				}
+
 				int SelectedChange = (BuildList.SelectedItems.Count > 0)? ((PerforceChangeSummary)BuildList.SelectedItems[0].Tag).Number : -1;
 
 				ChangeNumberToArchivePath.Clear();
+				ChangeNumberToLayoutInfo.Clear();
 
 				BuildList.BeginUpdate();
 
@@ -694,15 +960,15 @@ namespace UnrealGameSync
 				string[] ExcludeChanges = new string[0];
 				if(Workspace != null)
 				{
-					ConfigFile ProjectConfigFile = Workspace.ProjectConfigFile;
+					ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
 					if(ProjectConfigFile != null)
 					{
-						ExcludeChanges = Workspace.ProjectConfigFile.GetValues("Options.ExcludeChanges", ExcludeChanges);
+						ExcludeChanges = ProjectConfigFile.GetValues("Options.ExcludeChanges", ExcludeChanges);
 					}
 				}
 
 				bool bFirstChange = true;
-				bool bOnlyShowReviewed = OnlyShowReviewedCheckBox.Checked;
+				bool bHideUnreviewed = !Settings.bShowUnreviewedChanges;
 
 				NumChanges = Changes.Count;
 				ListIndexToChangeIndex = new List<int>();
@@ -715,7 +981,7 @@ namespace UnrealGameSync
 					{
 						SortedChangeNumbers.Add(Change.Number);
 
-						if(!bOnlyShowReviewed || (!EventMonitor.IsUnderInvestigation(Change.Number) && (ShouldIncludeInReviewedList(Change.Number) || bFirstChange)))
+						if(!bHideUnreviewed || (!EventMonitor.IsUnderInvestigation(Change.Number) && (ShouldIncludeInReviewedList(Change.Number) || bFirstChange)))
 						{
 							bFirstChange = false;
 
@@ -744,15 +1010,19 @@ namespace UnrealGameSync
 								DisplayTime = (DisplayTime - ServerTimeZone).ToLocalTime();
 							}
 
+							string[] SubItemLabels = new string[BuildList.Columns.Count];
+							SubItemLabels[ChangeColumn.Index] = String.Format("{0}", Change.Number);
+							SubItemLabels[TimeColumn.Index] = DisplayTime.ToString("h\\.mmtt");
+							SubItemLabels[AuthorColumn.Index] = FormatUserName(Change.User);
+							SubItemLabels[DescriptionColumn.Index] = Change.Description.Replace('\n', ' ');
+
 							ListViewItem Item = new ListViewItem(Group);
 							Item.Tag = Change;
-							Item.Selected = (Change.Number == SelectedChange);
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, String.Format("{0}", Change.Number)));
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, DisplayTime.ToString("h\\.mmtt")));
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, FormatUserName(Change.User)));
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, Change.Description.Replace('\n', ' ')));
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, ""));
-							Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, ""));
+							Item.Selected = SelectedChanges.Contains(Change.Number);
+							for(int ColumnIdx = 1; ColumnIdx < BuildList.Columns.Count; ColumnIdx++)
+							{
+								Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, SubItemLabels[ColumnIdx] ?? ""));
+							}
 
 							// Insert it at the right position within the group
 							int GroupInsertIdx = 0;
@@ -790,9 +1060,9 @@ namespace UnrealGameSync
 				}
 			}
 
-			if(HoverItem > BuildList.Items.Count)
+			if(BuildList.HoverItem > BuildList.Items.Count)
 			{
-				HoverItem = -1;
+				BuildList.HoverItem = -1;
 			}
 
 			UpdateBuildFailureNotification();
@@ -803,15 +1073,22 @@ namespace UnrealGameSync
 
 		bool ShouldShowChange(PerforceChangeSummary Change, string[] ExcludeChanges)
 		{
-			foreach(string ExcludeChange in ExcludeChanges)
+			if(!Settings.bShowAutomatedChanges)
 			{
-				if(Regex.IsMatch(Change.Description, ExcludeChange, RegexOptions.IgnoreCase))
+				foreach(string ExcludeChange in ExcludeChanges)
+				{
+					if(Regex.IsMatch(Change.Description, ExcludeChange, RegexOptions.IgnoreCase))
+					{
+						return false;
+					}
+				}
+
+				if(String.Compare(Change.User, "buildmachine", true) == 0 && Change.Description.IndexOf("lightmaps", StringComparison.InvariantCultureIgnoreCase) == -1)
 				{
 					return false;
 				}
 			}
-
-			if(String.Compare(Change.User, "buildmachine", true) == 0 && Change.Description.IndexOf("lightmaps", StringComparison.InvariantCultureIgnoreCase) == -1)
+			if(IsBisectModeEnabled() && !WorkspaceSettings.ChangeNumberToBisectState.ContainsKey(Change.Number))
 			{
 				return false;
 			}
@@ -820,15 +1097,139 @@ namespace UnrealGameSync
 
 		void UpdateBuildMetadataCallback()
 		{
-			Invoke(new MethodInvoker(UpdateBuildMetadata));
+			if(!bUpdateBuildMetadataPosted)
+			{
+				bUpdateBuildMetadataPosted = true;
+				MainThreadSynchronizationContext.Post((o) => { bUpdateBuildMetadataPosted = false; if(!bIsDisposing) { UpdateBuildMetadata(); } }, null);
+			}
 		}
 
 		void UpdateBuildMetadata()
 		{
+			// Update the column settings first, since this may affect the badges we hide
+			UpdateColumnSettings();
+
+			// Clear the badge size cache
+			BadgeLabelToSize.Clear();
+
+			// Reset the badge groups
+			Dictionary<string, string> BadgeNameToGroup = new Dictionary<string, string>();
+
+			// Read the group mappings from the config file
+			string GroupDefinitions;
+			if(TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "BadgeGroups", out GroupDefinitions))
+			{
+				string[] GroupDefinitionsArray = GroupDefinitions.Split('\n');
+				for(int Idx = 0; Idx < GroupDefinitionsArray.Length; Idx++)
+				{
+					string GroupName = String.Format("{0:0000}", Idx);
+					foreach(string BadgeName in GroupDefinitionsArray[Idx].Split(',').Select(x => x.Trim()))
+					{
+						BadgeNameToGroup[BadgeName] = GroupName;
+					}
+				}
+			}
+
+			// Add a dummy group for any other badges we have
+			foreach(ListViewItem Item in BuildList.Items)
+			{
+				EventSummary Summary = EventMonitor.GetSummaryForChange(((PerforceChangeSummary)Item.Tag).Number);
+				if(Summary != null)
+				{
+					foreach(BuildData Build in Summary.Builds)
+					{
+						string BadgeSlot = Build.BadgeName;
+						if(!BadgeNameToGroup.ContainsKey(BadgeSlot))
+						{
+							BadgeNameToGroup.Add(BadgeSlot, "XXXX");
+						}
+					}
+				}
+			}
+
+			// Remove anything that's a service badge
+			foreach(KeyValuePair<string, BuildData> ServiceBadge in ServiceBadges)
+			{
+				BadgeNameToGroup.Remove(ServiceBadge.Key);
+			}
+
+			// Remove everything that's in a custom column
+			foreach(ColumnHeader CustomColumn in CustomColumns)
+			{
+				ConfigObject ColumnConfig = (ConfigObject)CustomColumn.Tag;
+				foreach(string BadgeName in ColumnConfig.GetValue("Badges", "").Split(','))
+				{
+					BadgeNameToGroup.Remove(BadgeName);
+				}
+			}
+
+			// Sort the list of groups for display
+			BadgeNameAndGroupPairs = BadgeNameToGroup.OrderBy(x => x.Value).ThenBy(x => x.Key).ToList();
+
+			// Figure out whether to show smaller badges due to limited space
+			UpdateMaxBuildBadgeChars();
+
+			// Update everything else
 			ChangeNumberToArchivePath.Clear();
+			ChangeNumberToLayoutInfo.Clear();
 			BuildList.Invalidate();
+			UpdateServiceBadges();
 			UpdateStatusPanel();
 			UpdateBuildFailureNotification();
+		}
+
+		void UpdateMaxBuildBadgeChars()
+		{
+			int NewMaxBuildBadgeChars;
+			if(GetBuildBadgeStripWidth(-1) < CISColumn.Width)
+			{
+				NewMaxBuildBadgeChars = -1;
+			}
+			else if(GetBuildBadgeStripWidth(3) < CISColumn.Width)
+			{
+				NewMaxBuildBadgeChars = 3;
+			}
+			else if(GetBuildBadgeStripWidth(2) < CISColumn.Width)
+			{
+				NewMaxBuildBadgeChars = 2;
+			}
+			else
+			{
+				NewMaxBuildBadgeChars = 1;
+			}
+
+			if(NewMaxBuildBadgeChars != MaxBuildBadgeChars)
+			{
+				ChangeNumberToLayoutInfo.Clear();
+				BuildList.Invalidate();
+				MaxBuildBadgeChars = NewMaxBuildBadgeChars;
+			}
+		}
+
+		int GetBuildBadgeStripWidth(int MaxNumChars)
+		{
+			// Create dummy badges for each badge name
+			List<BadgeInfo> DummyBadges = new List<BadgeInfo>();
+			foreach(KeyValuePair<string, string> BadgeNameAndGroupPair in BadgeNameAndGroupPairs)
+			{
+				string BadgeName = BadgeNameAndGroupPair.Key;
+				if(MaxNumChars != -1 && BadgeName.Length > MaxNumChars)
+				{
+					BadgeName = BadgeName.Substring(0, MaxNumChars);
+				}
+
+				BadgeInfo DummyBadge = CreateBadge(-1, BadgeName, BadgeNameAndGroupPair.Value, null);
+				DummyBadges.Add(DummyBadge);
+			}
+
+			// Check if they fit within the column
+			int Width = 0;
+			if(DummyBadges.Count > 0)
+			{
+				LayoutBadges(DummyBadges);
+				Width = DummyBadges[DummyBadges.Count - 1].Offset + DummyBadges[DummyBadges.Count - 1].Width;
+			}
+			return Width;
 		}
 
 		bool ShouldIncludeInReviewedList(int ChangeNumber)
@@ -855,12 +1256,17 @@ namespace UnrealGameSync
 
 		void UpdateReviewsCallback()
 		{
-			Invoke(new MethodInvoker(UpdateReviews));
+			if(!bUpdateReviewsPosted)
+			{
+				bUpdateReviewsPosted = true;
+				MainThreadSynchronizationContext.Post((o) => { bUpdateReviewsPosted = false; if(!bIsDisposing) { UpdateReviews(); } }, null);
+			}
 		}
 
 		void UpdateReviews()
 		{
 			ChangeNumberToArchivePath.Clear();
+			ChangeNumberToLayoutInfo.Clear();
 			EventMonitor.ApplyUpdates();
 			Refresh();
 			UpdateBuildFailureNotification();
@@ -873,10 +1279,7 @@ namespace UnrealGameSync
 
 			// Find all the badges which should notify users due to content changes
 			HashSet<string> ContentBadges = new HashSet<string>();
-			if(Workspace != null && Workspace.ProjectConfigFile != null)
-			{
-				ContentBadges.UnionWith(Workspace.ProjectConfigFile.GetValues("Notifications.ContentBadges", new string[0]));
-			}
+			ContentBadges.UnionWith(PerforceMonitor.LatestProjectConfigFile.GetValues("Notifications.ContentBadges", new string[0]));
 
 			// Find the most recent build of each type, and the last time it succeeded
 			Dictionary<string, BuildData> TypeToLastBuild = new Dictionary<string,BuildData>();
@@ -986,31 +1389,21 @@ namespace UnrealGameSync
 
 		private void BuildList_DrawItem(object sender, DrawListViewItemEventArgs e)
 		{
-			if(Application.RenderWithVisualStyles)
+			if(e.State.HasFlag(ListViewItemStates.Selected))
 			{
-				if(e.State.HasFlag(ListViewItemStates.Selected))
-				{
-					SelectedItemRenderer.DrawBackground(e.Graphics, e.Bounds);
-				}
-				else if(e.ItemIndex == HoverItem)
-				{
-					TrackedItemRenderer.DrawBackground(e.Graphics, e.Bounds);
-				}
-				else if(((PerforceChangeSummary)e.Item.Tag).Number == Workspace.PendingChangeNumber)
-				{
-					TrackedItemRenderer.DrawBackground(e.Graphics, e.Bounds);
-				}
+				BuildList.DrawSelectedBackground(e.Graphics, e.Bounds);
+			}
+			else if(e.ItemIndex == BuildList.HoverItem)
+			{
+				BuildList.DrawTrackedBackground(e.Graphics, e.Bounds);
+			}
+			else if(((PerforceChangeSummary)e.Item.Tag).Number == Workspace.PendingChangeNumber)
+			{
+				BuildList.DrawTrackedBackground(e.Graphics, e.Bounds);
 			}
 			else
 			{
-				if(e.State.HasFlag(ListViewItemStates.Selected))
-				{
-					e.Graphics.FillRectangle(SystemBrushes.ButtonFace, e.Bounds);
-				}
-				else
-				{
-					e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
-				}
+				BuildList.DrawDefaultBackground(e.Graphics, e.Bounds);
 			}
 		}
 
@@ -1019,13 +1412,13 @@ namespace UnrealGameSync
 			string ArchivePath;
 			if(!ChangeNumberToArchivePath.TryGetValue(ChangeNumber, out ArchivePath))
 			{
-				PerforceChangeType Type;
-				if(PerforceMonitor.TryGetChangeType(ChangeNumber, out Type))
+				PerforceChangeDetails Details;
+				if(PerforceMonitor.TryGetChangeDetails(ChangeNumber, out Details))
 				{
 					// Try to get the archive for this CL
-					if(!PerforceMonitor.TryGetArchivePathForChangeNumber(ChangeNumber, out ArchivePath) && Type == PerforceChangeType.Content)
+					if(!PerforceMonitor.TryGetArchivePathForChangeNumber(ChangeNumber, out ArchivePath) && !Details.bContainsCode)
 					{
-						// Otherwise if it's a content change, find the previous build any use the archive path from that
+						// Otherwise if it's a content-only change, find the previous build any use the archive path from that
 						int Index = SortedChangeNumbers.BinarySearch(ChangeNumber);
 						if(Index > 0)
 						{
@@ -1048,11 +1441,57 @@ namespace UnrealGameSync
 			return !ShouldSyncPrecompiledEditor || GetArchivePathForChangeNumber(ChangeNumber) != null;
 		}
 
+		private ChangeLayoutInfo GetChangeLayoutInfo(PerforceChangeSummary Change)
+		{
+			ChangeLayoutInfo LayoutInfo;
+			if(!ChangeNumberToLayoutInfo.TryGetValue(Change.Number, out LayoutInfo))
+			{
+				LayoutInfo = new ChangeLayoutInfo();
+
+				LayoutInfo.DescriptionBadges = CreateDescriptionBadges(Change);
+				LayoutInfo.TypeBadges = CreateTypeBadges(Change.Number);
+
+				EventSummary Summary = EventMonitor.GetSummaryForChange(Change.Number);
+				LayoutInfo.BuildBadges = CreateBuildBadges(Change.Number, Summary);
+				LayoutInfo.CustomBadges = CreateCustomBadges(Change.Number, Summary);
+
+				ChangeNumberToLayoutInfo.Add(Change.Number, LayoutInfo);
+			}
+			return LayoutInfo;
+		}
+
+		private void GetRemainingBisectRange(out int OutPassChangeNumber, out int OutFailChangeNumber)
+		{
+			int PassChangeNumber = -1;
+			foreach(KeyValuePair<int, BisectState> Pair in WorkspaceSettings.ChangeNumberToBisectState)
+			{
+				if(Pair.Value == BisectState.Pass && (Pair.Key > PassChangeNumber || PassChangeNumber == -1))
+				{
+					PassChangeNumber = Pair.Key;
+				}
+			}
+
+			int FailChangeNumber = -1;
+			foreach(KeyValuePair<int, BisectState> Pair in WorkspaceSettings.ChangeNumberToBisectState)
+			{
+				if(Pair.Value == BisectState.Fail && Pair.Key > PassChangeNumber && (Pair.Key < FailChangeNumber || FailChangeNumber == -1))
+				{
+					FailChangeNumber = Pair.Key;
+				}
+			}
+
+			OutPassChangeNumber = PassChangeNumber;
+			OutFailChangeNumber = FailChangeNumber;
+		}
+
 		private void BuildList_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
 		{
 			PerforceChangeSummary Change = (PerforceChangeSummary)e.Item.Tag;
 
-			int IconY = e.Bounds.Top + (e.Bounds.Height - 16) / 2;
+			float DpiScaleX = e.Graphics.DpiX / 96.0f;
+			float DpiScaleY = e.Graphics.DpiY / 96.0f;
+
+			float IconY = e.Bounds.Top + (e.Bounds.Height - 16 * DpiScaleY) / 2;
 
 			StringFormat Format = new StringFormat();
 			Format.LineAlignment = StringAlignment.Center;
@@ -1062,111 +1501,142 @@ namespace UnrealGameSync
 			Font CurrentFont = (Change.Number == Workspace.PendingChangeNumber || Change.Number == Workspace.CurrentChangeNumber)? SelectedBuildFont : BuildFont;
 
 			bool bAllowSync = CanSyncChange(Change.Number);
+			int BadgeAlpha = bAllowSync? 255 : 128;
 			Color TextColor = (bAllowSync || Change.Number == Workspace.PendingChangeNumber || Change.Number == Workspace.CurrentChangeNumber || (WorkspaceSettings != null && WorkspaceSettings.AdditionalChangeNumbers.Contains(Change.Number)))? SystemColors.WindowText : Blend(SystemColors.Window, SystemColors.WindowText, 0.25f);
 
 			if(e.ColumnIndex == IconColumn.Index)
 			{
 				EventSummary Summary = EventMonitor.GetSummaryForChange(Change.Number);
 
-				int MinX = 4;
+				float MinX = 4 * DpiScaleX;
 				if((Summary != null && EventMonitor.WasSyncedByCurrentUser(Summary.ChangeNumber)) || (Workspace != null && Workspace.CurrentChangeNumber == Change.Number))
 				{
-					e.Graphics.DrawImage(Properties.Resources.Icons, MinX, IconY, PreviousSyncIcon, GraphicsUnit.Pixel);
+					e.Graphics.DrawImage(Properties.Resources.Icons, MinX * DpiScaleX, IconY, PreviousSyncIcon, GraphicsUnit.Pixel);
 				}
 				else if(WorkspaceSettings != null && WorkspaceSettings.AdditionalChangeNumbers.Contains(Change.Number))
 				{
-					e.Graphics.DrawImage(Properties.Resources.Icons, MinX, IconY, AdditionalSyncIcon, GraphicsUnit.Pixel);
+					e.Graphics.DrawImage(Properties.Resources.Icons, MinX * DpiScaleX, IconY, AdditionalSyncIcon, GraphicsUnit.Pixel);
 				}
 				else if(bAllowSync && ((Summary != null && Summary.LastStarReview != null && Summary.LastStarReview.Type == EventType.Starred) || PromotedChangeNumbers.Contains(Change.Number)))
 				{
-					e.Graphics.DrawImage(Properties.Resources.Icons, MinX, IconY, PromotedBuildIcon, GraphicsUnit.Pixel);
+					e.Graphics.DrawImage(Properties.Resources.Icons, MinX * DpiScaleX, IconY, PromotedBuildIcon, GraphicsUnit.Pixel);
 				}
-				MinX += PromotedBuildIcon.Width;
+				MinX += PromotedBuildIcon.Width * DpiScaleX;
 
 				if(bAllowSync)
 				{
 					Rectangle QualityIcon = DefaultBuildIcon;
-					if(EventMonitor.IsUnderInvestigation(Change.Number))
+
+					if(IsBisectModeEnabled())
 					{
-						QualityIcon = BadBuildIcon;
-					}
-					else if(Summary != null)
-					{
-						if(Summary.Verdict == ReviewVerdict.Good)
+						int FirstPass, FirstFail;
+						GetRemainingBisectRange(out FirstPass, out FirstFail);
+
+						BisectState State;
+						if(!WorkspaceSettings.ChangeNumberToBisectState.TryGetValue(Change.Number, out State) || State == BisectState.Exclude)
 						{
-							QualityIcon = GoodBuildIcon;
+							QualityIcon = new Rectangle(0, 0, 0, 0);
 						}
-						else if(Summary.Verdict == ReviewVerdict.Bad)
+						if(State == BisectState.Pass)
+						{
+							QualityIcon = BisectPassIcon;
+						}
+						else if(State == BisectState.Fail)
+						{
+							QualityIcon = BisectFailIcon;
+						}
+						else if(FirstFail != -1 && Change.Number > FirstFail)
+						{
+							QualityIcon = BisectImplicitFailIcon;
+						}
+						else if(FirstPass != -1 && Change.Number < FirstPass)
+						{
+							QualityIcon = BisectImplicitPassIcon;
+						}
+					}
+					else
+					{
+						if(EventMonitor.IsUnderInvestigation(Change.Number))
 						{
 							QualityIcon = BadBuildIcon;
 						}
-						else if(Summary.Verdict == ReviewVerdict.Mixed)
+						else if(Summary != null)
 						{
-							QualityIcon = MixedBuildIcon;
+							if(Summary.Verdict == ReviewVerdict.Good)
+							{
+								QualityIcon = GoodBuildIcon;
+							}
+							else if(Summary.Verdict == ReviewVerdict.Bad)
+							{
+								QualityIcon = BadBuildIcon;
+							}
+							else if(Summary.Verdict == ReviewVerdict.Mixed)
+							{
+								QualityIcon = MixedBuildIcon;
+							}
 						}
 					}
-
 					e.Graphics.DrawImage(Properties.Resources.Icons, MinX, IconY, QualityIcon, GraphicsUnit.Pixel);
-					MinX += QualityIcon.Width;
+
+					MinX += QualityIcon.Width * DpiScaleX;
 				}
 			}
-			else if(e.ColumnIndex == ChangeColumn.Index || e.ColumnIndex == TimeColumn.Index || e.ColumnIndex == AuthorColumn.Index || e.ColumnIndex == DescriptionColumn.Index)
+			else if(e.ColumnIndex == ChangeColumn.Index || e.ColumnIndex == TimeColumn.Index)
+			{
+				TextRenderer.DrawText(e.Graphics, e.SubItem.Text, CurrentFont, e.Bounds, TextColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+			}
+			else if(e.ColumnIndex == AuthorColumn.Index)
 			{
 				TextRenderer.DrawText(e.Graphics, e.SubItem.Text, CurrentFont, e.Bounds, TextColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
 			}
+			else if(e.ColumnIndex == DescriptionColumn.Index)
+			{
+				ChangeLayoutInfo Layout = GetChangeLayoutInfo(Change);
+
+				Rectangle RemainingBounds = e.Bounds;
+				if (Layout.DescriptionBadges.Count > 0)
+				{
+				    e.Graphics.IntersectClip(e.Bounds);
+				    e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+
+					RemainingBounds = new Rectangle(RemainingBounds.Left, RemainingBounds.Top, RemainingBounds.Width - (int)(2 * DpiScaleX), RemainingBounds.Height);
+
+					Point ListLocation = GetBadgeListLocation(Layout.DescriptionBadges, RemainingBounds, HorizontalAlign.Right, VerticalAlignment.Middle);
+					DrawBadges(e.Graphics, ListLocation, Layout.DescriptionBadges, BadgeAlpha);
+
+					RemainingBounds = new Rectangle(RemainingBounds.Left, RemainingBounds.Top, ListLocation.X - RemainingBounds.Left - (int)(2 * DpiScaleX), RemainingBounds.Height);
+				}
+
+				TextRenderer.DrawText(e.Graphics, e.SubItem.Text, CurrentFont, RemainingBounds, TextColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+			}
+			else if(e.ColumnIndex == TypeColumn.Index)
+			{
+				ChangeLayoutInfo Layout = GetChangeLayoutInfo(Change);
+				if(Layout.TypeBadges.Count > 0)
+				{
+				    e.Graphics.IntersectClip(e.Bounds);
+				    e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+					Point TypeLocation = GetBadgeListLocation(Layout.TypeBadges, e.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+					DrawBadges(e.Graphics, TypeLocation, Layout.TypeBadges, BadgeAlpha);
+				}
+			}
 			else if(e.ColumnIndex == CISColumn.Index)
 			{
-				e.Graphics.IntersectClip(e.Bounds);
-				e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-
-				EventSummary Summary = EventMonitor.GetSummaryForChange(Change.Number);
-				if(Summary == null || Summary.Builds.Count == 0)
+				ChangeLayoutInfo Layout = GetChangeLayoutInfo(Change);
+				if(Layout.BuildBadges.Count > 0)
 				{
-					PerforceChangeType Type;
-					if(PerforceMonitor.TryGetChangeType(Change.Number, out Type))
-					{
-						if(Type == PerforceChangeType.Code)
-						{
-							DrawSingleBadge(e.Graphics, e.Bounds, "Code", Color.FromArgb(192, 192, 192));
-						}
-						else if(Type == PerforceChangeType.Content)
-						{
-							DrawSingleBadge(e.Graphics, e.Bounds, "Content", bAllowSync? Color.FromArgb(128, 128, 192) : Color.FromArgb(192, 192, 192));
-						}
-					}
-				}
-				else
-				{
-					Tuple<BuildData, Rectangle>[] Badges = LayoutBadges(Summary.Builds, e.Bounds);
-					foreach(Tuple<BuildData, Rectangle> Badge in Badges)
-					{
-						Color BadgeColor = Color.FromArgb(128, 192, 64);
-						if(Badge.Item1.Result == BuildDataResult.Starting)
-						{
-							BadgeColor = Color.FromArgb(128, 192, 255);
-						}
-						else if(Badge.Item1.Result == BuildDataResult.Warning)
-						{
-							BadgeColor = Color.FromArgb(255, 192, 0);
-						}
-						else if(Badge.Item1.Result == BuildDataResult.Failure)
-						{
-							BadgeColor = Color.FromArgb(192, 64, 0);
-						}
+				    e.Graphics.IntersectClip(e.Bounds);
+				    e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
 
-						if(Badge.Item1 == HoverBadge)
-						{
-							BadgeColor = Color.FromArgb(Math.Min(BadgeColor.R + 32, 255), Math.Min(BadgeColor.G + 32, 255), Math.Min(BadgeColor.B + 32, 255));
-						}
+					Point BuildsLocation = GetBadgeListLocation(Layout.BuildBadges, e.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+					BuildsLocation.X = Math.Max(BuildsLocation.X, e.Bounds.Left);
 
-						Size BadgeSize = GetBadgeSize(Badge.Item1.BuildType);
-						DrawBadge(e.Graphics, Badge.Item2, Badge.Item1.BuildType, BadgeColor);
-					}
+					DrawBadges(e.Graphics, BuildsLocation, Layout.BuildBadges, BadgeAlpha);
 				}
 			}
 			else if(e.ColumnIndex == StatusColumn.Index)
 			{
-				int MaxX = e.SubItem.Bounds.Right;
+				float MaxX = e.SubItem.Bounds.Right;
 
 				if(Change.Number == Workspace.PendingChangeNumber && Workspace.IsBusy())
 				{
@@ -1181,9 +1651,9 @@ namespace UnrealGameSync
 						e.Graphics.DrawImage(Properties.Resources.Icons, MaxX, IconY, InfoIcon, GraphicsUnit.Pixel);
 					}
 
-					int MinX = e.Bounds.Left;
+					float MinX = e.Bounds.Left;
 
-					TextRenderer.DrawText(e.Graphics, Progress.Item1, CurrentFont, new Rectangle(MinX, e.Bounds.Top, MaxX - MinX, e.Bounds.Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+					TextRenderer.DrawText(e.Graphics, Progress.Item1, CurrentFont, new Rectangle((int)MinX, e.Bounds.Top, (int)(MaxX - MinX), e.Bounds.Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 				}
 				else
 				{
@@ -1194,17 +1664,17 @@ namespace UnrealGameSync
 					{
 						EventData Review = EventMonitor.GetReviewByCurrentUser(Change.Number);
 
-						MaxX -= FrownIcon.Width;
+						MaxX -= FrownIcon.Width * DpiScaleX;
 						e.Graphics.DrawImage(Properties.Resources.Icons, MaxX, IconY, (Review == null || !EventMonitor.IsPositiveReview(Review.Type))? FrownIcon : DisabledFrownIcon, GraphicsUnit.Pixel);
 
-						MaxX -= HappyIcon.Width;
+						MaxX -= HappyIcon.Width * DpiScaleX;
 						e.Graphics.DrawImage(Properties.Resources.Icons, MaxX, IconY, (Review == null || !EventMonitor.IsNegativeReview(Review.Type))? HappyIcon : DisabledHappyIcon, GraphicsUnit.Pixel);
 					}
-					else if(e.ItemIndex == HoverItem && bAllowSync)
+					else if(e.ItemIndex == BuildList.HoverItem && bAllowSync)
 					{
 						Rectangle SyncBadgeRectangle = GetSyncBadgeRectangle(e.SubItem.Bounds);
-						DrawBadge(e.Graphics, SyncBadgeRectangle, "Sync", bHoverSync? Color.FromArgb(140, 180, 230) : Color.FromArgb(112, 146, 190));
-						MaxX = SyncBadgeRectangle.Left - 2;
+						DrawBadge(e.Graphics, SyncBadgeRectangle, "Sync", bHoverSync? Color.FromArgb(140, 180, 230) : Color.FromArgb(112, 146, 190), true, true);
+						MaxX = SyncBadgeRectangle.Left - (int)(2 * DpiScaleX);
 					}
 
 					string SummaryText;
@@ -1237,28 +1707,357 @@ namespace UnrealGameSync
 						SummaryText = SummaryText.Substring(0, SummaryText.IndexOf('\n')).TrimEnd() + "...";
 					}
 
-					TextRenderer.DrawText(e.Graphics, SummaryText, CurrentFont, new Rectangle(e.Bounds.Left, e.Bounds.Top, MaxX - e.Bounds.Left, e.Bounds.Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+					TextRenderer.DrawText(e.Graphics, SummaryText, CurrentFont, new Rectangle(e.Bounds.Left, e.Bounds.Top, (int)MaxX - e.Bounds.Left, e.Bounds.Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 				}
 			}
 			else
 			{
-				throw new NotImplementedException();
+				ColumnHeader Column = BuildList.Columns[e.ColumnIndex];
+				if(CustomColumns.Contains(Column))
+				{
+				    ChangeLayoutInfo Layout = GetChangeLayoutInfo(Change);
+
+				    List<BadgeInfo> Badges;
+				    if(Layout.CustomBadges.TryGetValue(Column.Text, out Badges) && Badges.Count > 0)
+				    {
+				        e.Graphics.IntersectClip(e.Bounds);
+				        e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+    
+					    Point BuildsLocation = GetBadgeListLocation(Badges, e.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+					    DrawBadges(e.Graphics, BuildsLocation, Badges, BadgeAlpha);
+				    }
+				}
 			}
 		}
 
-		private Tuple<BuildData, Rectangle>[] LayoutBadges(IEnumerable<BuildData> Builds, Rectangle DisplayRectangle)
+		private void LayoutBadges(List<BadgeInfo> Badges)
 		{
-			int NextX = 0;
-			List<Tuple<BuildData, Rectangle>> Badges = new List<Tuple<BuildData,Rectangle>>();
-			foreach(BuildData Build in Builds.OrderBy(x => x.BuildType))
+			int Offset = 0;
+			for (int Idx = 0; Idx < Badges.Count; Idx++)
 			{
-				Size BadgeSize = GetBadgeSize(Build.BuildType);
-				Badges.Add(new Tuple<BuildData, Rectangle>(Build, new Rectangle(NextX, DisplayRectangle.Top + (DisplayRectangle.Height - BadgeSize.Height) / 2, BadgeSize.Width, BadgeSize.Height)));
-				NextX += BadgeSize.Width + 2;
+				BadgeInfo Badge = Badges[Idx];
+
+				if (Idx > 0 && Badge.Group != Badges[Idx - 1].Group)
+				{
+					Offset += 6;
+				}
+				Badge.Offset = Offset;
+
+				Size BadgeSize = GetBadgeSize(Badge.Label);
+				Badge.Width = BadgeSize.Width;
+				Badge.Height = BadgeSize.Height;
+
+				Offset += BadgeSize.Width + 1;
+			}
+		}
+
+		private Point GetBadgeListLocation(List<BadgeInfo> Badges, Rectangle Bounds, HorizontalAlign HorzAlign, VerticalAlignment VertAlign)
+		{
+			Point Location = Bounds.Location;
+			if(Badges.Count == 0)
+			{
+				return Bounds.Location;
 			}
 
-			int Offset = (Badges.Count > 0)? DisplayRectangle.Left + Math.Max(DisplayRectangle.Width - Badges.Last().Item2.Right, 0) / 2 : 0;
-			return Badges.Select(x => new Tuple<BuildData, Rectangle>(x.Item1, new Rectangle(x.Item2.Left + Offset, x.Item2.Top, x.Item2.Width, x.Item2.Height))).ToArray();
+			BadgeInfo LastBadge = Badges[Badges.Count - 1];
+
+			int X = Bounds.X;
+			switch(HorzAlign)
+			{
+				case HorizontalAlign.Center:
+					X += (Bounds.Width - LastBadge.Width - LastBadge.Offset) / 2;
+					break;
+				case HorizontalAlign.Right:
+					X += (Bounds.Width - LastBadge.Width - LastBadge.Offset);
+					break;
+			}
+
+			int Y = Bounds.Y;
+			switch(VertAlign)
+			{
+				case VerticalAlignment.Middle:
+					Y += (Bounds.Height - LastBadge.Height) / 2;
+					break;
+				case VerticalAlignment.Bottom:
+					Y += (Bounds.Height - LastBadge.Height);
+					break;
+			}
+
+			return new Point(X, Y);
+		}
+
+		private void DrawBadges(Graphics Graphics, Point ListLocation, List<BadgeInfo> Badges, int Alpha)
+		{
+			for(int Idx = 0; Idx < Badges.Count; Idx++)
+			{
+				BadgeInfo Badge = Badges[Idx];
+				bool bMergeLeft = (Idx > 0 && Badges[Idx - 1].Group == Badge.Group);
+				bool bMergeRight = (Idx < Badges.Count - 1 && Badges[Idx + 1].Group == Badge.Group);
+
+				Rectangle Bounds = new Rectangle(ListLocation.X + Badge.Offset, ListLocation.Y, Badge.Width, Badge.Height);
+				if(Badge.UniqueId != null && Badge.UniqueId == HoverBadgeUniqueId)
+				{
+					DrawBadge(Graphics, Bounds, Badge.Label, Color.FromArgb((Alpha * Badge.HoverBackgroundColor.A) / 255, Badge.HoverBackgroundColor), bMergeLeft, bMergeRight);
+				}
+				else
+				{
+					DrawBadge(Graphics, Bounds, Badge.Label, Color.FromArgb((Alpha * Badge.BackgroundColor.A) / 255, Badge.BackgroundColor), bMergeLeft, bMergeRight);
+				}
+			}
+		}
+
+		private List<BadgeInfo> CreateDescriptionBadges(PerforceChangeSummary Change)
+		{
+			string Description = Change.Description;
+
+			PerforceChangeDetails Details;
+			if(PerforceMonitor.TryGetChangeDetails(Change.Number, out Details))
+			{
+				Description = Details.Description;
+			}
+
+			List<BadgeInfo> Badges = new List<BadgeInfo>();
+
+			try
+			{
+				ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
+				if(ProjectConfigFile != null)
+				{
+					string[] BadgeDefinitions = ProjectConfigFile.GetValues("Badges.DescriptionBadges", new string[0]);
+					foreach(string BadgeDefinition in BadgeDefinitions)
+					{
+						ConfigObject BadgeDefinitionObject = new ConfigObject(BadgeDefinition);
+						string Pattern = BadgeDefinitionObject.GetValue("Pattern", null);
+						string Name = BadgeDefinitionObject.GetValue("Name", null);
+						string Group = BadgeDefinitionObject.GetValue("Group", null);
+						string Color = BadgeDefinitionObject.GetValue("Color", "#909090");
+						string HoverColor = BadgeDefinitionObject.GetValue("HoverColor", "#b0b0b0");
+						string Url = BadgeDefinitionObject.GetValue("Url", null);
+						if(!String.IsNullOrEmpty(Name) && !String.IsNullOrEmpty(Pattern))
+						{
+							foreach(Match MatchResult in Regex.Matches(Description, Pattern, RegexOptions.Multiline))
+							{
+								Color BadgeColor = System.Drawing.ColorTranslator.FromHtml(Color);
+								Color HoverBadgeColor = System.Drawing.ColorTranslator.FromHtml(HoverColor);
+
+								string UniqueId = String.IsNullOrEmpty(Url)? null : String.Format("Description:{0}:{1}", Change.Number, Badges.Count);
+								Badges.Add(new BadgeInfo(ReplaceRegexMatches(Name, MatchResult), Group, UniqueId, BadgeColor, HoverBadgeColor, ReplaceRegexMatches(Url, MatchResult)));
+							}
+						}
+					}
+				}
+			}
+			catch(Exception)
+			{
+			}
+
+			LayoutBadges(Badges);
+
+			return Badges;
+		}
+
+		private string ReplaceRegexMatches(string Text, Match MatchResult)
+		{
+			if(Text != null)
+			{
+				for(int Idx = 1; Idx < MatchResult.Groups.Count; Idx++)
+				{
+					string SourceText = String.Format("${0}", Idx);
+					Text = Text.Replace(SourceText, MatchResult.Groups[Idx].Value);
+				}
+			}
+			return Text;
+		}
+
+		private List<BadgeInfo> CreateTypeBadges(int ChangeNumber)
+		{
+			List<BadgeInfo> Badges = new List<BadgeInfo>();
+
+			PerforceChangeDetails Details;
+			if(PerforceMonitor.TryGetChangeDetails(ChangeNumber, out Details))
+			{
+				if(Details.bContainsCode)
+				{
+					Badges.Add(new BadgeInfo("Code", "ChangeType", Color.FromArgb(116, 185, 255)));
+				}
+				if(Details.bContainsContent)
+				{
+					Badges.Add(new BadgeInfo("Content", "ChangeType", Color.FromArgb(162, 155, 255)));
+				}
+			}
+			if(Badges.Count == 0)
+			{
+				Badges.Add(new BadgeInfo("Unknown", "ChangeType", Color.FromArgb(192, 192, 192)));
+			}
+			LayoutBadges(Badges);
+
+			return Badges;
+		}
+
+		private bool TryGetProjectSetting(ConfigFile ProjectConfigFile, string Name, out string Value)
+		{
+			ConfigSection ProjectSection = ProjectConfigFile.FindSection(SelectedProjectIdentifier);
+			if(ProjectSection != null)
+			{
+				string NewValue = ProjectSection.GetValue(Name, null);
+				if(NewValue != null)
+				{
+					Value = NewValue;
+					return true;
+				}
+			}
+
+			ConfigSection DefaultSection = ProjectConfigFile.FindSection("Default");
+			if(DefaultSection != null)
+			{
+				string NewValue = DefaultSection.GetValue(Name, null);
+				if(NewValue != null)
+				{
+					Value = NewValue;
+					return true;
+				}
+			}
+
+			Value = null;
+			return false;
+		}
+
+		private bool TryGetProjectSetting(ConfigFile ProjectConfigFile, string Name, out string[] Values)
+		{
+			string ValueList;
+			if(TryGetProjectSetting(ProjectConfigFile, Name, out ValueList))
+			{
+				Values = ValueList.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
+				return true;
+			}
+			else
+			{
+				Values = null;
+				return false;
+			}
+		}
+
+		private bool TryGetProjectSetting(ConfigFile ProjectConfigFile, string Name, string LegacyName, out string Value)
+		{
+			string NewValue;
+			if(TryGetProjectSetting(ProjectConfigFile, Name, out NewValue))
+			{
+				Value = NewValue;
+				return true;
+			}
+
+			NewValue = ProjectConfigFile.GetValue(LegacyName, null);
+			if(NewValue != null)
+			{
+				Value = NewValue;
+				return true;
+			}
+
+			Value = null;
+			return false;
+		}
+
+		private List<BadgeInfo> CreateBuildBadges(int ChangeNumber, EventSummary Summary)
+		{
+			List<BadgeInfo> Badges = new List<BadgeInfo>();
+
+			if(Summary != null && Summary.Builds.Count > 0)
+			{
+				// Create a lookup for build data for each badge name
+				Dictionary<string, BuildData> BadgeNameToBuildData = new Dictionary<string, BuildData>();
+				foreach(BuildData Build in Summary.Builds)
+				{
+					BadgeNameToBuildData[Build.BadgeName] = Build;
+				}
+
+				// Add all the badges, sorted by group
+				foreach(KeyValuePair<string, string> BadgeNameAndGroup in BadgeNameAndGroupPairs)
+				{
+					BuildData Build;
+					BadgeNameToBuildData.TryGetValue(BadgeNameAndGroup.Key, out Build);
+
+					BadgeInfo Badge = CreateBadge(ChangeNumber, BadgeNameAndGroup.Key, BadgeNameAndGroup.Value, Build);
+					if(MaxBuildBadgeChars != -1 && Badge.Label.Length > MaxBuildBadgeChars)
+					{
+						Badge.ToolTip = Badge.Label;
+						Badge.Label = Badge.Label.Substring(0, MaxBuildBadgeChars);
+					}
+					Badges.Add(Badge);
+				}
+			}
+
+			// Layout the badges
+			LayoutBadges(Badges);
+			return Badges;
+		}
+
+		private BadgeInfo CreateBadge(int ChangeNumber, string BadgeName, string BadgeGroup, BuildData Build)
+		{
+			string BadgeLabel = BadgeName;
+			Color BadgeColor = Color.FromArgb(0, Color.White);
+
+			if(Build != null)
+			{
+				BadgeLabel = Build.BadgeLabel;
+				BadgeColor = GetBuildBadgeColor(Build.Result);
+			}
+
+			Color HoverBadgeColor = Color.FromArgb(BadgeColor.A, Math.Min(BadgeColor.R + 32, 255), Math.Min(BadgeColor.G + 32, 255), Math.Min(BadgeColor.B + 32, 255));
+
+			string UniqueId = String.Format("{0}:{1}", ChangeNumber, BadgeName);
+			return new BadgeInfo(BadgeLabel, BadgeGroup, UniqueId, BadgeColor, HoverBadgeColor, Build);
+		}
+
+		private Dictionary<string, List<BadgeInfo>> CreateCustomBadges(int ChangeNumber, EventSummary Summary)
+		{
+			Dictionary<string, List<BadgeInfo>> ColumnNameToBadges = new Dictionary<string, List<BadgeInfo>>();
+			if(Summary != null && Summary.Builds.Count > 0)
+			{
+				foreach(ColumnHeader CustomColumn in CustomColumns)
+				{
+					ConfigObject Config = (ConfigObject)CustomColumn.Tag;
+					if(Config != null)
+					{
+						List<BadgeInfo> Badges = new List<BadgeInfo>();
+
+						string[] BadgeNames = Config.GetValue("Badges", "").Split(new char[]{ ',' }, StringSplitOptions.RemoveEmptyEntries);
+						foreach(string BadgeName in BadgeNames)
+						{
+							BadgeInfo Badge = CreateBadge(ChangeNumber, BadgeName, "XXXX", Summary.Builds.FirstOrDefault(x => x.BadgeName == BadgeName));
+							Badges.Add(Badge);
+						}
+
+						LayoutBadges(Badges);
+
+						ColumnNameToBadges[CustomColumn.Text] = Badges;
+					}
+				}
+			}
+			return ColumnNameToBadges;
+		}
+
+		private static Color GetBuildBadgeColor(BuildDataResult Result)
+		{
+			if(Result == BuildDataResult.Starting)
+			{
+				return Color.FromArgb(128, 192, 255);
+			}
+			else if(Result == BuildDataResult.Warning)
+			{
+				return Color.FromArgb(255, 192, 0);
+			}
+			else if(Result == BuildDataResult.Failure)
+			{
+				return Color.FromArgb(192, 64, 0);
+			}
+			else if(Result == BuildDataResult.Skipped)
+			{
+				return Color.FromArgb(192, 192, 192);
+			}
+			else
+			{
+				return Color.FromArgb(128, 192, 64);
+			}
 		}
 
 		private Rectangle GetSyncBadgeRectangle(Rectangle Bounds)
@@ -1274,30 +2073,44 @@ namespace UnrealGameSync
 			int X = DisplayRectangle.Left + (DisplayRectangle.Width - BadgeSize.Width) / 2;
 			int Y = DisplayRectangle.Top + (DisplayRectangle.Height - BadgeSize.Height) / 2;
 
-			DrawBadge(Graphics, new Rectangle(X, Y, BadgeSize.Width, BadgeSize.Height), BadgeText, BadgeColor);
+			DrawBadge(Graphics, new Rectangle(X, Y, BadgeSize.Width, BadgeSize.Height), BadgeText, BadgeColor, false, false);
 		}
 
-		private void DrawBadge(Graphics Graphics, Rectangle BadgeRect, string BadgeText, Color BadgeColor)
+		private void DrawBadge(Graphics Graphics, Rectangle BadgeRect, string BadgeText, Color BadgeColor, bool bMergeLeft, bool bMergeRight)
 		{
-			GraphicsPath Path = new GraphicsPath();
-			Path.StartFigure();
-			Path.AddArc((float)BadgeRect.Left, (float)BadgeRect.Top, BadgeRect.Height, BadgeRect.Height, 90, 180);
-			Path.AddArc((float)BadgeRect.Right - BadgeRect.Height - 1, (float)BadgeRect.Top, BadgeRect.Height, BadgeRect.Height, 270, 180);
-			Path.CloseFigure();
-
-			using(SolidBrush Brush = new SolidBrush(BadgeColor))
+			if(BadgeColor.A != 0)
 			{
-				Graphics.FillPath(Brush, Path);
-			}
+				using (GraphicsPath Path = new GraphicsPath())
+				{
+					Path.StartFigure();
+					Path.AddLine(BadgeRect.Left + (bMergeLeft? 1 : 0), BadgeRect.Top, BadgeRect.Left - (bMergeLeft? 1 : 0), BadgeRect.Bottom);
+					Path.AddLine(BadgeRect.Left - (bMergeLeft? 1 : 0), BadgeRect.Bottom, BadgeRect.Right - 1 - (bMergeRight? 1 : 0), BadgeRect.Bottom);
+					Path.AddLine(BadgeRect.Right - 1 - (bMergeRight? 1 : 0), BadgeRect.Bottom, BadgeRect.Right - 1 + (bMergeRight? 1 : 0), BadgeRect.Top);
+					Path.AddLine(BadgeRect.Right - 1 + (bMergeRight? 1 : 0), BadgeRect.Top, BadgeRect.Left + (bMergeLeft? 1 : 0), BadgeRect.Top);
+					Path.CloseFigure();
 
-			TextRenderer.DrawText(Graphics, BadgeText, BadgeFont, BadgeRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+					using(SolidBrush Brush = new SolidBrush(BadgeColor))
+					{
+						Graphics.FillPath(Brush, Path);
+					}
+				}
+
+				TextRenderer.DrawText(Graphics, BadgeText, BadgeFont, BadgeRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping);
+			}
 		}
 
 		private Size GetBadgeSize(string BadgeText)
 		{
-			Size LabelSize = TextRenderer.MeasureText(BadgeText, BadgeFont);
-			int BadgeHeight = BadgeFont.Height - 1;
-			return new Size(LabelSize.Width + BadgeHeight - 4, BadgeHeight);
+			Size BadgeSize;
+			if(!BadgeLabelToSize.TryGetValue(BadgeText, out BadgeSize))
+			{
+				Size LabelSize = TextRenderer.MeasureText(BadgeText, BadgeFont);
+				int BadgeHeight = BadgeFont.Height + 1;
+
+				BadgeSize = new Size(LabelSize.Width + BadgeHeight - 4, BadgeHeight);
+				BadgeLabelToSize[BadgeText] = BadgeSize;
+			}
+			return BadgeSize;
 		}
 
 		private static bool GetLastUpdateMessage(WorkspaceUpdateResult Result, string ResultMessage, out string Message)
@@ -1320,11 +2133,17 @@ namespace UnrealGameSync
 				case WorkspaceUpdateResult.FailedToSync:
 					Message = "Failed to sync files.";
 					return true;
+				case WorkspaceUpdateResult.FailedToSyncLoginExpired:
+					Message = "Failed to sync files (login expired).";
+					return true;
 				case WorkspaceUpdateResult.FilesToResolve:
 					Message = "Sync finished with unresolved files.";
 					return true;
 				case WorkspaceUpdateResult.FilesToClobber:
 					Message = "Sync failed due to modified files in workspace.";
+					return true;
+				case WorkspaceUpdateResult.FilesToDelete:
+					Message = "Sync aborted pending confirmation of files to delete.";
 					return true;
 				case WorkspaceUpdateResult.FailedToCompile:
 				case WorkspaceUpdateResult.FailedToCompileWithCleanWorkspace:
@@ -1428,6 +2247,11 @@ namespace UnrealGameSync
 				string EditorExe = GetEditorExePath(EditorBuildConfig);
 				if(ReceiptPaths.Any(x => File.Exists(x)) && File.Exists(EditorExe))
 				{
+					if(Settings.bEditorArgumentsPrompt && !ModifyEditorArguments())
+					{
+						return;
+					}
+
 					StringBuilder LaunchArguments = new StringBuilder();
 					if(SelectedFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase))
 					{
@@ -1462,7 +2286,7 @@ namespace UnrealGameSync
 							Options |= WorkspaceUpdateOptions.UseIncrementalBuilds;
 						}
 		
-						WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, Options, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, null, GetWorkspaceVariables());
+						WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, Options, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, null, GetWorkspaceVariables(Workspace.CurrentChangeNumber));
 						StartWorkspaceUpdate(Context);
 					}
 				}
@@ -1471,27 +2295,102 @@ namespace UnrealGameSync
 
 		private string GetEditorExePath(BuildConfig Config)
 		{
+			// Try to read the executable path from the target receipt
+			List<string> ReceiptFileNames = GetEditorReceiptPaths(Config);
+			foreach(string ReceiptFileName in ReceiptFileNames)
+			{
+				if(File.Exists(ReceiptFileName))
+				{
+					Log.WriteLine("Reading {0}", ReceiptFileName);
+					try
+					{
+						string Text = File.ReadAllText(ReceiptFileName);
+						JavaScriptSerializer Serializer = new JavaScriptSerializer();
+						Dictionary<string, object> RawObject = Serializer.Deserialize<Dictionary<string, object>>(Text);
+
+						object LaunchFileNameObject;
+						if(RawObject.TryGetValue("Launch", out LaunchFileNameObject))
+						{
+							string LaunchFileName = LaunchFileNameObject as string;
+							if(LaunchFileName != null)
+							{
+								LaunchFileName = LaunchFileName.Replace("$(EngineDir)", Path.Combine(BranchDirectoryName, "Engine"));
+								LaunchFileName = LaunchFileName.Replace("$(ProjectDir)", Path.GetDirectoryName(SelectedFileName));
+								return Path.GetFullPath(LaunchFileName);
+							}
+						}
+					}
+					catch(Exception Ex)
+					{
+						Log.WriteLine("  Exception while parsing receipt: {0}", Ex.ToString());
+					}
+					break;
+				}
+			}
+
+			// Otherwise use the standard editor path
 			string ExeFileName = "UE4Editor.exe";
-			if(Config != BuildConfig.DebugGame && Config != BuildConfig.Development)
+			if((Config != BuildConfig.DebugGame || PerforceMonitor.LatestProjectConfigFile.GetValue("Options.DebugGameHasSeparateExecutable", false)) && Config != BuildConfig.Development)
 			{
 				ExeFileName	= String.Format("UE4Editor-Win64-{0}.exe", Config.ToString());
 			}
 			return Path.Combine(BranchDirectoryName, "Engine", "Binaries", "Win64", ExeFileName);
 		}
 
-		private bool IsEditorRunning(BuildConfig Config)
+		private bool WaitForProgramsToFinish()
 		{
-			string EditorFileName = Path.GetFullPath(GetEditorExePath(GetEditorBuildConfig()));
+			string[] ProcessFileNames = GetProcessesRunningInWorkspace();
+			if(ProcessFileNames.Length > 0)
+			{
+				ProgramsRunningWindow ProgramsRunning = new ProgramsRunningWindow(GetProcessesRunningInWorkspace, ProcessFileNames);
+				if(ProgramsRunning.ShowDialog() != DialogResult.OK)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private string[] GetProcessesRunningInWorkspace()
+		{
+			HashSet<string> ProcessNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+			ProcessNames.Add("UE4Editor");
+			ProcessNames.Add("UE4Editor-Cmd");
+			ProcessNames.Add("UE4Editor-Win64-Debug");
+			ProcessNames.Add("UE4Editor-Win64-Debug-Cmd");
+			ProcessNames.Add("CrashReportClient");
+			ProcessNames.Add("CrashReportClient-Win64-Development");
+			ProcessNames.Add("CrashReportClient-Win64-Debug");
+			ProcessNames.Add("UnrealBuildTool");
+			ProcessNames.Add("AutomationTool");
+
+			List<string> ProcessFileNames = new List<string>();
 			try
 			{
-				foreach(Process ProcessInstance in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(EditorFileName)))
+				string RootDirectoryName = Path.GetFullPath(Workspace.LocalRootPath) + Path.DirectorySeparatorChar;
+				foreach(Process ProcessInstance in Process.GetProcesses())
 				{
 					try
 					{
-						string ProcessFileName = Path.GetFullPath(Path.GetFullPath(ProcessInstance.MainModule.FileName));
-						if(String.Compare(EditorFileName, ProcessFileName, StringComparison.InvariantCultureIgnoreCase) == 0)
+						if(ProcessNames.Contains(ProcessInstance.ProcessName))
 						{
-							return true;
+							string ProcessFileName = Path.GetFullPath(ProcessInstance.MainModule.FileName);
+							if(ProcessFileName.StartsWith(RootDirectoryName, StringComparison.InvariantCultureIgnoreCase))
+							{
+								string DisplayTitle = ProcessFileName;
+								try
+								{
+									string MainWindowTitle = ProcessInstance.MainWindowTitle;
+									if(!String.IsNullOrEmpty(MainWindowTitle))
+									{
+										DisplayTitle = String.Format("{0} ({1})", ProcessInstance.MainWindowTitle, DisplayTitle);
+									}
+								}
+								catch
+								{
+								}
+								ProcessFileNames.Add(DisplayTitle);
+							}
 						}
 					}
 					catch
@@ -1502,7 +2401,7 @@ namespace UnrealGameSync
 			catch
 			{
 			}
-			return false;
+			return ProcessFileNames.ToArray();
 		}
 
 		private List<string> GetEditorReceiptPaths(BuildConfig Config)
@@ -1510,15 +2409,20 @@ namespace UnrealGameSync
 			string ConfigSuffix = (Config == BuildConfig.Development)? "" : String.Format("-Win64-{0}", Config.ToString());
 
 			List<string> PossiblePaths = new List<string>();
-			if(EditorTargetName == null)
-			{
-				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Engine", "Binaries", "Win64", String.Format("UE4Editor{0}.target", ConfigSuffix)));
-				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Engine", "Build", "Receipts", String.Format("UE4Editor-Win64-{0}.target.xml", Config.ToString())));
-			}
-			else
+			if(EditorTargetName != null)
 			{
 				PossiblePaths.Add(Path.Combine(Path.GetDirectoryName(SelectedFileName), "Binaries", "Win64", String.Format("{0}{1}.target", EditorTargetName, ConfigSuffix)));
 				PossiblePaths.Add(Path.Combine(Path.GetDirectoryName(SelectedFileName), "Build", "Receipts", String.Format("{0}-Win64-{1}.target.xml", EditorTargetName, Config.ToString())));
+			}
+			else if(SelectedFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase) && bIsEnterpriseProject)
+			{
+				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Enterprise", "Binaries", "Win64", String.Format("StudioEditor{0}.target", ConfigSuffix)));
+				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Enterprise", "Build", "Receipts", String.Format("StudioEditor-Win64-{0}.target.xml", Config.ToString())));
+			}
+			else
+			{
+				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Engine", "Binaries", "Win64", String.Format("UE4Editor{0}.target", ConfigSuffix)));
+				PossiblePaths.Add(Path.Combine(BranchDirectoryName, "Engine", "Build", "Receipts", String.Format("UE4Editor-Win64-{0}.target.xml", Config.ToString())));
 			}
 			return PossiblePaths;
 		}
@@ -1553,7 +2457,7 @@ namespace UnrealGameSync
 
 		private void UpdateStatusPanel()
 		{
-			int NewContentWidth = Math.Max(TextRenderer.MeasureText(String.Format("Last synced to {0} at changelist 123456789. 12 users are on a newer build.        | Sync Now | Sync To...", StreamName ?? ""), StatusPanel.Font).Width, 400);
+			int NewContentWidth = Math.Max(TextRenderer.MeasureText(String.Format("Opened {0}  |  Browse...  |  Connect...", SelectedFileName), StatusPanel.Font).Width, 400);
 			StatusPanel.SetContentWidth(NewContentWidth);
 
 			List<StatusLine> Lines = new List<StatusLine>();
@@ -1569,7 +2473,7 @@ namespace UnrealGameSync
 				}
 				else
 				{
-					SummaryLine.AddText("Updating to changelist ");
+					SummaryLine.AddText("Syncing to changelist ");
 					SummaryLine.AddLink(Workspace.PendingChangeNumber.ToString(), FontStyle.Regular, () => { SelectChange(Workspace.PendingChangeNumber); });
 					SummaryLine.AddText("... | ");
 				}
@@ -1590,7 +2494,7 @@ namespace UnrealGameSync
 				ProjectLine.AddText(String.Format("Opened "));
 				ProjectLine.AddLink(SelectedFileName + " \u25BE", FontStyle.Regular, (P, R) => { SelectRecentProject(R); });
 				ProjectLine.AddText("  |  ");
-				ProjectLine.AddLink("Browse...", FontStyle.Regular, (P, R) => { Owner.BrowseForProject(this); });
+				ProjectLine.AddLink("Browse...", FontStyle.Regular, (P, R) => { Owner.EditSelectedProject(this); });
 				Lines.Add(ProjectLine);
 
 				// Spacer
@@ -1598,41 +2502,67 @@ namespace UnrealGameSync
 
 				// Sync status
 				StatusLine SummaryLine = new StatusLine();
-				if(Workspace.CurrentChangeNumber != -1)
+				if(IsBisectModeEnabled())
 				{
-					if(StreamName == null)
+					int PassChangeNumber;
+					int FailChangeNumber;
+					GetRemainingBisectRange(out PassChangeNumber, out FailChangeNumber);
+					
+					SummaryLine.AddText("Bisecting changes between ");
+					SummaryLine.AddLink(String.Format("{0}", PassChangeNumber), FontStyle.Regular, () => { SelectChange(PassChangeNumber); });
+					SummaryLine.AddText(" and ");
+					SummaryLine.AddLink(String.Format("{0}", FailChangeNumber), FontStyle.Regular, () => { SelectChange(FailChangeNumber); });
+					SummaryLine.AddText(".  ");
+
+					int BisectChangeNumber = GetBisectChangeNumber();
+					if(BisectChangeNumber != -1)
 					{
-						SummaryLine.AddText("Last synced to changelist ");
+						SummaryLine.AddLink("Sync Next", FontStyle.Bold | FontStyle.Underline, () => { SyncBisectChange(); });
+						SummaryLine.AddText(" | ");
 					}
-					else
-					{
-						SummaryLine.AddText("Last synced to ");
-						SummaryLine.AddLink(StreamName + "\u25BE", FontStyle.Regular, (P, R) => { SelectOtherStream(R); });
-						SummaryLine.AddText(" at changelist ");
-					}
-					SummaryLine.AddLink(String.Format("{0}.", Workspace.CurrentChangeNumber), FontStyle.Regular, () => { SelectChange(Workspace.CurrentChangeNumber); });
-					int NumUsersOnNewerChange = SortedChangeNumbers.Where(x => (x > Workspace.CurrentChangeNumber)).OrderByDescending(x => x).Select(x => EventMonitor.GetSummaryForChange(x)).Where(x => x != null && (!ShouldSyncPrecompiledEditor || GetArchivePathForChangeNumber(x.ChangeNumber) != null)).Sum(x => x.CurrentUsers.Count);
-					if(NumUsersOnNewerChange > 0)
-					{
-						SummaryLine.AddText((NumUsersOnNewerChange == 1)? " 1 user is on a newer build." : String.Format(" {0} users are on a newer build.", NumUsersOnNewerChange));
-					}
+
+					SummaryLine.AddLink("Cancel", FontStyle.Bold | FontStyle.Underline, () => { CancelBisectMode(); });
 				}
 				else
 				{
-					SummaryLine.AddText("You are not currently synced to ");
-					if(StreamName == null)
+					if(Workspace.CurrentChangeNumber != -1)
 					{
-						SummaryLine.AddText("this branch.");
+						if(StreamName == null)
+						{
+							SummaryLine.AddText("Last synced to changelist ");
+						}
+						else
+						{
+							SummaryLine.AddText("Last synced to ");
+							if(Workspace.ProjectStreamFilter == null || Workspace.ProjectStreamFilter.Count == 0)
+							{
+								SummaryLine.AddLink(StreamName, FontStyle.Regular, (P, R) => { SelectOtherStreamDialog(); });
+							}
+							else
+							{
+								SummaryLine.AddLink(StreamName + "\u25BE", FontStyle.Regular, (P, R) => { SelectOtherStream(R); });
+							}
+							SummaryLine.AddText(" at changelist ");
+						}
+						SummaryLine.AddLink(String.Format("{0}.", Workspace.CurrentChangeNumber), FontStyle.Regular, () => { SelectChange(Workspace.CurrentChangeNumber); });
 					}
 					else
 					{
-						SummaryLine.AddLink(StreamName + " \u25BE", FontStyle.Regular, (P, R) => { SelectOtherStream(R); });
+						SummaryLine.AddText("You are not currently synced to ");
+						if(StreamName == null)
+						{
+							SummaryLine.AddText("this branch.");
+						}
+						else
+						{
+							SummaryLine.AddLink(StreamName + " \u25BE", FontStyle.Regular, (P, R) => { SelectOtherStream(R); });
+						}
 					}
+					SummaryLine.AddText("  |  ");
+					SummaryLine.AddLink("Sync Now", FontStyle.Bold | FontStyle.Underline, () => { SyncLatestChange(); });
+					SummaryLine.AddText(" - ");
+					SummaryLine.AddLink(" To... \u25BE", 0, (P, R) => { ShowSyncMenu(R); });
 				}
-				SummaryLine.AddText("  |  ");
-				SummaryLine.AddLink("Sync Now", FontStyle.Bold | FontStyle.Underline, () => { SyncLatestChange(); });
-				SummaryLine.AddText(" - ");
-				SummaryLine.AddLink(" To... \u25BE", 0, (P, R) => { ShowSyncMenu(R); });
 				Lines.Add(SummaryLine);
 
 				// Programs
@@ -1642,11 +2572,32 @@ namespace UnrealGameSync
 					ProgramsLine.AddLink("Unreal Editor", FontStyle.Regular, () => { LaunchEditor(); });
 					ProgramsLine.AddText("  |  ");
 				}
+
+				string[] SdkInfoEntries;
+				if(TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "SdkInfo", out SdkInfoEntries))
+				{
+					ProgramsLine.AddLink("SDK Info", FontStyle.Regular, () => { ShowRequiredSdkInfo(); });
+					ProgramsLine.AddText("  |  ");
+				}
+
 				ProgramsLine.AddLink("Perforce", FontStyle.Regular, () => { OpenPerforce(); });
 				ProgramsLine.AddText("  |  ");
 				ProgramsLine.AddLink("Visual Studio", FontStyle.Regular, () => { OpenSolution(); });
 				ProgramsLine.AddText("  |  ");
 				ProgramsLine.AddLink("Windows Explorer", FontStyle.Regular, () => { Process.Start("explorer.exe", String.Format("\"{0}\"", Path.GetDirectoryName(SelectedFileName))); });
+
+				foreach(KeyValuePair<string, BuildData> ServiceBadge in ServiceBadges)
+				{
+					ProgramsLine.AddText("  |  ");
+					if(ServiceBadge.Value == null)
+					{
+						ProgramsLine.AddBadge(ServiceBadge.Key, GetBuildBadgeColor(BuildDataResult.Skipped), null);
+					}
+					else
+					{
+						ProgramsLine.AddBadge(ServiceBadge.Key, GetBuildBadgeColor(ServiceBadge.Value.Result), () => { Process.Start(ServiceBadge.Value.Url); });
+					}
+				}
 				ProgramsLine.AddText("  |  ");
 				ProgramsLine.AddLink("More... \u25BE", FontStyle.Regular, (P, R) => { ShowActionsMenu(R); });
 				Lines.Add(ProgramsLine);
@@ -1693,77 +2644,230 @@ namespace UnrealGameSync
 					}
 				}
 			}
-			StatusPanel.Set(Lines);
+
+			StatusLine Caption = null;
+			if(StreamName != null && !Workspace.IsBusy())
+			{
+				Caption = new StatusLine();
+				Caption.AddLink(StreamName + "\u25BE", FontStyle.Bold, (P, R) => { SelectOtherStream(R); });
+			}
+
+			StatusLine Alert = null;
+			Color? TintColor = null;
+
+			ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
+			if(ProjectConfigFile != null)
+			{
+				string Message;
+				if(TryGetProjectSetting(ProjectConfigFile, "Message", out Message))
+				{
+					Alert = CreateStatusLineFromMarkdown(Message);
+				}
+
+				string StatusPanelColor;
+				if(TryGetProjectSetting(ProjectConfigFile, "StatusPanelColor", out StatusPanelColor))
+				{
+					TintColor = System.Drawing.ColorTranslator.FromHtml(StatusPanelColor);
+				}
+			}
+
+			using(Graphics Graphics = CreateGraphics())
+			{
+				int StatusPanelHeight = (int)(148.0f * Graphics.DpiY / 96.0f);
+				if(Alert != null)
+				{
+					StatusPanelHeight += (int)(40.0f * Graphics.DpiY / 96.0f);
+				}
+				if(StatusLayoutPanel.RowStyles[0].Height != StatusPanelHeight)
+				{
+					StatusLayoutPanel.RowStyles[0].Height = StatusPanelHeight;
+				}
+			}
+
+			StatusPanel.Set(Lines, Caption, Alert, TintColor);
+		}
+
+		private void ShowRequiredSdkInfo()
+		{
+			string[] SdkInfoEntries;
+			if(TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "SdkInfo", out SdkInfoEntries))
+			{
+				Dictionary<string, string> Variables = GetWorkspaceVariables(-1);
+				SdkInfoWindow Window = new SdkInfoWindow(SdkInfoEntries, Variables, BadgeFont);
+				Window.ShowDialog();
+			}
+		}
+
+		private StatusLine CreateStatusLineFromMarkdown(string Text)
+		{
+			StatusLine Line = new StatusLine();
+
+			FontStyle Style = FontStyle.Regular;
+
+			StringBuilder ElementText = new StringBuilder();
+			for(int Idx = 0; Idx < Text.Length; )
+			{
+				// Bold and italic
+				if(Text[Idx] == '_' || Text[Idx] == '*')
+				{
+					if(Idx + 1 < Text.Length && Text[Idx + 1] == Text[Idx])
+					{
+						FlushMarkdownText(Line, ElementText, Style);
+						Idx += 2;
+						Style ^= FontStyle.Bold;
+						continue;
+					}
+					else
+					{
+						FlushMarkdownText(Line, ElementText, Style);
+						Idx++;
+						Style ^= FontStyle.Italic;
+						continue;
+					}
+				}
+
+				// Strikethrough
+				if(Idx + 2 < Text.Length && Text[Idx] == '~' && Text[Idx + 1] == '~')
+				{
+					FlushMarkdownText(Line, ElementText, Style);
+					Idx += 2;
+					Style ^= FontStyle.Strikeout;
+					continue;
+				}
+
+				// Link
+				if (Text[Idx] == '[')
+				{
+					if(Idx + 1 < Text.Length && Text[Idx + 1] == '[')
+					{
+						ElementText.Append(Text[Idx]);
+						continue;
+					}
+
+					int EndIdx = Text.IndexOf("](", Idx);
+					if(EndIdx != -1)
+					{
+						int UrlEndIdx = Text.IndexOf(')', EndIdx + 2);
+						if(UrlEndIdx != -1)
+						{
+							FlushMarkdownText(Line, ElementText, Style);
+							string LinkText = Text.Substring(Idx + 1, EndIdx - (Idx + 1));
+							string LinkUrl = Text.Substring(EndIdx + 2, UrlEndIdx - (EndIdx + 2));
+							Line.AddLink(LinkText, Style, () => Process.Start(LinkUrl));
+							Idx = UrlEndIdx + 1;
+							continue;
+						}
+					}
+				}
+
+				// Icon
+				if(Text[Idx] == ':')
+				{
+					int EndIdx = Text.IndexOf(':', Idx + 1);
+					if(EndIdx != -1)
+					{
+						if(String.Compare(":alert:", 0, Text, Idx, EndIdx - Idx) == 0)
+						{
+							FlushMarkdownText(Line, ElementText, Style);
+							Line.AddIcon(Properties.Resources.StatusIcons, new Size(16, 16), 4);
+							Idx = EndIdx + 1;
+							continue;
+						}
+					}
+				}
+
+				// Otherwise, just append the current character
+				ElementText.Append(Text[Idx++]);
+			}
+			FlushMarkdownText(Line, ElementText, Style);
+
+			return Line;
+		}
+
+		private void FlushMarkdownText(StatusLine Line, StringBuilder ElementText, FontStyle Style)
+		{
+			if(ElementText.Length > 0)
+			{
+				Line.AddText(ElementText.ToString(), Style);
+				ElementText.Clear();
+			}
 		}
 
 		private void SelectOtherStream(Rectangle Bounds)
 		{
+			bool bShownContextMenu = false;
 			if(StreamName != null)
 			{
-				IReadOnlyList<string> OtherStreamNames = PerforceMonitor.OtherStreamNames;
 				IReadOnlyList<string> OtherStreamFilter = Workspace.ProjectStreamFilter;
-
-				StreamContextMenu.Items.Clear();
-
-				if(OtherStreamFilter != null && !Settings.bShowAllStreams)
-				{
-					OtherStreamNames = OtherStreamNames.Where(x => OtherStreamFilter.Any(y => y.Equals(x, StringComparison.InvariantCultureIgnoreCase)) || x.Equals(StreamName, StringComparison.InvariantCultureIgnoreCase)).ToList().AsReadOnly();
-				}
-
-				foreach(string OtherStreamName in OtherStreamNames.OrderBy(x => x).Where(x => !x.EndsWith("/Dev-Binaries")))
-				{
-					string ThisStreamName = OtherStreamName; // Local for lambda capture
-
-					ToolStripMenuItem Item = new ToolStripMenuItem(ThisStreamName, null, new EventHandler((S, E) => SelectStream(ThisStreamName)));
-					if(String.Compare(StreamName, OtherStreamName, StringComparison.InvariantCultureIgnoreCase) == 0)
-					{
-						Item.Checked = true;
-					}
-					StreamContextMenu.Items.Add(Item);
-				}
-
 				if(OtherStreamFilter != null)
 				{
-					StreamContextMenu.Items.Add(new ToolStripSeparator());
-					if(Settings.bShowAllStreams)
+					IReadOnlyList<string> OtherStreamNames = PerforceMonitor.OtherStreamNames.Where(x => OtherStreamFilter.Any(y => y.Equals(x, StringComparison.InvariantCultureIgnoreCase)) || x.Equals(StreamName, StringComparison.InvariantCultureIgnoreCase)).ToList().AsReadOnly();
+					if(OtherStreamNames.Count > 0)
 					{
-						StreamContextMenu.Items.Add(new ToolStripMenuItem("Show Filtered Stream List...", null, new EventHandler((S, E) => SetShowAllStreamsOption(false, Bounds))));
-					}
-					else
-					{
-						StreamContextMenu.Items.Add(new ToolStripMenuItem("Show All Streams...", null, new EventHandler((S, E) => SetShowAllStreamsOption(true, Bounds))));
+						StreamContextMenu.Items.Clear();
+
+						foreach (string OtherStreamName in OtherStreamNames.OrderBy(x => x).Where(x => !x.EndsWith("/Dev-Binaries")))
+						{
+							string ThisStreamName = OtherStreamName; // Local for lambda capture
+
+							ToolStripMenuItem Item = new ToolStripMenuItem(ThisStreamName, null, new EventHandler((S, E) => SelectStream(ThisStreamName)));
+							if(String.Compare(StreamName, OtherStreamName, StringComparison.InvariantCultureIgnoreCase) == 0)
+							{
+								Item.Checked = true;
+								StreamContextMenu.Items.Insert(0, Item);
+								StreamContextMenu.Items.Insert(1, new ToolStripSeparator());
+							}
+							else
+							{
+								StreamContextMenu.Items.Add(Item);
+							}
+						}
+
+						StreamContextMenu.Items.Add(new ToolStripSeparator());
+						StreamContextMenu.Items.Add(new ToolStripMenuItem("Select Other...", null, new EventHandler((S, E) => SelectOtherStreamDialog())));
+
+						int X = (Bounds.Left + Bounds.Right) / 2 + StreamContextMenu.Bounds.Width / 2;
+						int Y = Bounds.Bottom + 2;
+						StreamContextMenu.Show(StatusPanel, new Point(X, Y), ToolStripDropDownDirection.Left);
+
+						bShownContextMenu = true;
+
 					}
 				}
-
-				StreamContextMenu.Show(StatusPanel, new Point(Bounds.Left, Bounds.Bottom), ToolStripDropDownDirection.BelowRight);
+			}
+			if(!bShownContextMenu)
+			{
+				SelectOtherStreamDialog();
 			}
 		}
 
-		private void SetShowAllStreamsOption(bool bValue, Rectangle Bounds)
+		private void SelectOtherStreamDialog()
 		{
-			Settings.bShowAllStreams = bValue;
-			Settings.Save();
-
-			// Showing the new context menu before the current one has closed seems to fail to display it if the new context menu is shorter (ie. the current cursor position is out of bounds).
-			// BeginInvoke() it so it won't happen until the menu has closed.
-			BeginInvoke(new MethodInvoker(() => SelectOtherStream(Bounds)));
+			string NewStreamName;
+			if(SelectStreamWindow.ShowModal(this, SelectedProject.ServerAndPort, SelectedProject.UserName, StreamName, Log, out NewStreamName))
+			{
+				SelectStream(NewStreamName);
+			}
 		}
 
-		private void SelectStream(string StreamName)
+		private void SelectStream(string NewStreamName)
 		{
-			if(Workspace.IsBusy())
+			if(StreamName != NewStreamName)
 			{
-				MessageBox.Show("Please retry after the current sync has finished.", "Sync in Progress");
-			}
-			else if(Workspace.Perforce != null)
-			{
-				if(!Workspace.Perforce.HasOpenFiles(Log) || MessageBox.Show("You have files open for edit in this workspace. If you continue, you will not be able to submit them until you switch back.\n\nContinue switching workspaces?", "Files checked out", MessageBoxButtons.YesNo) == DialogResult.Yes)
+				if(Workspace.IsBusy())
 				{
-					if(Workspace.Perforce.SwitchStream(StreamName, Log))
+					MessageBox.Show("Please retry after the current sync has finished.", "Sync in Progress");
+				}
+				else if(Workspace.Perforce != null)
+				{
+					if(!Workspace.Perforce.HasOpenFiles(Log) || MessageBox.Show("You have files open for edit in this workspace. If you continue, you will not be able to submit them until you switch back.\n\nContinue switching workspaces?", "Files checked out", MessageBoxButtons.YesNo) == DialogResult.Yes)
 					{
-						StatusPanel.SuspendLayout();
-						StreamChangedCallback();
-						StatusPanel.ResumeLayout();
+						if(Workspace.Perforce.SwitchStream(NewStreamName, Log))
+						{
+							StatusPanel.SuspendLayout();
+							StreamChanged();
+							StatusPanel.ResumeLayout();
+						}
 					}
 				}
 			}
@@ -1799,6 +2903,8 @@ namespace UnrealGameSync
 
 		private void SelectChange(int ChangeNumber)
 		{
+			BuildList.SelectedItems.Clear();
+
 			PendingSelectedChangeNumber = -1;
 
 			foreach(ListViewItem Item in BuildList.Items)
@@ -1872,18 +2978,65 @@ namespace UnrealGameSync
 						}
 					}
 
+					if(DescriptionColumn.Index < HitTest.Item.SubItems.Count && HitTest.Item.SubItems[DescriptionColumn.Index] == HitTest.SubItem)
+					{
+						ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo(Change);
+						if(LayoutInfo.DescriptionBadges.Count > 0)
+						{
+							Point BuildListLocation = GetBadgeListLocation(LayoutInfo.DescriptionBadges, HitTest.SubItem.Bounds, HorizontalAlign.Right, VerticalAlignment.Middle);
+							BuildListLocation.Offset(-2, 0);
+
+							foreach (BadgeInfo Badge in LayoutInfo.DescriptionBadges)
+							{
+								Rectangle BadgeBounds = Badge.GetBounds(BuildListLocation);
+								if(BadgeBounds.Contains(Args.Location))
+								{
+									Process.Start((string)Badge.UserData);
+									break;
+								}
+							}
+						}
+					}
+
 					if(CISColumn.Index < HitTest.Item.SubItems.Count && HitTest.Item.SubItems[CISColumn.Index] == HitTest.SubItem)
 					{
-						EventSummary Summary = EventMonitor.GetSummaryForChange(Change.Number);
-						if(Summary != null)
+						ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo(Change);
+						if(LayoutInfo.BuildBadges.Count > 0)
 						{
-							Tuple<BuildData, Rectangle>[] Badges = LayoutBadges(Summary.Builds, HitTest.SubItem.Bounds);
-							for(int Idx = 0; Idx < Badges.Length; Idx++)
+							Point BuildListLocation = GetBadgeListLocation(LayoutInfo.BuildBadges, HitTest.SubItem.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+							BuildListLocation.X = Math.Max(BuildListLocation.X, HitTest.SubItem.Bounds.Left);
+
+							BadgeInfo Badge = HitTestBadge(Args.Location, LayoutInfo.BuildBadges, BuildListLocation);
+							if(Badge != null)
 							{
-								if(Badges[Idx].Item2.Contains(Args.Location))
+								BuildData Build = (BuildData)Badge.UserData;
+								if(Build != null)
 								{
-									Process.Start(Badges[Idx].Item1.Url);
-									break;
+									Process.Start(Build.Url);
+								}
+							}
+						}
+					}
+
+					foreach(ColumnHeader CustomColumn in CustomColumns)
+					{
+						if(CustomColumn.Index < HitTest.Item.SubItems.Count && HitTest.Item.SubItems[CustomColumn.Index] == HitTest.SubItem)
+						{
+							ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo((PerforceChangeSummary)HitTest.Item.Tag);
+
+							List<BadgeInfo> Badges;
+							if(LayoutInfo.CustomBadges.TryGetValue(CustomColumn.Text, out Badges) && Badges.Count > 0)
+							{
+								Point ListLocation = GetBadgeListLocation(Badges, HitTest.SubItem.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+
+								BadgeInfo Badge = HitTestBadge(Args.Location, Badges, ListLocation);
+								if(Badge != null)
+								{
+									BuildData Build = (BuildData)Badge.UserData;
+									if(Build != null)
+									{
+										Process.Start(Build.Url);
+									}
 								}
 							}
 						}
@@ -1895,83 +3048,109 @@ namespace UnrealGameSync
 				ListViewHitTestInfo HitTest = BuildList.HitTest(Args.Location);
 				if(HitTest.Item != null && HitTest.Item.Tag != null)
 				{
-					ContextMenuChange = (PerforceChangeSummary)HitTest.Item.Tag;
-
-					BuildListContextMenu_WithdrawReview.Visible = (EventMonitor.GetReviewByCurrentUser(ContextMenuChange.Number) != null);
-					BuildListContextMenu_StartInvestigating.Visible = !EventMonitor.IsUnderInvestigationByCurrentUser(ContextMenuChange.Number);
-					BuildListContextMenu_FinishInvestigating.Visible = EventMonitor.IsUnderInvestigation(ContextMenuChange.Number);
-
-					string CommentText;
-					bool bHasExistingComment = EventMonitor.GetCommentByCurrentUser(ContextMenuChange.Number, out CommentText);
-					BuildListContextMenu_LeaveComment.Visible = !bHasExistingComment;
-					BuildListContextMenu_EditComment.Visible = bHasExistingComment;
-
-					bool bIsBusy = Workspace.IsBusy();
-					bool bIsCurrentChange = (ContextMenuChange.Number == Workspace.CurrentChangeNumber);
-					BuildListContextMenu_Sync.Visible = !bIsBusy;
-					BuildListContextMenu_Sync.Font = new Font(SystemFonts.MenuFont, bIsCurrentChange? FontStyle.Regular : FontStyle.Bold);
-					BuildListContextMenu_SyncContentOnly.Visible = !bIsBusy && ShouldSyncPrecompiledEditor;
-					BuildListContextMenu_SyncOnlyThisChange.Visible = !bIsBusy && !bIsCurrentChange && ContextMenuChange.Number > Workspace.CurrentChangeNumber && Workspace.CurrentChangeNumber != -1;
-					BuildListContextMenu_Build.Visible = !bIsBusy && bIsCurrentChange && !ShouldSyncPrecompiledEditor && Settings.bUseIncrementalBuilds;
-					BuildListContextMenu_Rebuild.Visible = !bIsBusy && bIsCurrentChange && !ShouldSyncPrecompiledEditor;
-					BuildListContextMenu_GenerateProjectFiles.Visible = !bIsBusy && bIsCurrentChange;
-					BuildListContextMenu_LaunchEditor.Visible = !bIsBusy && ContextMenuChange.Number == Workspace.CurrentChangeNumber;
-					BuildListContextMenu_LaunchEditor.Font = new Font(SystemFonts.MenuFont, FontStyle.Bold);
-					BuildListContextMenu_OpenVisualStudio.Visible = !bIsBusy && bIsCurrentChange;
-					BuildListContextMenu_Cancel.Visible = bIsBusy;
-
-					EventSummary Summary = EventMonitor.GetSummaryForChange(ContextMenuChange.Number);
-					bool bStarred = (Summary != null && Summary.LastStarReview != null && Summary.LastStarReview.Type == EventType.Starred);
-					BuildListContextMenu_AddStar.Visible = !bStarred;
-					BuildListContextMenu_RemoveStar.Visible = bStarred;
-
-					bool bIsTimeColumn = (HitTest.Item.SubItems.IndexOf(HitTest.SubItem) == TimeColumn.Index);
-					BuildListContextMenu_TimeZoneSeparator.Visible = bIsTimeColumn;
-					BuildListContextMenu_ShowLocalTimes.Visible = bIsTimeColumn;
-					BuildListContextMenu_ShowLocalTimes.Checked = Settings.bShowLocalTimes;
-					BuildListContextMenu_ShowServerTimes.Visible = bIsTimeColumn;
-					BuildListContextMenu_ShowServerTimes.Checked = !Settings.bShowLocalTimes;
-
-					int CustomToolStart = BuildListContextMenu.Items.IndexOf(BuildListContextMenu_CustomTool_Start) + 1;
-					int CustomToolEnd = BuildListContextMenu.Items.IndexOf(BuildListContextMenu_CustomTool_End);
-					while(CustomToolEnd > CustomToolStart)
+					if(BuildList.SelectedItems.Count > 1 && BuildList.SelectedItems.Contains(HitTest.Item))
 					{
-						BuildListContextMenu.Items.RemoveAt(CustomToolEnd - 1);
-						CustomToolEnd--;
+						bool bIsTimeColumn = (HitTest.Item.SubItems.IndexOf(HitTest.SubItem) == TimeColumn.Index);
+						BuildListMultiContextMenu_TimeZoneSeparator.Visible = bIsTimeColumn;
+						BuildListMultiContextMenu_ShowLocalTimes.Visible = bIsTimeColumn;
+						BuildListMultiContextMenu_ShowLocalTimes.Checked = Settings.bShowLocalTimes;
+						BuildListMultiContextMenu_ShowServerTimes.Visible = bIsTimeColumn;
+						BuildListMultiContextMenu_ShowServerTimes.Checked = !Settings.bShowLocalTimes;
+
+						BuildListMultiContextMenu.Show(BuildList, Args.Location);
 					}
-
-					ConfigFile ProjectConfigFile = Workspace.ProjectConfigFile;
-					if(ProjectConfigFile != null)
+					else
 					{
-						Dictionary<string, string> Variables = GetWorkspaceVariables();
-						Variables.Add("Change", String.Format("{0}", ContextMenuChange.Number));
+						ContextMenuChange = (PerforceChangeSummary)HitTest.Item.Tag;
 
-						string[] ChangeContextMenuEntries = ProjectConfigFile.GetValues("Options.ContextMenu", new string[0]);
-						foreach(string ChangeContextMenuEntry in ChangeContextMenuEntries)
+						BuildListContextMenu_WithdrawReview.Visible = (EventMonitor.GetReviewByCurrentUser(ContextMenuChange.Number) != null);
+						BuildListContextMenu_StartInvestigating.Visible = !EventMonitor.IsUnderInvestigationByCurrentUser(ContextMenuChange.Number);
+						BuildListContextMenu_FinishInvestigating.Visible = EventMonitor.IsUnderInvestigation(ContextMenuChange.Number);
+
+						string CommentText;
+						bool bHasExistingComment = EventMonitor.GetCommentByCurrentUser(ContextMenuChange.Number, out CommentText);
+						BuildListContextMenu_LeaveComment.Visible = !bHasExistingComment;
+						BuildListContextMenu_EditComment.Visible = bHasExistingComment;
+
+						bool bIsBusy = Workspace.IsBusy();
+						bool bIsCurrentChange = (ContextMenuChange.Number == Workspace.CurrentChangeNumber);
+						BuildListContextMenu_Sync.Visible = !bIsBusy;
+						BuildListContextMenu_Sync.Font = new Font(SystemFonts.MenuFont, bIsCurrentChange? FontStyle.Regular : FontStyle.Bold);
+						BuildListContextMenu_SyncContentOnly.Visible = !bIsBusy && ShouldSyncPrecompiledEditor;
+						BuildListContextMenu_SyncOnlyThisChange.Visible = !bIsBusy && !bIsCurrentChange && ContextMenuChange.Number > Workspace.CurrentChangeNumber && Workspace.CurrentChangeNumber != -1;
+						BuildListContextMenu_Build.Visible = !bIsBusy && bIsCurrentChange && !ShouldSyncPrecompiledEditor && Settings.bUseIncrementalBuilds;
+						BuildListContextMenu_Rebuild.Visible = !bIsBusy && bIsCurrentChange && !ShouldSyncPrecompiledEditor;
+						BuildListContextMenu_GenerateProjectFiles.Visible = !bIsBusy && bIsCurrentChange;
+						BuildListContextMenu_LaunchEditor.Visible = !bIsBusy && ContextMenuChange.Number == Workspace.CurrentChangeNumber;
+						BuildListContextMenu_LaunchEditor.Font = new Font(SystemFonts.MenuFont, FontStyle.Bold);
+						BuildListContextMenu_OpenVisualStudio.Visible = !bIsBusy && bIsCurrentChange;
+						BuildListContextMenu_Cancel.Visible = bIsBusy;
+
+						BisectState State; 
+						WorkspaceSettings.ChangeNumberToBisectState.TryGetValue(ContextMenuChange.Number, out State);
+						bool bIsBisectMode = IsBisectModeEnabled();
+						BuildListContextMenu_Bisect_Pass.Visible = bIsBisectMode && State != BisectState.Pass;
+						BuildListContextMenu_Bisect_Fail.Visible = bIsBisectMode && State != BisectState.Fail;
+						BuildListContextMenu_Bisect_Exclude.Visible = bIsBisectMode && State != BisectState.Exclude;
+						BuildListContextMenu_Bisect_Include.Visible = bIsBisectMode && State != BisectState.Include;
+						BuildListContextMenu_Bisect_Separator.Visible = bIsBisectMode;
+
+						BuildListContextMenu_MarkGood.Visible = !bIsBisectMode;
+						BuildListContextMenu_MarkBad.Visible = !bIsBisectMode;
+						BuildListContextMenu_WithdrawReview.Visible = !bIsBisectMode;
+
+						EventSummary Summary = EventMonitor.GetSummaryForChange(ContextMenuChange.Number);
+						bool bStarred = (Summary != null && Summary.LastStarReview != null && Summary.LastStarReview.Type == EventType.Starred);
+						BuildListContextMenu_AddStar.Visible = !bStarred;
+						BuildListContextMenu_RemoveStar.Visible = bStarred;
+
+						bool bIsTimeColumn = (HitTest.Item.SubItems.IndexOf(HitTest.SubItem) == TimeColumn.Index);
+						BuildListContextMenu_TimeZoneSeparator.Visible = bIsTimeColumn;
+						BuildListContextMenu_ShowLocalTimes.Visible = bIsTimeColumn;
+						BuildListContextMenu_ShowLocalTimes.Checked = Settings.bShowLocalTimes;
+						BuildListContextMenu_ShowServerTimes.Visible = bIsTimeColumn;
+						BuildListContextMenu_ShowServerTimes.Checked = !Settings.bShowLocalTimes;
+
+						int CustomToolStart = BuildListContextMenu.Items.IndexOf(BuildListContextMenu_CustomTool_Start) + 1;
+						int CustomToolEnd = BuildListContextMenu.Items.IndexOf(BuildListContextMenu_CustomTool_End);
+						while(CustomToolEnd > CustomToolStart)
 						{
-							ConfigObject Object = new ConfigObject(ChangeContextMenuEntry);
+							BuildListContextMenu.Items.RemoveAt(CustomToolEnd - 1);
+							CustomToolEnd--;
+						}
 
-							string Label = Object.GetValue("Label");
-							string Execute = Object.GetValue("Execute");
-							string Arguments = Object.GetValue("Arguments");
+						ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
+						if(ProjectConfigFile != null)
+						{
+							Dictionary<string, string> Variables = GetWorkspaceVariables(ContextMenuChange.Number);
 
-							if(Label != null && Execute != null)
+							string[] ChangeContextMenuEntries = ProjectConfigFile.GetValues("Options.ContextMenu", new string[0]);
+							foreach(string ChangeContextMenuEntry in ChangeContextMenuEntries)
 							{
-								Label = Utility.ExpandVariables(Label, Variables);
-								Execute = Utility.ExpandVariables(Execute, Variables);
-								Arguments = Utility.ExpandVariables(Arguments ?? "", Variables);
+								ConfigObject Object = new ConfigObject(ChangeContextMenuEntry);
 
-								ToolStripMenuItem Item = new ToolStripMenuItem(Label, null, new EventHandler((o, a) => Process.Start(Execute, Arguments)));
+								string Label = Object.GetValue("Label");
+								string Execute = Object.GetValue("Execute");
+								string Arguments = Object.GetValue("Arguments");
+
+								if(Label != null && Execute != null)
+								{
+									Label = Utility.ExpandVariables(Label, Variables);
+									Execute = Utility.ExpandVariables(Execute, Variables);
+									Arguments = Utility.ExpandVariables(Arguments ?? "", Variables);
+
+									ToolStripMenuItem Item = new ToolStripMenuItem(Label, null, new EventHandler((o, a) => Process.Start(Execute, Arguments)));
 	
-								BuildListContextMenu.Items.Insert(CustomToolEnd, Item);
-								CustomToolEnd++;
+									BuildListContextMenu.Items.Insert(CustomToolEnd, Item);
+									CustomToolEnd++;
+								}
 							}
 						}
+
+						BuildListContextMenu_CustomTool_End.Visible = (CustomToolEnd > CustomToolStart);
+
+						BuildListContextMenu.Show(BuildList, Args.Location);
 					}
-
-					BuildListContextMenu_CustomTool_End.Visible = (CustomToolEnd > CustomToolStart);
-
-					BuildListContextMenu.Show(BuildList, Args.Location);
 				}
 			}
 		}
@@ -1979,39 +3158,54 @@ namespace UnrealGameSync
 		private void BuildList_MouseMove(object sender, MouseEventArgs e)
 		{
 			ListViewHitTestInfo HitTest = BuildList.HitTest(e.Location);
-			int HitTestIndex = (HitTest.Item == null)? -1 : HitTest.Item.Index;
-			if(HitTestIndex != HoverItem)
-			{
-				if(HoverItem != -1)
-				{
-					BuildList.RedrawItems(HoverItem, HoverItem, true);
-				}
-				HoverItem = HitTestIndex;
-				if(HoverItem != -1)
-				{
-					BuildList.RedrawItems(HoverItem, HoverItem, true);
-				}
-			}
 
-			BuildData NewHoverBadge = null;
-			if(HitTest.Item != null && HitTest.Item.SubItems.IndexOf(HitTest.SubItem) == CISColumn.Index)
+			string NewHoverBadgeUniqueId = null;
+			if(HitTest.Item != null)
 			{
-				EventSummary Summary = EventMonitor.GetSummaryForChange(((PerforceChangeSummary)HitTest.Item.Tag).Number);
-				if(Summary != null)
+				int ColumnIndex = HitTest.Item.SubItems.IndexOf(HitTest.SubItem);
+				if(ColumnIndex == DescriptionColumn.Index)
 				{
-					foreach(Tuple<BuildData, Rectangle> Badge in LayoutBadges(Summary.Builds, HitTest.SubItem.Bounds))
+					ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo((PerforceChangeSummary)HitTest.Item.Tag);
+					if(LayoutInfo.DescriptionBadges.Count > 0)
 					{
-						if(Badge.Item2.Contains(e.Location))
+						Point ListLocation = GetBadgeListLocation(LayoutInfo.DescriptionBadges, HitTest.SubItem.Bounds, HorizontalAlign.Right, VerticalAlignment.Middle);
+						NewHoverBadgeUniqueId = HitTestBadge(e.Location, LayoutInfo.DescriptionBadges, ListLocation)?.UniqueId;
+					}
+				}
+				else if(ColumnIndex == CISColumn.Index)
+				{
+					ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo((PerforceChangeSummary)HitTest.Item.Tag);
+					if(LayoutInfo.BuildBadges.Count > 0)
+					{
+						Point BuildListLocation = GetBadgeListLocation(LayoutInfo.BuildBadges, HitTest.SubItem.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+						BuildListLocation.X = Math.Max(BuildListLocation.X, HitTest.SubItem.Bounds.Left);
+
+						BadgeInfo Badge = HitTestBadge(e.Location, LayoutInfo.BuildBadges, BuildListLocation);
+						NewHoverBadgeUniqueId = (Badge != null)? Badge.UniqueId : null;
+
+						if(Badge != null && Badge.ToolTip != null && HoverBadgeUniqueId != NewHoverBadgeUniqueId)
 						{
-							NewHoverBadge = Badge.Item1;
-							break;
+							BuildListToolTip.Show(Badge.ToolTip, BuildList, new Point(BuildListLocation.X + Badge.Offset, HitTest.Item.Bounds.Bottom + 2));
 						}
 					}
 				}
+				else if(CustomColumns.Contains(BuildList.Columns[ColumnIndex]))
+				{
+					ColumnHeader Column = BuildList.Columns[ColumnIndex];
+
+					ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo((PerforceChangeSummary)HitTest.Item.Tag);
+
+					List<BadgeInfo> Badges;
+					if(LayoutInfo.CustomBadges.TryGetValue(Column.Text, out Badges) && Badges.Count > 0)
+					{
+						Point ListLocation = GetBadgeListLocation(Badges, HitTest.SubItem.Bounds, HorizontalAlign.Center, VerticalAlignment.Middle);
+						NewHoverBadgeUniqueId = HitTestBadge(e.Location, Badges, ListLocation)?.UniqueId;
+					}
+				}
 			}
-			if(NewHoverBadge != HoverBadge)
+			if(HoverBadgeUniqueId != NewHoverBadgeUniqueId)
 			{
-				HoverBadge = NewHoverBadge;
+				HoverBadgeUniqueId = NewHoverBadgeUniqueId;
 				BuildList.Invalidate();
 			}
 
@@ -2027,11 +3221,25 @@ namespace UnrealGameSync
 			}
 		}
 
+		private BadgeInfo HitTestBadge(Point Location, List<BadgeInfo> BadgeList, Point ListLocation)
+		{
+			foreach(BadgeInfo Badge in BadgeList)
+			{
+				Rectangle BadgeBounds = Badge.GetBounds(ListLocation);
+				if(BadgeBounds.Contains(Location))
+				{
+					return Badge;
+				}
+			}
+			return null;
+		}
+
 		private void OptionsButton_Click(object sender, EventArgs e)
 		{
 			OptionsContextMenu_AutoResolveConflicts.Checked = Settings.bAutoResolveConflicts;
-			OptionsContextMenu_SyncPrecompiledEditor.Visible = PerforceMonitor != null && PerforceMonitor.HasZippedBinaries;
+			OptionsContextMenu_SyncPrecompiledEditor.Enabled = PerforceMonitor != null && PerforceMonitor.HasZippedBinaries;
 			OptionsContextMenu_SyncPrecompiledEditor.Checked = Settings.bSyncPrecompiledEditor;
+			OptionsContextMenu_SyncPrecompiledEditor.ToolTipText = PerforceMonitor.ZippedBinariesStatus;
 			OptionsContextMenu_EditorBuildConfiguration.Enabled = !ShouldSyncPrecompiledEditor;
 			UpdateCheckedBuildConfig();
 			OptionsContextMenu_UseIncrementalBuilds.Enabled = !ShouldSyncPrecompiledEditor;
@@ -2043,6 +3251,8 @@ namespace UnrealGameSync
 			OptionsContextMenu_TimeZone_PerforceServer.Checked = !Settings.bShowLocalTimes;
 			OptionsContextMenu_AutomaticallyRunAtStartup.Checked = IsAutomaticallyRunAtStartup();
 			OptionsContextMenu_KeepInTray.Checked = Settings.bKeepInTray;
+			OptionsContextMenu_ShowChanges_ShowUnreviewed.Checked = Settings.bShowUnreviewedChanges;
+			OptionsContextMenu_ShowChanges_ShowAutomated.Checked = Settings.bShowAutomatedChanges;
 			OptionsContextMenu_TabNames_Stream.Checked = Settings.TabLabels == TabLabels.Stream;
 			OptionsContextMenu_TabNames_WorkspaceName.Checked = Settings.TabLabels == TabLabels.WorkspaceName;
 			OptionsContextMenu_TabNames_WorkspaceRoot.Checked = Settings.TabLabels == TabLabels.WorkspaceRoot;
@@ -2291,11 +3501,21 @@ namespace UnrealGameSync
 				{
 					PerforceChangeSummary Change = (PerforceChangeSummary)Args.Item.Tag;
 
+					Rectangle CISBounds = Args.Item.SubItems[CISColumn.Index].Bounds;
+					if(CISBounds.Contains(ClientPoint))
+					{
+						return;
+					}
+
 					Rectangle DescriptionBounds = Args.Item.SubItems[DescriptionColumn.Index].Bounds;
 					if(DescriptionBounds.Contains(ClientPoint))
 					{
-						BuildListToolTip.Show(Change.Description, BuildList, new Point(DescriptionBounds.Left, DescriptionBounds.Bottom + 2));
-						return;
+						ChangeLayoutInfo LayoutInfo = GetChangeLayoutInfo(Change);
+						if(LayoutInfo.DescriptionBadges.Count == 0 || ClientPoint.X < GetBadgeListLocation(LayoutInfo.DescriptionBadges, DescriptionBounds, HorizontalAlign.Right, VerticalAlignment.Middle).X - 2)
+						{
+							BuildListToolTip.Show(Change.Description, BuildList, new Point(DescriptionBounds.Left, DescriptionBounds.Bottom + 2));
+							return;
+						}
 					}
 
 					EventSummary Summary = EventMonitor.GetSummaryForChange(Change.Number);
@@ -2341,15 +3561,9 @@ namespace UnrealGameSync
 		{
 			BuildListToolTip.Hide(BuildList);
 
-			if(HoverItem != -1)
+			if(HoverBadgeUniqueId != null)
 			{
-				HoverItem = -1;
-				BuildList.Invalidate();
-			}
-
-			if(HoverBadge != null)
-			{
-				HoverBadge = null;
+				HoverBadgeUniqueId = null;
 				BuildList.Invalidate();
 			}
 		}
@@ -2381,12 +3595,20 @@ namespace UnrealGameSync
 
 		private void OptionsContextMenu_EditorArguments_Click(object sender, EventArgs e)
 		{
-			ArgumentsWindow Arguments = new ArgumentsWindow(Settings.EditorArguments);
+			ModifyEditorArguments();
+		}
+
+		private bool ModifyEditorArguments()
+		{
+			ArgumentsWindow Arguments = new ArgumentsWindow(Settings.EditorArguments, Settings.bEditorArgumentsPrompt);
 			if(Arguments.ShowDialog(this) == DialogResult.OK)
 			{
 				Settings.EditorArguments = Arguments.GetItems();
+				Settings.bEditorArgumentsPrompt = Arguments.PromptBeforeLaunch;
 				Settings.Save();
+				return true;
 			}
+			return false;
 		}
 
 		private void BuildListContextMenu_OpenVisualStudio_Click(object sender, EventArgs e)
@@ -2396,7 +3618,22 @@ namespace UnrealGameSync
 
 		private void OpenSolution()
 		{
-			string SolutionFileName = Path.Combine(BranchDirectoryName, "UE4.sln");
+			string MasterProjectName = "UE4";
+
+			string MasterProjectNameFileName = Path.Combine(BranchDirectoryName, "Engine", "Intermediate", "ProjectFiles", "MasterProjectName.txt");
+			if(File.Exists(MasterProjectNameFileName))
+			{
+				try
+				{
+					MasterProjectName = File.ReadAllText(MasterProjectNameFileName).Trim();
+				}
+				catch(Exception Ex)
+				{
+					Log.WriteException(Ex, "Unable to read '{0}'", MasterProjectNameFileName);
+				}
+			}
+
+			string SolutionFileName = Path.Combine(BranchDirectoryName, MasterProjectName + ".sln");
 			if(!File.Exists(SolutionFileName))
 			{
 				MessageBox.Show(String.Format("Couldn't find solution at {0}", SolutionFileName));
@@ -2479,10 +3716,6 @@ namespace UnrealGameSync
 					{
 						Options |= WorkspaceUpdateOptions.AutoResolveChanges;
 					}
-					if(Settings.bBuildAfterSync && Settings.bRunAfterSync)
-					{
-						Options |= WorkspaceUpdateOptions.RunAfterSync;
-					}
 					StartWorkspaceUpdate(ChangeNumber, Options);
 				}
 			}
@@ -2537,8 +3770,8 @@ namespace UnrealGameSync
 			{
 				int NextChangeNumber = SortedChangeNumbers[NextIndex];
 
-				PerforceChangeType Type;
-				if(!PerforceMonitor.TryGetChangeType(NextChangeNumber, out Type) || Type != PerforceChangeType.Content)
+				PerforceChangeDetails Details;
+				if(!PerforceMonitor.TryGetChangeDetails(NextChangeNumber, out Details) || Details.bContainsCode)
 				{
 					break;
 				}
@@ -2590,7 +3823,27 @@ namespace UnrealGameSync
 
 		private void MoreToolsContextMenu_CleanWorkspace_Click(object sender, EventArgs e)
 		{
-			CleanWorkspaceWindow.DoClean(ParentForm, Workspace.Perforce, BranchDirectoryName, Workspace.ClientRootPath, Workspace.SyncPaths, Log);
+			if(!WaitForProgramsToFinish())
+			{
+				return;
+			}
+
+			string ExtraSafeToDeleteFolders;
+			if(!TryGetProjectSetting(Workspace.ProjectConfigFile, "SafeToDeleteFolders", out ExtraSafeToDeleteFolders))
+			{
+				ExtraSafeToDeleteFolders = "";
+			}
+
+			string ExtraSafeToDeleteExtensions;
+			if(!TryGetProjectSetting(Workspace.ProjectConfigFile, "SafeToDeleteExtensions", out ExtraSafeToDeleteExtensions))
+			{
+				ExtraSafeToDeleteExtensions = "";
+			}
+
+			string[] CombinedSyncFilter = UserSettings.GetCombinedSyncFilter(Workspace.GetSyncCategories(), Settings.SyncView, Settings.SyncExcludedCategories, WorkspaceSettings.SyncView, WorkspaceSettings.SyncIncludedCategories, WorkspaceSettings.SyncExcludedCategories);
+			List<string> SyncPaths = Workspace.GetSyncPaths(WorkspaceSettings.bSyncAllProjects ?? Settings.bSyncAllProjects, CombinedSyncFilter);
+
+			CleanWorkspaceWindow.DoClean(ParentForm, Workspace.Perforce, BranchDirectoryName, Workspace.ClientRootPath, SyncPaths, ExtraSafeToDeleteFolders.Split('\n'), ExtraSafeToDeleteExtensions.Split('\n'), Log);
 		}
 
 		private void UpdateBuildSteps()
@@ -2641,18 +3894,22 @@ namespace UnrealGameSync
 				}
 				else
 				{
-					WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, WorkspaceUpdateOptions.Build, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, new HashSet<Guid>{ UniqueId }, GetWorkspaceVariables());
+					WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, WorkspaceUpdateOptions.Build, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, new HashSet<Guid>{ UniqueId }, GetWorkspaceVariables(Workspace.CurrentChangeNumber));
 					StartWorkspaceUpdate(Context);
 				}
 			}
 		}
 
-		private Dictionary<string, string> GetWorkspaceVariables()
+		private Dictionary<string, string> GetWorkspaceVariables(int ChangeNumber)
 		{
 			BuildConfig EditorBuildConfig = GetEditorBuildConfig();
 
+			string SdkInstallerDir;
+			TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "SdkInstallerDir", out SdkInstallerDir);
+
 			Dictionary<string, string> Variables = new Dictionary<string,string>();
 			Variables.Add("Stream", StreamName);
+			Variables.Add("Change", ChangeNumber.ToString());
 			Variables.Add("ClientName", ClientName);
 			Variables.Add("BranchDir", BranchDirectoryName);
 			Variables.Add("ProjectDir", Path.GetDirectoryName(SelectedFileName));
@@ -2661,6 +3918,11 @@ namespace UnrealGameSync
 			Variables.Add("UE4EditorCmdExe", GetEditorExePath(EditorBuildConfig).Replace(".exe", "-Cmd.exe"));
 			Variables.Add("UE4EditorConfig", EditorBuildConfig.ToString());
 			Variables.Add("UE4EditorDebugArg", (EditorBuildConfig == BuildConfig.Debug || EditorBuildConfig == BuildConfig.DebugGame)? " -debug" : "");
+			Variables.Add("UseIncrementalBuilds", Settings.bUseIncrementalBuilds? "1" : "0");
+			if(!String.IsNullOrEmpty(SdkInstallerDir))
+			{
+				Variables.Add("SdkInstallerDir", SdkInstallerDir);
+			}
 			return Variables;
 		}
 
@@ -2688,7 +3950,7 @@ namespace UnrealGameSync
 				List<BuildStep> UserSteps = GetUserBuildSteps(ProjectBuildStepObjects);
 
 				// Show the dialog
-				ModifyBuildStepsWindow EditStepsWindow = new ModifyBuildStepsWindow(TargetNames, UserSteps, new HashSet<Guid>(ProjectBuildStepObjects.Keys), BranchDirectoryName, GetWorkspaceVariables());
+				ModifyBuildStepsWindow EditStepsWindow = new ModifyBuildStepsWindow(TargetNames, UserSteps, new HashSet<Guid>(ProjectBuildStepObjects.Keys), BranchDirectoryName, GetWorkspaceVariables(Workspace.CurrentChangeNumber));
 				EditStepsWindow.ShowDialog();
 
 				// Update the user settings
@@ -2720,12 +3982,16 @@ namespace UnrealGameSync
 			Guid UniqueId;
 			if(Guid.TryParse(Object.GetValue(BuildStep.UniqueIdKey, ""), out UniqueId))
 			{
+				// Add or apply Object to the list of steps in Steps. Do not modify Object; make a copy first.
+				ConfigObject NewObject = new ConfigObject(Object);
+
 				ConfigObject DefaultObject;
 				if(Steps.TryGetValue(UniqueId, out DefaultObject))
 				{
-					Object.SetDefaults(DefaultObject);
+					NewObject.SetDefaults(DefaultObject);
 				}
-				Steps[UniqueId] = Object;
+
+				Steps[UniqueId] = NewObject;
 			}
 		}
 
@@ -2747,9 +4013,22 @@ namespace UnrealGameSync
 				ProjectArgument = String.Format("\"{0}\"", SelectedFileName);
 			}
 
+			string ActualEditorTargetName;
+			if(EditorTargetName != null)
+			{
+				ActualEditorTargetName = EditorTargetName;
+			}
+			else if(SelectedFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase) && bIsEnterpriseProject)
+			{
+				ActualEditorTargetName = "StudioEditor";
+			}
+			else
+			{
+				ActualEditorTargetName = "UE4Editor";
+			}
+
 			List<BuildStep> DefaultBuildSteps = new List<BuildStep>();
 			DefaultBuildSteps.Add(new BuildStep(new Guid("{01F66060-73FA-4CC8-9CB3-E217FBBA954E}"), 0, "Compile UnrealHeaderTool", "Compiling UnrealHeaderTool...", 1, "UnrealHeaderTool", "Win64", "Development", "", !ShouldSyncPrecompiledEditor));
-			string ActualEditorTargetName = EditorTargetName ?? "UE4Editor";
 			DefaultBuildSteps.Add(new BuildStep(new Guid("{F097FF61-C916-4058-8391-35B46C3173D5}"), 1, String.Format("Compile {0}", ActualEditorTargetName), String.Format("Compiling {0}...", ActualEditorTargetName), 10, ActualEditorTargetName, "Win64", Settings.CompiledEditorBuildConfig.ToString(), ProjectArgument, !ShouldSyncPrecompiledEditor));
 			DefaultBuildSteps.Add(new BuildStep(new Guid("{C6E633A1-956F-4AD3-BC95-6D06D131E7B4}"), 2, "Compile ShaderCompileWorker", "Compiling ShaderCompileWorker...", 1, "ShaderCompileWorker", "Win64", "Development", "", !ShouldSyncPrecompiledEditor));
 			DefaultBuildSteps.Add(new BuildStep(new Guid("{24FFD88C-7901-4899-9696-AE1066B4B6E8}"), 3, "Compile UnrealLightmass", "Compiling UnrealLightmass...", 1, "UnrealLightmass", "Win64", "Development", "", !ShouldSyncPrecompiledEditor));
@@ -2789,7 +4068,7 @@ namespace UnrealGameSync
 			}
 			else
 			{
-				Key.SetValue("UnrealGameSync", OriginalExecutableFileName);
+				Key.SetValue("UnrealGameSync", String.Format("\"{0}\" -RestoreState", OriginalExecutableFileName));
 			}
 		}
 
@@ -2838,13 +4117,16 @@ namespace UnrealGameSync
 
 		private void OptionsContextMenu_SyncFilter_Click(object sender, EventArgs e)
 		{
-			SyncFilter Filter = new SyncFilter(Workspace.GetSyncCategories(), Settings.SyncView, Settings.SyncExcludedCategories, WorkspaceSettings.SyncView, WorkspaceSettings.SyncExcludedCategories);
+			SyncFilter Filter = new SyncFilter(Workspace.GetSyncCategories(), Settings.SyncView, Settings.SyncExcludedCategories, Settings.bSyncAllProjects, WorkspaceSettings.SyncView, WorkspaceSettings.SyncIncludedCategories, WorkspaceSettings.SyncExcludedCategories, WorkspaceSettings.bSyncAllProjects);
 			if(Filter.ShowDialog() == DialogResult.OK)
 			{
 				Settings.SyncExcludedCategories = Filter.GlobalExcludedCategories;
 				Settings.SyncView = Filter.GlobalView;
+				Settings.bSyncAllProjects = Filter.bGlobalSyncAllProjects;
+				WorkspaceSettings.SyncIncludedCategories = Filter.WorkspaceIncludedCategories;
 				WorkspaceSettings.SyncExcludedCategories = Filter.WorkspaceExcludedCategories;
 				WorkspaceSettings.SyncView = Filter.WorkspaceView;
+				WorkspaceSettings.bSyncAllProjects = Filter.bWorkspaceSyncAllProjects;
                 Settings.Save();
 			}
 		}
@@ -2877,6 +4159,11 @@ namespace UnrealGameSync
 
 		private void SyncContextMenu_EnterChangelist_Click(object sender, EventArgs e)
 		{
+			if(!WaitForProgramsToFinish())
+			{
+				return;
+			}
+
 			ChangelistWindow ChildWindow = new ChangelistWindow((Workspace == null)? -1 : Workspace.CurrentChangeNumber);
 			if(ChildWindow.ShowDialog() == DialogResult.OK)
 			{
@@ -2932,33 +4219,337 @@ namespace UnrealGameSync
 				RecentMenu.Items.RemoveAt(2);
 			}
 
-			HashSet<string> ProjectList = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-			foreach(string ProjectFileName in Settings.OtherProjectFileNames)
+			foreach(UserSelectedProjectSettings RecentProject in Settings.RecentProjects)
 			{
-				if(!String.IsNullOrEmpty(ProjectFileName))
-				{
-					string FullProjectFileName = Path.GetFullPath(ProjectFileName);
-					if(ProjectList.Add(FullProjectFileName))
-					{
-						ToolStripMenuItem Item = new ToolStripMenuItem(FullProjectFileName, null, new EventHandler((o, e) => Owner.RequestProjectChange(this, FullProjectFileName)));
-						RecentMenu.Items.Insert(RecentMenu.Items.Count - 2, Item);
-					}
-				}
+				ToolStripMenuItem Item = new ToolStripMenuItem(RecentProject.ToString(), null, new EventHandler((o, e) => Owner.RequestProjectChange(this, RecentProject, true)));
+				RecentMenu.Items.Insert(RecentMenu.Items.Count - 2, Item);
 			}
 
-			RecentMenu_Separator.Visible = (RecentMenu.Items.Count >= 2);
+			RecentMenu_Separator.Visible = (Settings.RecentProjects.Count > 0);
 			RecentMenu.Show(StatusPanel, new Point(Bounds.Left, Bounds.Bottom), ToolStripDropDownDirection.BelowRight);
 		}
 
 		private void RecentMenu_Browse_Click(object sender, EventArgs e)
 		{
-			Owner.BrowseForProject(this);
+			Owner.EditSelectedProject(this);
 		}
 
 		private void RecentMenu_ClearList_Click(object sender, EventArgs e)
 		{
-			Settings.OtherProjectFileNames = new string[0];
+			Settings.RecentProjects.Clear();
 			Settings.Save();
+		}
+
+		private void OptionsContextMenu_ShowChanges_ShowUnreviewed_Click(object sender, EventArgs e)
+		{
+			Settings.bShowUnreviewedChanges ^= true;
+			Settings.Save();
+
+			UpdateBuildList();
+			UpdateNumRequestedBuilds(true);
+		}
+
+		private void OptionsContextMenu_ShowChanges_ShowAutomated_Click(object sender, EventArgs e)
+		{
+			Settings.bShowAutomatedChanges ^= true;
+			Settings.Save();
+
+			UpdateBuildList();
+			UpdateNumRequestedBuilds(true);
+		}
+
+		private void BuildList_ColumnWidthChanging(object sender, ColumnWidthChangingEventArgs e)
+		{
+			UpdateMaxBuildBadgeChars();
+		}
+
+		private void BuildList_ColumnWidthChanged(object sender, ColumnWidthChangedEventArgs e)
+		{
+			if(ColumnWidths != null && MinColumnWidths != null)
+			{
+				int NewWidth = BuildList.Columns[e.ColumnIndex].Width;
+				if(NewWidth < MinColumnWidths[e.ColumnIndex])
+				{
+					NewWidth = MinColumnWidths[e.ColumnIndex];
+					BuildList.Columns[e.ColumnIndex].Width = NewWidth;
+				}
+				ColumnWidths[e.ColumnIndex] = NewWidth;
+			}
+			UpdateMaxBuildBadgeChars();
+		}
+
+		private void BuildList_Resize(object sender, EventArgs e)
+		{
+			int PrevBuildListWidth = BuildListWidth;
+
+			BuildListWidth = BuildList.Width;
+
+			if (PrevBuildListWidth != 0 && BuildListWidth != PrevBuildListWidth && ColumnWidths != null)
+			{
+				float SafeWidth = ColumnWidths.Sum() + 50.0f;
+				if(BuildListWidth < PrevBuildListWidth)
+				{
+					if(BuildListWidth <= SafeWidth)
+					{
+						ResizeColumns(ColumnWidths.Sum() + (BuildListWidth - Math.Max(PrevBuildListWidth, SafeWidth)));
+					}
+				}
+				else
+				{
+					if(BuildListWidth >= SafeWidth)
+					{
+						ResizeColumns(ColumnWidths.Sum() + (BuildListWidth - Math.Max(PrevBuildListWidth, SafeWidth)));
+					}
+				}
+			}
+		}
+
+		void ResizeColumns(float NextTotalWidth)
+		{
+			float[] TargetColumnWidths = GetTargetColumnWidths(NextTotalWidth);
+
+			// Get the current total width of the columns, and the new space that we'll aim to fill
+			float PrevTotalWidth = ColumnWidths.Sum();
+			float TotalDelta = Math.Abs(NextTotalWidth - PrevTotalWidth);
+
+			float TotalColumnDelta = 0.0f;
+			for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+			{
+				TotalColumnDelta += Math.Abs(TargetColumnWidths[Idx] - ColumnWidths[Idx]);
+			}
+
+			if(TotalColumnDelta > 0.5f)
+			{
+				float[] NextColumnWidths = new float[BuildList.Columns.Count];
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					float MaxColumnDelta = TotalDelta * Math.Abs(TargetColumnWidths[Idx] - ColumnWidths[Idx]) / TotalColumnDelta;
+					NextColumnWidths[Idx] = Math.Max(Math.Min(TargetColumnWidths[Idx], ColumnWidths[Idx] + MaxColumnDelta), ColumnWidths[Idx] - MaxColumnDelta);
+				}
+
+				// Update the control
+				BuildList.BeginUpdate();
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					BuildList.Columns[Idx].Width = (int)NextColumnWidths[Idx];
+				}
+				ColumnWidths = NextColumnWidths;
+				BuildList.EndUpdate();
+			}
+		}
+
+		float[] GetTargetColumnWidths(float NextTotalWidth)
+		{
+			// Array to store the output list
+			float[] TargetColumnWidths = new float[BuildList.Columns.Count];
+
+			// Array of flags to store columns which are clamped into position. We try to respect proportional resizing as well as clamping to min/max sizes,
+			// and remaining space can be distributed via non-clamped columns via another iteration.
+			bool[] ConstrainedColumns = new bool[BuildList.Columns.Count];
+
+			// Keep track of the remaining width that we have to distribute between columns. Does not include the required minimum size of each column.
+			float RemainingWidth = Math.Max(NextTotalWidth - MinColumnWidths.Sum(), 0.0f);
+
+			// Keep track of the sum of the remaining column weights. Used to proportionally allocate remaining space.
+			float RemainingTotalWeight = ColumnWeights.Sum();
+
+			// Handle special cases for shrinking/expanding
+			float PrevTotalWidth = ColumnWidths.Sum();
+			if(NextTotalWidth < PrevTotalWidth)
+			{
+				// If target size is less than current size, keep it at the current size
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					if(!ConstrainedColumns[Idx])
+					{
+						float TargetColumnWidth = MinColumnWidths[Idx] + (RemainingWidth * ColumnWeights[Idx] / RemainingTotalWeight);
+						if(TargetColumnWidth > ColumnWidths[Idx])
+						{
+							TargetColumnWidths[Idx] = ColumnWidths[Idx];
+							ConstrainedColumns[Idx] = true;
+
+							RemainingWidth -= Math.Max(TargetColumnWidths[Idx] - MinColumnWidths[Idx], 0.0f);
+							RemainingTotalWeight -= ColumnWeights[Idx];
+
+							Idx = -1;
+							continue;
+						}
+					}
+				}
+			}
+			else
+			{
+				// If target size is greater than desired size, clamp it to that
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					if(!ConstrainedColumns[Idx])
+					{
+						float TargetColumnWidth = MinColumnWidths[Idx] + (RemainingWidth * ColumnWeights[Idx] / RemainingTotalWeight);
+						if(TargetColumnWidth > DesiredColumnWidths[Idx])
+						{
+							// Don't allow this column to expand above the maximum desired size
+							TargetColumnWidths[Idx] = DesiredColumnWidths[Idx];
+							ConstrainedColumns[Idx] = true;
+
+							RemainingWidth -= Math.Max(TargetColumnWidths[Idx] - MinColumnWidths[Idx], 0.0f);
+							RemainingTotalWeight -= ColumnWeights[Idx];
+
+							Idx = -1;
+							continue;
+						}
+					}
+				}
+
+				// If current size is greater than target size, keep it that way
+				for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+				{
+					if(!ConstrainedColumns[Idx])
+					{
+						float TargetColumnWidth = MinColumnWidths[Idx] + (RemainingWidth * ColumnWeights[Idx] / RemainingTotalWeight);
+						if(TargetColumnWidth < ColumnWidths[Idx])
+						{
+							TargetColumnWidths[Idx] = ColumnWidths[Idx];
+							ConstrainedColumns[Idx] = true;
+
+							RemainingWidth -= Math.Max(TargetColumnWidths[Idx] - MinColumnWidths[Idx], 0.0f);
+							RemainingTotalWeight -= ColumnWeights[Idx];
+
+							Idx = -1;
+							continue;
+						}
+					}
+				}
+			}
+
+			// Allocate the remaining space equally
+			for(int Idx = 0; Idx < BuildList.Columns.Count; Idx++)
+			{
+				if(!ConstrainedColumns[Idx])
+				{
+					TargetColumnWidths[Idx] = MinColumnWidths[Idx] + (RemainingWidth * ColumnWeights[Idx] / RemainingTotalWeight);
+				}
+			}
+
+			return TargetColumnWidths;
+		}
+
+		private void BuidlListMultiContextMenu_Bisect_Click(object sender, EventArgs e)
+		{
+			EnableBisectMode();
+		}
+
+		private bool IsBisectModeEnabled()
+		{
+			return WorkspaceSettings.ChangeNumberToBisectState.Count >= 2;
+		}
+
+		private void EnableBisectMode()
+		{
+			if(BuildList.SelectedItems.Count >= 2)
+			{
+				Dictionary<int, BisectState> ChangeNumberToBisectState = new Dictionary<int, BisectState>();
+				foreach(ListViewItem SelectedItem in BuildList.SelectedItems)
+				{
+					PerforceChangeSummary Change = (PerforceChangeSummary)SelectedItem.Tag;
+					ChangeNumberToBisectState[Change.Number] = BisectState.Include;
+				}
+
+				ChangeNumberToBisectState[ChangeNumberToBisectState.Keys.Min()] = BisectState.Pass;
+				ChangeNumberToBisectState[ChangeNumberToBisectState.Keys.Max()] = BisectState.Fail;
+
+				WorkspaceSettings.ChangeNumberToBisectState = ChangeNumberToBisectState;
+				Settings.Save();
+
+				UpdateBuildList();
+				UpdateStatusPanel();
+			}
+		}
+
+		private void CancelBisectMode()
+		{
+			WorkspaceSettings.ChangeNumberToBisectState.Clear();
+			Settings.Save();
+
+			UpdateBuildList();
+			UpdateStatusPanel();
+		}
+
+		private void SetBisectStateForSelection(BisectState State)
+		{
+			foreach(ListViewItem SelectedItem in BuildList.SelectedItems)
+			{
+				PerforceChangeSummary Change = (PerforceChangeSummary)SelectedItem.Tag;
+				if(Change != null)
+				{
+					WorkspaceSettings.ChangeNumberToBisectState[Change.Number] = State;
+				}
+			}
+
+			Settings.Save();
+
+			ChangeNumberToLayoutInfo.Clear();
+			BuildList.Invalidate();
+
+			UpdateStatusPanel();
+		}
+
+		private int GetBisectChangeNumber()
+		{
+			int PassChangeNumber;
+			int FailChangeNumber;
+			GetRemainingBisectRange(out PassChangeNumber, out FailChangeNumber);
+
+			List<int> ChangeNumbers = new List<int>();
+			foreach(KeyValuePair<int, BisectState> Pair in WorkspaceSettings.ChangeNumberToBisectState)
+			{
+				if(Pair.Value == BisectState.Include && Pair.Key > PassChangeNumber && Pair.Key < FailChangeNumber)
+				{
+					ChangeNumbers.Add(Pair.Key);
+				}
+			}
+
+			ChangeNumbers.Sort();
+
+			return (ChangeNumbers.Count > 0)? ChangeNumbers[ChangeNumbers.Count / 2] : -1;
+		}
+
+		private void SyncBisectChange()
+		{
+			int BisectChange = GetBisectChangeNumber();
+			if(BisectChange != -1)
+			{
+				Owner.ShowAndActivate();
+				SelectChange(BisectChange);
+				StartSync(BisectChange);
+			}
+		}
+
+		private void BuildListContextMenu_Bisect_Pass_Click(object sender, EventArgs e)
+		{
+			SetBisectStateForSelection(BisectState.Pass);
+		}
+
+		private void BuildListContextMenu_Bisect_Fail_Click(object sender, EventArgs e)
+		{
+			SetBisectStateForSelection(BisectState.Fail);
+		}
+
+		private void BuildListContextMenu_Bisect_Exclude_Click(object sender, EventArgs e)
+		{
+			SetBisectStateForSelection(BisectState.Exclude);
+		}
+
+		private void BuildListContextMenu_Bisect_Include_Click(object sender, EventArgs e)
+		{
+			SetBisectStateForSelection(BisectState.Include);
+		}
+
+		private void WorkspaceControl_VisibleChanged(object sender, EventArgs e)
+		{
+			if(PerforceMonitor != null && PerforceMonitor.IsActive != Visible)
+			{
+				PerforceMonitor.IsActive = Visible;
+			}
 		}
 	}
 }

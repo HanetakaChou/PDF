@@ -23,6 +23,35 @@ public:
 	virtual TSharedPtr<struct FVirtualPointerPosition> TranslateMouseCoordinateFor3DChild( const TSharedRef<SWidget>& ChildWidget, const FGeometry& ViewportGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate ) const = 0;
 };
 
+
+struct FCachedWidget
+{
+	FCachedWidget(int32 InParentIndex, const FArrangedWidget& InWidget, int32 InClippingStateIndex, int32 InLayerId)
+		: WidgetPtr(InWidget.Widget)
+		, CachedGeometry(InWidget.Geometry)
+		, ClippingStateIndex(InClippingStateIndex)
+		, Children()
+		, ParentIndex(InParentIndex)
+		, LayerId(InLayerId)
+	{}
+
+	void AddChild(const int32 ChildIndex)
+	{
+		Children.Add(ChildIndex);
+	}
+
+	TWeakPtr<SWidget> WidgetPtr;
+	/** Allow widgets that implement this interface to insert widgets into the bubble path */
+	TWeakPtr<ICustomHitTestPath> CustomPath;
+	FGeometry CachedGeometry;
+	int32 ClippingStateIndex;
+	TArray<int32, TInlineAllocator<4> > Children;
+	int32 ParentIndex;
+	/** This is needed to be able to pick the best of the widgets within the virtual cursor's radius. */
+	int32 LayerId;
+};
+
+
 class SLATECORE_API FHittestGrid
 {
 public:
@@ -64,6 +93,26 @@ public:
 	 */
 	TSharedPtr<SWidget> FindNextFocusableWidget(const FArrangedWidget& StartingWidget, const EUINavigation Direction, const FNavigationReply& NavigationReply, const FArrangedWidget& RuleWidget);
 
+	/**
+	 * Get the size of the grid in cells.
+	 * @returns - The size of the grid in cells.
+	 */
+	FIntPoint GetNumCells() const
+	{
+		return NumCells;
+	}
+	
+	/**
+	 * Set an excess of cells which will increase the size of the grid. This
+	 * extends the desktop space beyond the norm and allows hits to take place
+	 * on areas outside the desktop.
+	 * @param InNumCellsExcess - The excess of cells.
+	 */
+	void SetNumCellsExcess(const FIntPoint& InNumCellsExcess)
+	{
+		NumCellsExcess = InNumCellsExcess;
+	}
+
 private:
 
 	/**
@@ -74,40 +123,6 @@ private:
 	struct FCell
 	{
 		TArray<int32> CachedWidgetIndexes;
-	};
-
-	/**
-	 * @todo umg: can we eliminate this?
-	 *
-	 * FNodes are a duplicate of the widget tree, with each widget
-	 * that is encountered on the way to outputting a hit-testable element
-	 * being recorded such that the event bubbling path can be reconstructed.
-	 */
-	struct FCachedWidget
-	{
-		FCachedWidget(int32 InParentIndex, const FArrangedWidget& InWidget, int32 InClippingStateIndex, int32 InLayerId)
-			: WidgetPtr(InWidget.Widget)
-			, CachedGeometry(InWidget.Geometry)
-			, ClippingStateIndex(InClippingStateIndex)
-			, Children()
-			, ParentIndex(InParentIndex)
-			, LayerId(InLayerId)
-		{}
-
-		void AddChild(const int32 ChildIndex)
-		{
-			Children.Add(ChildIndex);
-		}
-
-		TWeakPtr<SWidget> WidgetPtr;
-		/** Allow widgets that implement this interface to insert widgets into the bubble path */
-		TWeakPtr<ICustomHitTestPath> CustomPath;
-		FGeometry CachedGeometry;
-		int32 ClippingStateIndex;
-		TArray<int32, TInlineAllocator<16> > Children;
-		int32 ParentIndex;
-		/** This is needed to be able to pick the best of the widgets within the virtual cursor's radius. */
-		int32 LayerId;
 	};
 
 	/** Shared arguments to helper functions. */
@@ -179,13 +194,13 @@ private:
 	/** Access a cell at coordinates X, Y. Coordinates are row and column indexes. */
 	FORCEINLINE_DEBUGGABLE FCell& CellAt(const int32 X, const int32 Y)
 	{
-		check(( Y*NumCells.X + X ) < Cells.Num());
+		checkf((Y*NumCells.X + X) < Cells.Num(), TEXT("HitTestGrid CellAt() failed: X= %d Y= %d NumCells.X= %d NumCells.Y= %d Cells.Num()= %d"), X, Y, NumCells.X, NumCells.Y, Cells.Num());
 		return Cells[Y*NumCells.X + X];
 	}
 
 	FORCEINLINE_DEBUGGABLE const FCell& CellAt( const int32 X, const int32 Y ) const
 	{
-		check(( Y*NumCells.X + X ) < Cells.Num());
+		checkf((Y*NumCells.X + X) < Cells.Num(), TEXT("HitTestGrid CellAt() failed: X= %d Y= %d NumCells.X= %d NumCells.Y= %d Cells.Num()= %d"), X, Y, NumCells.X, NumCells.Y, Cells.Num());
 		return Cells[Y*NumCells.X + X];
 	}
 
@@ -200,6 +215,9 @@ private:
 
 	/** The size of the grid in cells. */
 	FIntPoint NumCells;
+
+	/** The excess of cells which will increase the size of the grid. */
+	FIntPoint NumCellsExcess;
 
 	/** The clipping manager that manages any clipping for hit testable widgets. */
 	FSlateClippingManager ClippingManager;

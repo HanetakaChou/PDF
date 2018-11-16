@@ -15,7 +15,7 @@
 #include "Misc/ScopeLock.h"
 #include "PipelineStateCache.h"
 #include "RHIStaticStates.h"
-#include "Class.h"
+#include "UObject/Class.h"
 #endif
 
 #include "AvfMediaTextureSample.h"
@@ -131,7 +131,7 @@ FAvfMediaVideoSampler::FAvfMediaVideoSampler(FMediaSamples& InSamples)
 	: Output(nil)
 	, Samples(InSamples)
 	, VideoSamplePool(new FAvfMediaTextureSamplePool)
-	, FrameRate(0.0f)
+	, FrameDuration(0.0f)
 #if WITH_ENGINE && COREVIDEO_SUPPORTS_METAL
 	, MetalTextureCache(nullptr)
 #endif
@@ -168,7 +168,7 @@ void FAvfMediaVideoSampler::SetOutput(AVPlayerItemVideoOutput* InOutput, float I
 	[Output release];
 	Output = InOutput;
 
-	FrameRate = InFrameRate;
+	FrameDuration = 1.f / InFrameRate;
 }
 
 
@@ -197,7 +197,7 @@ void FAvfMediaVideoSampler::Tick()
 		return;
 	}
 
-	const FTimespan SampleDuration = FTimespan::FromSeconds(FrameRate);
+	const FTimespan SampleDuration = FTimespan::FromSeconds(FrameDuration);
 	const FTimespan SampleTime = FTimespan::FromSeconds(CMTimeGetSeconds(OutputItemTime));
 
 	const int32 FrameHeight = CVPixelBufferGetHeight(Frame);
@@ -288,28 +288,13 @@ void FAvfMediaVideoSampler::Tick()
 				
 				PixelShader->SetParameters(RHICmdList, YTex, UVTex, MediaShaders::YuvToSrgbPs4, true);
 				
-				// draw full-size quad
-				FMediaElementVertex Vertices[4];
-				Vertices[0].Position.Set(-1.0f,  1.0f, 1.0f, 1.0f); // Top Left
-				Vertices[1].Position.Set( 1.0f,  1.0f, 1.0f, 1.0f); // Top Right
-				Vertices[2].Position.Set(-1.0f, -1.0f, 1.0f, 1.0f); // Bottom Left
-				Vertices[3].Position.Set( 1.0f, -1.0f, 1.0f, 1.0f); // Bottom Right
-				
-				const float ULeft   = 0.0f;
-				const float URight  = 1.0f;
-				const float VTop    = 0.0f;
-				const float VBottom = 1.0f;
-				
-				Vertices[0].TextureCoordinate.Set(ULeft, VTop);
-				Vertices[1].TextureCoordinate.Set(URight, VTop);
-				Vertices[2].TextureCoordinate.Set(ULeft, VBottom);
-				Vertices[3].TextureCoordinate.Set(URight, VBottom);
-				
+				FVertexBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
+				RHICmdList.SetStreamSource(0, VertexBuffer, 0);
 				RHICmdList.SetViewport(0, 0, 0.0f, YWidth, YHeight, 1.0f);
 
-				DrawPrimitiveUP(RHICmdList, PT_TriangleStrip, 2, Vertices, sizeof(Vertices[0]));
+				RHICmdList.DrawPrimitive(PT_TriangleStrip, 0, 2, 1);
 				
-				RHICmdList.CopyToResolveTarget(ShaderResource, ShaderResource, true, FResolveParams());
+				RHICmdList.CopyToResolveTarget(ShaderResource, ShaderResource, FResolveParams());
 			}
 			
 			CFRelease(YTextureRef);

@@ -2,6 +2,7 @@
 
 #include "OnlineAchievementsInterfaceNull.h"
 #include "OnlineSubsystem.h"
+#include "OnlineSubsystemNullTypes.h"
 
 FOnlineAchievementsNull::FOnlineAchievementsNull(class FOnlineSubsystemNull* InSubsystem)
 	:	NullSubsystem(InSubsystem)
@@ -30,7 +31,7 @@ void FOnlineAchievementsNull::WriteAchievements(const FUniqueNetId& PlayerId, FO
 		return;
 	}
 
-	FUniqueNetIdString NullId(PlayerId);
+	FUniqueNetIdNull NullId(PlayerId);
 	const TArray<FOnlineAchievement> * PlayerAch = PlayerAchievements.Find(NullId);
 	if (NULL == PlayerAch)
 	{
@@ -68,7 +69,7 @@ void FOnlineAchievementsNull::QueryAchievements( const FUniqueNetId& PlayerId, c
 		return;
 	}
 
-	FUniqueNetIdString NullId(PlayerId);
+	FUniqueNetIdNull NullId(PlayerId);
 	if (!PlayerAchievements.Find(NullId))
 	{
 		// copy for a new player
@@ -117,7 +118,7 @@ EOnlineCachedResult::Type FOnlineAchievementsNull::GetCachedAchievement(const FU
 		return EOnlineCachedResult::NotFound;
 	}
 
-	FUniqueNetIdString NullId(PlayerId);
+	FUniqueNetIdNull NullId(PlayerId);
 	const TArray<FOnlineAchievement> * PlayerAch = PlayerAchievements.Find(NullId);
 	if (NULL == PlayerAch)
 	{
@@ -147,7 +148,7 @@ EOnlineCachedResult::Type FOnlineAchievementsNull::GetCachedAchievements(const F
 		return EOnlineCachedResult::NotFound;
 	}
 
-	FUniqueNetIdString NullId(PlayerId);
+	FUniqueNetIdNull NullId(PlayerId);
 	const TArray<FOnlineAchievement> * PlayerAch = PlayerAchievements.Find(NullId);
 	if (NULL == PlayerAch)
 	{
@@ -190,16 +191,16 @@ bool FOnlineAchievementsNull::ResetAchievements(const FUniqueNetId& PlayerId)
 	if (!ReadAchievementsFromConfig())
 	{
 		// we don't have achievements
-		UE_LOG_ONLINE(Warning, TEXT("No achievements have been configured"));
+		UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("No achievements have been configured"));
 		return false;
 	}
 
-	FUniqueNetIdString NullId(PlayerId);
+	FUniqueNetIdNull NullId(PlayerId);
 	TArray<FOnlineAchievement> * PlayerAch = PlayerAchievements.Find(NullId);
 	if (NULL == PlayerAch)
 	{
 		// achievements haven't been read for a player
-		UE_LOG_ONLINE(Warning, TEXT("Could not find achievements for player %s"), *PlayerId.ToString());
+		UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Could not find achievements for player %s"), *PlayerId.ToString());
 		return false;
 	}
 

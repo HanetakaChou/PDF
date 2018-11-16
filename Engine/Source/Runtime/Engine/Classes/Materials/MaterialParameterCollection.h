@@ -12,7 +12,7 @@
 #include "Misc/Guid.h"
 #include "Templates/ScopedPointer.h"
 #include "UniformBuffer.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 #include "MaterialParameterCollection.generated.h"
 
 struct FPropertyChangedEvent;
@@ -33,7 +33,7 @@ struct FCollectionParameterBase
 	FName ParameterName;
 
 	/** Uniquely identifies the parameter, used for fixing up materials that reference this parameter when renaming. */
-	UPROPERTY()
+	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
 	FGuid Id;
 };
 
@@ -44,6 +44,7 @@ struct FCollectionScalarParameter : public FCollectionParameterBase
 	GENERATED_USTRUCT_BODY()
 
 	FCollectionScalarParameter()
+		: DefaultValue(0.0f)
 	{
 		ParameterName = FName(TEXT("Scalar"));
 	}
@@ -59,6 +60,7 @@ struct FCollectionVectorParameter : public FCollectionParameterBase
 	GENERATED_USTRUCT_BODY()
 	
 	FCollectionVectorParameter()
+		: DefaultValue(ForceInitToZero)
 	{
 		ParameterName = FName(TEXT("Vector"));
 	}

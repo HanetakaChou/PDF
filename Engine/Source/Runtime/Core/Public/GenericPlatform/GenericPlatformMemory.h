@@ -17,6 +17,24 @@ struct FPlatformMemoryStats;
 /** Holds generic memory stats, internally implemented as a map. */
 struct FGenericMemoryStats;
 
+/**
+* Platform-dependent "bucket" for memory size, where Default is the normal, or possibly the largest.
+* This is generally used for texture LOD settings for how to fit in smaller memory devices
+*/
+enum class EPlatformMemorySizeBucket
+{
+	// not used with texture LODs (you can't use bigger textures than what is cooked out, which is what Default should map to)
+	Largest,
+	Larger,
+
+	// these are used by texture LODs
+	Default,
+	Smaller,
+	Smallest,
+    Tiniest
+};
+
+
 /** 
  * Struct used to hold common memory constants for all platforms.
  * These values don't change over the entire life of the executable.
@@ -106,6 +124,9 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 	/** Default constructor, clears all variables. */
 	FGenericPlatformMemoryStats();
 };
+
+
+
 
 struct FPlatformMemoryStats;
 
@@ -224,6 +245,8 @@ struct CORE_API FGenericPlatformMemory
 		SIZE_T			Size;
 	};
 
+
+
 	/** Initializes platform memory specific constants. */
 	static void Init();
 	
@@ -251,6 +274,14 @@ struct CORE_API FGenericPlatformMemory
 	 * @return platform specific current memory statistics.
 	 */
 	static FPlatformMemoryStats GetStats();
+
+	/**
+	* @return memory used for platforms that can do it quickly (without affecting stat unit much)
+	*/
+	static uint64 GetMemoryUsedFast()
+	{
+		return 0;
+	}
 
 	/**
 	 * Writes all platform specific current memory statistics in the format usable by the malloc profiler.
@@ -296,6 +327,29 @@ struct CORE_API FGenericPlatformMemory
 	static void BinnedFreeToOS( void* Ptr, SIZE_T Size );
 
 	/**
+	 * Reserves a virtual memory range.
+	 * 
+	 * Unlike BinnedAllocFromOS, this function does not have to return pointers with alignment larger than the VM page.
+	 */
+	static void* MemoryRangeReserve(SIZE_T Size, bool bCommit = false, int32 Node = -1);
+
+	/**
+	 * Frees a virtual memory range.
+	 * 
+	 */
+	static void MemoryRangeFree(void* Ptr, SIZE_T Size);
+
+	/**
+	 * Commits a virtual memory range. Can be no-op on platforms where just reservation of the range is not supported.
+	 */
+	static bool MemoryRangeCommit(void* Ptr, SIZE_T Size) { return true; }
+
+	/**
+	 * Decommits a virtual memory range. Can be no-op on platforms where just reservation of the range is not supported.
+	 */
+	static bool MemoryRangeDecommit(void* Ptr, SIZE_T Size) { return true; }
+
+	/**
 	 * Some platforms may pool allocations of this size to reduce OS calls. This function
 	 * serves as a hint for BinnedMalloc's CachedOSPageAllocator so it does not cache these allocations additionally
 	 */
@@ -315,6 +369,11 @@ struct CORE_API FGenericPlatformMemory
 
 	/** Dumps basic platform memory statistics and allocator specific statistics into the specified output device. */
 	static void DumpPlatformAndAllocatorStats( FOutputDevice& Ar );
+
+	/**
+	 * Return which "high level", per platform, memory bucket we are in
+	 */
+	static EPlatformMemorySizeBucket GetMemorySizeBucket();
 
 	/** @name Memory functions */
 
@@ -474,6 +533,13 @@ public:
 	* These functions are the platform dependant low low low level functions that LLM uses to allocate memory.
 	*/
 	static bool GetLLMAllocFunctions(void*(*&OutAllocFunction)(size_t), void(*&OutFreeFunction)(void*, size_t), int32& OutAlignment);
+
+	/**
+	* Called for all default tracker LLM allocations and frees, when LLM is enabled.
+	* Provides a single alloc/free hook that platforms can implement to support platform specific memory analysis tools.
+	*/
+	FORCEINLINE static void OnLowLevelMemory_Alloc(void const* Pointer, uint64 Size, uint64 Tag) { }
+	FORCEINLINE static void OnLowLevelMemory_Free(void const* Pointer, uint64 Size, uint64 Tag) { }
 
 protected:
 	friend struct FGenericStatsUpdater;

@@ -17,13 +17,13 @@
 	#include "UnrealEdGlobals.h"
 #endif
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
+	#include "Windows/WindowsHWrapper.h"
 #endif
 
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, Launch);
 
-#if PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX
+#if PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_UNIX
 
 FEngineLoop	GEngineLoop;
 bool GIsConsoleExecutable = false;
@@ -96,6 +96,14 @@ int32 GuardedMain( const TCHAR* CmdLine, HINSTANCE hInInstance, HINSTANCE hPrevI
 int32 GuardedMain( const TCHAR* CmdLine )
 #endif
 {
+#if !(UE_BUILD_SHIPPING)
+	if (FParse::Param(CmdLine, TEXT("waitforattach")))
+	{
+		while (!FPlatformMisc::IsDebuggerPresent());
+		UE_DEBUG_BREAK();
+	}
+#endif
+
 	// Super early init code. DO NOT MOVE THIS ANYWHERE ELSE!
 	FCoreDelegates::GetPreMainInitDelegate().Broadcast();
 

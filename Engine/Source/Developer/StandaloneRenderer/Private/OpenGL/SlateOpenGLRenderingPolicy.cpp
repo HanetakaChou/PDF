@@ -118,15 +118,25 @@ void FSlateOpenGLRenderingPolicy::UpdateVertexAndIndexBuffers(FSlateBatchData& I
 		uint8* VerticesPtr = (uint8*)VertexBuffer.Lock(0);
 		uint8* IndicesPtr = (uint8*)IndexBuffer.Lock(0);
 
-		InBatchData.FillVertexAndIndexBuffer(VerticesPtr, IndicesPtr, /*bAbsoluteIndices*/ false);
+		//Early out if we have an invalid buffer (might have lost context and now have invalid buffers)
+		if ((nullptr != VerticesPtr) && (nullptr != IndicesPtr))
+		{
+			InBatchData.FillVertexAndIndexBuffer(VerticesPtr, IndicesPtr, /*bAbsoluteIndices*/ false);
+		}
 
-		VertexBuffer.Unlock();
-		IndexBuffer.Unlock();
+		if (nullptr != VerticesPtr)
+		{
+			VertexBuffer.Unlock();
+		}
+
+		if (nullptr != IndicesPtr)
+		{
+			IndexBuffer.Unlock();
+		}
 	}
 }
 
-
-void FSlateOpenGLRenderingPolicy::DrawElements( const FMatrix& ViewProjectionMatrix, FVector2D ViewportSize, const TArray<FSlateRenderBatch>& RenderBatches, const TArray<FSlateClippingState> RenderClipStates)
+void FSlateOpenGLRenderingPolicy::DrawElements( const FMatrix& ViewProjectionMatrix, FVector2D ViewportSize, const TArray<FSlateRenderBatch>& RenderBatches)
 {
 	// Bind the vertex buffer.  Each element uses the same buffer
 	VertexBuffer.Bind();
@@ -159,7 +169,7 @@ void FSlateOpenGLRenderingPolicy::DrawElements( const FMatrix& ViewProjectionMat
 	glStencilFunc(GL_GREATER, 0, 0xFF);
 	glStencilOp(GL_KEEP, GL_INCR, GL_INCR);
 
-	int32 LastClippingIndex = -1;
+	TOptional<FSlateClippingState> LastClippingState;
 
 	for( int32 BatchIndex = 0; BatchIndex < RenderBatches.Num(); ++BatchIndex )
 	{
@@ -255,13 +265,13 @@ void FSlateOpenGLRenderingPolicy::DrawElements( const FMatrix& ViewProjectionMat
 		IndexBuffer.Bind();
 
 
-		if (RenderBatch.ClippingIndex != LastClippingIndex)
+		if (RenderBatch.ClippingState != LastClippingState)
 		{
-			LastClippingIndex = RenderBatch.ClippingIndex;
+			LastClippingState = RenderBatch.ClippingState;
 
-			if (RenderBatch.ClippingIndex != -1)
+			if (RenderBatch.ClippingState.IsSet())
 			{
-				const FSlateClippingState& ClipState = RenderClipStates[RenderBatch.ClippingIndex];
+				const FSlateClippingState& ClipState = RenderBatch.ClippingState.GetValue();
 				if (ClipState.ScissorRect.IsSet())
 				{
 					const FSlateClippingZone& ScissorRect = ClipState.ScissorRect.GetValue();

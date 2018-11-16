@@ -45,6 +45,23 @@ TArrayView<TWeakObjectPtr<>> FMovieSceneObjectCache::FindBoundObjects(const FGui
 	return TArrayView<TWeakObjectPtr<>>();
 }
 
+TArrayView<const TWeakObjectPtr<>> FMovieSceneObjectCache::IterateBoundObjects(const FGuid& InBindingID) const
+{
+	MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_IterateBoundObjects)
+
+	const FBoundObjects* Bindings = BoundObjects.Find(InBindingID);
+	if (Bindings && Bindings->bUpToDate)
+	{
+		return TArrayView<const TWeakObjectPtr<>>(
+			Bindings->Objects.GetData(),
+			Bindings->Objects.Num()
+			);
+	}
+
+	// Just return nothing
+	return TArrayView<TWeakObjectPtr<>>();
+}
+
 FGuid FMovieSceneObjectCache::FindObjectId(UObject& InObject, IMovieScenePlayer& Player)
 {
 	UMovieSceneSequence* Sequence = WeakSequence.Get();
@@ -57,6 +74,18 @@ FGuid FMovieSceneObjectCache::FindObjectId(UObject& InObject, IMovieScenePlayer&
 	// @todo: Currently we nuke the entire object cache when attempting to find an object's ID to ensure that we do a 
 	// complete lookup from scratch. This is required for UMG as it interchanges content slots without notifying sequencer.
 	Clear(Player);
+
+	return FindCachedObjectId(InObject, Player);
+}
+
+FGuid FMovieSceneObjectCache::FindCachedObjectId(UObject& InObject, IMovieScenePlayer& Player)
+{
+	UMovieSceneSequence* Sequence = WeakSequence.Get();
+	UMovieScene* MovieScene = Sequence ? Sequence->GetMovieScene() : nullptr;
+	if (!MovieScene)
+	{
+		return FGuid();
+	}
 
 	TWeakObjectPtr<> ObjectToFind(&InObject);
 
@@ -99,6 +128,17 @@ void FMovieSceneObjectCache::InvalidateExpiredObjects()
 				Invalidate(Pair.Key);
 				break;
 			}
+		}
+	}
+
+	if (UMovieSceneSequence* Sequence = WeakSequence.Get())
+	{
+		TArray<FGuid> InvalidObjectIDs;
+		Sequence->GatherExpiredObjects(*this, InvalidObjectIDs);
+
+		for (const FGuid& ObjectID : InvalidObjectIDs)
+		{
+			Invalidate(ObjectID);
 		}
 	}
 }
@@ -285,4 +325,10 @@ FGuid FMovieSceneEvaluationState::FindObjectId(UObject& Object, FMovieSceneSeque
 {
 	FMovieSceneObjectCache* Cache = ObjectCaches.Find(InSequenceID);
 	return Cache ? Cache->FindObjectId(Object, Player) : FGuid();
+}
+
+FGuid FMovieSceneEvaluationState::FindCachedObjectId(UObject& Object, FMovieSceneSequenceIDRef InSequenceID, IMovieScenePlayer& Player)
+{
+	FMovieSceneObjectCache* Cache = ObjectCaches.Find(InSequenceID);
+	return Cache ? Cache->FindCachedObjectId(Object, Player) : FGuid();
 }

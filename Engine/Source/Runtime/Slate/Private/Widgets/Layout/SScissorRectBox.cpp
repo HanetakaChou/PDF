@@ -4,7 +4,7 @@
 #include "Types/PaintArgs.h"
 #include "Layout/ArrangedChildren.h"
 #include "Rendering/RenderingCommon.h"
-#include "IConsoleManager.h"
+#include "HAL/IConsoleManager.h"
 
 namespace Slate
 {
@@ -12,12 +12,13 @@ namespace Slate
 }
 
 SScissorRectBox::SScissorRectBox()
+	: ChildSlot(this)
 {
 }
 
 void SScissorRectBox::Construct(const FArguments& InArgs)
 {
-	bCanTick = false;
+	SetCanTick(false);
 
 	ChildSlot
 	[

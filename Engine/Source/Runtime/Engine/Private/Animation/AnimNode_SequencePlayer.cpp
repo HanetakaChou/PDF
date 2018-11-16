@@ -2,6 +2,7 @@
 
 #include "Animation/AnimNode_SequencePlayer.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "AnimEncoding.h"
 
 #define LOCTEXT_NAMESPACE "AnimNode_SequencePlayer"
 
@@ -16,7 +17,8 @@ float FAnimNode_SequencePlayer::GetCurrentAssetTime()
 float FAnimNode_SequencePlayer::GetCurrentAssetTimePlayRateAdjusted()
 {
 	const float SequencePlayRate = (Sequence ? Sequence->RateScale : 1.f);
-	const float EffectivePlayrate = FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (SequencePlayRate * PlayRate / PlayRateBasis);
+	const float AdjustedPlayRate = PlayRateScaleBiasClamp.ApplyTo(FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (PlayRate / PlayRateBasis), 0.f);
+	const float EffectivePlayrate = SequencePlayRate * AdjustedPlayRate;
 	return (EffectivePlayrate < 0.0f) ? GetCurrentAssetLength() - InternalTimeAccumulator : InternalTimeAccumulator;
 }
 
@@ -31,10 +33,13 @@ void FAnimNode_SequencePlayer::Initialize_AnyThread(const FAnimationInitializeCo
 
 	EvaluateGraphExposedInputs.Execute(Context);
 	InternalTimeAccumulator = StartPosition;
+	PlayRateScaleBiasClamp.Reinitialize();
+
 	if (Sequence != nullptr)
 	{
 		InternalTimeAccumulator = FMath::Clamp(StartPosition, 0.f, Sequence->SequenceLength);
-		const float EffectivePlayrate = FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (Sequence->RateScale * PlayRate / PlayRateBasis);
+		const float AdjustedPlayRate = PlayRateScaleBiasClamp.ApplyTo(FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (PlayRate / PlayRateBasis), 0.f);
+		const float EffectivePlayrate = Sequence->RateScale * AdjustedPlayRate;
 		if ((StartPosition == 0.f) && (EffectivePlayrate < 0.f))
 		{
 			InternalTimeAccumulator = Sequence->SequenceLength;
@@ -42,7 +47,7 @@ void FAnimNode_SequencePlayer::Initialize_AnyThread(const FAnimationInitializeCo
 	}
 }
 
-void FAnimNode_SequencePlayer::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) 
+void FAnimNode_SequencePlayer::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
 }
 
@@ -53,18 +58,13 @@ void FAnimNode_SequencePlayer::UpdateAssetPlayer(const FAnimationUpdateContext& 
 	if ((Sequence != nullptr) && (Context.AnimInstanceProxy->IsSkeletonCompatible(Sequence->GetSkeleton())))
 	{
 		InternalTimeAccumulator = FMath::Clamp(InternalTimeAccumulator, 0.f, Sequence->SequenceLength);
-		const float AdjustedPlayRate = FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (PlayRate / PlayRateBasis);
+		const float AdjustedPlayRate = PlayRateScaleBiasClamp.ApplyTo(FMath::IsNearlyZero(PlayRateBasis) ? 0.f : (PlayRate / PlayRateBasis), Context.GetDeltaTime());
 		CreateTickRecordForNode(Context, Sequence, bLoopAnimation, AdjustedPlayRate);
 	}
 }
 
 void FAnimNode_SequencePlayer::Evaluate_AnyThread(FPoseContext& Output)
 {
-	auto BoolToYesNo = [](const bool& bBool) -> const TCHAR*
-	{
-		return bBool ? TEXT("Yes") : TEXT("No");
-	};
-
 	if ((Sequence != nullptr) && (Output.AnimInstanceProxy->IsSkeletonCompatible(Sequence->GetSkeleton())))
 	{
 		const bool bExpectedAdditive = Output.ExpectsAdditivePose();
@@ -86,7 +86,7 @@ void FAnimNode_SequencePlayer::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_SequencePlayer::OverrideAsset(UAnimationAsset* NewAsset)
 {
-	if(UAnimSequenceBase* AnimSequence = Cast<UAnimSequenceBase>(NewAsset))
+	if (UAnimSequenceBase* AnimSequence = Cast<UAnimSequenceBase>(NewAsset))
 	{
 		Sequence = AnimSequence;
 	}
@@ -95,7 +95,7 @@ void FAnimNode_SequencePlayer::OverrideAsset(UAnimationAsset* NewAsset)
 void FAnimNode_SequencePlayer::GatherDebugData(FNodeDebugData& DebugData)
 {
 	FString DebugLine = DebugData.GetNodeName(this);
-	
+
 	DebugLine += FString::Printf(TEXT("('%s' Play Time: %.3f)"), Sequence ? *Sequence->GetName() : TEXT("NULL"), InternalTimeAccumulator);
 	DebugData.AddDebugItem(DebugLine, true);
 }

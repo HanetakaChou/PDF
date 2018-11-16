@@ -14,12 +14,13 @@
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "GenericPlatform/GenericWindowDefinition.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/IInputInterface.h"
 #include "Linux/LinuxWindow.h"
 #include "Linux/LinuxCursor.h"
 
 class IInputDevice;
 
-class FLinuxApplication : public GenericApplication, public FSelfRegisteringExec
+class FLinuxApplication : public GenericApplication, public FSelfRegisteringExec, public IInputInterface
 {
 
 public:
@@ -70,8 +71,6 @@ public:
 
 	void AddPendingEvent( SDL_Event event );
 
-	void OnMouseCursorLock( bool bLockEnabled );
-
 	void RemoveEventWindow(SDL_HWindow Window);
 
 	void RemoveRevertFocusWindow(SDL_HWindow HWnd);
@@ -120,13 +119,6 @@ public:
 	 */
 	void GetWindowPositionInEventLoop(SDL_HWindow NativeWindow, int *x, int *y);
 
-	/**
-	 * Destroys native window safely, possibly postponing it to some time in the future.
-	 *
-	 * @param NativeWindow The native window handle to be destroyed
-	 */
-	void DestroyNativeWindow(SDL_HWindow NativeWindow);
-
 	virtual bool IsMouseAttached() const override;
 
 	/**
@@ -137,6 +129,16 @@ public:
 	TSharedPtr< FLinuxWindow > GetCurrentActiveWindow() 
 	{
 		return CurrentlyActiveWindow;
+	}
+
+	/**
+	 * Returns the current active foreground window.
+	 *
+	 * @return pointer to the window, if any
+	 */
+	TSharedPtr< FLinuxWindow > GetCurrentFocusWindow() 
+	{
+		return CurrentFocusWindow;
 	}
 
 private:
@@ -194,13 +196,23 @@ private:
 
 	void RefreshDisplayCache();
 
-	/**
-	 * Checks if we need to destroy any of PendingDestroy windows.
-	 */
-	void DestroyPendingWindows();
-
 	/** Gets the location from a given touch event. */
 	FVector2D GetTouchEventLocation(SDL_Event TouchEvent);
+
+public:
+	virtual IInputInterface* GetInputInterface() override
+	{
+		return this;
+	}
+	// IInputInterface overrides
+	virtual void SetForceFeedbackChannelValue (int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value) override;
+	virtual void SetForceFeedbackChannelValues(int32 ControllerId, const FForceFeedbackValues &Values) override;
+	virtual void SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values) override;
+	virtual void SetLightColor(int32 ControllerId, FColor Color) override { }
+
+private:
+	void AddGameController(int Index);
+	void RemoveGameController(SDL_JoystickID Id);
 
 	/** Stores context information about a currently active touch. */
 	struct FTouchContext
@@ -232,12 +244,26 @@ private:
 		/** Store axis values from events here to be handled once per frame. */
 		TMap<FGamepadKeyNames::Type, float> AxisEvents;
 
+		/** SDL haptic, will be nullptr if not supported by the controller */
+		SDL_Haptic* Haptic;
+		/** ID of the haptic effect */
+		int EffectId;
+		/** Whether the effect is currently running */
+		bool bEffectRunning;
+		/** Current force feedback values */
+		FForceFeedbackValues ForceFeedbackValues;
+
 		SDLControllerState()
 			:	Controller(nullptr)
 			,	ControllerIndex(-1)
+			,	Haptic(nullptr)
+			,	EffectId(-1)
+			,	bEffectRunning(false)
 		{
 			FMemory::Memzero(AnalogOverThreshold);
 		}
+
+		void UpdateHapticEffect();
 	};
 
 	TArray< SDL_Event > PendingEvents;
@@ -305,22 +331,14 @@ private:
 	/** Used to check if the application is active or not. */
 	bool bActivateApp;
 
-	/** Used to check with cursor type is current and set to true if left button is pressed.*/
-	bool bLockToCurrentMouseType;
+	/** Time before deactivating the application if no FocusIn event happens on any of our Windows */
+	double FocusOutDeactivationTime;
 
 	/** Cached displays - to reduce costly communication with X server (may be better cached in SDL? avoids ugly 'mutable') */
 	mutable TArray<SDL_Rect>	CachedDisplays;
 
 	/** Last time we asked about work area (this is a hack. What we need is a callback when screen config changes). */
 	mutable double			LastTimeCachedDisplays;
-
-	/**
-	 * Native windows to be destroyed - maps window handles to their deadlines (set in terms of FPlatformTime::Seconds())
-	 *
-	 * Deferred destruction is needed because of race condition between render and game threads: Slate might have already queued the window to be drawn this tick (see SlateDrawWindowsCommand), so deleting it
-	 * while processing window messages (especially deferred ones) during the same tick is not safe. See UE-28322 for details.
-	 */
-	TMap<SDL_HWindow, double> PendingDestroyWindows;
 };
 
 extern FLinuxApplication* LinuxApplication;

@@ -40,8 +40,20 @@
 #if !defined(PLATFORM_ANDROID_VULKAN)
 	#define PLATFORM_ANDROID_VULKAN 0
 #endif
+#if !defined(PLATFORM_QUAIL)
+	#define PLATFORM_QUAIL 0
+#endif
 #if !defined(PLATFORM_ANDROIDESDEFERRED)
 	#define PLATFORM_ANDROIDESDEFERRED 0
+#endif
+#if !defined(PLATFORM_ANDROIDGL4)
+	#define PLATFORM_ANDROIDGL4 0
+#endif
+#if !defined(PLATFORM_LUMINGL4)
+	#define PLATFORM_LUMINGL4 0
+#endif
+#if !defined(PLATFORM_LUMIN)
+	#define PLATFORM_LUMIN 0
 #endif
 #if !defined(PLATFORM_APPLE)
 	#define PLATFORM_APPLE 0
@@ -57,6 +69,9 @@
 #endif
 #if !defined(PLATFORM_FREEBSD)
 	#define PLATFORM_FREEBSD 0
+#endif
+#if !defined(PLATFORM_UNIX)
+	#define PLATFORM_UNIX 0
 #endif
 
 // Platform specific compiler pre-setup.
@@ -76,6 +91,8 @@
 	#include "HTML5/HTML5PlatformCompilerPreSetup.h"
 #elif PLATFORM_LINUX
 	#include "Linux/LinuxPlatformCompilerPreSetup.h"
+#elif PLATFORM_QUAIL
+	#include "Quail/QuailPlatformCompilerPreSetup.h"
 #elif PLATFORM_SWITCH
 	#include "Switch/SwitchPlatformCompilerPreSetup.h"
 #else
@@ -90,6 +107,27 @@
 #endif
 
 #include "GenericPlatform/GenericPlatform.h"
+
+//------------------------------------------------------------------
+// Setup macros for static code analysis
+//------------------------------------------------------------------
+#ifndef PLATFORM_COMPILER_CLANG
+#if defined(__clang__)
+#define PLATFORM_COMPILER_CLANG			1
+#else
+#define PLATFORM_COMPILER_CLANG			0
+#endif // defined(__clang__)
+#endif
+
+#if PLATFORM_WINDOWS
+	#include "Windows/WindowsPlatformCodeAnalysis.h"
+#elif PLATFORM_COMPILER_CLANG
+	#include "Clang/ClangPlatformCodeAnalysis.h"
+#endif
+
+#ifndef USING_ADDRESS_SANITISER
+	#define USING_ADDRESS_SANITISER 0
+#endif
 
 //---------------------------------------------------------
 // Identify the current platform and include that header
@@ -112,31 +150,12 @@
 	#include "HTML5/HTML5Platform.h"
 #elif PLATFORM_LINUX
 	#include "Linux/LinuxPlatform.h"
+#elif PLATFORM_QUAIL
+	#include "Quail/QuailPlatform.h"
 #elif PLATFORM_SWITCH
 	#include "Switch/SwitchPlatform.h"
 #else
-	#error Unknown Compiler
-#endif
-
-//------------------------------------------------------------------
-// Setup macros for static code analysis
-//------------------------------------------------------------------
-#ifndef PLATFORM_COMPILER_CLANG
-	#if defined(__clang__)
-		#define PLATFORM_COMPILER_CLANG			1
-	#else
-		#define PLATFORM_COMPILER_CLANG			0
-	#endif // defined(__clang__)
-#endif
-
-#if PLATFORM_WINDOWS
-    #include "Windows/WindowsPlatformCodeAnalysis.h"
-#elif PLATFORM_COMPILER_CLANG
-    #include "Clang/ClangPlatformCodeAnalysis.h"
-#endif
-
-#ifndef USING_ADDRESS_SANITISER
-	#define USING_ADDRESS_SANITISER 0
+	#error Unknown platform
 #endif
 
 //------------------------------------------------------------------
@@ -173,8 +192,8 @@
 #ifndef PLATFORM_LITTLE_ENDIAN
 	#define PLATFORM_LITTLE_ENDIAN				0
 #endif
-#ifndef PLATFORM_SUPPORTS_UNALIGNED_INT_LOADS
-	#define PLATFORM_SUPPORTS_UNALIGNED_INT_LOADS	0
+#ifndef PLATFORM_SUPPORTS_UNALIGNED_LOADS
+	#define PLATFORM_SUPPORTS_UNALIGNED_LOADS	0
 #endif
 #ifndef PLATFORM_EXCEPTIONS_DISABLED
 	#define PLATFORM_EXCEPTIONS_DISABLED		!PLATFORM_DESKTOP
@@ -214,7 +233,9 @@
 #endif
 #ifdef _MSC_VER
 	#define PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES 1
-	#pragma deprecated("PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES")
+	#ifndef __clang__
+		#pragma deprecated("PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES")
+	#endif
 #else
 	#define PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES 1 DEPRECATED_MACRO(4.19, "PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES has been deprecated and should be replaced with 1.")
 #endif
@@ -223,7 +244,9 @@
 #endif
 #ifdef _MSC_VER
 	#define PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS 1
-	#pragma deprecated("PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS")
+	#ifndef __clang__
+		#pragma deprecated("PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS")
+	#endif
 #else
 	#define PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS 1 DEPRECATED_MACRO(4.19, "PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS has been deprecated and should be replaced with 1.")
 #endif
@@ -233,11 +256,17 @@
 #ifndef PLATFORM_COMPILER_HAS_TCHAR_WMAIN
 	#define PLATFORM_COMPILER_HAS_TCHAR_WMAIN 0
 #endif
+#ifndef PLATFORM_COMPILER_HAS_DECLTYPE_AUTO
+	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 1
+#endif
 #ifndef PLATFORM_TCHAR_IS_1_BYTE
 	#define PLATFORM_TCHAR_IS_1_BYTE			0
 #endif
 #ifndef PLATFORM_TCHAR_IS_4_BYTES
 	#define PLATFORM_TCHAR_IS_4_BYTES			0
+#endif
+#ifndef PLATFORM_TCHAR_IS_CHAR16
+	#define PLATFORM_TCHAR_IS_CHAR16			0
 #endif
 #ifndef PLATFORM_HAS_BSD_TIME
 	#define PLATFORM_HAS_BSD_TIME				1
@@ -248,11 +277,14 @@
 #ifndef PLATFORM_HAS_BSD_IPV6_SOCKETS
 	#define PLATFORM_HAS_BSD_IPV6_SOCKETS			0
 #endif
+#ifndef PLATFORM_SUPPORTS_UDP_MULTICAST_GROUP
+	#define PLATFORM_SUPPORTS_UDP_MULTICAST_GROUP	1
+#endif
 #ifndef PLATFORM_USE_PTHREADS
 	#define PLATFORM_USE_PTHREADS				1
 #endif
-#ifndef PLATFORM_MAX_FILEPATH_LENGTH
-	#define PLATFORM_MAX_FILEPATH_LENGTH		128
+#ifndef PLATFORM_MAX_FILEPATH_LENGTH_DEPRECATED
+	#define PLATFORM_MAX_FILEPATH_LENGTH_DEPRECATED		128			// Deprecated - prefer FPlatformMisc::GetMaxPathLength() instead.
 #endif
 #ifndef PLATFORM_SUPPORTS_TEXTURE_STREAMING
 	#define PLATFORM_SUPPORTS_TEXTURE_STREAMING	1
@@ -280,6 +312,9 @@
 #endif
 #ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_GETADDRINFO
 	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_GETADDRINFO	1
+#endif
+#ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_GETNAMEINFO
+	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_GETNAMEINFO 1
 #endif
 #ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_CLOSE_ON_EXEC
 	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_CLOSE_ON_EXEC	0
@@ -366,6 +401,10 @@
 	#define PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING	1
 #endif
 
+#ifndef PLATFORM_IMPLEMENTS_BeginNamedEventStatic
+	#define PLATFORM_IMPLEMENTS_BeginNamedEventStatic			0
+#endif
+
 #ifndef PLATFORM_RHITHREAD_DEFAULT_BYPASS
 	#define PLATFORM_RHITHREAD_DEFAULT_BYPASS					1
 #endif
@@ -376,10 +415,6 @@
 
 #ifndef PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS
 	#define PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS 2
-#endif
-
-#ifndef PLATFORM_USES_FACE_BUTTON_RIGHT_FOR_ACCEPT
-	#define PLATFORM_USES_FACE_BUTTON_RIGHT_FOR_ACCEPT		0
 #endif
 
 #ifndef PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK
@@ -408,6 +443,10 @@
 
 #ifndef PLATFORM_WEAKLY_CONSISTENT_MEMORY
 	#define PLATFORM_WEAKLY_CONSISTENT_MEMORY PLATFORM_CPU_ARM_FAMILY
+#endif
+
+#ifndef PLATFORM_HAS_CRC_INTRINSICS
+	#define PLATFORM_HAS_CRC_INTRINSICS							0
 #endif
 
 // deprecated, do not use
@@ -481,7 +520,7 @@
 
 /** Branch prediction hints */
 #ifndef LIKELY						/* Hints compiler that expression is likely to be true, much softer than ASSUME - allows (penalized by worse performance) expression to be false */
-	#if ( defined(__clang__) || defined(__GNUC__) ) && PLATFORM_LINUX	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
+	#if ( defined(__clang__) || defined(__GNUC__) ) && (PLATFORM_UNIX)	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
 		#define LIKELY(x)			__builtin_expect(!!(x), 1)
 	#else
 		#define LIKELY(x)			(x)
@@ -489,7 +528,7 @@
 #endif
 
 #ifndef UNLIKELY					/* Hints compiler that expression is unlikely to be true, allows (penalized by worse performance) expression to be true */
-	#if ( defined(__clang__) || defined(__GNUC__) ) && PLATFORM_LINUX	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
+	#if ( defined(__clang__) || defined(__GNUC__) ) && (PLATFORM_UNIX)	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
 		#define UNLIKELY(x)			__builtin_expect(!!(x), 0)
 	#else
 		#define UNLIKELY(x)			(x)
@@ -641,7 +680,7 @@ int32 main(int32 ArgC, ANSICHAR* Utf8ArgV[]) \
 	{ \
 		FUTF8ToTCHAR ConvertFromUtf8(Utf8ArgV[a]); \
 		ArgV[a] = new TCHAR[ConvertFromUtf8.Length() + 1]; \
-		FCString::Strcpy(ArgV[a], ConvertFromUtf8.Length(), ConvertFromUtf8.Get()); \
+		FCString::Strcpy(ArgV[a], ConvertFromUtf8.Length() + 1, ConvertFromUtf8.Get()); \
 	} \
 	int32 Result = tchar_main(ArgC, ArgV); \
 	for (int32 a = 0; a < ArgC; a++) \
@@ -842,6 +881,8 @@ namespace TypeTests
 	#include "HTML5/HTML5PlatformCompilerSetup.h"
 #elif PLATFORM_LINUX
 	#include "Linux/LinuxPlatformCompilerSetup.h"
+#elif PLATFORM_QUAIL
+	#include "Quail/QuailPlatformCompilerSetup.h"
 #elif PLATFORM_SWITCH
 	#include "Switch/SwitchPlatformCompilerSetup.h"
 #else
@@ -850,6 +891,19 @@ namespace TypeTests
 
 // If we don't have a platform-specific define for the TEXT macro, define it now.
 #if !defined(TEXT) && !UE_BUILD_DOCS
-	#define TEXT_PASTE(x) L ## x
-	#define TEXT(x) TEXT_PASTE(x)
+	#if PLATFORM_TCHAR_IS_CHAR16
+		#define TEXT_PASTE(x) u ## x
+	#else
+		#define TEXT_PASTE(x) L ## x
+	#endif
+		#define TEXT(x) TEXT_PASTE(x)
 #endif
+
+// this function is used to suppress static analysis warnings
+#if PLATFORM_HTML5
+FORCEINLINE bool IsHTML5Platform() { return true; }
+#else
+FORCEINLINE bool IsHTML5Platform() { return false; }
+#endif
+
+

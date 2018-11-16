@@ -21,6 +21,7 @@
 #include "EngineAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
+#include "AudioPluginUtilities.h"
 
 DEFINE_LOG_CATEGORY(LogAudio);
 
@@ -580,6 +581,7 @@ FSpatializationParams FSoundSource::GetSpatializationParams()
 void FSoundSource::InitCommon()
 {
 	PlaybackTime = 0.0f;
+	TickCount = 0;
 
 	// Reset pause state
 	bIsPausedByGame = false;
@@ -784,6 +786,7 @@ FWaveInstance::FWaveInstance( FActiveSound* InActiveSound )
 	, bCenterChannelOnly(false)
 	, bReportedSpatializationWarning(false)
 	, bIsAmbisonics(false)
+	, bIsStopping(false)
 	, SpatializationMethod(ESoundSpatializationAlgorithm::SPATIALIZATION_Default)
 	, OcclusionPluginSettings(nullptr)
 	, OutputTarget(EAudioOutputTarget::Speaker)
@@ -900,11 +903,24 @@ float FWaveInstance::GetVolumeWeightedPriority() const
 	float ActualVolume = GetVolumeWithDistanceAttenuation();
 	if (ActualVolume > 0.0f)
 	{
-		return ActualVolume * Priority;
+		// Only check for bypass if the actual volume is greater than 0.0
+		if (WaveData && WaveData->bBypassVolumeScaleForPriority)
+		{
+			return Priority;
+		}
+		else
+		{
+			return ActualVolume * Priority;
+		}
+	}
+	else if (IsStopping())
+	{
+		// Stopping sounds will be sorted above 0-volume sounds
+		return ActualVolume * Priority - MAX_SOUND_PRIORITY - 1.0f;
 	}
 	else
 	{
-		return Priority - MAX_SOUND_PRIORITY - 1;
+		return Priority - 2.0f * MAX_SOUND_PRIORITY - 1.0f;
 	}
 }
 
@@ -1013,7 +1029,7 @@ struct FExtendedFormatChunk
 //
 //	Figure out the WAVE file layout.
 //
-bool FWaveModInfo::ReadWaveInfo( uint8* WaveData, int32 WaveDataSize, FString* ErrorReason, bool InHeaderDataOnly, void** OutFormatHeader)
+bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FString* ErrorReason, bool InHeaderDataOnly, void** OutFormatHeader)
 {
 	FRiffFormatChunk* FmtChunk;
 	FExtendedFormatChunk* FmtChunkEx = nullptr;
@@ -1257,7 +1273,7 @@ bool FWaveModInfo::ReadWaveInfo( uint8* WaveData, int32 WaveDataSize, FString* E
 	return( true );
 }
 
-bool FWaveModInfo::ReadWaveHeader(uint8* RawWaveData, int32 Size, int32 Offset )
+bool FWaveModInfo::ReadWaveHeader(const uint8* RawWaveData, int32 Size, int32 Offset )
 {
 	if( Size == 0 )
 	{

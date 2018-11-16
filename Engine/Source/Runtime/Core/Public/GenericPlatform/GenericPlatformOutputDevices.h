@@ -17,11 +17,14 @@ struct CORE_API FGenericPlatformOutputDevices
 	static void							SetupOutputDevices();
 	static FString						GetAbsoluteLogFilename();
 	static FOutputDevice*				GetLog();
-
+	static void							GetPerChannelFileOverrides(TArray<FOutputDevice*>& OutputDevices);
 	static FOutputDevice*				GetEventLog()
 	{
 		return nullptr; // normally only used for dedicated servers
 	}
+
+	static FOutputDeviceError*			GetError();
+	static FFeedbackContext*            GetFeedbackContext();
 
 protected:
 	static TCHAR CachedAbsoluteFilename[1024];

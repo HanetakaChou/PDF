@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3481084
+﻿INTSourceChangelist:3810467
 Availability:Public
 Title: 메인 메뉴 바
 Crumbs:%ROOT%, Engine, Engine/UI
@@ -54,7 +54,7 @@ mac
 | **애셋 열기** | 애셋 선택기를 띄웁니다. |
 | **모두 저장** | 저장되지 않은 모든 레벨과 애셋을 저장합니다. |
 | **저장할 파일 선택** | 레벨과 콘텐츠에 대한 저장 옵션이 포함된 대화창을 엽니다. |
-| **소스 콘트롤에 제출** | 콘텐츠와 레벨의 체크인 옵션이 포함된 대화창을 엽니다. |
+| **소스 컨트롤에 제출** | 콘텐츠와 레벨의 체크인 옵션이 포함된 대화창을 엽니다. |
 | [REGION:tablesection]**프로젝트**[/REGION] ||
 | **새 프로젝트** | 새 게임 프로젝트 생성을 위한 대화창을 엽니다. |
 | **프로젝트 열기** | 게임 프로젝트를 열기 위한 대화창을 엽니다. |
@@ -117,7 +117,7 @@ mac
 %commonwindowmenu%
 
 [VAR:CommonWindowMenu]
-| [REGION:tablesection]** **[/REGION] ||
+| [REGION:tablesection] [/REGION] ||
 | **콘텐츠 브라우저** | 콘텐츠 애셋 작업용 [콘텐츠 브라우저](Engine/Content/Browser) 를 최대 4 개까지 엽니다. |
 | **개발자 툴** | 엔진 및 에디터 작업을 하는 프로그래머용 [다양한 툴](Engine\Tools\DevTools) 에 대한 바로가기가 제공됩니다. |
 | **블루프린트 디버거** | [](Engine/Blueprints/UserGuide/Debugging) 패널을 엽니다. |
@@ -141,7 +141,7 @@ mac
 | [REGION:tablesection]**둘러보기**[/REGION] ||
 | **문서** | 주요 문서 페이지를 엽니다. |
 | **API 참고서** | API 참고서를 엽니다. |
-| **뷰포트 콘트롤** | 뷰포트 조작법 일람표를 엽니다. |
+| **뷰포트 컨트롤** | 뷰포트 조작법 일람표를 엽니다. |
 | [REGION:tablesection]**튜토리얼**[/REGION] ||
 | 언리얼 엔진 4 에디터 사용에 있어서의 기본을 다루는 입문 튜토리얼을 엽니다. ||
 | [REGION:tablesection]**온라인**[/REGION] ||

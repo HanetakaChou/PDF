@@ -113,10 +113,12 @@ private:
 	FEdGraphSchemaAction_K2Var* MyBlueprintSelectionAsVar() const {return MyBlueprint.Pin()->SelectionAsVar();}
 	FEdGraphSchemaAction_K2LocalVar* MyBlueprintSelectionAsLocalVar() const {return MyBlueprint.Pin()->SelectionAsLocalVar();}
 	UK2Node_Variable* EdGraphSelectionAsVar() const;
+	UProperty* CustomizedObjectAsProperty() const;
 	UProperty* SelectionAsProperty() const;
 	FName GetVariableName() const;
 
 	/** Commonly queried attributes about the schema action */
+	bool IsAUserVariable(UProperty* VariableProperty) const;
 	bool IsASCSVariable(UProperty* VariableProperty) const;
 	bool IsABlueprintVariable(UProperty* VariableProperty) const;
 	bool IsALocalVariable(UProperty* VariableProperty) const;
@@ -281,6 +283,9 @@ private:
 
 	/** External detail customizations */
 	TArray<TSharedPtr<IDetailCustomization>> ExternalDetailCustomizations;
+
+	/** Array of nodes were were constructed to represent */
+	TArray< TWeakObjectPtr<UObject> > ObjectsBeingEdited;
 };
 
 class FBaseBlueprintGraphActionDetails : public IDetailCustomization
@@ -390,6 +395,7 @@ private:
 	void CollectAvailibleSignatures();
 	void OnFunctionSelected(TSharedPtr<FString> FunctionItemData, ESelectInfo::Type SelectInfo);
 	bool IsBlueprintProperty() const;
+	EVisibility OnGetSectionTextVisibility(TWeakPtr<SWidget> RowWidget) const;
 
 private:
 

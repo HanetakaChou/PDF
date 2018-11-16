@@ -1,3 +1,5 @@
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+
 #pragma once
 
 #include "Misc/Timespan.h"
@@ -36,7 +38,7 @@ public:
 	void SeekOnOpen(FTimespan Time);
 
 	/** Set up this persistent data object. */
-	void Setup();
+	void Setup(UMediaPlayer* OverrideMediaPlayer);
 
 private:
 
@@ -44,6 +46,7 @@ private:
 	void HandleMediaPlayerEvent(EMediaEvent Event);
 
 private:
+	bool bOverrideMediaPlayer;
 
 	/** The media player used by this object. */
 	UMediaPlayer* MediaPlayer;

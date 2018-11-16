@@ -23,8 +23,8 @@
 #include "Particles/VectorField/ParticleModuleVectorFieldLocal.h"
 #include "Particles/ParticleLODLevel.h"
 #include "Particles/ParticleModuleRequired.h"
-#include "PhysicsPublic.h"
 #include "Components/LineBatchComponent.h"
+#include "Physics/PhysicsInterfaceCore.h"
 
 #define LOCTEXT_NAMESPACE "CascadeViewportClient"
 
@@ -183,6 +183,8 @@ FCascadeEdPreviewViewportClient::FCascadeEdPreviewViewportClient(TWeakPtr<FCasca
 
 void FCascadeEdPreviewViewportClient::AddReferencedObjects( FReferenceCollector& Collector )
 {
+	FEditorViewportClient::AddReferencedObjects(Collector);
+
 	CascadePreviewScene.AddReferencedObjects(Collector);
 }
 

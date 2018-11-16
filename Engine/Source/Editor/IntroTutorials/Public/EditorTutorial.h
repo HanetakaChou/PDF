@@ -14,7 +14,7 @@ class AActor;
 class UTexture2D;
 
 /** The type of tutorial content to display */
-UENUM()
+UENUM(meta=(ScriptName="TutorialContentType"))
 namespace ETutorialContent
 {
 	enum Type
@@ -165,6 +165,7 @@ struct INTROTUTORIALS_API FTutorialWidgetContent
 		ContentWidth = 350.0f;
 		HorizontalAlignment = HAlign_Center;
 		VerticalAlignment = VAlign_Bottom;
+		Offset = FVector2D::ZeroVector;
 		bAutoFocus = false;
 	}
 

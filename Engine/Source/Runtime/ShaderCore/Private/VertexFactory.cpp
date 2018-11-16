@@ -117,10 +117,7 @@ FVertexFactoryType::FVertexFactoryType(
 		TEXT("Incorrect virtual shader path extension for vertex factory shader header '%s': Only .ush files should be included."),
 		InShaderFilename);
 
-	for (int32 Platform = 0; Platform < SP_NumPlatforms; Platform++)
-	{
-		bCachedUniformBufferStructDeclarations[Platform] = false;
-	}
+	bCachedUniformBufferStructDeclarations = false;
 
 	// This will trigger if an IMPLEMENT_VERTEX_FACTORY_TYPE was in a module not loaded before InitializeShaderTypes
 	// Vertex factory types need to be implemented in modules that are loaded before that
@@ -139,9 +136,9 @@ FVertexFactoryType::~FVertexFactoryType()
 }
 
 /** Calculates a Hash based on this vertex factory type's source code and includes */
-const FSHAHash& FVertexFactoryType::GetSourceHash() const
+const FSHAHash& FVertexFactoryType::GetSourceHash(EShaderPlatform ShaderPlatform) const
 {
-	return GetShaderFileHash(GetShaderFilename());
+	return GetShaderFileHash(GetShaderFilename(), ShaderPlatform);
 }
 
 FArchive& operator<<(FArchive& Ar,FVertexFactoryType*& TypeRef)
@@ -173,9 +170,9 @@ FVertexFactoryType* FindVertexFactoryType(FName TypeName)
 	return NULL;
 }
 
-void FVertexFactory::Set(EShaderPlatform InShaderPlatform, FRHICommandList& RHICmdList) const
+void FVertexFactory::SetStreams(ERHIFeatureLevel::Type InFeatureLevel, FRHICommandList& RHICmdList) const
 {
-	bool bSupportsVertexFetch = SupportsManualVertexFetch(InShaderPlatform);
+	bool bSupportsVertexFetch = SupportsManualVertexFetch(InFeatureLevel);
 	check(IsInitialized());
 	for(int32 StreamIndex = 0;StreamIndex < Streams.Num();StreamIndex++)
 	{
@@ -319,13 +316,14 @@ void FVertexFactory::InitPositionDeclaration(const FVertexDeclarationElementList
 	PositionDeclaration = RHICreateVertexDeclaration(Elements);
 }
 
-FVertexFactoryParameterRef::FVertexFactoryParameterRef(FVertexFactoryType* InVertexFactoryType,const FShaderParameterMap& ParameterMap, EShaderFrequency InShaderFrequency)
+FVertexFactoryParameterRef::FVertexFactoryParameterRef(FVertexFactoryType* InVertexFactoryType,const FShaderParameterMap& ParameterMap, EShaderFrequency InShaderFrequency, EShaderPlatform InShaderPlatform)
 : Parameters(NULL)
 , VertexFactoryType(InVertexFactoryType)
 , ShaderFrequency(InShaderFrequency)
+, ShaderPlatform(InShaderPlatform)
 {
 	Parameters = VertexFactoryType->CreateShaderParameters(InShaderFrequency);
-	VFHash = GetShaderFileHash(VertexFactoryType->GetShaderFilename());
+	VFHash = GetShaderFileHash(VertexFactoryType->GetShaderFilename(), InShaderPlatform);
 
 	if(Parameters)
 	{
@@ -346,7 +344,14 @@ bool operator<<(FArchive& Ar,FVertexFactoryParameterRef& Ref)
 		Ref.ShaderFrequency = (EShaderFrequency)ShaderFrequencyByte;
 	}
 
-	Ar << Ref.VFHash;
+	uint8 ShaderPlatformByte = Ref.ShaderPlatform;
+	Ar << ShaderPlatformByte;
+	if (Ar.IsLoading())
+	{
+		Ref.ShaderPlatform = (EShaderPlatform)ShaderPlatformByte;
+	}
+
+	Ar << FShaderResource::FilterShaderSourceHashForSerialization(Ar, Ref.VFHash);
 
 
 	if (Ar.IsLoading())
@@ -364,7 +369,7 @@ bool operator<<(FArchive& Ar,FVertexFactoryParameterRef& Ref)
 	}
 
 	// Need to be able to skip over parameters for no longer existing vertex factories.
-	int32 SkipOffset = Ar.Tell();
+	int64 SkipOffset = Ar.Tell();
 	{
 		FArchive::FScopeSetDebugSerializationFlags S(Ar, DSF_IgnoreDiff);
 		// Write placeholder.
@@ -383,7 +388,7 @@ bool operator<<(FArchive& Ar,FVertexFactoryParameterRef& Ref)
 
 	if( Ar.IsSaving() )
 	{
-		int32 EndOffset = Ar.Tell();
+		int64 EndOffset = Ar.Tell();
 		Ar.Seek( SkipOffset );
 		Ar << EndOffset;
 		Ar.Seek( EndOffset );
@@ -396,4 +401,10 @@ bool operator<<(FArchive& Ar,FVertexFactoryParameterRef& Ref)
 const FSHAHash& FVertexFactoryParameterRef::GetHash() const 
 { 
 	return VFHash;
+}
+
+/** Returns the shader platform that this shader was compiled with. */
+EShaderPlatform FVertexFactoryParameterRef::GetShaderPlatform() const
+{
+	return ShaderPlatform;
 }

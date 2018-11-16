@@ -4,7 +4,7 @@
 
 #include "CoreTypes.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
-#include "WindowsSystemIncludes.h"
+#include "Windows/WindowsSystemIncludes.h"
 
 class FEvent;
 class FRunnableThread;
@@ -125,11 +125,9 @@ public:
 	static void* GetDllHandle( const TCHAR* Filename );
 	static void FreeDllHandle( void* DllHandle );
 	static void* GetDllExport( void* DllHandle, const TCHAR* ProcName );
-	static int32 GetDllApiVersion( const TCHAR* Filename );
 	static void AddDllDirectory(const TCHAR* Directory);
 	static void PushDllDirectory(const TCHAR* Directory);
 	static void PopDllDirectory(const TCHAR* Directory);
-	static void CleanFileCache();
 	static uint32 GetCurrentProcessId();
 	static void SetThreadAffinityMask( uint64 AffinityMask );
 	static const TCHAR* BaseDir();

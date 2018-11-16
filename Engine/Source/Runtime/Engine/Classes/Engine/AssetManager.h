@@ -4,12 +4,14 @@
 
 #include "AssetData.h"
 #include "AssetManagerTypes.h"
-#include "AssetRegistryInterface.h"
+#include "Misc/AssetRegistryInterface.h"
 #include "StreamableManager.h"
 #include "AssetBundleData.h"
 #include "AssetRegistryModule.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
 #include "AssetManager.generated.h"
+
+DECLARE_LOG_CATEGORY_EXTERN(LogAssetManager, Log, All);
 
 /** Defined in C++ file */
 struct FPrimaryAssetTypeData;
@@ -386,6 +388,9 @@ public:
 	/** Gets package names to add to the cook, and packages to never cook even if in startup set memory or referenced */
 	virtual void ModifyCook(TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook);
 
+	/** Returns whether or not a specific UPackage should be cooked for the provied TargetPlatform */
+	virtual bool ShouldCookForPlatform(const UPackage* Package, const ITargetPlatform* TargetPlatform);
+
 	/** Returns cook rule for a package name using Management rules, games should override this to take into account their individual workflows */
 	virtual EPrimaryAssetCookRule GetPackageCookRule(FName PackageName) const;
 
@@ -402,11 +407,19 @@ public:
 	 */
 	virtual bool GetPackageChunkIds(FName PackageName, const class ITargetPlatform* TargetPlatform, const TArray<int32>& ExistingChunkList, TArray<int32>& OutChunkList, TArray<int32>* OutOverrideChunkList = nullptr) const;
 
+	/** 
+	 * Retrieve the encryption key guid for a given chunk ID
+	 *
+	 * @param InChunkIndex - The chunk ID for which we are querying the encryption key guid
+	 * @return If chunk ID is valid and references and encrypted chunk, returns the key guid. Otherwise, returns an empty guid 
+	 */
+	virtual FGuid GetChunkEncryptionKeyGuid(int32 InChunkId) const { return FGuid(); }
+
 	/** Returns the list of chunks assigned to the list of primary assets, which is usually a manager list. This is called by GetPackageChunkIds */
 	virtual bool GetPrimaryAssetSetChunkIds(const TSet<FPrimaryAssetId>& PrimaryAssetSet, const class ITargetPlatform* TargetPlatform, const TArray<int32>& ExistingChunkList, TArray<int32>& OutChunkList) const;
 
-	/** Refresh the entire set of asset data, can call from editor when things have changed dramatically */
-	virtual void RefreshPrimaryAssetDirectory();
+	/** Refresh the entire set of asset data, can call from editor when things have changed dramatically. Will only refresh if force is true or it thinks something has changed */
+	virtual void RefreshPrimaryAssetDirectory(bool bForceRefresh = false);
 
 	/** Resets all asset manager data, called in the editor to reinitialize the config */
 	virtual void ReinitializeFromConfig();
@@ -435,13 +448,23 @@ public:
 	 * @param StructValue	Location in memory of Struct or Object
 	 * @param AssetBundle	Bundle that will be filled out
 	 */
-	virtual void InitializeAssetBundlesFromMetadata(const UStruct* Struct, const void* StructValue, FAssetBundleData& AssetBundle) const;
+	virtual void InitializeAssetBundlesFromMetadata(const UStruct* Struct, const void* StructValue, FAssetBundleData& AssetBundle, FName DebugName = NAME_None) const;
 
 	/** UObject wrapper */
 	virtual void InitializeAssetBundlesFromMetadata(const UObject* Object, FAssetBundleData& AssetBundle) const
 	{
-		InitializeAssetBundlesFromMetadata(Object->GetClass(), Object, AssetBundle);
+		InitializeAssetBundlesFromMetadata(Object->GetClass(), Object, AssetBundle, Object->GetFName());
 	}
+
+	/** 
+	  * Called immediately before saving the asset registry during cooking
+	  */
+	virtual void PreSaveAssetRegistry(const class ITargetPlatform* TargetPlatform) {}
+
+	/** 
+	  * Called immediately after saving the asset registry during cooking
+	  */
+	virtual void PostSaveAssetRegistry() {}
 
 #endif
 
@@ -519,6 +542,9 @@ protected:
 	/** Called after PIE ends, resets loading state */
 	virtual void EndPIE(bool bStartSimulate);
 
+	/** Invalidate cached asset data so it knows to rescan when needed */
+	virtual void InvalidatePrimaryAssetDirectory();
+
 	/** Copy of the asset state before PIE was entered, return to that when PIE completes */
 	TMap<FPrimaryAssetId, TArray<FName>> PrimaryAssetStateBeforePIE;
 
@@ -594,6 +620,10 @@ protected:
 	/** True if we are currently in bulk scanning mode */
 	UPROPERTY()
 	bool bIsBulkScanning;
+
+	/** True if asset data is current, if false it will need to rescan before PIE */
+	UPROPERTY()
+	bool bIsPrimaryAssetDirectoryCurrent;
 
 	/** True if the asset management database is up to date */
 	UPROPERTY()

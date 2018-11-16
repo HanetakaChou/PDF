@@ -15,8 +15,8 @@
 #if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
 #include "IOS/IOSApplication.h"
 #include "IOS/IOSWindow.h"
-#include "IOSAppDelegate.h"
-#include "IOSView.h"
+#include "IOS/IOSAppDelegate.h"
+#include "IOS/IOSView.h"
 #endif
 #if GOOGLEVRHMD_SUPPORTED_INSTANT_PREVIEW_PLATFORMS
 #include "GlobalShader.h"
@@ -29,6 +29,7 @@
 #include "UObject/Package.h"
 #include "EngineAnalytics.h"
 #include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "Kismet/GameplayStatics.h"
 
 ///////////////////////////////////////////
 // Begin GoogleVR Api Console Variables //
@@ -105,22 +106,6 @@ void OnTriggerEvent(void* UserParam)
 
 #if GOOGLEVRHMD_SUPPORTED_ANDROID_PLATFORMS
 
-// Note: Should probably be moved into AndroidJNI class
-int64 CallLongMethod(JNIEnv* Env, jobject Object, jmethodID Method, ...)
-{
-	if (Method == NULL || Object == NULL)
-	{
-		return false;
-	}
-
-	va_list Args;
-	va_start(Args, Method);
-	jlong Return = Env->CallLongMethodV(Object, Method, Args);
-	va_end(Args);
-
-	return (int64)Return;
-}
-
 JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnUiLayerBack(JNIEnv* jenv, jobject thiz)
 {
 	// Need to be on game thread to dispatch handler
@@ -129,11 +114,11 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnUiLayerBack(JNIEnv* 
 
 void AndroidThunkCpp_UiLayer_SetEnabled(bool bEnable)
 {
- 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
- 	{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
 		static jmethodID UiLayerMethod = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_UiLayer_SetEnabled", "(Z)V", false);
 		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, UiLayerMethod, bEnable);
- 	}
+	}
 }
 void AndroidThunkCpp_UiLayer_SetViewerName(const FString& ViewerName)
 {
@@ -142,41 +127,41 @@ void AndroidThunkCpp_UiLayer_SetViewerName(const FString& ViewerName)
 		return;
 	}
 
- 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
- 	{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
 		static jmethodID UiLayerMethod = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_UiLayer_SetViewerName", "(Ljava/lang/String;)V", false);
 		jstring NameJava = Env->NewStringUTF(TCHAR_TO_UTF8(*ViewerName));
 		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, UiLayerMethod, NameJava);
- 	}
+	}
 }
 
 gvr_context* AndroidThunkCpp_GetNativeGVRApi()
 {
- 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
- 	{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
 		static jmethodID Method = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_GetNativeGVRApi", "()J", false);
-		return reinterpret_cast<gvr_context*>(CallLongMethod(Env, FJavaWrapper::GameActivityThis, Method));
- 	}
+		return reinterpret_cast<gvr_context*>(FJavaWrapper::CallLongMethod(Env, FJavaWrapper::GameActivityThis, Method));
+	}
 
 	return nullptr;
 }
 
 void AndroidThunkCpp_GvrLayout_SetFixedPresentationSurfaceSizeToCurrent()
 {
- 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
- 	{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
 		static jmethodID Method = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_GvrLayout_SetFixedPresentationSurfaceSizeToCurrent", "()V", false);
 		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, Method);
- 	}
+	}
 }
 
 bool AndroidThunkCpp_ProjectWantsCardboardOnlyMode()
 {
- 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
- 	{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
 		static jmethodID Method = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_ProjectWantsCardboardOnlyMode", "()Z", false);
 		return FJavaWrapper::CallBooleanMethod(Env, FJavaWrapper::GameActivityThis, Method);
- 	}
+	}
 
 	return false;
 }
@@ -337,16 +322,13 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 	, BaseOrientation(FQuat::Identity)
 	, PixelDensity(1.0f)
 	, RendererModule(nullptr)
-	, DistortionMeshIndices(nullptr)
-	, DistortionMeshVerticesLeftEye(nullptr)
-	, DistortionMeshVerticesRightEye(nullptr)
 #if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
 	, OverlayView(nil)
 #endif
 	, LastUpdatedCacheFrame(0)
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
 	, CachedFinalHeadRotation(EForceInit::ForceInit)
-	, CachedFinalHeadPosition(EForceInit::ForceInitToZero)
+	, CachedFinalHeadPosition(ForceInitToZero)
 	, DistortedBufferViewportList(nullptr)
 	, NonDistortedBufferViewportList(nullptr)
 	, ActiveViewportList(nullptr)
@@ -405,6 +387,7 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 			"Gogle VR specific extension.\n"
 			"Enable or Disable Sustained Performance Mode").ToString(),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateRaw(this, &FGoogleVRHMD::EnableSustainedPerformanceModeHandler))
+	, CVarSink(FConsoleCommandDelegate::CreateRaw(this, &FGoogleVRHMD::CVarSinkHandler))
 #endif
 	, TrackingOrigin(EHMDTrackingOrigin::Eye)
 	, bIs6DoFSupported(false)
@@ -413,6 +396,12 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 	FPlatformMisc::LowLevelOutputDebugString(TEXT("Initializing FGoogleVRHMD"));
 
 #if GOOGLEVRHMD_SUPPORTED_ANDROID_PLATFORMS
+
+	// set to identity
+	CachedHeadPose = 	{ { { 1.0f, 0.0f, 0.0f, 0.0f },
+						{ 0.0f, 1.0f, 0.0f, 0.0f },
+						{ 0.0f, 0.0f, 1.0f, 0.0f },
+						{ 0.0f, 0.0f, 0.0f, 1.0f } } };
 
 	// Get GVRAPI from java
 	GVRAPI = AndroidThunkCpp_GetNativeGVRApi();
@@ -478,21 +467,6 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 		const bool bIsMobileMultiViewDirectEnabled = (CVarMobileMultiViewDirect && CVarMobileMultiViewDirect->GetValueOnAnyThread() != 0);
 		bIsMobileMultiViewDirect = GSupportsMobileMultiView && bIsMobileMultiViewEnabled && bIsMobileMultiViewDirectEnabled;
 
-		if (bIsMobileMultiViewDirect)
-		{
-			IConsoleVariable* DebugCanvasInLayerCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vr.DebugCanvasInLayer"));
-			if (DebugCanvasInLayerCVar && DebugCanvasInLayerCVar->GetInt() == 0)
-			{
-				const EConsoleVariableFlags CVarSetByFlags = (EConsoleVariableFlags)(DebugCanvasInLayerCVar->GetFlags() & ECVF_SetByMask);
-				// if this was set by anything else (manually by the user), then we don't want to reset the "default" here
-				if (CVarSetByFlags == ECVF_SetByConstructor)
-				{
-					// when direct multiview is enabled, the default for this should be on
-					DebugCanvasInLayerCVar->Set(1, ECVF_Default);
-				}
-			}
-		}
-
 		if(bUseOffscreenFramebuffers)
 		{
 			// Create custom present class
@@ -521,7 +495,6 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 			OverlayView = [[GVROverlayView alloc] initWithFrame:[IOSAppDelegate GetDelegate].IOSView.bounds];
 			OverlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 			OverlayView.delegate = OverlayViewDelegate;
-			[[IOSAppDelegate GetDelegate].IOSView addSubview:OverlayView];
 		});
 #endif // GOOGLEVRHMD_SUPPORTED_ANDROID_PLATFORMS
 
@@ -558,6 +531,8 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 
 		// Register LoadMap Delegate
 		FCoreUObjectDelegates::PreLoadMap.AddRaw(this, &FGoogleVRHMD::OnPreLoadMap);
+
+		FCoreDelegates::VRControllerRecentered.AddRaw(this, &FGoogleVRHMD::OnControllerRecentered);
 	}
 	else
 	{
@@ -567,13 +542,6 @@ FGoogleVRHMD::FGoogleVRHMD(const FAutoRegister& AutoRegister)
 
 FGoogleVRHMD::~FGoogleVRHMD()
 {
-	delete[] DistortionMeshIndices;
-	DistortionMeshIndices = nullptr;
-	delete[] DistortionMeshVerticesLeftEye;
-	DistortionMeshVerticesLeftEye = nullptr;
-	delete[] DistortionMeshVerticesRightEye;
-	DistortionMeshVerticesRightEye = nullptr;
-
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
 	if (DistortedBufferViewportList)
 	{
@@ -771,6 +739,7 @@ FIntPoint FGoogleVRHMD::GetGVRMaxRenderTargetSize() const
 {
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
 	gvr_sizei MaxSize = gvr_get_maximum_effective_render_target_size(GVRAPI);
+	UE_LOG(LogHMD, Log, TEXT("GVR Recommended RenderTargetSize: %d x %d"), MaxSize.width, MaxSize.height);
 	return FIntPoint{ static_cast<int>(MaxSize.width), static_cast<int>(MaxSize.height) };
 #else
 	return FIntPoint{ 0, 0 };
@@ -930,8 +899,7 @@ void FGoogleVRHMD::SetNumOfDistortionPoints(int32 XPoints, int32 YPoints)
 #if !GOOGLEVRHMD_SUPPORTED_PLATFORMS
 	XPoints = 40;
 	YPoints = 40;
-#endif
-
+#else
 	// clamp values
 	if (XPoints < 2)
 	{
@@ -950,6 +918,7 @@ void FGoogleVRHMD::SetNumOfDistortionPoints(int32 XPoints, int32 YPoints)
 	{
 		YPoints = 200;
 	}
+#endif
 
 	// calculate our values
 	DistortionPointsX = XPoints;
@@ -959,9 +928,13 @@ void FGoogleVRHMD::SetNumOfDistortionPoints(int32 XPoints, int32 YPoints)
 	NumIndices = NumTris * 3;
 
 	// generate the distortion mesh
-	GenerateDistortionCorrectionIndexBuffer();
-	GenerateDistortionCorrectionVertexBuffer(eSSP_LEFT_EYE);
-	GenerateDistortionCorrectionVertexBuffer(eSSP_RIGHT_EYE);
+	FGoogleVRHMD * const Self = this;
+	ENQUEUE_RENDER_COMMAND(GenerateDistortionCorrectionCmd)([Self](FRHICommandListImmediate& RHICmdList)
+	{
+		Self->GenerateDistortionCorrectionIndexBuffer();
+		Self->GenerateDistortionCorrectionVertexBuffer(eSSP_LEFT_EYE);
+		Self->GenerateDistortionCorrectionVertexBuffer(eSSP_RIGHT_EYE);
+	});
 }
 
 void FGoogleVRHMD::SetDistortionMeshSize(EDistortionMeshSizeEnum MeshSize)
@@ -1369,11 +1342,9 @@ void FGoogleVRHMD::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& R
 			*VertexShader,
 			EDRF_Default);
 		// Asynchronously copy delayed render target from GPU to CPU
-		const bool bKeepOriginalSurface = false;
 		RHICmdList.CopyToResolveTarget(
 			DestRenderTarget.TargetableTexture,
 			ReadbackTextures[ReadbackTextureCount % kReadbackTextureCount],
-			bKeepOriginalSurface,
 			FResolveParams());
 		ReadbackReferencePoses[ReadbackTextureCount % kReadbackTextureCount] = RenderReferencePose;
 		RHICmdList.EndRenderQuery(ReadbackCopyQueries[ReadbackTextureCount % kReadbackTextureCount]);
@@ -1382,14 +1353,9 @@ void FGoogleVRHMD::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& R
 	}
 
 	uint64 result = 0;
-	bool isTextureReadyForReadback = false;
-	while (SentTextureCount < ReadbackTextureCount && RHICmdList.GetRenderQueryResult(ReadbackCopyQueries[SentTextureCount % kReadbackTextureCount], result, false)) {
-		isTextureReadyForReadback = true;
-		SentTextureCount++;
-	}
-
-	if (isTextureReadyForReadback) {
-		int latestReadbackTextureIndex = (SentTextureCount - 1) % kReadbackTextureCount;
+	if (RHICmdList.GetRenderQueryResult(ReadbackCopyQueries[SentTextureCount % kReadbackTextureCount], result, false))
+	{
+		int latestReadbackTextureIndex = SentTextureCount % kReadbackTextureCount;
 		GDynamicRHI->RHIReadSurfaceData(
 			ReadbackTextures[latestReadbackTextureIndex],
 			FIntRect(FIntPoint(0, 0),
@@ -1403,6 +1369,8 @@ void FGoogleVRHMD::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& R
 			ReadbackTextureSizes[latestReadbackTextureIndex].X * 4,
 			instant_preview::PIXEL_FORMAT_BGRA,
 			ReadbackReferencePoses[latestReadbackTextureIndex]);
+
+		SentTextureCount++;
 	}
 }
 #endif  // GOOGLEVRHMD_SUPPORTED_INSTANT_PREVIEW_PLATFORMS
@@ -1462,6 +1430,20 @@ bool FGoogleVRHMD::EnableStereo(bool stereo)
 		return true;
 	}
 	AndroidThunkCpp_UiLayer_SetEnabled(stereo);
+#endif
+
+#if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
+	dispatch_async(dispatch_get_main_queue(), ^
+	{
+		if (stereo)
+		{
+			[[IOSAppDelegate GetDelegate].IOSView addSubview : OverlayView];
+		}
+		else
+		{
+			[OverlayView removeFromSuperview];
+		}
+	});
 #endif
 
 	bStereoEnabled = stereo;
@@ -1545,10 +1527,10 @@ FMatrix FGoogleVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ste
 	if (bIsInstantPreviewActive) {
 		int index = (StereoPassType == eSSP_LEFT_EYE) ? 0 : 1;
 		// Have to flip left/right and top/bottom to match UE4 expectations
-		float Right = FPlatformMath::Tan(FMath::DegreesToRadians(EyeViews.eye_views[index].eye_fov.left));
-		float Left = -FPlatformMath::Tan(FMath::DegreesToRadians(EyeViews.eye_views[index].eye_fov.right));
-		float Bottom = -FPlatformMath::Tan(FMath::DegreesToRadians(EyeViews.eye_views[index].eye_fov.top));
-		float Top = FPlatformMath::Tan(FMath::DegreesToRadians(EyeViews.eye_views[index].eye_fov.bottom));
+		float Right = FPlatformMath::Tan(FMath::DegreesToRadians(FMath::Abs(EyeViews.eye_views[index].eye_fov.left)));
+		float Left = -FPlatformMath::Tan(FMath::DegreesToRadians(FMath::Abs(EyeViews.eye_views[index].eye_fov.right)));
+		float Bottom = -FPlatformMath::Tan(FMath::DegreesToRadians(FMath::Abs(EyeViews.eye_views[index].eye_fov.top)));
+		float Top = FPlatformMath::Tan(FMath::DegreesToRadians(FMath::Abs(EyeViews.eye_views[index].eye_fov.bottom)));
 		float ZNear = GNearClippingPlane;
 		float SumRL = (Right + Left);
 		float SumTB = (Top + Bottom);
@@ -1622,14 +1604,17 @@ void FGoogleVRHMD::GetEyeRenderParams_RenderThread(const struct FRenderingCompos
 	}
 }
 
-void FGoogleVRHMD::UpdateViewportRHIBridge(bool bUseSeparateRenderTarget, const class FViewport& InViewport, FRHIViewport* const ViewportRHI)
+FXRRenderBridge* FGoogleVRHMD::GetActiveRenderBridge_GameThread(bool /* bUseSeparateRenderTarget */)
 {
+	check(IsInGameThread());
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
-
 	check(CustomPresent);
-	CustomPresent->UpdateViewport(InViewport, ViewportRHI);
-
+	if (CustomPresent->IsInitialized())
+	{
+		return CustomPresent;
+	}
 #endif // GOOGLEVRHMD_SUPPORTED_PLATFORMS
+	return nullptr;
 }
 
 void FGoogleVRHMD::CalculateRenderTargetSize(const class FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY)
@@ -1810,10 +1795,15 @@ bool FGoogleVRHMD::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	else if (FParse::Command(&Cmd, TEXT("GVRRENDERSIZE")))
 	{
 		int Width, Height;
+		float ScaleFactor;
 		FIntPoint ActualSize;
 		if (FParse::Value(Cmd, TEXT("W="), Width) && FParse::Value(Cmd, TEXT("H="), Height))
 		{
 			AliasedCommand = FString::Printf(TEXT("vr.googlevr.RenderTargetSize %d %d"), Width, Height);
+		}
+		else if (FParse::Value(Cmd, TEXT("S="), ScaleFactor))
+		{
+			AliasedCommand = FString::Printf(TEXT("r.ScreenPercentage %.0f"), ScaleFactor*100.f);
 		}
 		else if (FParse::Command(&Cmd, TEXT("RESET")))
 		{
@@ -2011,6 +2001,20 @@ void FGoogleVRHMD::EnableSustainedPerformanceModeHandler(const TArray<FString>& 
 		SetSPMEnable(Enabled);
 	}
 }
+
+void FGoogleVRHMD::CVarSinkHandler()
+{
+	static const auto ScreenPercentageCVar = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.ScreenPercentage"));
+	static float PreviousValue = ScreenPercentageCVar->GetValueOnAnyThread();
+
+	float CurrentValue = ScreenPercentageCVar->GetValueOnAnyThread();
+	if (CurrentValue != PreviousValue)
+	{
+		FIntPoint ActualSize;
+		SetGVRHMDRenderTargetSize(CurrentValue / 100.f, ActualSize);
+		PreviousValue = CurrentValue;
+	}
+}
 #endif
 
 void FGoogleVRHMD::SetPixelDensity(const float NewDensity)
@@ -2200,17 +2204,23 @@ bool FGoogleVRHMD::OnStartGameFrame( FWorldContext& WorldContext )
 			GEngine->GameViewport->Viewport &&
 			GEngine->GameViewport->Viewport->GetClient() )
 		{
-			GEngine->GameViewport->Viewport->GetClient()->InputTouch(GEngine->GameViewport->Viewport, 0, 0, ETouchType::Began, FVector2D(-1, -1), FDateTime::Now(), 0);
-			GEngine->GameViewport->Viewport->GetClient()->InputTouch(GEngine->GameViewport->Viewport, 0, 0, ETouchType::Ended, FVector2D(-1, -1), FDateTime::Now(), 0);
+			GEngine->GameViewport->Viewport->GetClient()->InputTouch(GEngine->GameViewport->Viewport, 0, 0, ETouchType::Began, FVector2D(-1, -1), 1.f, FDateTime::Now(), 0);
+			GEngine->GameViewport->Viewport->GetClient()->InputTouch(GEngine->GameViewport->Viewport, 0, 0, ETouchType::Ended, FVector2D(-1, -1), 1.f, FDateTime::Now(), 0);
 		}
 		bTriggerDetected = false;
 	}
 
-	//Update the head pose at the begnning of a frame. This headpose will be used for both simulation and rendering.
+	//Update the head pose at the beginning of a frame. This headpose will be used for both simulation and rendering.
 	UpdatePoses();
 
 	// Update ViewportList from GVR API
 	UpdateGVRViewportList();
+
+	if (bRecenterControllerOnly)
+	{
+		// Update Correction for Recenter Controller Only
+		TrackYawCorrection(WorldContext);
+	}
 
 	RefreshTrackingToWorldTransform(WorldContext);
 
@@ -2319,6 +2329,11 @@ bool FGoogleVRHMD::GetRecenterTransform(FQuat& RecenterOrientation, FVector& Rec
 }
 
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
+gvr::ViewerType FGoogleVRHMD::GetViewerType() const
+{
+	return static_cast<gvr::ViewerType>(gvr_get_viewer_type(GVRAPI));
+}
+
 bool FGoogleVRHMD::TryReadProperty(int32_t PropertyKey, gvr_value* ValueOut)
 {
 	const gvr_properties* props = gvr_get_current_properties(GVRAPI);
@@ -2334,6 +2349,8 @@ void FGoogleVRHMD::SetTrackingOrigin(EHMDTrackingOrigin::Type InOrigin)
 		return;
 	}
 	TrackingOrigin = InOrigin;
+
+	OnTrackingOriginChanged();
 }
 
 EHMDTrackingOrigin::Type FGoogleVRHMD::GetTrackingOrigin()
@@ -2344,4 +2361,61 @@ EHMDTrackingOrigin::Type FGoogleVRHMD::GetTrackingOrigin()
 bool FGoogleVRHMD::Is6DOFSupported() const
 {
 	return bIs6DoFSupported;
+}
+
+void FGoogleVRHMD::SetRecenterControllerOnly(bool bIsRecenterControllerOnly)
+{
+	if (bRecenterControllerOnly && !bIsRecenterControllerOnly)
+	{
+		ResetOrientationAndPosition(0.0f);
+	}
+	bRecenterControllerOnly = bIsRecenterControllerOnly;
+	yawCorrection = 0.0f;
+	bShouldApplyYawCorrection = false;
+}
+
+void FGoogleVRHMD::OnControllerRecentered()
+{
+	if (!bRecenterControllerOnly)
+	{
+		return;
+	}
+
+	bShouldApplyYawCorrection = true;
+}
+
+void FGoogleVRHMD::TrackYawCorrection(FWorldContext& WorldContext)
+{
+	if (!bRecenterControllerOnly)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(WorldContext.World(), 0);
+	if (PlayerController)
+	{
+		// We don't track yaw changes when the Recenter event is going to be fired
+		// Both Gamepad_Special_Left and Gamepad_Special_Right are mapped to the Home Button
+		float stateLeft = PlayerController->GetInputAnalogKeyState(FKey("Gamepad_Special_Left"));
+		float stateRight = PlayerController->GetInputAnalogKeyState(FKey("Gamepad_Special_Right"));
+		if (stateLeft != 1.0f && stateRight != 1.0f)
+		{
+			// If we want to keep tracking yaw then we get the new yaw
+			FQuat headRotation;
+			FVector headPosition;
+			if (GetCurrentPose(0, headRotation, headPosition))
+			{
+				FVector euler = headRotation.Euler();
+				yawCorrection = euler.Z;
+			}
+		}
+	}
+
+	// If we should apply the yaw correction, we do and reset flags
+	if (bShouldApplyYawCorrection)
+	{
+		ResetOrientationAndPosition(yawCorrection);
+		bShouldApplyYawCorrection = false;
+		yawCorrection = 0.0f;
+	}
 }

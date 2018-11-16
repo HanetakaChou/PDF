@@ -11,32 +11,9 @@
 #include "UObject/Object.h"
 #include "Serialization/ArchiveUObject.h"
 #include "Misc/ITransaction.h"
+#include "Serialization/ArchiveSerializedPropertyChain.h"
 #include "Transactor.generated.h"
 
-
-/*-----------------------------------------------------------------------------
-	FUndoSessionContext
------------------------------------------------------------------------------*/
-
-/**
- * Convenience struct for passing around undo/redo context
- */
-struct FUndoSessionContext 
-{
-	FUndoSessionContext()
-		: Title(), Context(TEXT("")), PrimaryObject(nullptr)
-	{}
-	FUndoSessionContext (const TCHAR* InContext, const FText& InSessionTitle, UObject* InPrimaryObject) 
-		: Title(InSessionTitle), Context(InContext), PrimaryObject(InPrimaryObject)
-	{}
-
-	/** Descriptive title of the undo/redo session */
-	FText Title;
-	/** The context that generated the undo/redo session */
-	FString Context;
-	/** The primary UObject for the context (if any). */
-	UObject* PrimaryObject;
-};
 
 /*-----------------------------------------------------------------------------
 	FTransaction.
@@ -53,10 +30,9 @@ struct FUndoSessionContext
  */
 class UNREALED_API FTransaction : public ITransaction
 {
+	friend class FTransactionObjectEvent;
+
 protected:
-	/** Map type for efficient unique indexing into UObject* arrays */
-	typedef	TMap<UObject*,int32> ObjectMapType;
-	
 	// Record of an object.
 	class UNREALED_API FObjectRecord
 	{
@@ -116,17 +92,116 @@ protected:
 			}
 		};
 
+		struct FSerializedProperty
+		{
+			FSerializedProperty()
+				: DataOffset(INDEX_NONE)
+				, DataSize(0)
+			{
+			}
+
+			static FName BuildSerializedPropertyKey(const FArchiveSerializedPropertyChain& InPropertyChain)
+			{
+				const int32 NumProperties = InPropertyChain.GetNumProperties();
+				check(NumProperties > 0);
+				return InPropertyChain.GetPropertyFromRoot(0)->GetFName();
+			}
+
+			void AppendSerializedData(const int32 InOffset, const int32 InSize)
+			{
+				if (DataOffset == INDEX_NONE)
+				{
+					DataOffset = InOffset;
+					DataSize = InSize;
+				}
+				else
+				{
+					DataOffset = FMath::Min(DataOffset, InOffset);
+					DataSize += InSize;
+				}
+			}
+
+			/** Offset to the start of this property within the serialized object */
+			int32 DataOffset;
+			/** Size (in bytes) of this property within the serialized object */
+			int32 DataSize;
+		};
+
+		struct FSerializedObject
+		{
+			FSerializedObject()
+				: bIsPendingKill(false)
+			{
+			}
+
+			void SetObject(const UObject* InObject)
+			{
+				ObjectName = InObject->GetFName();
+				ObjectPathName = *InObject->GetPathName();
+				ObjectOuterPathName = InObject->GetOuter() ? FName(*InObject->GetOuter()->GetPathName()) : FName();
+				bIsPendingKill = InObject->IsPendingKill();
+				ObjectAnnotation = InObject->FindOrCreateTransactionAnnotation();
+			}
+
+			void Reset()
+			{
+				ObjectName = FName();
+				ObjectPathName = FName();
+				ObjectOuterPathName = FName();
+				bIsPendingKill = false;
+				Data.Reset();
+				ReferencedObjects.Reset();
+				ReferencedNames.Reset();
+				SerializedProperties.Reset();
+				SerializedObjectIndices.Reset();
+				SerializedNameIndices.Reset();
+				ObjectAnnotation.Reset();
+			}
+
+			void Swap(FSerializedObject& Other)
+			{
+				Exchange(ObjectName, Other.ObjectName);
+				Exchange(ObjectPathName, Other.ObjectPathName);
+				Exchange(ObjectOuterPathName, Other.ObjectOuterPathName);
+				Exchange(bIsPendingKill, Other.bIsPendingKill);
+				Exchange(Data, Other.Data);
+				Exchange(ReferencedObjects, Other.ReferencedObjects);
+				Exchange(ReferencedNames, Other.ReferencedNames);
+				Exchange(SerializedProperties, Other.SerializedProperties);
+				Exchange(SerializedObjectIndices, Other.SerializedObjectIndices);
+				Exchange(SerializedNameIndices, Other.SerializedNameIndices);
+				Exchange(ObjectAnnotation, Other.ObjectAnnotation);
+			}
+
+			/** The name of the object when it was serialized */
+			FName ObjectName;
+			/** The path name of the object when it was serialized */
+			FName ObjectPathName;
+			/** The outer path name of the object when it was serialized */
+			FName ObjectOuterPathName;
+			/** The pending kill state of the object when it was serialized */
+			bool bIsPendingKill;
+			/** The data stream used to serialize/deserialize record */
+			TArray<uint8> Data;
+			/** External objects referenced in the transaction */
+			TArray<FPersistentObjectRef> ReferencedObjects;
+			/** FNames referenced in the object record */
+			TArray<FName> ReferencedNames;
+			/** Information about the properties that were serialized within this object */
+			TMap<FName, FSerializedProperty> SerializedProperties;
+			/** Information about the object pointer offsets that were serialized within this object (this maps the property name (or None if there was no property) to the ReferencedObjects indices of the property) */
+			TMultiMap<FName, int32> SerializedObjectIndices;
+			/** Information about the name offsets that were serialized within this object (this maps the property name to the ReferencedNames index of the property) */
+			TMultiMap<FName, int32> SerializedNameIndices;
+			/** Annotation data for the object stored externally */
+			TSharedPtr<ITransactionObjectAnnotation> ObjectAnnotation;
+		};
+
 		// Variables.
-		/** The data stream used to serialize/deserialize record */
-		TArray<uint8>		Data;
-		/** External objects referenced in the transaction */
-		TArray<FPersistentObjectRef>	ReferencedObjects;
-		/** FNames referenced in the object record */
-		TArray<FName>		ReferencedNames;
 		/** The object to track */
-		FPersistentObjectRef	Object;
-		/** Annotation data for the object stored externally */
-		TSharedPtr<ITransactionObjectAnnotation> ObjectAnnotation;
+		FPersistentObjectRef Object;
+		/** Custom change to apply to this object to undo this record.  Executing the undo will return an object that can be used to redo the change. */
+		TUniquePtr<FChange> CustomChange;
 		/** Array: If an array object, reference to script array */
 		FScriptArray*		Array;
 		/** Array: Offset into the array */
@@ -146,31 +221,41 @@ protected:
 		STRUCT_DTOR			Destructor;
 		/** True if object  has already been restored from data. False otherwise. */
 		bool				bRestored;
+		/** True if object has been finalized and generated diff data */
+		bool				bFinalized;
+		/** True if object has been snapshot before */
+		bool				bSnapshot;
 		/** True if record should serialize data as binary blob (more compact). False to use tagged serialization (more robust) */
 		bool				bWantsBinarySerialization;
-
-		/** Copy of data that will be used when the transaction is flipped */
-		TArray<uint8> FlipData;
-
-		/** Copy of ReferencedObjects that will be used when the transaction is flipped */
-		TArray<FPersistentObjectRef> FlipReferencedObjects;
-
-		/** Copy of ReferencedNames that will be used when the transaction is flipped */
-		TArray<FName> FlipReferencedNames;
-
-		/** Copy of ObjectAnnotation that will be used when the transaction is flipped */
-		TSharedPtr<ITransactionObjectAnnotation> FlipObjectAnnotation;
+		/** The serialized object data */
+		FSerializedObject	SerializedObject;
+		/** The serialized object data that will be used when the transaction is flipped */
+		FSerializedObject	SerializedObjectFlip;
+		/** The serialized object data when it was last snapshot (if bSnapshot is true) */
+		FSerializedObject	SerializedObjectSnapshot;
+		/** Delta change information between the state of the object when the transaction started, and the state of the object when the transaction ended */
+		FTransactionObjectDeltaChange DeltaChange;
 
 		// Constructors.
 		FObjectRecord()
 		{}
-		FObjectRecord( FTransaction* Owner, UObject* InObject, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor );
+		FObjectRecord( FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor );
 
+	private:
+		// Non-copyable
+		FObjectRecord( const FObjectRecord& ) = delete;
+		FObjectRecord& operator=( const FObjectRecord& ) = delete;
+
+	public:
 		// Functions.
 		void SerializeContents( FArchive& Ar, int32 InOper );
+		void SerializeObject( FArchive& Ar );
 		void Restore( FTransaction* Owner );
 		void Save( FTransaction* Owner );
 		void Load( FTransaction* Owner );
+		void Finalize( FTransaction* Owner, TSharedPtr<ITransactionObjectAnnotation>& OutFinalizedObjectAnnotation );
+		void Snapshot( FTransaction* Owner );
+		static void Diff( FTransaction* Owner, const FSerializedObject& OldSerializedObect, const FSerializedObject& NewSerializedObject, FTransactionObjectDeltaChange& OutDeltaChange );
 
 		/** Used by GC to collect referenced objects. */
 		void AddReferencedObjects( FReferenceCollector& Collector );
@@ -184,19 +269,16 @@ protected:
 		public:
 			FReader(
 				FTransaction* InOwner,
-				const TArray<uint8>& InData,
-				const TArray<FPersistentObjectRef>& InReferencedObjects,
-				const TArray<FName>& InReferencedNames,
+				const FSerializedObject& InSerializedObject,
 				bool bWantBinarySerialization
-				):
-				Owner(InOwner),
-				Data(InData),
-				ReferencedObjects(InReferencedObjects),
-				ReferencedNames(InReferencedNames),
-				Offset(0)
+				)
+				: Owner(InOwner)
+				, SerializedObject(InSerializedObject)
+				, Offset(0)
 			{
-				ArWantBinaryPropertySerialization = bWantBinarySerialization;
-				ArIsLoading = ArIsTransacting = 1;
+				this->SetWantBinaryPropertySerialization(bWantBinarySerialization);
+				this->SetIsLoading(true);
+				this->SetIsTransacting(true);
 			}
 
 			virtual int64 Tell() override {return Offset;}
@@ -207,8 +289,8 @@ protected:
 			{
 				if( Num )
 				{
-					checkSlow(Offset+Num<=Data.Num());
-					FMemory::Memcpy( SerData, &Data[Offset], Num );
+					checkSlow(Offset+Num<=SerializedObject.Data.Num());
+					FMemory::Memcpy( SerData, &SerializedObject.Data[Offset], Num );
 					Offset += Num;
 				}
 			}
@@ -216,7 +298,7 @@ protected:
 			{
 				int32 NameIndex = 0;
 				(FArchive&)*this << NameIndex;
-				N = ReferencedNames[NameIndex];
+				N = SerializedObject.ReferencedNames[NameIndex];
 				return *this;
 			}
 			FArchive& operator<<( class UObject*& Res ) override
@@ -225,7 +307,7 @@ protected:
 				(FArchive&)*this << ObjectIndex;
 				if (ObjectIndex != INDEX_NONE)
 				{
-					Res = ReferencedObjects[ObjectIndex].Get();
+					Res = SerializedObject.ReferencedObjects[ObjectIndex].Get();
 				}
 				else
 				{
@@ -250,9 +332,7 @@ protected:
 				}
 			}
 			FTransaction* Owner;
-			const TArray<uint8>& Data;
-			const TArray<FPersistentObjectRef>& ReferencedObjects;
-			const TArray<FName>& ReferencedNames;
+			const FSerializedObject& SerializedObject;
 			int64 Offset;
 		};
 
@@ -263,50 +343,97 @@ protected:
 		{
 		public:
 			FWriter(
-				TArray<uint8>& InData,
-				TArray<FPersistentObjectRef>& InReferencedObjects,
-				TArray<FName>& InReferencedNames,
+				FSerializedObject& InSerializedObject,
 				bool bWantBinarySerialization
-				):
-				Data(InData),
-				ReferencedObjects(InReferencedObjects),
-				ReferencedNames(InReferencedNames),
-				Offset(0)
+				)
+				: SerializedObject(InSerializedObject)
+				, Offset(0)
 			{
-				for(int32 ObjIndex = 0; ObjIndex < InReferencedObjects.Num(); ++ObjIndex)
+				for(int32 ObjIndex = 0; ObjIndex < SerializedObject.ReferencedObjects.Num(); ++ObjIndex)
 				{
-					ObjectMap.Add(InReferencedObjects[ObjIndex].Get(), ObjIndex);
+					ObjectMap.Add(SerializedObject.ReferencedObjects[ObjIndex].Get(), ObjIndex);
 				}
 
-				ArWantBinaryPropertySerialization = bWantBinarySerialization;
-				ArIsSaving = ArIsTransacting = 1;
+				this->SetWantBinaryPropertySerialization(bWantBinarySerialization);
+				this->SetIsSaving(true);
+				this->SetIsTransacting(true);
 			}
 
 			virtual int64 Tell() override {return Offset;}
 			virtual void Seek( int64 InPos ) override
 			{
-				checkSlow(Offset<=Data.Num());
+				checkSlow(Offset<=SerializedObject.Data.Num());
 				Offset = InPos; 
 			}
 
 		private:
+			struct FCachedPropertyKey
+			{
+			public:
+				FCachedPropertyKey()
+					: LastUpdateCount(0)
+				{
+				}
+
+				FName SyncCache(const FArchiveSerializedPropertyChain* InPropertyChain)
+				{
+					if (InPropertyChain)
+					{
+						const uint32 CurrentUpdateCount = InPropertyChain->GetUpdateCount();
+						if (CurrentUpdateCount != LastUpdateCount)
+						{
+							CachedKey = InPropertyChain->GetNumProperties() > 0 ? FSerializedProperty::BuildSerializedPropertyKey(*InPropertyChain) : FName();
+							LastUpdateCount = CurrentUpdateCount;
+						}
+					}
+					else
+					{
+						CachedKey = FName();
+						LastUpdateCount = 0;
+					}
+
+					return CachedKey;
+				}
+
+			private:
+				FName CachedKey;
+				uint32 LastUpdateCount;
+			};
+
 			void Serialize( void* SerData, int64 Num ) override
 			{
 				if( Num )
 				{
-					int32 DataIndex = ( Offset == Data.Num() )
-						?  Data.AddUninitialized(Num)
+					int32 DataIndex = ( Offset == SerializedObject.Data.Num() )
+						?  SerializedObject.Data.AddUninitialized(Num)
 						:  Offset;
 					
-					FMemory::Memcpy( &Data[DataIndex], SerData, Num );
+					FMemory::Memcpy( &SerializedObject.Data[DataIndex], SerData, Num );
 					Offset+= Num;
+
+					// Track this property offset in the serialized data
+					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
+					if (PropertyChain && PropertyChain->GetNumProperties() > 0)
+					{
+						const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
+						FSerializedProperty& SerializedTaggedProperty = SerializedObject.SerializedProperties.FindOrAdd(SerializedTaggedPropertyKey);
+						SerializedTaggedProperty.AppendSerializedData(DataIndex, Num);
+					}
 				}
 			}
 			FArchive& operator<<( class FName& N ) override
 			{
-				int32 NameIndex = ReferencedNames.AddUnique(N);
+				int32 NameIndex = SerializedObject.ReferencedNames.AddUnique(N);
+
+				// Track this name index in the serialized data
+				{
+					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
+					const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
+					SerializedObject.SerializedNameIndices.Add(SerializedTaggedPropertyKey, NameIndex);
+				}
+
 				return (FArchive&)*this << NameIndex;
-			}
+			} 
 			FArchive& operator<<( class UObject*& Res ) override
 			{
 				int32 ObjectIndex = INDEX_NONE;
@@ -317,15 +444,22 @@ protected:
 				}
 				else if(Res)
 				{
-					ObjectIndex = ReferencedObjects.Add(FPersistentObjectRef(Res));
+					ObjectIndex = SerializedObject.ReferencedObjects.Add(FPersistentObjectRef(Res));
 					ObjectMap.Add(Res, ObjectIndex);
 				}
+
+				// Track this object offset in the serialized data
+				{
+					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
+					const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
+					SerializedObject.SerializedObjectIndices.Add(SerializedTaggedPropertyKey, ObjectIndex);
+				}
+
 				return (FArchive&)*this << ObjectIndex;
 			}
-			TArray<uint8>& Data;
-			ObjectMapType ObjectMap;
-			TArray<FPersistentObjectRef>& ReferencedObjects;
-			TArray<FName>& ReferencedNames;
+			FSerializedObject& SerializedObject;
+			TMap<UObject*, int32> ObjectMap;
+			FCachedPropertyKey CachedSerializedTaggedPropertyKey;
 			int64 Offset;
 		};
 	};
@@ -334,6 +468,16 @@ protected:
 	/** List of object records in this transaction */
 	TArray<FObjectRecord>	Records;
 	
+	/** Unique identifier for this transaction, used to track it during its lifetime */
+	FGuid		Id;
+
+	/**
+	 * Unique identifier for the active operation on this transaction (if any).
+	 * This is set by a call to BeginOperation and cleared by a call to EndOperation.
+	 * BeginOperation should be called when a transaction or undo/redo starts, and EndOperation should be called when a transaction is finalized or canceled or undo/redo ends.
+	 */
+	FGuid		OperationId;
+
 	/** Description of the transaction. Can be used by UI */
 	FText		Title;
 	
@@ -344,21 +488,38 @@ protected:
 	UObject*	PrimaryObject;
 
 	/** Used to prevent objects from being serialized to a transaction more than once. */
-	ObjectMapType			ObjectMap;
+	TMap<UObject*, int32>	ObjectMap;
 
 	/** If true, on apply flip the direction of iteration over object records. The only client for which this is false is FMatineeTransaction */
 	bool					bFlip;
 	/** Used to track direction to iterate over transaction's object records. Typically -1 for Undo, 1 for Redo */
 	int32					Inc;
-	/** Count of the number of UModels modified since the last call to FTransaction::Apply */
-	int32					NumModelsModified;
+
+	struct FChangedObjectValue
+	{
+		FChangedObjectValue()
+			: Annotation()
+			, RecordIndex(INDEX_NONE)
+		{
+		}
+
+		FChangedObjectValue(const int32 InRecordIndex, const TSharedPtr<ITransactionObjectAnnotation>& InAnnotation)
+			: Annotation(InAnnotation)
+			, RecordIndex(InRecordIndex)
+		{
+		}
+
+		TSharedPtr<ITransactionObjectAnnotation> Annotation;
+		int32 RecordIndex;
+	};
 
 	/** Objects that will be changed directly by the transaction, empty when not transacting */
-	TMap<UObject*, TSharedPtr<ITransactionObjectAnnotation>> ChangedObjects;
+	TMap<UObject*, FChangedObjectValue> ChangedObjects;
 public:
 	// Constructor.
 	FTransaction(  const TCHAR* InContext=nullptr, const FText& InTitle=FText(), bool bInFlip=false )
-		:	Title( InTitle )
+		:	Id( FGuid::NewGuid() )
+		,	Title( InTitle )
 		,	Context( InContext )
 		,	PrimaryObject(nullptr)
 		,	bFlip(bInFlip)
@@ -369,15 +530,43 @@ public:
 	{
 	}
 
+private:
+	// Non-copyable
+	FTransaction( const FTransaction& ) = delete;
+	FTransaction& operator=( const FTransaction& ) = delete;
+
+public:
+	
 	// FTransactionBase interface.
 	virtual void SaveObject( UObject* Object ) override;
 	virtual void SaveArray( UObject* Object, FScriptArray* Array, int32 Index, int32 Count, int32 Oper, int32 ElementSize, STRUCT_DC DefaultConstructor, STRUCT_AR Serializer, STRUCT_DTOR Destructor ) override;
+	virtual void StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange ) override;
 	virtual void SetPrimaryObject(UObject* InObject) override;
+	virtual void SnapshotObject( UObject* InObject ) override;
+
+	/** BeginOperation should be called when a transaction or undo/redo starts */
+	virtual void BeginOperation() override;
+
+	/** EndOperation should be called when a transaction is finalized or canceled or undo/redo ends */
+	virtual void EndOperation() override;
 
 	/**
 	 * Enacts the transaction.
 	 */
 	virtual void Apply() override;
+
+	/**
+	 * Finalize the transaction (try and work out what's changed).
+	 */
+	virtual void Finalize() override;
+
+	/**
+	 * Gets the full context for the transaction.
+	 */
+	virtual FTransactionContext GetContext() const override
+	{
+		return FTransactionContext(Id, OperationId, Title, *Context, PrimaryObject);
+	}
 
 	/** Returns a unique string to serve as a type ID for the FTranscationBase-derived type. */
 	virtual const TCHAR* GetTransactionType() const
@@ -388,22 +577,28 @@ public:
 	// FTransaction interface.
 	SIZE_T DataSize() const;
 
+	/** Returns the unique identifier for this transaction, used to track it during its lifetime */
+	FGuid GetId() const
+	{
+		return Id;
+	}
+
+	/** Returns the unique identifier for the active operation on this transaction (if any) */
+	FGuid GetOperationId() const
+	{
+		return OperationId;
+	}
+
 	/** Returns the descriptive text for the transaction */
 	FText GetTitle() const
 	{
 		return Title;
 	}
 
-	/** Gets the full context for the transaction */
-	FUndoSessionContext GetContext() const
-	{
-		return FUndoSessionContext(*Context, Title, PrimaryObject);
-	}
-
 	/** Serializes a reference to a transaction in a given archive. */
 	friend FArchive& operator<<( FArchive& Ar, FTransaction& T )
 	{
-		return Ar << T.Records << T.Title << T.ObjectMap << T.Context << T.PrimaryObject;
+		return Ar << T.Records << T.Id << T.Title << T.ObjectMap << T.Context << T.PrimaryObject;
 	}
 
 	/** Serializes a reference to a transaction in a given archive. */
@@ -414,12 +609,6 @@ public:
 
 	/** Used by GC to collect referenced objects. */
 	void AddReferencedObjects( FReferenceCollector& Collector );
-
-	/** Returns the number of models that were modified by the last call to FTransaction::Apply(). */
-	int32 GetNumModelsModified() const
-	{
-		return NumModelsModified;
-	}
 
 	/**
 	 * Get all the objects that are part of this transaction.
@@ -432,7 +621,7 @@ public:
 	const UObject* GetPrimaryObject() const { return PrimaryObject; }
 
 	/** @return True if this record contains a reference to a pie object */
-	bool ContainsPieObject() const;
+	virtual bool ContainsPieObjects() const override;
 
 	/** Checks if a specific object is in the transaction currently underway */
 	bool IsObjectTransacting(const UObject* Object) const;
@@ -528,7 +717,7 @@ class UNREALED_API UTransactor : public UObject
 	 *
 	 * @return A read-only pointer to the transaction, or NULL if it does not exist.
 	 */
-	virtual const FTransaction* GetTransaction( int32 QueueIndex ) const PURE_VIRTUAL(UTransactor::GetQueueEntry,return nullptr;);
+	virtual const FTransaction* GetTransaction( int32 QueueIndex ) const PURE_VIRTUAL(UTransactor::GetTransaction,return nullptr;);
 
 	/**
 	 * Returns the description of the undo action that will be performed next.
@@ -538,7 +727,7 @@ class UNREALED_API UTransactor : public UObject
 	 *
 	 * @return	text describing the next undo transaction
 	 */
-	virtual FUndoSessionContext GetUndoContext ( bool bCheckWhetherUndoPossible = true ) PURE_VIRTUAL(UTransactor::GetUndoDesc,return FUndoSessionContext(););
+	virtual FTransactionContext GetUndoContext( bool bCheckWhetherUndoPossible = true ) PURE_VIRTUAL(UTransactor::GetUndoContext,return FTransactionContext(););
 
 	/**
 	 * Determines the amount of data currently stored by the transaction buffer.
@@ -560,7 +749,7 @@ class UNREALED_API UTransactor : public UObject
 	 * 
 	 * @return	text describing the next redo transaction
 	 */
-	virtual FUndoSessionContext GetRedoContext () PURE_VIRTUAL(UTransactor::GetRedoDesc,return FUndoSessionContext(););
+	virtual FTransactionContext GetRedoContext() PURE_VIRTUAL(UTransactor::GetRedoContext,return FTransactionContext(););
 
 	/**
 	 * Sets an undo barrier at the current point in the transaction buffer.
@@ -625,5 +814,5 @@ class UNREALED_API UTransactor : public UObject
 	virtual bool IsObjectTransacting(const UObject* Object) const PURE_VIRTUAL(UTransactor::IsObjectTransacting, return false;);
 
 	/** @return True if this record contains a reference to a pie object */
-	virtual bool ContainsPieObject() const { return false; }
+	virtual bool ContainsPieObjects() const { return false; }
 };

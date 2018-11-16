@@ -61,15 +61,15 @@
 #include "Engine/ChildConnection.h"
 #include "VisualLogger/VisualLogger.h"
 #include "Logging/MessageLog.h"
-#include "SceneViewport.h"
+#include "Slate/SceneViewport.h"
 #include "Engine/NetworkObjectList.h"
 #include "GameFramework/GameSession.h"
+#include "GameMapsSettings.h"
 
 DEFINE_LOG_CATEGORY(LogPlayerController);
 
 #define LOCTEXT_NAMESPACE "PlayerController"
 
-DECLARE_STATS_GROUP(TEXT("PlayerController"), STATGROUP_PlayerController, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("PC Tick Actor"), STAT_PC_TickActor, STATGROUP_PlayerController);
 DECLARE_CYCLE_STAT(TEXT("  PC Tick Input"), STAT_PC_TickInput, STATGROUP_PlayerController);
 DECLARE_CYCLE_STAT(TEXT("    PC Build Input Stack"), STAT_PC_BuildInputStack, STATGROUP_PlayerController);
@@ -118,6 +118,7 @@ APlayerController::APlayerController(const FObjectInitializer& ObjectInitializer
 
 	bIsPlayerController = true;
 	bIsLocalPlayerController = false;
+	bDisableHaptics = false;
 
 	ClickEventKeys.Add(EKeys::LeftMouseButton);
 
@@ -249,27 +250,26 @@ void APlayerController::ClientUpdateLevelStreamingStatus_Implementation(FName Pa
 	else
 	{
 		// search for the level object by name
-		ULevelStreaming* LevelStreamingObject = NULL;
+		ULevelStreaming* LevelStreamingObject = nullptr;
 		if (World && PackageName != NAME_None)
 		{
-			for (int32 LevelIndex=0; LevelIndex < World->StreamingLevels.Num(); LevelIndex++)
+			for (ULevelStreaming* CurrentLevelStreamingObject : World->GetStreamingLevels())
 			{
-				ULevelStreaming* CurrentLevelStreamingObject = World->StreamingLevels[LevelIndex];
-				if (CurrentLevelStreamingObject != NULL && CurrentLevelStreamingObject->GetWorldAssetPackageFName() == PackageName)
+				if (CurrentLevelStreamingObject && CurrentLevelStreamingObject->GetWorldAssetPackageFName() == PackageName)
 				{
 					LevelStreamingObject = CurrentLevelStreamingObject;
-					if (LevelStreamingObject != NULL)
+					if (LevelStreamingObject)
 					{
 						// If we're unloading any levels, we need to request a one frame delay of garbage collection to make sure it happens after the level is actually unloaded
-						if (LevelStreamingObject->bShouldBeLoaded && !bNewShouldBeLoaded)
+						if (LevelStreamingObject->ShouldBeLoaded() && !bNewShouldBeLoaded)
 						{
 							GEngine->DelayGarbageCollection();
 						}
 
-						LevelStreamingObject->bShouldBeLoaded		= bNewShouldBeLoaded;
-						LevelStreamingObject->bShouldBeVisible		= bNewShouldBeVisible;
-						LevelStreamingObject->bShouldBlockOnLoad	= bNewShouldBlockOnLoad;
-						LevelStreamingObject->LevelLODIndex			= LODIndex;
+						LevelStreamingObject->SetShouldBeLoaded(bNewShouldBeLoaded);
+						LevelStreamingObject->SetShouldBeVisible(bNewShouldBeVisible);
+						LevelStreamingObject->bShouldBlockOnLoad = bNewShouldBlockOnLoad;
+						LevelStreamingObject->SetLevelLODIndex(LODIndex);
 					}
 					else
 					{
@@ -612,7 +612,7 @@ void APlayerController::ForceSingleNetUpdateFor(AActor* Target)
 				Conn = ((UChildConnection*)Conn)->Parent;
 				checkSlow(Conn != NULL);
 			}
-			UActorChannel* Channel = Conn->ActorChannels.FindRef(Target);
+			UActorChannel* Channel = Conn->FindActorChannelRef(Target);
 			if (Channel != NULL)
 			{
 				FNetworkObjectInfo* NetActor = Target->FindOrAddNetworkObjectInfo();
@@ -712,7 +712,7 @@ void APlayerController::ClientRestart_Implementation(APawn* NewPawn)
 	AcknowledgedPawn = NULL;
 
 	SetPawn(NewPawn);
-	if ( (GetPawn() != NULL) && GetPawn()->bTearOff )
+	if ( (GetPawn() != NULL) && GetPawn()->GetTearOff() )
 	{
 		UnPossess();
 		SetPawn(NULL);
@@ -808,7 +808,9 @@ void APlayerController::Possess(APawn* PawnToPossess)
 			AutoManageActiveCameraTarget(GetPawn());
 			ResetCameraMode();
 		}
-		UpdateNavigationComponents();
+		// not calling UpdateNavigationComponents() anymore. The
+		// PathFollowingComponent is now observing newly possessed
+		// pawns (via OnNewPawn)
 	}
 }
 
@@ -888,7 +890,7 @@ void APlayerController::GetPlayerViewPoint( FVector& out_Location, FRotator& out
 		out_Rotation = LastSpectatorSyncRotation;
 	}
 	else if (PlayerCameraManager != NULL && 
-		PlayerCameraManager->CameraCache.TimeStamp > 0.f) // Whether camera was updated at least once)
+		PlayerCameraManager->GetCameraCacheTime() > 0.f) // Whether camera was updated at least once)
 	{
 		PlayerCameraManager->GetCameraViewPoint(out_Location, out_Rotation);
 	}
@@ -1699,7 +1701,7 @@ void APlayerController::ServerUpdateCamera_Implementation(FVector_NetQuantize Ca
 #endif
 	{
 		//@TODO: CAMERA: Fat pipe
-		FMinimalViewInfo NewInfo = PlayerCameraManager->CameraCache.POV;
+		FMinimalViewInfo NewInfo = PlayerCameraManager->GetCameraCachePOV();
 		NewInfo.Location = NewPOV.Location;
 		NewInfo.Rotation = NewPOV.Rotation;
 		PlayerCameraManager->FillCameraCache(NewInfo);
@@ -2266,7 +2268,7 @@ bool APlayerController::InputAxis(FKey Key, float Delta, float DeltaTime, int32 
 	return bResult;
 }
 
-bool APlayerController::InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
+bool APlayerController::InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
 {
 	if (GEngine->XRSystem.IsValid())
 	{
@@ -2280,7 +2282,7 @@ bool APlayerController::InputTouch(uint32 Handle, ETouchType::Type Type, const F
 	bool bResult = false;
 	if (PlayerInput)
 	{
-		bResult = PlayerInput->InputTouch(Handle, Type, TouchLocation, DeviceTimestamp, TouchpadIndex);
+		bResult = PlayerInput->InputTouch(Handle, Type, TouchLocation, Force, DeviceTimestamp, TouchpadIndex);
 
 		if (bEnableTouchEvents || bEnableTouchOverEvents)
 		{
@@ -2457,7 +2459,10 @@ void APlayerController::BuildInputStack(TArray<UInputComponent*>& InputStack)
 
 void APlayerController::ProcessPlayerInput(const float DeltaTime, const bool bGamePaused)
 {
-	TArray<UInputComponent*> InputStack;
+	static TArray<UInputComponent*> InputStack;
+
+	// must be called non-recursively and on the game thread
+	check(IsInGameThread() && !InputStack.Num());
 
 	// process all input components in the stack, top down
 	{
@@ -2470,6 +2475,8 @@ void APlayerController::ProcessPlayerInput(const float DeltaTime, const bool bGa
 		SCOPE_CYCLE_COUNTER(STAT_PC_ProcessInputStack);
 		PlayerInput->ProcessInputStack(InputStack, DeltaTime, bGamePaused);
 	}
+
+	InputStack.Reset();
 }
 
 void APlayerController::PreProcessInput(const float DeltaTime, const bool bGamePaused)
@@ -2620,6 +2627,25 @@ void APlayerController::GetAudioListenerPosition(FVector& OutLocation, FVector& 
 	OutRightDir = ViewRotationMatrix.GetUnitAxis( EAxis::Y );
 }
 
+bool APlayerController::GetAudioListenerAttenuationOverridePosition(FVector& OutLocation)
+{
+	if (bOverrideAudioAttenuationListener)
+	{
+		USceneComponent* ListenerComponent = AudioListenerAttenuationComponent.Get();
+		if (ListenerComponent)
+		{
+			OutLocation = ListenerComponent->GetComponentLocation() + AudioListenerAttenuationOverride;
+		}
+		else
+		{
+			OutLocation = AudioListenerAttenuationOverride;
+		}
+		return true;
+	}
+	return false;
+}
+
+
 void APlayerController::SetAudioListenerOverride(USceneComponent* AttachedComponent, FVector Location, FRotator Rotation)
 {
 	bOverrideAudioListener = true;
@@ -2632,6 +2658,19 @@ void APlayerController::ClearAudioListenerOverride()
 {
 	bOverrideAudioListener = false;
 	AudioListenerComponent = nullptr;
+}
+
+void APlayerController::SetAudioListenerAttenuationOverride(USceneComponent* AttachToComponent, FVector AttenuationLocationOverride)
+{
+	bOverrideAudioAttenuationListener = true;
+	AudioListenerAttenuationComponent = AttachToComponent;
+	AudioListenerAttenuationOverride = AttenuationLocationOverride;
+}
+
+void APlayerController::ClearAudioListenerAttenuationOverride()
+{
+	bOverrideAudioAttenuationListener = false;
+	AudioListenerAttenuationComponent = nullptr;
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -2783,7 +2822,13 @@ APlayerState* APlayerController::GetNextViewablePlayer(int32 dir)
 	AGameModeBase* GameMode = World->GetAuthGameMode();
 	AGameStateBase* GameState = World->GetGameState();
 
-	if (PlayerCameraManager->ViewTarget.PlayerState )
+	// Can't continue unless we have the GameState and GameMode
+	if (!GameState || !GameMode)
+	{
+		return nullptr;
+	}
+
+	if (PlayerCameraManager && PlayerCameraManager->ViewTarget.PlayerState)
 	{
 		// Find index of current viewtarget's PlayerState
 		for ( int32 i=0; i<GameState->PlayerArray.Num(); i++ )
@@ -2999,7 +3044,7 @@ void APlayerController::DisplayDebug(class UCanvas* Canvas, const FDebugDisplayI
 	{
 		DisplayDebugManager.SetDrawColor(FColor::White);
 		DisplayDebugManager.DrawString(FString::Printf(TEXT("Force Feedback - Enabled: %s LL: %.2f LS: %.2f RL: %.2f RS: %.2f"), (bForceFeedbackEnabled ? TEXT("true") : TEXT("false")), ForceFeedbackValues.LeftLarge, ForceFeedbackValues.LeftSmall, ForceFeedbackValues.RightLarge, ForceFeedbackValues.RightSmall));
-		DisplayDebugManager.DrawString(FString::Printf(TEXT("Pawn: %s"), *this->AcknowledgedPawn->GetFName().ToString()));
+		DisplayDebugManager.DrawString(FString::Printf(TEXT("Pawn: %s"), this->AcknowledgedPawn ? *this->AcknowledgedPawn->GetFName().ToString() : TEXT("none")));
 		
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		DisplayDebugManager.DrawString(TEXT("-------------Last Played Force Feedback--------------"));												      
@@ -3671,8 +3716,23 @@ void APlayerController::ClientStopForceFeedback_Implementation( UForceFeedbackEf
 
 /// @endcond
 
+uint64 APlayerController::FDynamicForceFeedbackAction::HandleAllocator = 0;
+
+bool APlayerController::FDynamicForceFeedbackAction::Update(const float DeltaTime, FForceFeedbackValues& Values)
+{
+	TimeElapsed += DeltaTime;
+
+	if (TotalTime >= 0.f && TimeElapsed >= TotalTime)
+	{
+		return false;
+	}
+
+	ForceFeedbackDetails.Update(Values);
+	return true;
+}
+
 /** Action that interpolates a component over time to a desired position */
-class FDynamicForceFeedbackAction : public FPendingLatentAction
+class FLatentDynamicForceFeedbackAction : public FPendingLatentAction
 {
 public:
 	/** Time over which interpolation should happen */
@@ -3680,8 +3740,10 @@ public:
 	/** Time so far elapsed for the interpolation */
 	float TimeElapsed;
 	/** If we are currently running. If false, update will complete */
-	uint32 bRunning:1;
-	
+	uint8 bRunning:1;
+	/** Whether the latent action is currently in the player controller's array */
+	uint8 bAddedToPlayerController:1;
+
 	TWeakObjectPtr<APlayerController> PlayerController;
 
 	FDynamicForceFeedbackDetails ForceFeedbackDetails;
@@ -3695,16 +3757,28 @@ public:
 	/** Object to call callback on upon completion */
 	FWeakObjectPtr CallbackTarget;
 
-	FDynamicForceFeedbackAction(APlayerController* InPlayerController, const float InDuration, const FLatentActionInfo& LatentInfo)
+	FLatentDynamicForceFeedbackAction(APlayerController* InPlayerController, const float InDuration, const FLatentActionInfo& LatentInfo)
 		: TotalTime(InDuration)
 		, TimeElapsed(0.f)
 		, bRunning(true)
+		, bAddedToPlayerController(false)
 		, PlayerController(InPlayerController)
 		, ExecutionFunction(LatentInfo.ExecutionFunction)
 		, OutputLink(LatentInfo.Linkage)
 		, LatentUUID(LatentInfo.UUID)
 		, CallbackTarget(LatentInfo.CallbackTarget)
 	{
+	}
+
+	~FLatentDynamicForceFeedbackAction()
+	{
+		if (bAddedToPlayerController)
+		{
+			if (APlayerController* PC = PlayerController.Get())
+			{
+				PC->LatentDynamicForceFeedbacks.Remove(LatentUUID);
+			}
+		}
 	}
 
 	virtual void UpdateOperation(FLatentResponse& Response) override
@@ -3718,11 +3792,13 @@ public:
 		{
 			if (bComplete)
 			{
-				PC->DynamicForceFeedbacks.Remove(LatentUUID);
+				PC->LatentDynamicForceFeedbacks.Remove(LatentUUID);
+				bAddedToPlayerController = false;
 			}
 			else
 			{
-				PC->DynamicForceFeedbacks.Add(LatentUUID, ForceFeedbackDetails);
+				PC->LatentDynamicForceFeedbacks.Add(LatentUUID, &ForceFeedbackDetails);
+				bAddedToPlayerController = true;
 			}
 		}
 
@@ -3733,7 +3809,8 @@ public:
 	{
 		if (APlayerController* PC = PlayerController.Get())
 		{
-			PC->DynamicForceFeedbacks.Remove(LatentUUID);
+			PC->LatentDynamicForceFeedbacks.Remove(LatentUUID);
+			bAddedToPlayerController = false;
 		}
 	}
 
@@ -3741,7 +3818,8 @@ public:
 	{
 		if (APlayerController* PC = PlayerController.Get())
 		{
-			PC->DynamicForceFeedbacks.Remove(LatentUUID);
+			PC->LatentDynamicForceFeedbacks.Remove(LatentUUID);
+			bAddedToPlayerController = false;
 		}
 	}
 };
@@ -3749,7 +3827,7 @@ public:
 void APlayerController::PlayDynamicForceFeedback(float Intensity, float Duration, bool bAffectsLeftLarge, bool bAffectsLeftSmall, bool bAffectsRightLarge, bool bAffectsRightSmall, TEnumAsByte<EDynamicForceFeedbackAction::Type> Action, FLatentActionInfo LatentInfo)
 {
 	FLatentActionManager& LatentActionManager = GetWorld()->GetLatentActionManager();
-	FDynamicForceFeedbackAction* LatentAction = LatentActionManager.FindExistingAction<FDynamicForceFeedbackAction>(LatentInfo.CallbackTarget, LatentInfo.UUID);
+	FLatentDynamicForceFeedbackAction* LatentAction = LatentActionManager.FindExistingAction<FLatentDynamicForceFeedbackAction>(LatentInfo.CallbackTarget, LatentInfo.UUID);
 
 	if (LatentAction)
 	{
@@ -3775,7 +3853,7 @@ void APlayerController::PlayDynamicForceFeedback(float Intensity, float Duration
 	}
 	else if (Action == EDynamicForceFeedbackAction::Start)
 	{
-		LatentAction = new FDynamicForceFeedbackAction(this, Duration, LatentInfo);
+		LatentAction = new FLatentDynamicForceFeedbackAction(this, Duration, LatentInfo);
 
 		LatentAction->ForceFeedbackDetails.Intensity = Intensity;
 		LatentAction->ForceFeedbackDetails.bAffectsLeftLarge = bAffectsLeftLarge;
@@ -3785,6 +3863,64 @@ void APlayerController::PlayDynamicForceFeedback(float Intensity, float Duration
 
 		LatentActionManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID, LatentAction);
 	}
+}
+
+FDynamicForceFeedbackHandle APlayerController::PlayDynamicForceFeedback(float Intensity, float Duration, bool bAffectsLeftLarge, bool bAffectsLeftSmall, bool bAffectsRightLarge, bool bAffectsRightSmall, EDynamicForceFeedbackAction::Type Action, FDynamicForceFeedbackHandle ActionHandle)
+{
+	FDynamicForceFeedbackHandle FeedbackHandle = 0;
+
+	if (Action == EDynamicForceFeedbackAction::Stop)
+	{
+		if (ActionHandle > 0)
+		{
+			DynamicForceFeedbacks.Remove(ActionHandle);
+		}
+	}
+	else
+	{
+		FDynamicForceFeedbackAction* FeedbackAction = (ActionHandle > 0 ? DynamicForceFeedbacks.Find(ActionHandle) : nullptr);
+
+		if (FeedbackAction == nullptr && Action == EDynamicForceFeedbackAction::Start)
+		{
+			if (ActionHandle > 0)
+			{
+				if (ActionHandle <= FDynamicForceFeedbackAction::HandleAllocator)
+				{
+					// Restarting a stopped/finished index, this is fine
+					FeedbackAction = &DynamicForceFeedbacks.Add(ActionHandle);
+					FeedbackAction->Handle = ActionHandle;
+				}
+				else
+				{
+					UE_LOG(LogPlayerController, Error, TEXT("Specifying an ID to start a dynamic force feedback with that has not yet been assigned is unsafe. No action has been started."));
+				}
+			}
+			else
+			{
+				FeedbackAction = &DynamicForceFeedbacks.Add(++FDynamicForceFeedbackAction::HandleAllocator);
+				FeedbackAction->Handle = FDynamicForceFeedbackAction::HandleAllocator;
+			}
+		}
+
+		if (FeedbackAction)
+		{
+			if (Action == EDynamicForceFeedbackAction::Start)
+			{
+				FeedbackAction->TotalTime = Duration;
+				FeedbackAction->TimeElapsed = 0.f;
+			}
+
+			FeedbackAction->ForceFeedbackDetails.Intensity = Intensity;
+			FeedbackAction->ForceFeedbackDetails.bAffectsLeftLarge = bAffectsLeftLarge;
+			FeedbackAction->ForceFeedbackDetails.bAffectsLeftSmall = bAffectsLeftSmall;
+			FeedbackAction->ForceFeedbackDetails.bAffectsRightLarge = bAffectsRightLarge;
+			FeedbackAction->ForceFeedbackDetails.bAffectsRightSmall = bAffectsRightSmall;
+
+			FeedbackHandle = FeedbackAction->Handle;
+		}
+	}
+
+	return FeedbackHandle;
 }
 
 void APlayerController::PlayHapticEffect(UHapticFeedbackEffect_Base* HapticEffect, EControllerHand Hand, float Scale, bool bLoop)
@@ -3816,12 +3952,24 @@ void APlayerController::StopHapticEffect(EControllerHand Hand)
 	SetHapticsByValue(0.f, 0.f, Hand);
 }
 
+void APlayerController::SetDisableHaptics(bool bNewDisabled)
+{
+	if (bNewDisabled)
+	{
+		StopHapticEffect(EControllerHand::Left);
+		StopHapticEffect(EControllerHand::Right);
+		StopHapticEffect(EControllerHand::Gun);
+	}
+
+	bDisableHaptics = bNewDisabled;
+}
+
 static TAutoConsoleVariable<int32> CVarDisableHaptics(TEXT("input.DisableHaptics"),0,TEXT("If greater than zero, no haptic feedback is processed."));
 
 void APlayerController::SetHapticsByValue(const float Frequency, const float Amplitude, EControllerHand Hand)
 {
-	bool bDisableHaptics = (CVarDisableHaptics.GetValueOnGameThread() > 0);
-	if (bDisableHaptics)
+	bool bAreHapticsDisabled = bDisableHaptics || (CVarDisableHaptics.GetValueOnGameThread() > 0);
+	if (bAreHapticsDisabled)
 	{
 		return;
 	}
@@ -3903,10 +4051,10 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 	}	
 #endif
 
+	UWorld* World = GetWorld();
+
 	if (bProcessFeedback)
 	{
-		UWorld* World = GetWorld();
-
 		// --- Force Feedback --------------------------
 		for (int32 Index = ActiveForceFeedbackEffects.Num() - 1; Index >= 0; --Index)
 		{
@@ -3916,9 +4064,17 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 			}
 		}
 
-		for (const TPair<int32, FDynamicForceFeedbackDetails>& DynamicEntry : DynamicForceFeedbacks)
+		for (TSortedMap<uint64, FDynamicForceFeedbackAction>::TIterator It(DynamicForceFeedbacks.CreateIterator()); It; ++It)
 		{
-			DynamicEntry.Value.Update(ForceFeedbackValues);
+			if (!It.Value().Update(DeltaTime, ForceFeedbackValues))
+			{
+				It.RemoveCurrent();
+			}
+		}
+
+		for (const TPair<int32, FDynamicForceFeedbackDetails*>& DynamicEntry : LatentDynamicForceFeedbacks)
+		{
+			DynamicEntry.Value->Update(ForceFeedbackValues);
 		}
 
 		if (FForceFeedbackManager* ForceFeedbackManager = FForceFeedbackManager::Get(World))
@@ -3970,32 +4126,48 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 
 	if (FSlateApplication::IsInitialized())
 	{
-		const int32 ControllerId = GetInputIndex();
+		int32 ControllerId = GetInputIndex();
 
-		IInputInterface* InputInterface = FSlateApplication::Get().GetInputInterface();
-		if (InputInterface)
+		if (ControllerId != INVALID_CONTROLLERID)
 		{
-			InputInterface->SetForceFeedbackChannelValues(ControllerId, (bForceFeedbackEnabled ? ForceFeedbackValues : FForceFeedbackValues()));
-
-			const bool bDisableHaptics = (CVarDisableHaptics.GetValueOnGameThread() > 0);
-			if (!bDisableHaptics)
+			IInputInterface* InputInterface = FSlateApplication::Get().GetInputInterface();
+			if (InputInterface)
 			{
-				// Haptic Updates
-				if (bLeftHapticsNeedUpdate)
+				// Adjust the ControllerId to account for the controller ID offset applied in UGameViewportClient::InputKey/Axis
+				// to play the force feedback on the correct controller if the offset player gamepad IDs feature is in use. 
+				const int32 NumLocalPlayers = World->GetGameInstance()->GetNumLocalPlayers();
+				if (NumLocalPlayers > 1 && GetDefault<UGameMapsSettings>()->bOffsetPlayerGamepadIds)
 				{
-					InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Left, LeftHaptics);
+					--ControllerId;
 				}
-				if (bRightHapticsNeedUpdate)
+
+				UpdateForceFeedback(InputInterface, ControllerId);
+
+				const bool bAreHapticsDisabled = (CVarDisableHaptics.GetValueOnGameThread() > 0) || bDisableHaptics;
+				if (!bAreHapticsDisabled)
 				{
-					InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Right, RightHaptics);
-				}
-				if (bGunHapticsNeedUpdate)
-				{
-					InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Gun, GunHaptics);
+					// Haptic Updates
+					if (bLeftHapticsNeedUpdate)
+					{
+						InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Left, LeftHaptics);
+					}
+					if (bRightHapticsNeedUpdate)
+					{
+						InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Right, RightHaptics);
+					}
+					if (bGunHapticsNeedUpdate)
+					{
+						InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Gun, GunHaptics);
+					}
 				}
 			}
 		}
 	}
+}
+
+void APlayerController::UpdateForceFeedback(IInputInterface* InputInterface, const int32 ControllerId)
+{
+	InputInterface->SetForceFeedbackChannelValues(ControllerId, (bForceFeedbackEnabled ? ForceFeedbackValues : FForceFeedbackValues()));
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -4257,7 +4429,10 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 
 	//root of tick hierarchy
 
-	if ((GetRemoteRole() == ROLE_AutonomousProxy) && !IsNetMode(NM_Client) && !IsLocalPlayerController())
+	const bool bIsClient = IsNetMode(NM_Client);
+	const bool bIsLocallyControlled = IsLocalPlayerController();
+
+	if ((GetRemoteRole() == ROLE_AutonomousProxy) && !bIsClient && !bIsLocallyControlled)
 	{
 		// force physics update for clients that aren't sending movement updates in a timely manner 
 		// this prevents cheats associated with artificially induced ping spikes
@@ -4274,20 +4449,60 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 					UWorld* World = GetWorld();
 					if (ServerData->ServerTimeStamp != 0.f)
 					{
-						const float TimeSinceUpdate = World->GetTimeSeconds() - ServerData->ServerTimeStamp;
+						const float WorldTimeStamp = World->GetTimeSeconds();
+						const float TimeSinceUpdate = WorldTimeStamp - ServerData->ServerTimeStamp;
 						const float PawnTimeSinceUpdate = TimeSinceUpdate * GetPawn()->CustomTimeDilation;
-						if (PawnTimeSinceUpdate > FMath::Max<float>(DeltaSeconds+0.06f, AGameNetworkManager::StaticClass()->GetDefaultObject<AGameNetworkManager>()->MAXCLIENTUPDATEINTERVAL * GetPawn()->GetActorTimeDilation()))
+						// See how long we wait to force an update. Setting MAXCLIENTUPDATEINTERVAL to zero allows the server to disable this feature.
+						const AGameNetworkManager* GameNetworkManager = (const AGameNetworkManager*)(AGameNetworkManager::StaticClass()->GetDefaultObject());
+						const float ForcedUpdateInterval = GameNetworkManager->MAXCLIENTUPDATEINTERVAL;
+						const float ForcedUpdateMaxDuration = FMath::Min(GameNetworkManager->MaxClientForcedUpdateDuration, 5.0f);
+						
+						// If currently resolving forced updates, and exceeded max duration, then wait for a valid update before enabling them again.
+						ServerData->bForcedUpdateDurationExceeded = false;
+						if (ServerData->bTriggeringForcedUpdates)
 						{
+							const float PawnTimeSinceForcingUpdates = (WorldTimeStamp - ServerData->ServerTimeBeginningForcedUpdates) * GetPawn()->CustomTimeDilation;
+							if (PawnTimeSinceForcingUpdates > ForcedUpdateMaxDuration * GetPawn()->GetActorTimeDilation())
+							{
+								if (ServerData->ServerTimeStamp > ServerData->ServerTimeLastForcedUpdate)
+								{
+									// An update came in that was not a forced update (ie a real move), since ServerTimeStamp advanced outside this code.
+									ServerData->ResetForcedUpdateState();
+								}
+								else
+								{
+									// Waiting for ServerTimeStamp to advance from a client move.
+									ServerData->bForcedUpdateDurationExceeded = true;
+								}
+							}
+						}
+						
+						// Trigger forced update if allowed
+						if (ForcedUpdateInterval > 0.f && PawnTimeSinceUpdate > FMath::Max<float>(DeltaSeconds+0.06f, ForcedUpdateInterval * GetPawn()->GetActorTimeDilation()))
+						{						
 							//UE_LOG(LogPlayerController, Warning, TEXT("ForcedMovementTick. PawnTimeSinceUpdate: %f, DeltaSeconds: %f, DeltaSeconds+: %f"), PawnTimeSinceUpdate, DeltaSeconds, DeltaSeconds+0.06f);
 							const USkeletalMeshComponent* PawnMesh = GetPawn()->FindComponentByClass<USkeletalMeshComponent>();
-							if (!PawnMesh || !PawnMesh->IsSimulatingPhysics())
+							if (!ServerData->bForcedUpdateDurationExceeded && (!PawnMesh || !PawnMesh->IsSimulatingPhysics()))
 							{
-								// We are setting the ServerData timestamp BEFORE updating position below since that may cause ServerData to become deleted (like if the pawn was unpossessed as a result of the move)
-								// Also null the pointer to make sure no one accidentally starts using it below the call to ForcePositionUpdate
-								ServerData->ServerTimeStamp = World->GetTimeSeconds();
-								ServerData = nullptr;
+								const bool bDidUpdate = NetworkPredictionInterface->ForcePositionUpdate(PawnTimeSinceUpdate);
 
-								NetworkPredictionInterface->ForcePositionUpdate(PawnTimeSinceUpdate);
+								// Refresh this pointer in case it has changed (which can happen if character is destroyed or repossessed).
+								ServerData = NetworkPredictionInterface->HasPredictionData_Server() ? NetworkPredictionInterface->GetPredictionData_Server() : nullptr;
+
+								if (bDidUpdate && ServerData)
+								{
+									ServerData->ServerTimeLastForcedUpdate = WorldTimeStamp;
+
+									// Detect initial conditions triggering forced updates.
+									if (!ServerData->bTriggeringForcedUpdates)
+									{
+										ServerData->ServerTimeBeginningForcedUpdates = ServerData->ServerTimeStamp;
+										ServerData->bTriggeringForcedUpdates = true;
+									}
+
+									// Set server timestamp, if there was movement.
+									ServerData->ServerTimeStamp = WorldTimeStamp;
+								}
 							}
 						}
 					}
@@ -4295,17 +4510,18 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 					{
 						// If timestamp is zero, set to current time so we don't have a huge initial delta time for correction.
 						ServerData->ServerTimeStamp = World->GetTimeSeconds();
+						ServerData->ResetForcedUpdateState();
 					}
 				}
 			}
 		}
 
 		// update viewtarget replicated info
-		if (PlayerCameraManager != NULL)
+		if (PlayerCameraManager != nullptr)
 		{
 			APawn* TargetPawn = PlayerCameraManager->GetViewTargetPawn();
 			
-			if ((TargetPawn != GetPawn()) && (TargetPawn != NULL))
+			if ((TargetPawn != GetPawn()) && (TargetPawn != nullptr))
 			{
 				TargetViewRotation = TargetPawn->GetViewRotation();
 			}
@@ -4314,7 +4530,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 	else if (Role > ROLE_SimulatedProxy)
 	{
 		// Process PlayerTick with input.
-		if (!PlayerInput && (Player == NULL || Cast<ULocalPlayer>( Player ) != NULL))
+		if (!PlayerInput && (Player == nullptr || Cast<ULocalPlayer>( Player ) != nullptr))
 		{
 			InitInputSystem();
 		}
@@ -4330,12 +4546,24 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 		}
 
 		// update viewtarget replicated info
-		if (PlayerCameraManager != NULL)
+		if (PlayerCameraManager != nullptr)
 		{
 			APawn* TargetPawn = PlayerCameraManager->GetViewTargetPawn();
-			if ((TargetPawn != GetPawn()) && (TargetPawn != NULL))
+			if ((TargetPawn != GetPawn()) && (TargetPawn != nullptr))
 			{
 				SmoothTargetViewRotation(TargetPawn, DeltaSeconds);
+			}
+
+			// Send a camera update if necessary.
+			if (bIsClient && bIsLocallyControlled && GetPawn() && PlayerCameraManager->bUseClientSideCameraUpdates)
+			{
+				UPawnMovementComponent* PawnMovement = GetPawn()->GetMovementComponent();
+				if (PawnMovement != nullptr &&
+					!PawnMovement->IsMoveInputIgnored() &&
+					(PawnMovement->GetLastInputVector() != FVector::ZeroVector || PawnMovement->Velocity != FVector::ZeroVector))
+				{
+					PlayerCameraManager->bShouldSendClientSideCameraUpdate = true;
+				}
 			}
 		}
 	}
@@ -4349,7 +4577,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 	RotationInput = FRotator::ZeroRotator;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (CheatManager != NULL)
+	if (CheatManager != nullptr)
 	{
 		CheatManager->TickCollisionDebug();
 	}
@@ -4741,7 +4969,7 @@ float APlayerController::GetInputAnalogKeyState(const FKey Key) const
 
 FVector APlayerController::GetInputVectorKeyState(const FKey Key) const
 {
-	return (PlayerInput ? PlayerInput->GetVectorKeyValue(Key) : FVector());
+	return (PlayerInput ? PlayerInput->GetRawVectorKeyValue(Key) : FVector());
 }
 
 void APlayerController::GetInputTouchState(ETouchIndex::Type FingerIndex, float& LocationX, float& LocationY, bool& bIsCurrentlyPressed) const
@@ -4918,12 +5146,32 @@ void FInputModeDataBase::SetFocusAndLocking(FReply& SlateOperations, TSharedPtr<
 	}
 }
 
+FInputModeUIOnly& FInputModeUIOnly::SetWidgetToFocus(TSharedPtr<SWidget> InWidgetToFocus)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (InWidgetToFocus.IsValid() && !InWidgetToFocus->SupportsKeyboardFocus())
+	{
+		UE_LOG(LogPlayerController, Error, TEXT("InputMode:UIOnly - Attempting to focus Non-Focusable widget %s!"), *InWidgetToFocus->ToString());
+	}
+#endif
+	WidgetToFocus = InWidgetToFocus;
+	return *this;
+}
+
+FInputModeUIOnly& FInputModeUIOnly::SetLockMouseToViewportBehavior(EMouseLockMode InMouseLockMode)
+{
+	MouseLockMode = InMouseLockMode;
+	return *this;
+}
+
 void FInputModeUIOnly::ApplyInputMode(FReply& SlateOperations, class UGameViewportClient& GameViewportClient) const
 {
 	TSharedPtr<SViewport> ViewportWidget = GameViewportClient.GetGameViewportWidget();
 	if (ViewportWidget.IsValid())
 	{
-		SetFocusAndLocking(SlateOperations, WidgetToFocus, MouseLockMode == EMouseLockMode::LockAlways, ViewportWidget.ToSharedRef());
+		const bool bLockMouseToViewport = MouseLockMode == EMouseLockMode::LockAlways
+												 || (MouseLockMode == EMouseLockMode::LockInFullscreen && GameViewportClient.IsExclusiveFullscreenViewport());
+		SetFocusAndLocking(SlateOperations, WidgetToFocus, bLockMouseToViewport, ViewportWidget.ToSharedRef());
 
 		SlateOperations.ReleaseMouseCapture();
 
@@ -4938,7 +5186,9 @@ void FInputModeGameAndUI::ApplyInputMode(FReply& SlateOperations, class UGameVie
 	TSharedPtr<SViewport> ViewportWidget = GameViewportClient.GetGameViewportWidget();
 	if (ViewportWidget.IsValid())
 	{
-		SetFocusAndLocking(SlateOperations, WidgetToFocus, MouseLockMode == EMouseLockMode::LockAlways, ViewportWidget.ToSharedRef());
+		const bool bLockMouseToViewport = MouseLockMode == EMouseLockMode::LockAlways
+			|| (MouseLockMode == EMouseLockMode::LockInFullscreen && GameViewportClient.IsExclusiveFullscreenViewport());
+		SetFocusAndLocking(SlateOperations, WidgetToFocus, bLockMouseToViewport, ViewportWidget.ToSharedRef());
 
 		SlateOperations.ReleaseMouseCapture();
 
@@ -5023,7 +5273,7 @@ void APlayerController::BuildHiddenComponentList(const FVector& ViewLocation, TS
 		}
 	}
 
-	// iterate backwards to we can remove as we go
+	// iterate backwards so we can remove as we go
 	for (int32 ComponentIndx = HiddenPrimitiveComponents.Num() - 1; ComponentIndx >= 0; --ComponentIndx)
 	{
 		TWeakObjectPtr<UPrimitiveComponent> ComponentPtr = HiddenPrimitiveComponents[ComponentIndx];

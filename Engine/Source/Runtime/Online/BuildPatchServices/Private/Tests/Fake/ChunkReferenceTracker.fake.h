@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Installer/ChunkReferenceTracker.h"
+#include "Templates/Greater.h"
 #include "Algo/Sort.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -28,10 +29,10 @@ namespace BuildPatchServices
 			{
 				case ESortDirection::Ascending:
 					Algo::SortBy(ChunkList, [this](const FGuid& Element) { return NextReferences.IndexOfByKey(Element); }, TLess<int32>());
-				break;
+					break;
 				case ESortDirection::Descending:
 					Algo::SortBy(ChunkList, [this](const FGuid& Element) { return NextReferences.IndexOfByKey(Element); }, TGreater<int32>());
-				break;
+					break;
 			}
 		}
 

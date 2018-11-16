@@ -5,7 +5,7 @@
 #include "Misc/Parse.h"
 #include "Misc/CommandLine.h"
 #include "Misc/MessageDialog.h"
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 
 int32 GAppleMetalEnabled = 1;
 static FAutoConsoleVariableRef CVarMacMetalEnabled(
@@ -55,14 +55,22 @@ FDynamicRHI* PlatformCreateDynamicRHI()
 		GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetalMRT"), bSupportsMetalMRT, GEngineIni);
 		if (bSupportsMetalMRT)
 		{
+#if PLATFORM_TVOS
+			TargetedShaderFormats.Add(LegacyShaderPlatformToShaderFormat(SP_METAL_MRT_TVOS).ToString());
+#else
 			TargetedShaderFormats.Add(LegacyShaderPlatformToShaderFormat(SP_METAL_MRT).ToString());
+#endif
 		}
 		
 		bool bSupportsMetal = false;
 		GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bSupportsMetal, GEngineIni);
 		if (bSupportsMetal)
 		{
+#if PLATFORM_TVOS
+			TargetedShaderFormats.Add(LegacyShaderPlatformToShaderFormat(SP_METAL_TVOS).ToString());
+#else
 			TargetedShaderFormats.Add(LegacyShaderPlatformToShaderFormat(SP_METAL).ToString());
+#endif
 		}
 	
 		bool bSupportsOpenGLES2 = false;

@@ -2,6 +2,7 @@
 
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/PlatformStackWalk.h"
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/CommandLine.h"
@@ -16,6 +17,8 @@
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/EngineBuildSettings.h"
+#include "Stats/Stats.h"
+#include "Internationalization/TextLocalizationManager.h"
 
 #ifndef NOINITCRASHREPORTER
 #define NOINITCRASHREPORTER 0
@@ -92,7 +95,6 @@ namespace NCachedCrashContextProperties
 	static FString CrashReportClientRichText;
 	static FString GameStateName;
 	static TArray<FString> EnabledPluginsList;
-
 }
 
 void FGenericCrashContext::Initialize()
@@ -107,7 +109,6 @@ void FGenericCrashContext::Initialize()
 	NCachedCrashContextProperties::ExecutableName = FPlatformProcess::ExecutableName();
 	NCachedCrashContextProperties::PlatformName = FPlatformProperties::PlatformName();
 	NCachedCrashContextProperties::PlatformNameIni = FPlatformProperties::IniPlatformName();
-	NCachedCrashContextProperties::DeploymentName = FApp::GetDeploymentName();
 	NCachedCrashContextProperties::BaseDir = FPlatformProcess::BaseDir();
 	NCachedCrashContextProperties::RootDir = FPlatformMisc::RootDir();
 	NCachedCrashContextProperties::EpicAccountId = FPlatformMisc::GetEpicAccountId();
@@ -122,6 +123,9 @@ void FGenericCrashContext::Initialize()
 	NCachedCrashContextProperties::UserName = FPlatformProcess::UserName();
 	NCachedCrashContextProperties::DefaultLocale = FPlatformMisc::GetDefaultLocale();
 	NCachedCrashContextProperties::CommandLine = FCommandLine::IsInitialized() ? FCommandLine::GetOriginalForLogging() : TEXT(""); 
+
+	// Use -epicapp value from the commandline to start. This will also be set by the game
+	FParse::Value(FCommandLine::Get(), TEXT("EPICAPP="), NCachedCrashContextProperties::DeploymentName);
 
 	if (FInternationalization::IsAvailable())
 	{
@@ -163,6 +167,8 @@ void FGenericCrashContext::Initialize()
 	const float PollingInterval = 1.0f;
 	FTicker::GetCoreTicker().AddTicker( FTickerDelegate::CreateLambda( []( float DeltaTime )
 	{
+        QUICK_SCOPE_CYCLE_COUNTER(STAT_NCachedCrashContextProperties_LambdaTicker);
+
 		NCachedCrashContextProperties::SecondsSinceStart = int32(FPlatformTime::Seconds() - GStartTime);
 		return true;
 	} ), PollingInterval );
@@ -182,6 +188,7 @@ void FGenericCrashContext::Initialize()
 		NCachedCrashContextProperties::GameStateName = InGameStateName;
 	});
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::CrashOverrideParamsChanged.AddLambda([](const FCrashOverrideParameters& InParams)
 	{
 		if (InParams.bSetCrashReportClientMessageText)
@@ -193,6 +200,7 @@ void FGenericCrashContext::Initialize()
 			NCachedCrashContextProperties::GameName = FString(TEXT("UE4-")) + FApp::GetProjectName() + InParams.GameNameSuffix;
 		}
 	});
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FCoreDelegates::IsVanillaProductChanged.AddLambda([](bool bIsVanilla)
 	{
@@ -226,7 +234,25 @@ void FGenericCrashContext::InitializeFromConfig()
 		CrashConfigFile.Dirty = true;
 		CrashConfigFile.Write(GetCrashConfigFilePath());
 	}
+
+	// Read the initial un-localized crash context text
+	UpdateLocalizedStrings();
+
+	// Make sure we get updated text once the localized version is loaded
+	FTextLocalizationManager::Get().OnTextRevisionChangedEvent.AddStatic(&UpdateLocalizedStrings);
 #endif	// !NOINITCRASHREPORTER
+}
+
+void FGenericCrashContext::UpdateLocalizedStrings()
+{
+#if !NOINITCRASHREPORTER
+	// Allow overriding the crash text
+	FText CrashReportClientRichText;
+	if (GConfig->GetText(TEXT("CrashContextProperties"), TEXT("CrashReportClientRichText"), CrashReportClientRichText, GEngineIni))
+	{
+		NCachedCrashContextProperties::CrashReportClientRichText = CrashReportClientRichText.ToString();
+	}
+#endif
 }
 
 FGenericCrashContext::FGenericCrashContext()
@@ -263,6 +289,14 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 	AddCrashProperty( TEXT( "ExecutableName" ), *NCachedCrashContextProperties::ExecutableName );
 	AddCrashProperty( TEXT( "BuildConfiguration" ), EBuildConfigurations::ToString( FApp::GetBuildConfiguration() ) );
 	AddCrashProperty( TEXT( "GameSessionID" ), *NCachedCrashContextProperties::GameSessionID );
+	
+	// Unique string specifying the symbols to be used by CrashReporter
+	FString Symbols = FString::Printf( TEXT( "%s-%s-%s" ), FApp::GetBuildVersion(), FPlatformMisc::GetUBTPlatform(), EBuildConfigurations::ToString(FApp::GetBuildConfiguration())).Replace( TEXT( "+" ), TEXT( "*" ));
+#ifdef UE_BUILD_FLAVOR
+	Symbols = FString::Printf(TEXT( "%s-%s" ), *Symbols, *FString(UE_BUILD_FLAVOR));
+#endif
+
+	AddCrashProperty( TEXT( "Symbols" ), Symbols);
 
 	AddCrashProperty( TEXT( "PlatformName" ), *NCachedCrashContextProperties::PlatformName );
 	AddCrashProperty( TEXT( "PlatformNameIni" ), *NCachedCrashContextProperties::PlatformNameIni );
@@ -289,7 +323,12 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 	AddCrashProperty( TEXT( "LoginId" ), *NCachedCrashContextProperties::LoginIdStr );
 	AddCrashProperty( TEXT( "EpicAccountId" ), *NCachedCrashContextProperties::EpicAccountId );
 
-	AddCrashProperty( TEXT( "CallStack" ), TEXT( "" ) );
+	// Legacy callstack element for current crash reporter
+	AddCrashProperty(TEXT("CallStack"), TEXT(""));
+
+	// Add new portable callstack element with crash stack
+	AddPortableCallStack();
+
 	AddCrashProperty( TEXT( "SourceContext" ), TEXT( "" ) );
 	AddCrashProperty( TEXT( "UserDescription" ), TEXT( "" ) );
 	AddCrashProperty( TEXT( "UserActivityHint" ), *NCachedCrashContextProperties::UserActivityHint );
@@ -340,16 +379,16 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 	AddCrashProperty( TEXT( "MemoryStats.OOMAllocationSize"), (uint64)FPlatformMemory::OOMAllocationSize );
 	AddCrashProperty( TEXT( "MemoryStats.OOMAllocationAlignment"), (int32)FPlatformMemory::OOMAllocationAlignment );
 
-	//Architecture
-	//CrashedModuleName
-	//LoadedModules
 	EndSection( *RuntimePropertiesTag );
-	
+
 	// Add platform specific properties.
 	BeginSection( *PlatformPropertiesTag );
 	AddPlatformSpecificProperties();
 	EndSection( *PlatformPropertiesTag );
 
+	// Writing out the list of plugin JSON descriptors causes us to run out of memory
+	// in GMallocCrash on console, so enable this only for desktop platforms.
+#if PLATFORM_DESKTOP
 	if(NCachedCrashContextProperties::EnabledPluginsList.Num() > 0)
 	{
 		BeginSection(*EnabledPluginsTag);
@@ -361,8 +400,14 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 
 		EndSection(*EnabledPluginsTag);
 	}
+#endif // PLATFORM_DESKTOP
 
 	AddFooter();
+}
+
+void FGenericCrashContext::SetDeploymentName(const FString& EpicApp)
+{
+	NCachedCrashContextProperties::DeploymentName = EpicApp;
 }
 
 void FGenericCrashContext::GetUniqueCrashName(TCHAR* GUIDBuffer, int32 BufferSize) const
@@ -407,6 +452,37 @@ void FGenericCrashContext::AddPlatformSpecificProperties() const
 {
 	// Nothing really to do here. Can be overridden by the platform code.
 	// @see FWindowsPlatformCrashContext::AddPlatformSpecificProperties
+}
+
+void FGenericCrashContext::AddPortableCallStack() const
+{	
+
+	if (CallStack.Num() == 0)
+	{
+		AddCrashProperty(TEXT("PCallStack"), TEXT(""));
+		return;
+	}
+
+	FString CrashStackBuffer = LINE_TERMINATOR;
+
+	// Get the max module name length for padding
+	int32 MaxModuleLength = 0;
+	for (TArray<FCrashStackFrame>::TConstIterator It(CallStack); It; ++It)
+	{
+		MaxModuleLength = FMath::Max(MaxModuleLength, It->ModuleName.Len());
+	}
+
+	for (TArray<FCrashStackFrame>::TConstIterator It(CallStack); It; ++It)
+	{
+		CrashStackBuffer += FString::Printf(TEXT("%-*s 0x%016x + %-8x"),MaxModuleLength + 1, *It->ModuleName, It->BaseAddress, It->Offset);
+		CrashStackBuffer += LINE_TERMINATOR;
+	}
+
+	FString EscapedStackBuffer;
+
+	AppendEscapedXMLString(EscapedStackBuffer, *CrashStackBuffer);
+
+	AddCrashProperty(TEXT("PCallStack"), *EscapedStackBuffer);
 }
 
 void FGenericCrashContext::AddHeader() const
@@ -559,6 +635,63 @@ void FGenericCrashContext::PurgeOldCrashConfig()
 void FGenericCrashContext::AddPlugin(const FString& PluginDesc)
 {
 	NCachedCrashContextProperties::EnabledPluginsList.Add(PluginDesc);
+}
+
+FORCENOINLINE void FGenericCrashContext::CapturePortableCallStack(int32 NumStackFramesToIgnore, void* Context)
+{
+	// If the callstack is for the executing thread, ignore this function
+	if(Context == nullptr)
+	{
+		NumStackFramesToIgnore++;
+	}
+
+	const int32 MaxDepth = 100;
+	TArray<FProgramCounterSymbolInfo> Stack = FPlatformStackWalk::GetStack(NumStackFramesToIgnore, MaxDepth, Context);
+	return SetPortableCallStack(NumStackFramesToIgnore, Stack);
+}
+
+void FGenericCrashContext::SetPortableCallStack(int32 NumStackFramesToIgnore, const TArray<FProgramCounterSymbolInfo>& Stack)
+{
+	uint32 ModuleEntries = (uint32)FPlatformStackWalk::GetProcessModuleCount();
+
+	if (ModuleEntries)
+	{
+		TArray<FStackWalkModuleInfo> ProcessModules;
+		ProcessModules.AddUninitialized(ModuleEntries);
+		FPlatformStackWalk::GetProcessModuleSignatures(ProcessModules.GetData(), ProcessModules.Max());
+
+		TMap<FString, uint64> ImageBases;
+		int32 ModuleIndex = 0;
+		for (TArray<FProgramCounterSymbolInfo>::TConstIterator Itr(Stack); Itr; ++Itr)
+		{
+			FString ModuleName = FPaths::GetBaseFilename(Itr->ModuleName);
+
+			if (!ImageBases.Contains(ModuleName))
+			{
+				for (TArray<FStackWalkModuleInfo>::TConstIterator ProcessModuleItr(ProcessModules); ProcessModuleItr; ++ProcessModuleItr)
+				{
+					FString ProcessModuleName = FPaths::GetBaseFilename(ProcessModuleItr->ImageName);
+
+					if (!ModuleName.Compare(ProcessModuleName, ESearchCase::IgnoreCase))
+					{
+						ImageBases.Add(ModuleName, ProcessModuleItr->BaseOfImage);
+						break;
+					}
+				}
+
+			}
+
+			uint64 BaseOfImage = MAX_uint64;
+
+			if (ImageBases.Contains(ModuleName))
+			{
+				BaseOfImage = ImageBases[ModuleName];
+			}
+
+			CallStack.Add(FCrashStackFrame(ModuleName, BaseOfImage, Itr->ProgramCounter > BaseOfImage ? Itr->ProgramCounter - BaseOfImage : MAX_uint64));
+		}
+	}
+
 }
 
 FProgramCounterSymbolInfoEx::FProgramCounterSymbolInfoEx( FString InModuleName, FString InFunctionName, FString InFilename, uint32 InLineNumber, uint64 InSymbolDisplacement, uint64 InOffsetInModule, uint64 InProgramCounter ) :

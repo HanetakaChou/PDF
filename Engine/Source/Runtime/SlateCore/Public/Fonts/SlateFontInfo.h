@@ -47,18 +47,25 @@ struct SLATECORE_API FFontOutlineSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=OutlineSettings)
 	FLinearColor OutlineColor;
 
-	/** 
-	 * If checked, the outline will be completely translucent where the filled area will be.  This allows for a separate fill alpha value
+	/**
+	 * When enabled the outline will be completely translucent where the filled area will be.  This allows for a separate fill alpha value
 	 * The trade off when enabling this is slightly worse quality for completely opaque fills where the inner outline border meets the fill area
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=OutlineSettings)
-	bool bSeparateFillAlpha;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = OutlineSettings)
+	uint8 bSeparateFillAlpha : 1;
+
+	/**
+	 * When enabled the outline will be applied to any drop shadow that uses this font
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = OutlineSettings)
+	uint8 bApplyOutlineToDropShadows : 1;
 
 	FFontOutlineSettings()
 		: OutlineSize(0)
 		, OutlineMaterial(nullptr)
 		, OutlineColor(FLinearColor::Black)
 		, bSeparateFillAlpha(false)
+		, bApplyOutlineToDropShadows(false)
 	{}
 
 	FFontOutlineSettings(int32 InOutlineSize, FLinearColor InColor = FLinearColor::Black)
@@ -66,27 +73,48 @@ struct SLATECORE_API FFontOutlineSettings
 		, OutlineMaterial(nullptr)
 		, OutlineColor(InColor)
 		, bSeparateFillAlpha(false)
+		, bApplyOutlineToDropShadows(false)
 	{}
 
 	bool operator==(const FFontOutlineSettings& Other) const
 	{
 		return OutlineSize == Other.OutlineSize
+			&& bSeparateFillAlpha == Other.bSeparateFillAlpha
 			&& OutlineMaterial == Other.OutlineMaterial
 			&& OutlineColor == Other.OutlineColor
-			&& bSeparateFillAlpha == Other.bSeparateFillAlpha;
+			&& bApplyOutlineToDropShadows == Other.bApplyOutlineToDropShadows;
 	}
 
 	friend inline uint32 GetTypeHash(const FFontOutlineSettings& OutlineSettings)
 	{
 		uint32 Hash = 0;
 		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.OutlineSize));
-		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.OutlineMaterial));
-		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.OutlineColor));
 		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.bSeparateFillAlpha));
+		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.bApplyOutlineToDropShadows));
+
 		return Hash;
 	}
 
+	bool IsVisible() const
+	{
+		return OutlineSize > 0 && OutlineColor.A > 0;
+	}
+
+	bool Serialize(FArchive& Ar);
+	void PostSerialize(const FArchive& Ar);
+
 	static FFontOutlineSettings NoOutline;
+};
+
+template<>
+struct TStructOpsTypeTraits<FFontOutlineSettings>
+	: public TStructOpsTypeTraitsBase2<FFontOutlineSettings>
+{
+	enum
+	{
+		WithSerializer = true,
+		WithPostSerialize = true,
+	};
 };
 
 /**
@@ -265,6 +293,8 @@ public:
 	 */
 	void PostSerialize(const FArchive& Ar);
 #endif
+
+	void AddReferencedObjects(FReferenceCollector& Collector);
 
 private:
 

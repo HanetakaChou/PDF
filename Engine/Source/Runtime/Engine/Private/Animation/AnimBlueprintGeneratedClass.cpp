@@ -10,6 +10,8 @@
 #include "BonePose.h"
 #include "Animation/AnimNodeBase.h"
 #include "Animation/AnimInstance.h"
+#include "UObject/AnimObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 
 /////////////////////////////////////////////////////
 // FStateMachineDebugData
@@ -189,7 +191,7 @@ public:
 	FBinaryObjectWriter(UObject* Obj, TArray<uint8>& InBytes)
 		: FObjectWriter(InBytes)
 	{
-		ArWantBinaryPropertySerialization = true;
+		this->SetWantBinaryPropertySerialization(true);
 		Obj->Serialize(*this);
 	}
 };
@@ -203,7 +205,7 @@ public:
 	FBinaryObjectReader(UObject* Obj, TArray<uint8>& InBytes)
 		: FObjectReader(InBytes)
 	{
-		ArWantBinaryPropertySerialization = true;
+		this->SetWantBinaryPropertySerialization(true);
 		Obj->Serialize(*this);
 	}
 };
@@ -234,9 +236,20 @@ UAnimBlueprintGeneratedClass::UAnimBlueprintGeneratedClass(const FObjectInitiali
 	RootAnimNodeIndex = INDEX_NONE;
 }
 
+void UAnimBlueprintGeneratedClass::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FAnimObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
+	Super::Serialize(Ar);
+}
+
 void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProperties)
 {
 	Super::Link(Ar, bRelinkExistingProperties);
+
+	// We cant reference FAnimNode_Root directly as it is in AnimGraphRuntime, so we just hard-code the name instead.
+	static const FName NAME_AnimNode_Root(TEXT("AnimNode_Root"));
 
 	// @TODO: Shouldn't be necessary to clear these, but currently the class gets linked twice during compilation
 	AnimNodeProperties.Empty();
@@ -249,6 +262,19 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 		{
 			if (StructProp->Struct->IsChildOf(FAnimNode_Base::StaticStruct()))
 			{
+				if(StructProp->Struct->GetFName() == NAME_AnimNode_Root)
+				{
+					// If we are loading from a newer version, we must verify that there is only one root here.
+					// When linking an older version on load we may find multiple roots until the class is recompiled or saved
+#if DO_CHECK
+					if(Ar.IsLoading() && Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::LinkTimeAnimBlueprintRootDiscoveryBugFix)
+					{
+						check(RootAnimNodeProperty == nullptr);
+					}
+#endif
+					RootAnimNodeProperty = StructProp;
+					RootAnimNodeIndex = AnimNodeProperties.Num();
+				}
 				AnimNodeProperties.Add(StructProp);
 			}
 		}
@@ -264,6 +290,7 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 	if(RootClass != this)
 	{
 		// Copy root, state notifies and baked machines from the root class
+		check(RootClass);
 		RootAnimNodeIndex = RootClass->RootAnimNodeIndex;
 		AnimNotifies = RootClass->AnimNotifies;
 		BakedStateMachines = RootClass->BakedStateMachines;
@@ -272,11 +299,7 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 	if (AnimNodeProperties.Num() > 0)
 	{
 		const bool bValidRootIndex = (RootAnimNodeIndex >= 0) && (RootAnimNodeIndex < AnimNodeProperties.Num());
-		if (bValidRootIndex)
-		{
-			RootAnimNodeProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - RootAnimNodeIndex];
-		}
-		else
+		if (!bValidRootIndex)
 		{
 			UE_LOG(LogAnimation, Warning, TEXT("Invalid animation root node index %d on '%s' (only %d nodes)"), RootAnimNodeIndex, *GetPathName(), AnimNodeProperties.Num());
 			AnimNodeProperties.Empty();
@@ -289,6 +312,7 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 
 	if(RootClass != this)
 	{
+		check(RootClass);
 		if(OrderedSavedPoseIndices.Num() != RootClass->OrderedSavedPoseIndices.Num() || OrderedSavedPoseIndices != RootClass->OrderedSavedPoseIndices)
 		{
 			// Derived and our parent has a new ordered pose order, copy over.
@@ -308,17 +332,6 @@ void UAnimBlueprintGeneratedClass::PurgeClass(bool bRecompilingOnLoad)
 #endif
 
 	BakedStateMachines.Empty();
-}
-
-uint8* UAnimBlueprintGeneratedClass::GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const
-{
-	if(!IsInGameThread())
-	{
-		// we cant use the persistent frame if we are executing in parallel (as we could potentially thunk to BP)
-		return nullptr;
-	}
-
-	return Super::GetPersistentUberGraphFrame(Obj, FuncToCheck);
 }
 
 void UAnimBlueprintGeneratedClass::PostLoadDefaultObject(UObject* Object)

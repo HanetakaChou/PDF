@@ -135,6 +135,7 @@ struct FClothVertBoneData
 	GENERATED_BODY()
 
 	FClothVertBoneData()
+		: NumInfluences(0)
 	{
 		FMemory::Memset(BoneIndices, (uint8)INDEX_NONE, sizeof(BoneIndices));
 		FMemory::Memset(BoneWeights, 0, sizeof(BoneWeights));
@@ -179,6 +180,12 @@ struct CLOTHINGSYSTEMRUNTIME_API FClothPhysicalMeshData
 	// Normal at each vertex
 	UPROPERTY(EditAnywhere, Category = SimMesh)
 	TArray<FVector> Normals;
+
+#if WITH_EDITORONLY_DATA
+	// Color at each vertex
+	UPROPERTY(EditAnywhere, Category = SimMesh)
+	TArray<FColor> VertexColors;
+#endif // WITH_EDITORONLY_DATA
 
 	// Indices of the simulation mesh triangles
 	UPROPERTY(EditAnywhere, Category = SimMesh)
@@ -343,6 +350,8 @@ struct FClothConfig
 		, SolverFrequency(120.0f)
 		, StiffnessFrequency(100.0f)
 		, GravityScale(1.0f)
+		, GravityOverride(FVector::ZeroVector)
+		, bUseGravityOverride(false)
 		, TetherStiffness(1.0f)
 		, TetherLimit(1.0f)
 		, CollisionThickness(1.0f)
@@ -435,8 +444,16 @@ struct FClothConfig
 	float StiffnessFrequency;
 
 	// Scale of gravity effect on particles
-	UPROPERTY(EditAnywhere, Category = ClothConfig)
+	UPROPERTY(EditAnywhere, Category = ClothConfig, meta = (EditCondition = "!bUseGravityOverride"))
 	float GravityScale;
+
+	// Direct gravity override value
+	UPROPERTY(EditAnywhere, Category = ClothConfig, meta = (EditCondition = "bUseGravityOverride"))
+	FVector GravityOverride;
+
+	/** Use gravity override value vs gravity scale */
+	UPROPERTY(EditAnywhere, Category = ClothConfig, meta = (InlineEditConditionToggle))
+	bool bUseGravityOverride;
 
 	// Scale for stiffness of particle tethers between each other
 	UPROPERTY(EditAnywhere, Category = ClothConfig)

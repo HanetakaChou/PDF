@@ -4,7 +4,7 @@
 	VulkanConfiguration.h: Control compilation of the runtime RHI.
 =============================================================================*/
 
-// Compiled with 1.0.65.1
+// Compiled with 1.1.82.1
 
 #pragma once
 
@@ -12,7 +12,7 @@
 
 // API version we want to target.
 #ifndef UE_VK_API_VERSION
-	#define UE_VK_API_VERSION	VK_MAKE_VERSION(1, 0, 1)
+	#define UE_VK_API_VERSION									VK_API_VERSION_1_0
 #endif
 
 // by default, we enable debugging in Development builds, unless the platform says not to
@@ -20,46 +20,63 @@
 	#define VULKAN_SHOULD_DEBUG_IN_DEVELOPMENT 1
 #endif
 
-// always debug in Debug
-#define VULKAN_HAS_DEBUGGING_ENABLED UE_BUILD_DEBUG || (UE_BUILD_DEVELOPMENT && VULKAN_SHOULD_DEBUG_IN_DEVELOPMENT)
-
-// constants we probably will change a few times
-#define VULKAN_UB_RING_BUFFER_SIZE								(8 * 1024 * 1024)
-
+#define VULKAN_HAS_DEBUGGING_ENABLED							(UE_BUILD_DEBUG || (UE_BUILD_DEVELOPMENT && VULKAN_SHOULD_DEBUG_IN_DEVELOPMENT))
 
 // Enables the VK_LAYER_LUNARG_api_dump layer and the report VK_DEBUG_REPORT_INFORMATION_BIT_EXT flag
 #define VULKAN_ENABLE_API_DUMP									0
 
-// Enables logging wrappers per Vulkan call
 #ifndef VULKAN_SHOULD_ENABLE_DRAW_MARKERS
-	#define VULKAN_SHOULD_ENABLE_DRAW_MARKERS					1
+	#define VULKAN_SHOULD_ENABLE_DRAW_MARKERS					0
 #endif
+
+// Enables logging wrappers per Vulkan call
 #ifndef VULKAN_ENABLE_DUMP_LAYER
 	#define VULKAN_ENABLE_DUMP_LAYER							0
 #endif
-#define VULKAN_ENABLE_DRAW_MARKERS								VULKAN_SHOULD_ENABLE_DRAW_MARKERS && !VULKAN_ENABLE_DUMP_LAYER
 
-// Keep the Vk*CreateInfo stored per object for debugging
-#define VULKAN_KEEP_CREATE_INFO									0
+#define VULKAN_ENABLE_DRAW_MARKERS								VULKAN_SHOULD_ENABLE_DRAW_MARKERS
 
-#ifndef VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-	#define VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS			0
+#ifndef VULKAN_ENABLE_IMAGE_TRACKING_LAYER
+	#define VULKAN_ENABLE_IMAGE_TRACKING_LAYER					0
 #endif
+
+#ifndef VULKAN_ENABLE_BUFFER_TRACKING_LAYER
+	#define VULKAN_ENABLE_BUFFER_TRACKING_LAYER					0
+#endif
+
+#define VULKAN_ENABLE_TRACKING_LAYER							(VULKAN_ENABLE_BUFFER_TRACKING_LAYER || VULKAN_ENABLE_IMAGE_TRACKING_LAYER)
+#define VULKAN_ENABLE_WRAP_LAYER								(VULKAN_ENABLE_DUMP_LAYER || VULKAN_ENABLE_TRACKING_LAYER)
 
 #define VULKAN_HASH_POOLS_WITH_TYPES_USAGE_ID					1
 
-#ifndef VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	#define VULKAN_USE_DESCRIPTOR_POOL_MANAGER					1
-#endif
-
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER && VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-	#error Invalid combination!
-#endif
-
 #define VULKAN_SINGLE_ALLOCATION_PER_RESOURCE					0
 
+#ifndef VULKAN_FREEPAGE_FOR_TYPE
+	#define VULKAN_FREEPAGE_FOR_TYPE							0
+#endif
+
+#ifndef VULKAN_USE_NEW_QUERIES
+	#define VULKAN_USE_NEW_QUERIES								1
+#endif
+
+#ifndef VULKAN_SHOULD_USE_LLM
+	#define VULKAN_SHOULD_USE_LLM								0
+#endif
+
+#ifndef VULKAN_USE_LLM
+	#define VULKAN_USE_LLM										((ENABLE_LOW_LEVEL_MEM_TRACKER) && VULKAN_SHOULD_USE_LLM)
+#endif
+
 #ifndef VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED
-	#define VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED				1
+	#define VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED				VULKAN_USE_LLM
+#endif
+
+#ifndef VULKAN_SHOULD_USE_COMMANDWRAPPERS
+	#define VULKAN_SHOULD_USE_COMMANDWRAPPERS					VULKAN_ENABLE_WRAP_LAYER
+#endif
+
+#ifndef VULKAN_COMMANDWRAPPERS_ENABLE							
+	#define VULKAN_COMMANDWRAPPERS_ENABLE						VULKAN_SHOULD_USE_COMMANDWRAPPERS
 #endif
 
 #ifndef VULKAN_USE_QUERY_WAIT
@@ -74,16 +91,11 @@
 	#define VULKAN_HAS_PHYSICAL_DEVICE_PROPERTIES2				0
 #endif
 
-#define VULKAN_RETAIN_BUFFERS									0
-
 #define VULKAN_USE_MSAA_RESOLVE_ATTACHMENTS						1
 
 #define VULKAN_ENABLE_AGGRESSIVE_STATS							0
 
-#define VULKAN_ENABLE_RHI_DEBUGGING								1
-
 #define VULKAN_REUSE_FENCES										1
-
 
 #ifndef VULKAN_ENABLE_DESKTOP_HMD_SUPPORT
 	#define VULKAN_ENABLE_DESKTOP_HMD_SUPPORT					0
@@ -93,4 +105,102 @@
 	#define VULKAN_SIGNAL_UNIMPLEMENTED()
 #endif
 
+#ifndef VULKAN_ENABLE_LRU_CACHE
+	#define VULKAN_ENABLE_LRU_CACHE								0
+#endif
+
+#ifdef VK_KHR_maintenance1
+	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER1					1
+#else
+	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER1					0
+#endif
+
+#ifdef VK_KHR_maintenance2
+	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER2					1
+#else
+	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER2					0
+#endif
+
+#ifdef VK_EXT_validation_cache
+	#define VULKAN_SUPPORTS_VALIDATION_CACHE					1
+#else
+	#define VULKAN_SUPPORTS_VALIDATION_CACHE					0
+#endif
+
+#ifndef VULKAN_SUPPORTS_DEDICATED_ALLOCATION
+	#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION				0
+#endif
+
+#ifndef VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
+	#define VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING				0
+#endif
+
+#ifndef VULKAN_USE_CREATE_ANDROID_SURFACE
+	#define VULKAN_USE_CREATE_ANDROID_SURFACE					0
+#endif
+
+#ifndef VULKAN_USE_CREATE_WIN32_SURFACE
+	#define VULKAN_USE_CREATE_WIN32_SURFACE						0
+#endif
+
+#ifndef VULKAN_SUPPORTS_GEOMETRY_SHADERS
+	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					1
+#endif
+
+#ifndef VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
+	#define VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY			1
+#endif
+
+#ifndef VULKAN_USE_DIFFERENT_POOL_CMDBUFFERS
+	#define VULKAN_USE_DIFFERENT_POOL_CMDBUFFERS				1
+#endif
+
+#ifndef VULKAN_DELETE_STALE_CMDBUFFERS
+	#define VULKAN_DELETE_STALE_CMDBUFFERS						1
+#endif
+
+#ifndef VULKAN_SUPPORTS_COLOR_CONVERSIONS
+	#define VULKAN_SUPPORTS_COLOR_CONVERSIONS					0
+#endif
+
+#ifndef VULKAN_SUPPORTS_AMD_BUFFER_MARKER
+	#define VULKAN_SUPPORTS_AMD_BUFFER_MARKER					0
+#endif
+
+#ifndef VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
+	#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT			0
+#endif
+
+#define VULKAN_SUPPORTS_GPU_CRASH_DUMPS							(VULKAN_SUPPORTS_AMD_BUFFER_MARKER || VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT)
+
+#ifdef VK_EXT_debug_utils
+	#define VULKAN_SUPPORTS_DEBUG_UTILS							1
+#else
+	#define VULKAN_SUPPORTS_DEBUG_UTILS							0
+#endif
+
+
 DECLARE_LOG_CATEGORY_EXTERN(LogVulkanRHI, Log, All);
+
+#if VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED
+	#define VULKAN_CPU_ALLOCATOR								VulkanRHI::GetMemoryAllocator(nullptr)
+#else
+	#define VULKAN_CPU_ALLOCATOR								nullptr
+#endif
+
+#ifndef VULKAN_PURGE_SHADER_MODULES
+	#define VULKAN_PURGE_SHADER_MODULES							0
+#endif
+
+namespace VulkanRHI
+{
+	static FORCEINLINE const VkAllocationCallbacks* GetMemoryAllocator(const VkAllocationCallbacks* Allocator)
+	{
+#if VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED
+		extern VkAllocationCallbacks GAllocationCallbacks;
+		return Allocator ? Allocator : &GAllocationCallbacks;
+#else
+		return Allocator;
+#endif
+	}
+}

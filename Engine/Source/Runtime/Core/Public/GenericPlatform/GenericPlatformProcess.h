@@ -149,9 +149,6 @@ struct CORE_API FGenericPlatformProcess
 	/** Lookup the address of a DLL function. **/
 	static void* GetDllExport( void* DllHandle, const TCHAR* ProcName );
 
-	/** Gets the API version from the specified DLL **/
-	static int32 GetDllApiVersion( const TCHAR* Filename );
-
 	/** Adds a directory to search in when resolving implicitly loaded or filename-only DLLs. **/
 	FORCEINLINE static void AddDllDirectory(const TCHAR* Directory)
 	{
@@ -166,12 +163,6 @@ struct CORE_API FGenericPlatformProcess
 
 	/** Unsets a directory to look for DLL files. The same directory must be passed in as the Push call to validate */
 	FORCEINLINE static void PopDllDirectory(const TCHAR* Directory)
-	{
-
-	}
-
-	/** Deletes 1) all temporary files; 2) all cache files that are no longer wanted. **/
-	FORCEINLINE static void CleanFileCache()
 	{
 
 	}
@@ -595,23 +586,6 @@ struct CORE_API FGenericPlatformProcess
 	 * Checks if we're the first instance. An instance can become first if the previous first instance quits before it.
 	 */
 	static bool IsFirstInstance();
-
-	/**
-	 * Returns the map virtual shader directory path -> real shader directory path.
-	 */
-	static const TMap<FString, FString>& AllShaderSourceDirectoryMappings();
-	
-	/**
-	 * Clears all shader source directory mappings.
-	 */
-	static void ResetAllShaderSourceDirectoryMappings();
-
-	/**
-	 * Maps a real shader directory existing on disk to a virtual shader directory.
-	 * @param VirtualShaderDirectory Unique absolute path of the virtual shader directory (ex: /Project).
-	 * @param RealShaderDirectory FPlatformProcess::BaseDir() relative path of the directory map.
-	 */
-	static void AddShaderSourceDirectoryMapping(const FString& VirtualShaderDirectory, const FString& RealShaderDirectory);
 };
 
 

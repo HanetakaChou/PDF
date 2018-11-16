@@ -35,7 +35,9 @@ enum EBulkDataFlags
 	/** If set, payload is compressed using platform specific bit window			*/
 	BULKDATA_SerializeCompressedBitWindow		= 1<<9,
 	/** There is a new default to inline unless you opt out */
-	BULKDATA_Force_NOT_InlinePayload = 1 << 10,
+	BULKDATA_Force_NOT_InlinePayload			= 1 << 10,
+	/** This payload is optional and may not be on device */
+	BULKDATA_OptionalPayload					= 1 << 11,
 };
 
 /**
@@ -619,6 +621,8 @@ struct COREUOBJECT_API FFloatBulkData : public FUntypedBulkData
 
 class FFormatContainer
 {
+	friend class UBodySetup;
+
 	TSortedMap<FName, FByteBulkData*> Formats;
 	uint32 Alignment;
 public:

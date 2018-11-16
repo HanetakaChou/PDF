@@ -4,9 +4,11 @@
 	MacPlatformProcess.mm: Mac implementations of Process functions
 =============================================================================*/
 
-#include "MacPlatformProcess.h"
-#include "ApplePlatformRunnableThread.h"
+#include "Mac/MacPlatformProcess.h"
+#include "Mac/MacPlatform.h"
+#include "Apple/ApplePlatformRunnableThread.h"
 #include "Misc/App.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include <mach-o/dyld.h>
@@ -69,7 +71,7 @@ FString FMacPlatformProcess::GenerateApplicationPath( const FString& AppName, EB
 	
 	FString PlatformName = TEXT("Mac");
 	FString ExecutableName = AppName;
-	if (BuildConfiguration != EBuildConfigurations::Development && BuildConfiguration != EBuildConfigurations::DebugGame)
+	if (BuildConfiguration != EBuildConfigurations::Development)
 	{
 		ExecutableName += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
 	}
@@ -132,79 +134,6 @@ void* FMacPlatformProcess::GetDllExport( void* DllHandle, const TCHAR* ProcName 
 	return dlsym( DllHandle, TCHAR_TO_ANSI(ProcName) );
 }
 
-int32 FMacPlatformProcess::GetDllApiVersion( const TCHAR* Filename )
-{
-	check(Filename);
-
-	uint32 CurrentVersion = 0;
-		
-	CFStringRef CFStr = FPlatformString::TCHARToCFString(Filename);
-		
-	NSString* Path = (NSString*)CFStr;
-		
-	if([Path isAbsolutePath] == NO)
-	{
-		NSString* CurDir = [[NSFileManager defaultManager] currentDirectoryPath];
-		NSString* FullPath = [NSString stringWithFormat:@"%@/%@", CurDir, Path];
-		Path = [FullPath stringByResolvingSymlinksInPath];
-	}
-		
-	if([[NSFileManager defaultManager] fileExistsAtPath:Path] == NO)
-	{
-		Path = [[[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent] stringByAppendingPathComponent: [Path lastPathComponent]];
-	}
-		
-	BOOL bIsDirectory = NO;
-		
-	int32 File = -1;
-		
-	if([[NSFileManager defaultManager] fileExistsAtPath:Path isDirectory:&bIsDirectory] && bIsDirectory == YES && [[NSWorkspace sharedWorkspace] isFilePackageAtPath:Path])
-	{
-		// Try inside the bundle's MacOS folder
-		NSString *FullPath = [[[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent] stringByAppendingPathComponent:[Path lastPathComponent]];
-		File = open([FullPath fileSystemRepresentation], O_RDONLY);
-	}
-	else
-	{
-		File = open([Path fileSystemRepresentation], O_RDONLY);
-	}
-		
-	CFRelease(CFStr);
-		
-	if(File <= -1)
-	{
-		return -1;
-	}
-
-	struct mach_header_64 Header;
-	ssize_t Bytes = read( File, &Header, sizeof( Header ) );
-	if( Bytes == sizeof( Header ) && Header.filetype == MH_DYLIB )
-	{
-		struct load_command* Commands = ( struct load_command* )FMemory::Malloc( Header.sizeofcmds );
-		Bytes = read( File, Commands, Header.sizeofcmds );
-
-		if( Bytes == Header.sizeofcmds )
-		{
-			struct load_command* Command = Commands;
-			for( int32 Index = 0; Index < Header.ncmds; Index++ )
-			{
-				if( Command->cmd == LC_ID_DYLIB )
-				{
-					CurrentVersion = ( ( struct dylib_command* )Command )->dylib.current_version;
-					break;
-				}
-
-				Command = ( struct load_command* )( ( uint8* )Command + Command->cmdsize );
-			}
-		}
-
-		FMemory::Free( Commands );
-	}
-	close(File);
-
-	return ((CurrentVersion & 0xff) + ((CurrentVersion >> 8) & 0xff) * 100 + ((CurrentVersion >> 16) & 0xffff) * 10000);
-}
-
 bool FMacPlatformProcess::CanLaunchURL(const TCHAR* URL)
 {
 	return URL != nullptr;
@@ -215,6 +144,16 @@ void FMacPlatformProcess::LaunchURL( const TCHAR* URL, const TCHAR* Parms, FStri
 	SCOPED_AUTORELEASE_POOL;
 
 	UE_LOG(LogMac, Log,  TEXT("LaunchURL %s %s"), URL, Parms?Parms:TEXT("") );
+
+	if (FCoreDelegates::ShouldLaunchUrl.IsBound() && !FCoreDelegates::ShouldLaunchUrl.Execute(URL))
+	{
+		if (Error)
+		{
+			*Error = TEXT("LaunchURL cancelled by delegate");
+		}
+		return;
+	}
+
 	NSString* Url = (NSString*)FPlatformString::TCHARToCFString( URL );
 	
 	FString SchemeName;
@@ -425,7 +364,9 @@ bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, in
 		
 		NSAutoReadPipe* StdErrPipe = [[NSAutoReadPipe new] autorelease];
 		[ProcessHandle setStandardError: (id)[StdErrPipe Pipe]];
-		
+
+		id<NSObject> Activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated reason:@"ExecProcess"];
+
 		@try
 		{
 			[ProcessHandle launch];
@@ -446,7 +387,12 @@ bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, in
 			{
 				[StdErrPipe copyPipeData: *OutStdErr];
 			}
-			
+
+			if (Activity)
+			{
+				[[NSProcessInfo processInfo] endActivity:Activity];
+			}
+
 			return true;
 		}
 		@catch (NSException* Exc)
@@ -459,6 +405,12 @@ bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, in
 			{
 				*OutStdErr = FString([Exc reason]);
 			}
+
+			if (Activity)
+			{
+				[[NSProcessInfo processInfo] endActivity:Activity];
+			}
+
 			return false;
 		}
 	}
@@ -625,7 +577,14 @@ FProcHandle FMacPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parm
 		*OutProcessID = ProcessHandle ? [ProcessHandle processIdentifier] : 0;
 	}
 
-	return FProcHandle(ProcessHandle);
+	FProcHandle Handle(ProcessHandle);
+	if(ProcessHandle)
+	{
+		Handle.Activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated reason:@"CreateProc"];
+		[Handle.Activity retain];
+	}
+
+	return Handle;
 }
 
 FProcHandle FMacPlatformProcess::OpenProcess(uint32 ProcessID)
@@ -653,6 +612,11 @@ void FMacPlatformProcess::WaitForProc( FProcHandle& ProcessHandle )
 void FMacPlatformProcess::CloseProc( FProcHandle & ProcessHandle )
 {
 	SCOPED_AUTORELEASE_POOL;
+	if (ProcessHandle.Activity)
+	{
+		[[NSProcessInfo processInfo] endActivity:ProcessHandle.Activity];
+		[ProcessHandle.Activity release];
+	}
 	[(NSTask*)ProcessHandle.Get() release];
 	ProcessHandle.Reset();
 }
@@ -709,7 +673,7 @@ FString FMacPlatformProcess::GetApplicationName( uint32 ProcessId )
 {
 	FString Output = TEXT("");
 
-	char Buffer[MAX_PATH];
+	char Buffer[MAC_MAX_PATH];
 	int32 Ret = proc_pidpath(ProcessId, Buffer, sizeof(Buffer));
 	if (Ret > 0)
 	{
@@ -753,38 +717,9 @@ bool FMacPlatformProcess::IsSandboxedApplication()
 #endif
 }
 
-void FMacPlatformProcess::CleanFileCache()
-{
-	bool bShouldCleanShaderWorkingDirectory = true;
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
-	// Only clean the shader working directory if we are the first instance, to avoid deleting files in use by other instances
-	//@todo - check if any other instances are running right now
-	bShouldCleanShaderWorkingDirectory = GIsFirstInstance;
-#endif
-
-    if (bShouldCleanShaderWorkingDirectory && !FParse::Param( FCommandLine::Get(), TEXT("Multiprocess")))
-    {
-        // get shader path, and convert it to the userdirectory
-		for (const auto& ShaderSourceDirectoryEntry : FPlatformProcess::AllShaderSourceDirectoryMappings())
-		{
-			FString ShaderDir = FString(FPlatformProcess::BaseDir()) / ShaderSourceDirectoryEntry.Value;
-            FString UserShaderDir = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*ShaderDir);
-            FPaths::CollapseRelativeDirectories(ShaderDir);
-            
-            // make sure we don't delete from the source directory
-            if (ShaderDir != UserShaderDir)
-            {
-                IFileManager::Get().DeleteDirectory(*UserShaderDir, false, true);
-            }
-        }
-        
-        FPlatformProcess::CleanShaderWorkingDir();
-    }
-}
-
 const TCHAR* FMacPlatformProcess::BaseDir()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
@@ -811,7 +746,7 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 				BasePath = [BasePath stringByDeletingLastPathComponent];
 			}
 		}
-		FCString::Strcpy(Result, MAX_PATH, *FString(BasePath));
+		FCString::Strcpy(Result, MAC_MAX_PATH, *FString(BasePath));
 		FCString::Strcat(Result, TEXT("/"));
 	}
 	return Result;
@@ -819,7 +754,7 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 
 const TCHAR* FMacPlatformProcess::UserDir()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
@@ -847,7 +782,7 @@ const TCHAR* FMacPlatformProcess::UserSettingsDir()
 
 static TCHAR* UserLibrarySubDirectory()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		FString SubDirectory = IsRunningGame() ? FString(FApp::GetProjectName()) : FString(TEXT("Unreal Engine")) / FApp::GetProjectName();
@@ -869,7 +804,7 @@ static TCHAR* UserLibrarySubDirectory()
 
 const TCHAR* FMacPlatformProcess::UserPreferencesDir()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
@@ -883,7 +818,7 @@ const TCHAR* FMacPlatformProcess::UserPreferencesDir()
 
 const TCHAR* FMacPlatformProcess::UserLogsDir()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
@@ -895,9 +830,20 @@ const TCHAR* FMacPlatformProcess::UserLogsDir()
 	return Result;
 }
 
+const TCHAR* FMacPlatformProcess::UserHomeDir()
+{
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
+	if (!Result[0])
+	{
+		SCOPED_AUTORELEASE_POOL;
+		FPlatformString::CFStringToTCHAR((CFStringRef)NSHomeDirectory(), Result);
+	}
+	return Result;
+}
+
 const TCHAR* FMacPlatformProcess::ApplicationSettingsDir()
 {
-	static TCHAR Result[MAX_PATH] = TEXT("");
+	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
@@ -960,7 +906,7 @@ void FMacPlatformProcess::SetCurrentWorkingDirectoryToBaseDir()
 FString FMacPlatformProcess::GetCurrentWorkingDirectory()
 {
 	// get the current directory
-	ANSICHAR CurrentDir[MAX_PATH] = { 0 };
+	ANSICHAR CurrentDir[MAC_MAX_PATH] = { 0 };
 	getcwd(CurrentDir, sizeof(CurrentDir));
 	return UTF8_TO_TCHAR(CurrentDir);
 }
@@ -1203,7 +1149,7 @@ FMacPlatformProcess::FProcEnumerator::FProcEnumerator()
 
 	if (sysctl(Mib, 4, NULL, &BufferSize, NULL, 0) != -1 && BufferSize > 0)
 	{
-		char Buffer[MAX_PATH];
+		char Buffer[MAC_MAX_PATH];
 		Processes = (struct kinfo_proc*)FMemory::Malloc(BufferSize);
 		if (sysctl(Mib, 4, Processes, &BufferSize, NULL, 0) != -1)
 		{
@@ -1254,7 +1200,7 @@ uint32 FMacPlatformProcess::FProcEnumInfo::GetParentPID() const
 
 FString FMacPlatformProcess::FProcEnumInfo::GetFullPath() const
 {
-	char Buffer[MAX_PATH];
+	char Buffer[MAC_MAX_PATH];
 	proc_pidpath(GetPID(), Buffer, sizeof(Buffer));
 
 	return Buffer;

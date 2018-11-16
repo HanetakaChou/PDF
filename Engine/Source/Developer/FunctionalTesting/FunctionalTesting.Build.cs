@@ -14,6 +14,7 @@ public class FunctionalTesting : ModuleRules
                 "ShaderCore",
                 "Slate",
                 "MessageLog",
+                "NavigationSystem",
                 "AIModule",
                 "RenderCore",
                 "AssetRegistry",
@@ -31,8 +32,6 @@ public class FunctionalTesting : ModuleRules
         PrivateIncludePaths.AddRange(
             new string[]
             {
-                "MessageLog/Public",
-                "Stats/Public",
                 "Developer/FunctionalTesting/Private",
             }
         );
@@ -45,5 +44,11 @@ public class FunctionalTesting : ModuleRules
                 }
             );
         }
-    }
+
+		//make sure this is compiled for binary builds
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PrecompileForTargets = PrecompileTargetsType.Any;
+		}
+	}
 }

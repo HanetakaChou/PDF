@@ -5,6 +5,13 @@
 #include "IXRTrackingSystem.h"
 #include "IXRCamera.h"
 
+class HEADMOUNTEDDISPLAY_API FXRTrackingSystemDelegates
+{
+public:
+	DECLARE_MULTICAST_DELEGATE_OneParam(FXRTrackingOriginChanged, const IXRTrackingSystem* /*TrackingSystem*/);
+	static FXRTrackingOriginChanged OnXRTrackingOriginChanged;
+};
+
 /** 
  * Base utility class for implementations of the IXRTrackingSystem interface
  * Contains helpers and default implementation of most abstract methods, so final implementations only need to override features that they support.
@@ -82,7 +89,7 @@ public:
 	 *
 	 * The default implementations simply ignores the origin value.
 	 */
-	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override {}
+	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override { }
 
 	/**
 	 * Returns current tracking origin.
@@ -99,10 +106,37 @@ public:
 	 */
 	virtual FTransform GetTrackingToWorldTransform() const override;
 
+	/** 
+	 * Returns a transform for converting from 'Floor' origin space to 'Eye' origin space.
+	 * The default implementation always returns the identity.
+	 */
+	virtual bool GetFloorToEyeTrackingTransform(FTransform& OutFloorToEye) const override { OutFloorToEye = FTransform::Identity; return false; }
+
 	/**
 	 * Refreshes the system's known tracking-to-world transform.
 	 */
 	virtual void UpdateTrackingToWorldTransform(const FTransform& TrackingToWorldOverride) override;
+
+	/**
+	 * Called to calibrate the offset transform between an external tracking source and the internal tracking source
+	 * (e.g. mocap tracker to and HMD tracker).  This should be called once per session, or when the physical relationship
+	 * between the external tracker and internal tracker changes (e.g. it was bumped or reattached).  After calibration,
+	 * calling UpdateExternalTrackingPosition will try to correct the internal tracker to the calibrated offset to prevent
+	 * drift between the two systems
+	 *
+	 * @param ExternalTrackingTransform		The transform in world-coordinates, of the reference marker of the external tracking system
+	 */
+	virtual void CalibrateExternalTrackingSource(const FTransform& ExternalTrackingTransform) override;
+
+	/**
+	* Called after calibration to attempt to pull the internal tracker (e.g. HMD tracking) in line with the external tracker
+	* (e.g. mocap tracker).  This will set the internal tracker's base offset and rotation to match and realign the two systems.
+	* This can be called every tick, or whenever realignment is desired.  Note that this may cause choppy movement if the two
+	* systems diverge relative to each other, or a big jump if called infrequently when there has been significant drift
+	*
+	* @param ExternalTrackingTransform		The transform in world-coordinates, of the reference marker of the external tracking system
+	*/
+	virtual void UpdateExternalTrackingPosition(const FTransform& ExternalTrackingTransform) override;
 
 	/**
 	 * This method should return the world to meters scale for the current frame.
@@ -112,6 +146,13 @@ public:
 	virtual float GetWorldToMetersScale() const =0;
 
 protected:
+	/** 
+	 * Meant to be called by sub-classes whenever the tracking origin is altered.
+	 */
+	virtual void OnTrackingOriginChanged()
+	{
+		FXRTrackingSystemDelegates::OnXRTrackingOriginChanged.Broadcast(this);
+	}
 
 	/**
 	 * Computes the project's tracking-to-world transform based off how the user 
@@ -126,5 +167,13 @@ protected:
 	TSharedPtr< class FDefaultXRCamera, ESPMode::ThreadSafe > XRCamera;
 
 	FTransform CachedTrackingToWorld;
+
+	/**
+	 * If the tracker is trying to lock itself to an external tracking source for drift control,
+	 * this stores the calibrated offset between the external tracking system and the internal tracking system
+	 * (e.g. a location from a mocap system tracker to the HMD's internal IMU).  UpdateExternalTrackingPostion
+	 * will attempt to normalize the internal tracking system to match this calibration when called.
+	 */
+	FTransform CalibratedOffset;
 };
 

@@ -1,6 +1,6 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "AutomationTest.h"
+#include "Misc/AutomationTest.h"
 #include "Tests/TestHelpers.h"
 #include "Tests/Fake/ChunkReferenceTracker.fake.h"
 #include "Tests/Fake/ChunkDataAccess.fake.h"
@@ -9,6 +9,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 BEGIN_DEFINE_SPEC(FChunkEvictionPolicySpec, "BuildPatchServices.Unit", EAutomationTestFlags::ProductFilter | EAutomationTestFlags::ApplicationContextMask)
+const uint32 TestChunkSize = 128 * 1024;
 // Unit
 TUniquePtr<BuildPatchServices::IChunkEvictionPolicy> ChunkEvictionPolicy;
 // Mock
@@ -40,7 +41,7 @@ void FChunkEvictionPolicySpec::Define()
 		ReferencedChunks.Add(NextReference);
 		++ReferenceCounts.FindOrAdd(NextReference);
 	}
-	ChunkData.SetNumUninitialized(BuildPatchServices::ChunkDataSize);
+	ChunkData.SetNumUninitialized(TestChunkSize);
 	MockChunkDataAccess.Reset(new FFakeChunkDataAccess());
 	MockChunkDataAccess->ChunkData = ChunkData.GetData();
 

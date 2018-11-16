@@ -50,6 +50,7 @@
 #include "EditorWorldExtension.h"
 #include "ViewportWorldInteraction.h"
 #include "Editor/EditorPerformanceSettings.h"
+#include "ImageWriteQueue.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewportClient"
 
@@ -62,6 +63,14 @@ static TAutoConsoleVariable<int32> CVarAlignedOrthoZoom(
 	TEXT("Only affects the editor ortho viewports.\n")
 	TEXT(" 0: Each ortho viewport zoom in defined by the viewport width\n")
 	TEXT(" 1: All ortho viewport zoom are locked to each other to allow axis lines to be aligned with each other."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarEditorViewportTest(
+	TEXT("r.Test.EditorConstrainedView"),
+	0,
+	TEXT("Allows to test different viewport rectangle configuations (in game only) as they can happen when using Matinee/Editor.\n")
+	TEXT("0: off(default)\n")
+	TEXT("1..7: Various Configuations"),
 	ECVF_RenderThreadSafe);
 
 static bool GetDefaultLowDPIPreviewValue()
@@ -286,7 +295,7 @@ void InitViewOptionsArray()
 }
 
 FEditorViewportClient::FEditorViewportClient(FEditorModeTools* InModeTools, FPreviewScene* InPreviewScene, const TWeakPtr<SEditorViewport>& InEditorViewportWidget)
-	: bAllowCinematicPreview(false)
+	: bAllowCinematicControl(false)
 	, CameraSpeedSetting(4)
 	, CameraSpeedScalar(1.0f)
 	, ImmersiveDelegate()
@@ -364,6 +373,7 @@ FEditorViewportClient::FEditorViewportClient(FEditorModeTools* InModeTools, FPre
 	, NearPlane(-1.0f)
 	, FarPlane(0.0f)
 	, bInGameViewMode(false)
+	, bInVREditViewMode(false)
 	, bShouldInvalidateViewportWidget(false)
 	, DragStartView(nullptr)
 	, DragStartViewFamily(nullptr)
@@ -743,10 +753,34 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 
 
 
-	const FIntPoint ViewportSizeXY = Viewport->GetSizeXY();
+	FIntPoint ViewportSize = Viewport->GetSizeXY();
+	FIntPoint ViewportOffset(0, 0);
 
-	FIntRect ViewRect = FIntRect(0, 0, ViewportSizeXY.X, ViewportSizeXY.Y);
-	ViewInitOptions.SetViewRectangle(ViewRect);
+	// We expect some size to avoid problems with the view rect manipulation
+	if (ViewportSize.X > 50 && ViewportSize.Y > 50)
+	{
+		int32 Value = CVarEditorViewportTest.GetValueOnGameThread();
+
+		if (Value)
+		{
+			int InsetX = ViewportSize.X / 4;
+			int InsetY = ViewportSize.Y / 4;
+
+			// this allows to test various typical view port situations
+			switch (Value)
+			{
+			case 1: ViewportOffset.X += InsetX; ViewportOffset.Y += InsetY; ViewportSize.X -= InsetX * 2; ViewportSize.Y -= InsetY * 2; break;
+			case 2: ViewportOffset.Y += InsetY; ViewportSize.Y -= InsetY * 2; break;
+			case 3: ViewportOffset.X += InsetX; ViewportSize.X -= InsetX * 2; break;
+			case 4: ViewportSize.X /= 2; ViewportSize.Y /= 2; break;
+			case 5: ViewportSize.X /= 2; ViewportSize.Y /= 2; ViewportOffset.X += ViewportSize.X;	break;
+			case 6: ViewportSize.X /= 2; ViewportSize.Y /= 2; ViewportOffset.Y += ViewportSize.Y; break;
+			case 7: ViewportSize.X /= 2; ViewportSize.Y /= 2; ViewportOffset.X += ViewportSize.X; ViewportOffset.Y += ViewportSize.Y; break;
+			}
+		}
+	}
+
+	ViewInitOptions.SetViewRectangle(FIntRect(ViewportOffset, ViewportOffset + ViewportSize));
 
 	// no matter how we are drawn (forced or otherwise), reset our time here
 	TimeForForceRedraw = 0.0;
@@ -786,8 +820,8 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 		    {
 		        int32 X = 0;
 		        int32 Y = 0;
-		        uint32 SizeX = ViewportSizeXY.X;
-		        uint32 SizeY = ViewportSizeXY.Y;
+		        uint32 SizeX = ViewportSize.X;
+		        uint32 SizeY = ViewportSize.Y;
 			    GEngine->StereoRenderingDevice->AdjustViewRect( StereoPass, X, Y, SizeX, SizeY );
 		        const FIntRect StereoViewRect = FIntRect( X, Y, X + SizeX, Y + SizeY );
 		        ViewInitOptions.SetViewRectangle( StereoViewRect );
@@ -848,16 +882,16 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 				    float XAxisMultiplier;
 				    float YAxisMultiplier;
     
-				    if (((ViewportSizeXY.X > ViewportSizeXY.Y) && (AspectRatioAxisConstraint == AspectRatio_MajorAxisFOV)) || (AspectRatioAxisConstraint == AspectRatio_MaintainXFOV))
+				    if (((ViewportSize.X > ViewportSize.Y) && (AspectRatioAxisConstraint == AspectRatio_MajorAxisFOV)) || (AspectRatioAxisConstraint == AspectRatio_MaintainXFOV))
 				    {
 					    //if the viewport is wider than it is tall
 					    XAxisMultiplier = 1.0f;
-					    YAxisMultiplier = ViewportSizeXY.X / (float)ViewportSizeXY.Y;
+					    YAxisMultiplier = ViewportSize.X / (float)ViewportSize.Y;
 				    }
 				    else
 				    {
 					    //if the viewport is taller than it is wide
-					    XAxisMultiplier = ViewportSizeXY.Y / (float)ViewportSizeXY.X;
+					    XAxisMultiplier = ViewportSize.Y / (float)ViewportSize.X;
 					    YAxisMultiplier = 1.0f;
 				    }
     
@@ -895,8 +929,8 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 			//The divisor for the matrix needs to match the translation code.
 			const float Zoom = GetOrthoUnitsPerPixel(Viewport);
 
-			float OrthoWidth = Zoom * ViewportSizeXY.X / 2.0f;
-			float OrthoHeight = Zoom * ViewportSizeXY.Y / 2.0f;
+			float OrthoWidth = Zoom * ViewportSize.X / 2.0f;
+			float OrthoHeight = Zoom * ViewportSize.Y / 2.0f;
 
 			if (EffectiveViewportType == LVT_OrthoXY)
 			{
@@ -970,7 +1004,7 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 
 		if (bConstrainAspectRatio)
 		{
-			ViewInitOptions.SetConstrainedViewRectangle(Viewport->CalculateViewExtents(AspectRatio, ViewRect));
+			ViewInitOptions.SetConstrainedViewRectangle(Viewport->CalculateViewExtents(AspectRatio, ViewInitOptions.GetViewRect()));
 		}
 	}
 
@@ -1003,9 +1037,11 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 	ViewInitOptions.OverrideLODViewOrigin = FVector::ZeroVector;
 	ViewInitOptions.bUseFauxOrthoViewPos = true;
 
+	ViewInitOptions.FOV = ViewFOV;
 	if (bUseControllingActorViewInfo)
 	{
 		ViewInitOptions.bUseFieldOfViewForLOD = ControllingActorViewInfo.bUseFieldOfViewForLOD;
+		ViewInitOptions.FOV = ControllingActorViewInfo.FOV;
 	}
 
 	ViewInitOptions.OverrideFarClippingPlaneDistance = FarPlane;
@@ -1847,10 +1883,10 @@ void FEditorViewportClient::UpdateLightingShowFlags( FEngineShowFlags& InOutShow
 	}
 }
 
-bool FEditorViewportClient::CalculateEditorConstrainedViewRect(FSlateRect& OutSafeFrameRect, FViewport* InViewport)
+bool FEditorViewportClient::CalculateEditorConstrainedViewRect(FSlateRect& OutSafeFrameRect, FViewport* InViewport, float DPIScale)
 {
-	const int32 SizeX = InViewport->GetSizeXY().X;
-	const int32 SizeY = InViewport->GetSizeXY().Y;
+	const int32 SizeX = InViewport->GetSizeXY().X / DPIScale;
+	const int32 SizeY = InViewport->GetSizeXY().Y / DPIScale;
 
 	OutSafeFrameRect = FSlateRect(0, 0, SizeX, SizeY);
 	float FixedAspectRatio;
@@ -1894,7 +1930,7 @@ void FEditorViewportClient::DrawSafeFrames(FViewport& InViewport, FSceneView& Vi
 	if (EngineShowFlags.CameraAspectRatioBars || EngineShowFlags.CameraSafeFrames)
 	{
 		FSlateRect SafeRect;
-		if (CalculateEditorConstrainedViewRect(SafeRect, &InViewport))
+		if (CalculateEditorConstrainedViewRect(SafeRect, &InViewport, Canvas.GetDPIScale()))
 		{
 			if (EngineShowFlags.CameraSafeFrames)
 			{
@@ -3435,7 +3471,7 @@ void FEditorViewportClient::SetupViewForRendering(FSceneViewFamily& ViewFamily, 
 			(InspectViewportPos.X + 0.5f) / float(View.UnscaledViewRect.Width()),
 			(InspectViewportPos.Y + 0.5f) / float(View.UnscaledViewRect.Height()));
 
-		PixelInspectorModule.CreatePixelInspectorRequest(InspectViewportUV, View.State->GetViewKey(), SceneInterface, bInGameViewMode);
+		PixelInspectorModule.CreatePixelInspectorRequest(InspectViewportUV, View.State->GetViewKey(), SceneInterface, bInGameViewMode, View.State->GetPreExposure());
 	}
 	else if (!View.bUsePixelInspector && CurrentMousePos != FIntPoint(-1, -1))
 	{
@@ -3497,7 +3533,7 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 
 	ViewFamily.EngineShowFlags = EngineShowFlags;
 
-	if( ModeTools->GetActiveMode( FBuiltinEditorModes::EM_InterpEdit ) == 0 || !AllowsCinematicPreview() )
+	if( ModeTools->GetActiveMode( FBuiltinEditorModes::EM_InterpEdit ) == 0 || !AllowsCinematicControl() )
 	{
 		if( !EngineShowFlags.Game )
 		{
@@ -3545,7 +3581,7 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 
 	    FSlateRect SafeFrame;
 	    View->CameraConstrainedViewRect = View->UnscaledViewRect;
-	    if (CalculateEditorConstrainedViewRect(SafeFrame, Viewport))
+	    if (CalculateEditorConstrainedViewRect(SafeFrame, Viewport, Canvas->GetDPIScale()))
 	    {
 		    View->CameraConstrainedViewRect = FIntRect(SafeFrame.Left, SafeFrame.Top, SafeFrame.Right, SafeFrame.Bottom);
 	    }
@@ -5065,6 +5101,26 @@ void FEditorViewportClient::MouseLeave(FViewport* InViewport)
 	PixelInspectorRealtimeManagement(this, false);
 }
 
+FViewportCursorLocation FEditorViewportClient::GetCursorWorldLocationFromMousePos()
+{
+	// Create the scene view context
+	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
+		Viewport,
+		GetScene(),
+		EngineShowFlags)
+		.SetRealtimeUpdate(IsRealtime()));
+
+	// Calculate the scene view
+	FSceneView* View = CalcSceneView(&ViewFamily);
+
+	// Construct an FViewportCursorLocation which calculates world space postion from the scene view and mouse pos.
+	return FViewportCursorLocation(View,
+		this,
+		Viewport->GetMouseX(),
+		Viewport->GetMouseY()
+	);
+}
+
 void FEditorViewportClient::CapturedMouseMove( FViewport* InViewport, int32 InMouseX, int32 InMouseY )
 {
 	UpdateRequiredCursorVisibility();
@@ -5084,6 +5140,13 @@ void FEditorViewportClient::OpenScreenshot( FString SourceFilePath )
 
 void FEditorViewportClient::TakeScreenshot(FViewport* InViewport, bool bInValidatViewport)
 {
+	FHighResScreenshotConfig& HighResScreenshotConfig = GetHighResScreenshotConfig();
+
+	if (!ensure(HighResScreenshotConfig.ImageWriteQueue))
+	{
+		return;
+	}
+
 	// The old method for taking screenshots does this for us on mousedown, so we do not have
 	//	to do this for all situations.
 	if( bInValidatViewport )
@@ -5095,75 +5158,94 @@ void FEditorViewportClient::TakeScreenshot(FViewport* InViewport, bool bInValida
 	// Redraw the viewport so we don't end up with clobbered data from other viewports using the same frame buffer.
 	InViewport->Draw();
 
-	// Default the result to fail it will be set to  SNotificationItem::CS_Success if saved ok
-	SNotificationItem::ECompletionState SaveResultState = SNotificationItem::CS_Fail;
-	// The string we will use to tell the user the result of the save
-	FText ScreenshotSaveResultText;
-	FString HyperLinkString;
-
-	// Read the contents of the viewport into an array.
-	TArray<FColor> Bitmap;
-	if( InViewport->ReadPixels(Bitmap) )
-	{
-		check(Bitmap.Num() == InViewport->GetSizeXY().X * InViewport->GetSizeXY().Y);
-
-		// Initialize alpha channel of bitmap
-		for (auto& Pixel : Bitmap)
-		{
-			Pixel.A = 255;
-		}
-
-		// Create screenshot folder if not already present.
-		
-		if ( IFileManager::Get().MakeDirectory(*(GetDefault<ULevelEditorMiscSettings>()->EditorScreenshotSaveDirectory.Path), true ) )
-		{
-			// Save the contents of the array to a bitmap file.
-			FHighResScreenshotConfig& HighResScreenshotConfig = GetHighResScreenshotConfig();
-			HighResScreenshotConfig.SetHDRCapture(false);
-
-			FString ScreenshotSaveName;
-			if (FFileHelper::GenerateNextBitmapFilename(GetDefault<ULevelEditorMiscSettings>()->EditorScreenshotSaveDirectory.Path / TEXT("ScreenShot"), TEXT("png"), ScreenshotSaveName) &&
-				HighResScreenshotConfig.SaveImage(ScreenshotSaveName, Bitmap, InViewport->GetSizeXY()))
-			{
-				// Setup the string with the path and name of the file
-				ScreenshotSaveResultText = NSLOCTEXT( "UnrealEd", "ScreenshotSavedAs", "Screenshot capture saved as" );					
-				HyperLinkString = FPaths::ConvertRelativePathToFull( ScreenshotSaveName );	
-				// Flag success
-				SaveResultState = SNotificationItem::CS_Success;
-			}
-			else
-			{
-				// Failed to save the bitmap
-				ScreenshotSaveResultText = NSLOCTEXT( "UnrealEd", "ScreenshotFailedBitmap", "Screenshot failed, unable to save" );									
-			}
-		}
-		else
-		{
-			// Failed to make save directory
-			ScreenshotSaveResultText = NSLOCTEXT( "UnrealEd", "ScreenshotFailedFolder", "Screenshot capture failed, unable to create save directory (see log)" );					
-			UE_LOG(LogEditorViewport, Warning, TEXT("Failed to create directory %s"), *FPaths::ConvertRelativePathToFull(GetDefault<ULevelEditorMiscSettings>()->EditorScreenshotSaveDirectory.Path));
-		}
-	}
-	else
-	{
-		// Failed to read the image from the viewport
-		ScreenshotSaveResultText = NSLOCTEXT( "UnrealEd", "ScreenshotFailedViewport", "Screenshot failed, unable to read image from viewport" );					
-	}
-
 	// Inform the user of the result of the operation
-	FNotificationInfo Info( ScreenshotSaveResultText );
+	FNotificationInfo Info(FText::GetEmpty());
 	Info.ExpireDuration = 5.0f;
 	Info.bUseSuccessFailIcons = false;
 	Info.bUseLargeFont = false;
-	if ( !HyperLinkString.IsEmpty() )
+
+	TSharedPtr<SNotificationItem> SaveMessagePtr = FSlateNotificationManager::Get().AddNotification(Info);
+	SaveMessagePtr->SetCompletionState(SNotificationItem::CS_Fail);
+
+	TUniquePtr<FImageWriteTask> ImageTask = MakeUnique<FImageWriteTask>();
+
 	{
-		Info.Hyperlink = FSimpleDelegate::CreateRaw(this, &FEditorViewportClient::OpenScreenshot, HyperLinkString );
-		Info.HyperlinkText = FText::FromString( HyperLinkString );
+		// Read the contents of the viewport into an array.
+		TUniquePtr<TImagePixelData<FColor>> PixelData = MakeUnique<TImagePixelData<FColor>>(InViewport->GetSizeXY());
+		if( !InViewport->ReadPixels(PixelData->Pixels) )
+		{
+			// Failed to read the image from the viewport
+			SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailedViewport", "Screenshot failed, unable to read image from viewport" ));
+			return;
+		}
+
+		check(PixelData->IsDataWellFormed());
+		ImageTask->PixelData = MoveTemp(PixelData);
 	}
 
-	TWeakPtr<SNotificationItem> SaveMessagePtr;
-	SaveMessagePtr = FSlateNotificationManager::Get().AddNotification(Info);
-	SaveMessagePtr.Pin()->SetCompletionState(SaveResultState);
+	// Ensure the alpha channel is full alpha (this happens on the background thread)
+	ImageTask->PixelPreProcessors.Add(TAsyncAlphaWrite<FColor>(255));
+
+	// Create screenshot folder if not already present.
+	const FString& Directory = GetDefault<ULevelEditorMiscSettings>()->EditorScreenshotSaveDirectory.Path;
+	if ( !IFileManager::Get().MakeDirectory(*Directory, true ) )
+	{
+		// Failed to make save directory
+		UE_LOG(LogEditorViewport, Warning, TEXT("Failed to create directory %s"), *FPaths::ConvertRelativePathToFull(Directory));
+		SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailedFolder", "Screenshot capture failed, unable to create save directory (see log)" ));
+		return;
+	}
+
+	// Save the contents of the array to a bitmap file.
+	HighResScreenshotConfig.SetHDRCapture(false);
+
+	// Set the image task parameters
+	ImageTask->Format = EImageFormat::PNG;
+	ImageTask->CompressionQuality = (int32)EImageCompressionQuality::Default;
+
+	bool bGeneratedFilename = FFileHelper::GenerateNextBitmapFilename(Directory / TEXT("ScreenShot"), TEXT("png"), ImageTask->Filename);
+	if (!bGeneratedFilename)
+	{
+		SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailed_TooManyScreenshots", "Screenshot failed, too many screenshots in output directory" ));
+		return;
+	}
+
+	FString HyperLinkString = FPaths::ConvertRelativePathToFull(ImageTask->Filename);
+
+	// Define the callback to be called on the main thread when the image has completed
+	// This will be called regardless of whether the write succeeded or not, and will update
+	// the text and completion state of the notification.
+	ImageTask->OnCompleted = [HyperLinkString, SaveMessagePtr](bool bCompletedSuccessfully)
+	{
+		if (bCompletedSuccessfully)
+		{
+			auto OpenScreenshotFolder = [HyperLinkString]
+			{
+				FPlatformProcess::ExploreFolder( *FPaths::GetPath(HyperLinkString) );
+			};
+
+			SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotSavedAs", "Screenshot capture saved as" ));
+
+			SaveMessagePtr->SetHyperlink(FSimpleDelegate::CreateLambda(OpenScreenshotFolder), FText::FromString(HyperLinkString));
+			SaveMessagePtr->SetCompletionState(SNotificationItem::CS_Success);
+		}
+		else
+		{
+			SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailed_CouldNotSave", "Screenshot failed, unable to save" ));
+			SaveMessagePtr->SetCompletionState(SNotificationItem::CS_Fail);
+		}
+	};
+
+	TFuture<bool> CompletionFuture = HighResScreenshotConfig.ImageWriteQueue->Enqueue(MoveTemp(ImageTask));
+	if (CompletionFuture.IsValid())
+	{
+		SaveMessagePtr->SetCompletionState(SNotificationItem::CS_Pending);
+	}
+	else
+	{
+		// Unable to write the data for an unknown reason
+		SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailedWrite", "Screenshot failed, corrupt data captured from the viewport." ));
+	}
 }
 
 /**
@@ -5214,6 +5296,11 @@ void FEditorViewportClient::ProcessScreenShots(FViewport* InViewport)
 		FHighResScreenshotConfig& HighResScreenshotConfig = GetHighResScreenshotConfig();
 		bool bCaptureAreaValid = HighResScreenshotConfig.CaptureRegion.Area() > 0;
 
+		if (!ensure(HighResScreenshotConfig.ImageWriteQueue))
+		{
+			return;
+		}
+
 		// If capture region isn't valid, we need to determine which rectangle to capture from.
 		// We need to calculate a proper view rectangle so that we can take into account camera
 		// properties, such as it being aspect ratio constrained
@@ -5238,7 +5325,6 @@ void FEditorViewportClient::ProcessScreenShots(FViewport* InViewport)
 			CaptureRect = View->UnscaledViewRect;
 		}
 
-		FString ScreenShotName = FScreenshotRequest::GetFilename();
 		TArray<FColor> Bitmap;
 		if (GetViewportScreenShot(InViewport, Bitmap, CaptureRect))
 		{
@@ -5283,22 +5369,29 @@ void FEditorViewportClient::ProcessScreenShots(FViewport* InViewport)
 				BitmapSize = FIntPoint(NewWidth, NewHeight);
 			}
 
+			TUniquePtr<FImageWriteTask> ImageTask = MakeUnique<FImageWriteTask>();
+			ImageTask->PixelData = MakeUnique<TImagePixelData<FColor>>(BitmapSize, MoveTemp(Bitmap));
+
 			// Set full alpha on the bitmap
 			if (!bWriteAlpha)
 			{
-				for (auto& Pixel : Bitmap)
-				{
-					Pixel.A = 255;
-				}
+				ImageTask->PixelPreProcessors.Add(TAsyncAlphaWrite<FColor>(255));
 			}
 
+			HighResScreenshotConfig.PopulateImageTaskParams(*ImageTask);
+			ImageTask->Filename = FScreenshotRequest::GetFilename();
+
 			// Save the bitmap to disc
-			HighResScreenshotConfig.SaveImage(ScreenShotName, Bitmap, BitmapSize);
+			TFuture<bool> CompletionFuture = HighResScreenshotConfig.ImageWriteQueue->Enqueue(MoveTemp(ImageTask));
+			if (CompletionFuture.IsValid())
+			{
+				CompletionFuture.Wait();
+			}
 		}
 		
 		// Done with the request
 		FScreenshotRequest::Reset();
-		FScreenshotRequest::OnScreenshotRequestProcessed().ExecuteIfBound();
+		FScreenshotRequest::OnScreenshotRequestProcessed().Broadcast();
 
 		// Re-enable screen messages - if we are NOT capturing a movie
 		GAreScreenMessagesEnabled = GScreenMessagesRestoreState;
@@ -5470,6 +5563,60 @@ void FEditorViewportClient::SetGameView(bool bGameViewEnable)
 	ApplyViewMode(GetViewMode(), IsPerspective(), EngineShowFlags);
 
 	bInGameViewMode = bGameViewEnable;
+
+	Invalidate();
+}
+
+
+void FEditorViewportClient::SetVREditView(bool bVREditViewEnable)
+{
+	// backup this state as we want to preserve it
+	bool bCompositeEditorPrimitives = EngineShowFlags.CompositeEditorPrimitives;
+
+	// defaults
+	FEngineShowFlags VREditFlags(ESFIM_VREditing);
+	FEngineShowFlags EditorFlags(ESFIM_Editor);
+	{
+		// likely we can take the existing state
+		if (EngineShowFlags.VREditing)
+		{
+			VREditFlags = EngineShowFlags;
+			EditorFlags = LastEngineShowFlags;
+		}
+		else if (LastEngineShowFlags.VREditing)
+		{
+			VREditFlags = LastEngineShowFlags;
+			EditorFlags = EngineShowFlags;
+		}
+	}
+
+	// toggle between the game and engine flags
+	if (bVREditViewEnable)
+	{
+		EngineShowFlags = VREditFlags;
+		LastEngineShowFlags = EditorFlags;
+	}
+	else
+	{
+		EngineShowFlags = EditorFlags;
+		LastEngineShowFlags = VREditFlags;
+	}
+	// maintain this state
+	EngineShowFlags.SetCompositeEditorPrimitives(bCompositeEditorPrimitives);
+	LastEngineShowFlags.SetCompositeEditorPrimitives(bCompositeEditorPrimitives);
+
+	//reset game engine show flags that may have been turned on by making a selection in game view
+	if (bVREditViewEnable)
+	{
+		EngineShowFlags.SetModeWidgets(false);
+		EngineShowFlags.SetBillboardSprites(false);
+	}
+
+	EngineShowFlags.SetSelectionOutline(bVREditViewEnable ? true : GetDefault<ULevelEditorViewportSettings>()->bUseSelectionOutline);
+
+	ApplyViewMode(GetViewMode(), IsPerspective(), EngineShowFlags);
+
+	bInVREditViewMode = bVREditViewEnable;
 
 	Invalidate();
 }

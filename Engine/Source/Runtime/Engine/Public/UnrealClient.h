@@ -19,6 +19,7 @@
 class FCanvas;
 class FViewport;
 class FViewportClient;
+class UModel;
 
 /**
  * A render target.
@@ -89,6 +90,11 @@ public:
 
 	ENGINE_API bool ReadLinearColorPixelsPtr(FLinearColor* OutImageBytes, FReadSurfaceDataFlags InFlags = FReadSurfaceDataFlags(RCM_MinMax, CubeFace_MAX), FIntRect InRect = FIntRect(0, 0, 0, 0));
 
+	/**
+	 * Returns the GPU nodes on which to render this rendertarget.
+	 **/
+	ENGINE_API virtual FRHIGPUMask GetGPUMask(FRHICommandListImmediate& RHICmdList) const { return FRHIGPUMask::GPU0(); }
+
 protected:
 
 	FTexture2DRHIRef RenderTargetTextureRHI;
@@ -125,7 +131,7 @@ public:
 */
 #define MAX_HITPROXYSIZE 200
 
-DECLARE_DELEGATE(FOnScreenshotRequestProcessed);
+DECLARE_MULTICAST_DELEGATE(FOnScreenshotRequestProcessed);
 
 struct ENGINE_API FScreenshotRequest
 {
@@ -198,12 +204,14 @@ struct FStatUnitData
 	float GameThreadTime;
 	float GPUFrameTime;
 	float FrameTime;
+	float RHITTime;
 
 	/** Raw equivalents of the above variables */
 	float RawRenderThreadTime;
 	float RawGameThreadTime;
 	float RawGPUFrameTime;
 	float RawFrameTime;
+	float RawRHITTime;
 
 	// NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
@@ -225,6 +233,7 @@ struct FStatUnitData
 	TArray<float> GameThreadTimes;
 	TArray<float> GPUFrameTimes;
 	TArray<float> FrameTimes;
+	TArray<float> RHITTimes;
 	TArray<float> ResolutionFractions;
 #endif //!UE_BUILD_SHIPPING
 
@@ -233,6 +242,7 @@ struct FStatUnitData
 		, GameThreadTime(0.0f)
 		, GPUFrameTime(0.0f)
 		, FrameTime(0.0f)
+		, RHITTime(0.0f)
 		, RawRenderThreadTime(0.0f)
 		, RawGameThreadTime(0.0f)
 		, RawGPUFrameTime(0.0f)
@@ -253,6 +263,7 @@ struct FStatUnitData
 		GameThreadTimes.AddZeroed(NumberOfSamples);
 		GPUFrameTimes.AddZeroed(NumberOfSamples);
 		FrameTimes.AddZeroed(NumberOfSamples);
+		RHITTimes.AddZeroed(NumberOfSamples);
 		ResolutionFractions.Reserve(NumberOfSamples);
 		for (int32 i = 0; i < NumberOfSamples; i++)
 		{
@@ -341,6 +352,7 @@ public:
 	virtual bool IsPenActive() { return false; }
 	virtual void SetMouse(int32 x, int32 y) = 0;
 	virtual bool IsFullscreen()	const { return WindowMode == EWindowMode::Fullscreen || WindowMode == EWindowMode::WindowedFullscreen; }
+	virtual bool IsExclusiveFullscreen() const { return WindowMode == EWindowMode::Fullscreen; }
 	virtual EWindowMode::Type GetWindowMode()	const { return WindowMode; }
 	virtual void ProcessInput( float DeltaTime ) = 0;
 
@@ -378,9 +390,16 @@ public:
 	virtual void SetPreCaptureMousePosFromSlateCursor() {}
 
 	/**
-	 *	Starts a new rendering frame. Called from the game thread thread.
+	 * Starts a new rendering frame. Called from the game thread thread.
+	 * @param bShouldPresent Whether the frame will be presented to the screen
 	 */
-	ENGINE_API virtual void	EnqueueBeginRenderFrame();
+	ENGINE_API virtual void	EnqueueBeginRenderFrame(const bool bShouldPresent);
+
+	/**
+	 *	Ends a rendering frame. Called from the game thread.
+	 *	@param bPresent		Whether the frame should be presented to the screen
+	 */
+	ENGINE_API virtual void EnqueueEndRenderFrame(const bool bLockToVsync, const bool bShouldPresent);
 
 	/**
 	 *	Starts a new rendering frame. Called from the rendering thread.
@@ -393,6 +412,11 @@ public:
 	 *	@param bLockToVsync	Whether the GPU should block until VSYNC before presenting
 	 */
 	ENGINE_API virtual void	EndRenderFrame(FRHICommandListImmediate& RHICmdList, bool bPresent, bool bLockToVsync);
+
+	/**
+	 * Returns the GPU nodes on which to render this viewport.
+	 **/
+	ENGINE_API virtual FRHIGPUMask GetGPUMask(FRHICommandListImmediate& RHICmdList) const override;
 
 	/**
 	 * @return whether or not this Controller has a keyboard available to be used
@@ -455,6 +479,13 @@ public:
 	 * Caution is required as calling Invalidate after this will free the returned HHitProxy.
 	 */
 	ENGINE_API HHitProxy* GetHitProxy(int32 X,int32 Y);
+
+	/**
+	 * Returns all actors and models found in the hit proxy within a specified region.
+	 * InRect must be entirely within the viewport's client area.
+	 * If the hit proxies are not cached, this will call ViewportClient->Draw with a hit-testing canvas.
+	 */
+	ENGINE_API void GetActorsAndModelsInHitProxy(FIntRect InRect, TSet<AActor*>& OutActors, TSet<UModel*>& OutModels);
 
 	/**
 	 * Retrieves the interface to the viewport's frame, if it has one.
@@ -565,12 +596,6 @@ public:
 	/** Returns dimensions of RenderTarget texture. Can be called on a game thread. */
 	virtual FIntPoint GetRenderTargetTextureSizeXY() const { return GetSizeXY(); }
 
-	/** Causes this viewport to flush rendering commands once it has been drawn */
-	void IncrementFlushOnDraw() { ++FlushOnDrawCount; }
-
-	/** Decrements a previously incremented count that caused this viewport to flush rendering commands when it was drawn */
-	void DecrementFlushOnDraw() { check(FlushOnDrawCount); --FlushOnDrawCount; }
-
 protected:
 
 	/** The viewport's client. */
@@ -678,9 +703,6 @@ protected:
 	/** If true this viewport is an FSlateSceneViewport */
 	uint32 bIsSlateViewport : 1;
 
-	/** The number of pending calls to IncrementFlushOnDraw. Non-zero implies this viewport will flush rendering commands when it is drawn. */
-	uint32 FlushOnDrawCount;
-
 	/** true if we should draw game viewports (has no effect on Editor viewports) */
 	ENGINE_API static bool bIsGameRenderingEnabled;
 
@@ -781,11 +803,15 @@ public:
 	 * @param	Handle - Identifier unique to this touch event
 	 * @param	Type - What kind of touch event this is (see ETouchType)
 	 * @param	TouchLocation - Screen position of the touch
+	 * @param	Force - How hard the touch is
 	 * @param	DeviceTimestamp - Timestamp of the event
 	 * @param	TouchpadIndex - For devices with multiple touchpads, this is the index of which one
 	 * @return	True to consume the key event, false to pass it on.
 	 */
-	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex) { return false; }
+	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex) { return false; }
+
+	DEPRECATED(4.20, "InputTouch now takes a Force")
+	bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex) { return InputTouch(Viewport, ControllerId, Handle, Type, TouchLocation, 1.0f, DeviceTimestamp, TouchpadIndex); }
 
 	/**
 	 * Check a gesture event received by the viewport.

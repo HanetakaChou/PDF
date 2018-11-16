@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3782314
+﻿INTSourceChangelist:3810557
 Availability:Public
 Title:소스에서 언리얼 엔진 빌드하기
 Crumbs: %ROOT%, Programming, Programming/Development
@@ -106,13 +106,29 @@ tags:Unreal Build System
 	[/PARAM]
 [/OBJECT]
 
+## 언리얼 엔진 시작하기
+
+[](GettingStarted) 문서를 참고하여 언리얼 엔진 사용법을 배워보세요!
+
+UE4 에 빠르게 익숙해지는 방법을 찾고계시다면, 다음 튜토리얼을 참고하세요:
+*	[](Engine/Content/QuickStart)
+*	[](Programming/QuickStart)
+*	[](Engine/QuickStart)
+
+
+[REGION:note]
+UE4 에디터내 도움말 기능도 답을 구하기 좋은 방법입니다.
+[/REGION]
+
+[/EXCERPT:Main]
+
 [COMMENT:none]
 
 [EXCERPT:windowscompile]
 
 소스에서 언리얼 엔진을 빌드하기 전 Microsoft Visual Studio 2015 가 설치되어 있는지 확인해 주시기 바랍니다. 시스템 사양에 따라 엔진을 컴파일하는 데 10 에서 40 분까지도 걸릴 수 있습니다.
 
-1.	루트 디렉토리 안에서, **GenerateProjectFiles.bat** 를 실행하여 프로젝트 파일을 구성합니다.
+1.	루트 디렉터리 안에서, **GenerateProjectFiles.bat** 를 실행하여 프로젝트 파일을 구성합니다.
 
 	[REGION:warning]
 	모든 프로젝트 파일은 중간 파일입니다 (`[UE4Root]\Engine\Intermediate\ProjectFiles`). 최신 상태를 유지하려면 새 빌드를 동기화할 때마다 프로젝트 파일을 생성해야 합니다. `Intermediate` 폴더를 지운 경우, GenerateProjectFiles 뱃치 파일을 실행하여 프로젝트를 재생성해야 합니다.
@@ -124,11 +140,11 @@ tags:Unreal Build System
 
 	![](configMenu_updated.png)
 
-1.	개발중인 윈도우 운영체제 타겟 버전(32 비트냐 62 비트냐)에 따라 솔루션 플랫폼을 **Win32** 나 **Win64** 중 하나로 설정합니다.
+1.	개발중인 윈도우 운영체제 타깃 버전(32 비트냐 62 비트냐)에 따라 솔루션 플랫폼을 **Win32** 나 **Win64** 중 하나로 설정합니다.
 
 	![](platform_menu_updated.png)
 
-1.	UE4 타겟에 우클릭한 다음 **Build** 를 선택합니다.
+1.	UE4 타깃에 우클릭한 다음 **Build** 를 선택합니다.
 
 	![](BuildUE4.png)
 
@@ -138,11 +154,11 @@ tags:Unreal Build System
 
 소스에서 언리얼 엔진을 빌드하기 전 XCode 최신 버전이 설치되어 있는지 확인하세요. 시스템 사양에 따라 엔진을 컴파일하는 데 10 에서 40 분까지도 걸릴 수 있습니다.
 		
-1.	루트 디렉토리에서, **GenerateProjectFiles.command** 를 실행시켜 프로젝트 파일을 구성합니다.
+1.	루트 디렉터리에서, **GenerateProjectFiles.command** 를 실행시켜 프로젝트 파일을 구성합니다.
 		
 1.	**UE4.xcodeproj** 에 더블클릭하여 프로젝트를 XCode 에 로드합니다.
 
-1.	빌드 타겟 설정은, 제목줄에서 **My Mac** 에 **UE4Editor - Mac** 을 선택합니다.
+1.	빌드 타깃 설정은, 제목줄에서 **My Mac** 에 **UE4Editor - Mac** 을 선택합니다.
 
 	![](SettingMacTarget.png)
 
@@ -157,11 +173,11 @@ tags:Unreal Build System
 저희 개발자와 기술지원 팀은 현재 우분투 최신 버전을 사용합니다. 그에 따라 (우분투 다른 버전을 포함한) 다른 리눅스 배포판에 대해서는 기술지원이 불가능할 수도 있습니다. 진행하기 전 시스템에 여유 공간이 최소 10 기가는 되는지 
 확인해 주시기 바랍니다.
 
-1.  루트 디렉토리 내, 터미널에서 **Setup.sh** 를 실행하여 프로젝트 파일 생성 준비를 위한 파일을 구성합니다.
+1.  루트 디렉터리 내, 터미널에서 **Setup.sh** 를 실행하여 프로젝트 파일 생성 준비를 위한 파일을 구성합니다.
 
 	![](RunSetupShellScript_Linux.png)
 
-1.	루트 디렉토리에서, 터미널에 **GenerateProjectFiles.sh** 를 실행시켜 프로젝트 파일을 생성합니다.
+1.	루트 디렉터리에서, 터미널에 **GenerateProjectFiles.sh** 를 실행시켜 프로젝트 파일을 생성합니다.
 
 	![](RunGenPrjFilesShellScript_Linux.png)
 
@@ -173,10 +189,6 @@ tags:Unreal Build System
 램이 최소 8 기가바이트, 최소 8 코어 이상의 (하이퍼스레드 포함) CPU 가 장착된 머신에서 소스 코드 컴파일 작업을 할 것을 추천합니다.
 
 [/EXCERPT:linuxcompile]
-
-[/COMMENT]
-
-[COMMENT:none]
 
 [EXCERPT:windowsrun]
 
@@ -227,19 +239,3 @@ tags:Unreal Build System
 [/EXCERPT:linuxrun]
 
 [/COMMENT]
-
-## 언리얼 엔진 시작
-
-언리얼 엔진을 시작하는 법은 [](GettingStarted) 문서를 참고하시기 바랍니다.
-
-UE4 를 빠르게 시작해 보려면, 다음 튜토리얼을 참고하세요:
-*	[](Engine/Content/QuickStart)
-*	[](Programming/QuickStart)
-*	[](Engine/QuickStart)
-
-
-[REGION:note]
-UE4 의 에디터내 도움말 기능 역시 질문에 대한 답을 찾는 데 좋은 방법입니다.
-[/REGION]
-
-[/EXCERPT:Main]

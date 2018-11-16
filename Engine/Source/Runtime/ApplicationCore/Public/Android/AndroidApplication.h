@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "GenericApplication.h"
+#include "GenericPlatform/GenericApplication.h"
 #include "AndroidWindow.h"
-#include "AndroidJavaEnv.h"
+#if USE_ANDROID_JNI
+#include "Android/AndroidJavaEnv.h"
+#endif
 
 namespace FAndroidAppEntry
 {
@@ -15,6 +17,7 @@ namespace FAndroidAppEntry
 
 	void DestroyWindow();
 	void ReleaseEGL();
+	void OnPauseEvent();
 }
 
 struct FPlatformOpenGLContext;
@@ -40,6 +43,7 @@ public:
 
 	static FAndroidApplication* CreateAndroidApplication();
 
+#if USE_ANDROID_JNI
 	// Returns the java environment
 	static FORCEINLINE void InitializeJavaEnv(JavaVM* VM, jint Version, jobject GlobalThis)
 	{
@@ -69,6 +73,7 @@ public:
 	{
 		return AndroidJavaEnv::CheckJavaException();
 	}
+#endif
 
 	static FAndroidApplication* Get() { return _application; }
 
@@ -92,11 +97,14 @@ public:
 
 	static void OnWindowSizeChanged();
 
+	virtual void Tick(const float TimeDelta) override;
+
 	virtual bool IsGamepadAttached() const override;
 
-private:
+protected:
 
 	FAndroidApplication();
+	FAndroidApplication(TSharedPtr<class FAndroidInputInterface> InInputInterface);
 
 
 private:

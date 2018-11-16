@@ -182,7 +182,7 @@ struct GAMEPLAYTAGS_API FGameplayTag
 	bool NetSerialize_Packed(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
 	/** Used to upgrade a Name property to a GameplayTag struct property */
-	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
 
 	/** Sets from a ImportText string, used in asset registry */
 	void FromExportString(const FString& ExportString);
@@ -240,7 +240,7 @@ protected:
 	explicit FGameplayTag(FName InTagName);
 
 	/** This Tags Name */
-	UPROPERTY(VisibleAnywhere, Category = GameplayTags)
+	UPROPERTY(VisibleAnywhere, Category = GameplayTags, SaveGame)
 	FName TagName;
 
 	friend class UGameplayTagsManager;
@@ -254,8 +254,9 @@ struct TStructOpsTypeTraits< FGameplayTag > : public TStructOpsTypeTraitsBase2< 
 	enum
 	{
 		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 		WithPostSerialize = true,
-		WithSerializeFromMismatchedTag = true,
+		WithStructuredSerializeFromMismatchedTag = true,
 		WithImportTextItem = true,
 	};
 };
@@ -820,7 +821,7 @@ protected:
 	void FillParentTags();
 
 	/** Array of gameplay tags */
-	UPROPERTY(BlueprintReadWrite, Category=GameplayTags) // Change to VisibleAnywhere after fixing up games
+	UPROPERTY(BlueprintReadWrite, Category=GameplayTags, SaveGame) // Change to VisibleAnywhere after fixing up games
 	TArray<FGameplayTag> GameplayTags;
 
 	/** Array of expanded parent tags, in addition to GameplayTags. Used to accelerate parent searches. May contain duplicates in some cases */
@@ -861,6 +862,7 @@ struct TStructOpsTypeTraits<FGameplayTagContainer> : public TStructOpsTypeTraits
 		WithSerializer = true,
 		WithIdenticalViaEquality = true,
 		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
 		WithImportTextItem = true,
 		WithCopy = true,
 		WithPostScriptConstruct = true,
@@ -1057,6 +1059,8 @@ public:
 	static FGameplayTagQuery MakeQuery_MatchAnyTags(FGameplayTagContainer const& InTags);
 	static FGameplayTagQuery MakeQuery_MatchAllTags(FGameplayTagContainer const& InTags);
 	static FGameplayTagQuery MakeQuery_MatchNoTags(FGameplayTagContainer const& InTags);
+
+	static FGameplayTagQuery MakeQuery_MatchTag(FGameplayTag const& InTag);
 
 	friend class FQueryEvaluator;
 };

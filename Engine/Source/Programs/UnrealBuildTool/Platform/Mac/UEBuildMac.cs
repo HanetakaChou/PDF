@@ -42,14 +42,6 @@ namespace UnrealBuildTool
 		[CommandLine("-EnableUBSan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableUndefinedBehaviorSanitizer")]
 		public bool bEnableUndefinedBehaviorSanitizer = false;
-
-		/// <summary>
-		/// Constructor
-		/// </summary>
-		public MacTargetRules()
-		{
-			XmlConfig.ApplyTo(this);
-		}
 	}
 
 	/// <summary>
@@ -155,7 +147,8 @@ namespace UnrealBuildTool
 			}
 
 			// Force using the ANSI allocator if ASan is enabled
-			if(Target.MacPlatform.bEnableAddressSanitizer)
+			string AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
+			if(Target.MacPlatform.bEnableAddressSanitizer || (AddressSanitizer != null && AddressSanitizer == "YES"))
 			{
 				Target.GlobalDefinitions.Add("FORCE_ANSI_ALLOCATOR=1");
 			}
@@ -205,36 +198,26 @@ namespace UnrealBuildTool
 					return "";
 				case UEBuildBinaryType.StaticLibrary:
 					return ".a";
-				case UEBuildBinaryType.Object:
-					return ".o";
-				case UEBuildBinaryType.PrecompiledHeader:
-					return ".gch";
 			}
 			return base.GetBinaryExtension(InBinaryType);
 		}
 
 		/// <summary>
-		/// Get the extension to use for debug info for the given binary type
+		/// Get the extensions to use for debug info for the given binary type
 		/// </summary>
 		/// <param name="Target">Rules for the target being built</param>
 		/// <param name="InBinaryType"> The binary type being built</param>
-		/// <returns>string    The debug info extension (i.e. 'pdb')</returns>
-		public override string GetDebugInfoExtension(ReadOnlyTargetRules Target, UEBuildBinaryType InBinaryType)
+		/// <returns>string[]    The debug info extensions (i.e. 'pdb')</returns>
+		public override string[] GetDebugInfoExtensions(ReadOnlyTargetRules Target, UEBuildBinaryType InBinaryType)
 		{
 			switch (InBinaryType)
 			{
 				case UEBuildBinaryType.DynamicLinkLibrary:
-					return Target.bUsePDBFiles ? ".dSYM" : "";
 				case UEBuildBinaryType.Executable:
-					return Target.bUsePDBFiles ? ".dSYM" : "";
+					return Target.bUsePDBFiles ? new string[] {".dSYM"} : new string[] {};
 				case UEBuildBinaryType.StaticLibrary:
-					return "";
-				case UEBuildBinaryType.Object:
-					return "";
-				case UEBuildBinaryType.PrecompiledHeader:
-					return "";
 				default:
-					return "";
+					return new string [] {};
 			}
 		}
 
@@ -247,57 +230,6 @@ namespace UnrealBuildTool
 		/// <param name="Target">The target being build</param>
 		public override void ModifyModuleRulesForOtherPlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
 		{
-		}
-
-		/// <summary>
-		/// Don't use absolute paths in unity files; we may be remote compiling.
-		/// </summary>
-		/// <returns>bool true if it is required, false if not</returns>
-		public override bool UseAbsolutePathsInUnityFiles()
-		{
-			return false;
-		}
-
-
-		/// <summary>
-		/// Return whether we wish to have this platform's binaries in our builds
-		/// </summary>
-		public override bool IsBuildRequired()
-		{
-			return false;
-		}
-
-		/// <summary>
-		/// Return whether we wish to have this platform's binaries in our CIS tests
-		/// </summary>
-		public override bool IsCISRequired()
-		{
-			return false;
-		}
-
-		/// <summary>
-		/// Converts the passed in path from UBT host to compiler native format.
-		/// </summary>
-		/// <param name="OriginalPath">The path to convert</param>
-		/// <returns>The path in native format for the toolchain</returns>
-		public override string ConvertPath(string OriginalPath)
-		{
-			return MacToolChain.ConvertPath(OriginalPath);
-		}
-
-		public override void PreBuildSync()
-		{
-			MacToolChain.PreBuildSync();
-		}
-
-		public override void PostBuildSync(UEBuildTarget Target)
-		{
-			MacToolChain.PostBuildSync(Target);
-		}
-
-		public override void PostCodeGeneration(UHTManifest Manifest)
-		{
-			MacToolChain.PostCodeGeneration(Manifest);
 		}
 
 		public override DirectoryReference GetBundleDirectory(ReadOnlyTargetRules Rules, List<FileReference> OutputFiles)
@@ -393,15 +325,20 @@ namespace UnrealBuildTool
 		public override UEToolChain CreateToolChain(CppPlatform CppPlatform, ReadOnlyTargetRules Target)
 		{
 			MacToolChainOptions Options = MacToolChainOptions.None;
-			if(Target.MacPlatform.bEnableAddressSanitizer)
+
+			string AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
+			string ThreadSanitizer = Environment.GetEnvironmentVariable("ENABLE_THREAD_SANITIZER");
+			string UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
+
+			if(Target.MacPlatform.bEnableAddressSanitizer || (AddressSanitizer != null && AddressSanitizer == "YES"))
 			{
 				Options |= MacToolChainOptions.EnableAddressSanitizer;
 			}
-			if(Target.MacPlatform.bEnableThreadSanitizer)
+			if(Target.MacPlatform.bEnableThreadSanitizer || (ThreadSanitizer != null && ThreadSanitizer == "YES"))
 			{
 				Options |= MacToolChainOptions.EnableThreadSanitizer;
 			}
-			if(Target.MacPlatform.bEnableUndefinedBehaviorSanitizer)
+			if(Target.MacPlatform.bEnableUndefinedBehaviorSanitizer || (UndefSanitizerMode != null && UndefSanitizerMode == "YES"))
 			{
 				Options |= MacToolChainOptions.EnableUndefinedBehaviorSanitizer;
 			}
@@ -444,7 +381,6 @@ namespace UnrealBuildTool
 			// Register this build platform for Mac
 			Log.TraceVerbose("        Registering for {0}", UnrealTargetPlatform.Mac.ToString());
 			UEBuildPlatform.RegisterBuildPlatform(new MacPlatform(SDK));
-			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.Mac, UnrealPlatformGroup.Unix);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.Mac, UnrealPlatformGroup.Apple);
 		}
 	}

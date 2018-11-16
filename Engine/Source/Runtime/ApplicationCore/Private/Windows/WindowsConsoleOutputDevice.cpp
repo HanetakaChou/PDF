@@ -1,6 +1,6 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "WindowsConsoleOutputDevice.h"
+#include "Windows/WindowsConsoleOutputDevice.h"
 #include "Logging/LogMacros.h"
 #include "Misc/OutputDevice.h"
 #include "HAL/PlatformTime.h"
@@ -134,7 +134,7 @@ void FWindowsConsoleOutputDevice::Show( bool ShowWindow )
 				}
 
 				FDisplayMetrics DisplayMetrics;
-				FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+				FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 
 				// Make sure that the positions specified by INI/CMDLINE are proper
 				static const int32 ActualConsoleWidth = WindowRect.right - WindowRect.left;

@@ -1,18 +1,26 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "SkeletalMeshLODRenderData.h"
-#include "SkeletalMeshRenderData.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/MorphTarget.h"
 #include "Misc/ConfigCacheIni.h"
 #include "EngineLogs.h"
 #include "EngineUtils.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "PlatformInfo.h"
 
 #if WITH_EDITOR
-#include "SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshModel.h"
 #include "MeshUtilities.h"
 #endif // WITH_EDITOR
+
+int32 GStripSkeletalMeshLodsDuringCooking = 0;
+static FAutoConsoleVariableRef CVarStripSkeletalMeshLodsBelowMinLod(
+	TEXT("r.SkeletalMesh.StripMinLodDataDuringCooking"),
+	GStripSkeletalMeshLodsDuringCooking,
+	TEXT("If set will strip skeletal mesh LODs under the minimum renderable LOD for the target platform during cooking.")
+);
 
 // Serialization.
 FArchive& operator<<(FArchive& Ar, FSkelMeshRenderSection& S)
@@ -173,13 +181,14 @@ void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LO
 		MorphTargetVertexInfoBuffers.WorkItemsPerMorph.Empty(InMorphTargets.Num());
 		MorphTargetVertexInfoBuffers.MaximumValuePerMorph.Empty(InMorphTargets.Num());
 		MorphTargetVertexInfoBuffers.MinimumValuePerMorph.Empty(InMorphTargets.Num());
+		MorphTargetVertexInfoBuffers.NumSplitsPerMorph.Empty(InMorphTargets.Num());
 
 		uint32 MaxVertexIndex = 0;
 		// Populate the arrays to be filled in later in the render thread
 		for (int32 AnimIdx = 0; AnimIdx < InMorphTargets.Num(); ++AnimIdx)
 		{
 			uint32 StartOffset = MorphTargetVertexInfoBuffers.NumTotalWorkItems;
-			MorphTargetVertexInfoBuffers.StartOffsetPerMorph.Add(StartOffset);
+			MorphTargetVertexInfoBuffers.NumSplitsPerMorph.Add(0);
 
 			float MaximumValues[4] = { -FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX };
 			float MinimumValues[4] = { +FLT_MAX, +FLT_MAX, +FLT_MAX, +FLT_MAX };
@@ -214,9 +223,17 @@ void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LO
 				ensureMsgf(MinimumValues[0] > -32752.0f && MinimumValues[1] > -32752.0f && MinimumValues[2] > -32752.0f && MaximumValues[3] > -32752.0f, TEXT("Huge MorphTarget Delta found in %s at index %i, might break down because we use half float storage"), *MorphTarget->GetName(), AnimIdx);
 			}
 
-			MorphTargetVertexInfoBuffers.WorkItemsPerMorph.Add(MorphTargetSize);
-			MorphTargetVertexInfoBuffers.MaximumValuePerMorph.Add(FVector4(MaximumValues[0], MaximumValues[1], MaximumValues[2], MaximumValues[3]));
-			MorphTargetVertexInfoBuffers.MinimumValuePerMorph.Add(FVector4(MinimumValues[0], MinimumValues[1], MinimumValues[2], MinimumValues[3]));
+			do 
+			{
+				MorphTargetVertexInfoBuffers.StartOffsetPerMorph.Add(StartOffset);
+				MorphTargetVertexInfoBuffers.WorkItemsPerMorph.Add((MorphTargetSize <= FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize()) ? MorphTargetSize : FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize());
+				MorphTargetVertexInfoBuffers.MaximumValuePerMorph.Add(FVector4(MaximumValues[0], MaximumValues[1], MaximumValues[2], MaximumValues[3]));
+				MorphTargetVertexInfoBuffers.MinimumValuePerMorph.Add(FVector4(MinimumValues[0], MinimumValues[1], MinimumValues[2], MinimumValues[3]));
+				MorphTargetVertexInfoBuffers.NumSplitsPerMorph[AnimIdx]++;
+
+				MorphTargetSize = (MorphTargetSize > FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize()) ? MorphTargetSize - FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize() : 0;
+				StartOffset += FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize();
+			} while (MorphTargetSize > 0);
 		}
 
 		//this block recomputes morph target permutations. And build a rule set to efficiently compute their accumulated weights using as few additions as possible.
@@ -426,6 +443,7 @@ void FSkeletalMeshLODRenderData::ReleaseResources()
 void FSkeletalMeshLODRenderData::BuildFromLODModel(const FSkeletalMeshLODModel* ImportedModel, uint32 BuildFlags)
 {
 	bool bUseFullPrecisionUVs = (BuildFlags & ESkeletalMeshVertexFlags::UseFullPrecisionUVs) != 0;
+	bool bUseHighPrecisionTangentBasis = (BuildFlags & ESkeletalMeshVertexFlags::UseHighPrecisionTangentBasis) != 0;
 	bool bHasVertexColors = (BuildFlags & ESkeletalMeshVertexFlags::HasVertexColors) != 0;
 
 	// Copy required info from source sections
@@ -455,8 +473,10 @@ void FSkeletalMeshLODRenderData::BuildFromLODModel(const FSkeletalMeshLODModel* 
 	TArray<FSoftSkinVertex> Vertices;
 	ImportedModel->GetVertices(Vertices);
 
-	// match UV precision for mesh vertex buffer to setting from parent mesh
+	// match UV and tangent precision for mesh vertex buffer to setting from parent mesh
 	StaticVertexBuffers.StaticMeshVertexBuffer.SetUseFullPrecisionUVs(bUseFullPrecisionUVs);
+	StaticVertexBuffers.StaticMeshVertexBuffer.SetUseHighPrecisionTangentBasis(bUseHighPrecisionTangentBasis);
+
 	// init vertex buffer with the vertex array
 	StaticVertexBuffers.PositionVertexBuffer.Init(Vertices.Num());
 	StaticVertexBuffers.StaticMeshVertexBuffer.Init(Vertices.Num(), ImportedModel->NumTexCoords);
@@ -564,27 +584,57 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 
 	// Defined class flags for possible stripping
 	const uint8 LodAdjacencyStripFlag = 1;
+	const uint8 MinLodStripFlag = 2;
 
 	// Actual flags used during serialization
 	uint8 ClassDataStripFlags = 0;
 
+	const bool bIsCook = Ar.IsCooking();
+	const ITargetPlatform* CookTarget = Ar.CookingTarget();
+
 	extern int32 GForceStripMeshAdjacencyDataDuringCooking;
-	const bool bWantToStripTessellation = Ar.IsCooking() && ((GForceStripMeshAdjacencyDataDuringCooking != 0) || !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::Tessellation));
+	const bool bWantToStripTessellation = bIsCook && ((GForceStripMeshAdjacencyDataDuringCooking != 0) || !CookTarget->SupportsFeature(ETargetPlatformFeatures::Tessellation));
+
+	USkeletalMesh* OwnerMesh = CastChecked<USkeletalMesh>(Owner);
+	int32 MinMeshLod = 0;
+	
+#if WITH_EDITOR
+	if(bIsCook)
+	{
+		MinMeshLod = OwnerMesh ? OwnerMesh->MinLod.GetValueForPlatformGroup(CookTarget->GetPlatformInfo().PlatformGroupName) : 0;
+	}
+#endif
+
+	const bool bWantToStripBelowMinLod = bIsCook && GStripSkeletalMeshLodsDuringCooking != 0 && MinMeshLod > Idx;
+
 	ClassDataStripFlags |= bWantToStripTessellation ? LodAdjacencyStripFlag : 0;
+	ClassDataStripFlags |= bWantToStripBelowMinLod ? MinLodStripFlag : 0;
 
 	FStripDataFlags StripFlags(Ar, ClassDataStripFlags);
 
 	// Skeletal mesh buffers are kept in CPU memory after initialization to support merging of skeletal meshes.
 	bool bKeepBuffersInCPUMemory = true;
+	bool bNeedsCPUAccess = true;
+	USkeletalMesh* SkelMeshOwner = nullptr;
+
 #if !WITH_EDITOR
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.FreeSkeletalMeshBuffers"));
 	if (CVar)
 	{
 		bKeepBuffersInCPUMemory = !CVar->GetValueOnAnyThread();
+		bNeedsCPUAccess = bKeepBuffersInCPUMemory;
 	}
 #endif
+	if (!StripFlags.IsDataStrippedForServer())
+	{
+		SkelMeshOwner = CastChecked<USkeletalMesh>(Owner);
 
-	if (StripFlags.IsDataStrippedForServer())
+		// set cpu skinning flag on the vertex buffer so that the resource arrays know if they need to be CPU accessible
+		bNeedsCPUAccess = bKeepBuffersInCPUMemory || SkelMeshOwner->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel) ||
+			SkelMeshOwner->NeedCPUData(Idx);
+	}
+
+	if (StripFlags.IsDataStrippedForServer() || StripFlags.IsClassDataStripped(MinLodStripFlag))
 	{
 		TArray<FSkelMeshRenderSection> DummySections;
 		Ar << DummySections;
@@ -599,21 +649,15 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 	{
 		Ar << RenderSections;
 
-		MultiSizeIndexContainer.Serialize(Ar, bKeepBuffersInCPUMemory);
+		MultiSizeIndexContainer.Serialize(Ar, bNeedsCPUAccess);
 
 		Ar << ActiveBoneIndices;
 	}
 
 	Ar << RequiredBones;
-
-
-	if (!StripFlags.IsDataStrippedForServer())
+	
+	if (!StripFlags.IsDataStrippedForServer() && !StripFlags.IsClassDataStripped(MinLodStripFlag))
 	{
-		USkeletalMesh* SkelMeshOwner = CastChecked<USkeletalMesh>(Owner);
-
-		// set cpu skinning flag on the vertex buffer so that the resource arrays know if they need to be CPU accessible
-		bool bNeedsCPUAccess = bKeepBuffersInCPUMemory || SkelMeshOwner->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel);
-
 		if (Ar.IsLoading())
 		{
 			SkinWeightVertexBuffer.SetNeedsCPUAccess(bNeedsCPUAccess);
@@ -623,7 +667,7 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 		StaticVertexBuffers.StaticMeshVertexBuffer.Serialize(Ar, bNeedsCPUAccess);
 		Ar << SkinWeightVertexBuffer;
 
-		if (SkelMeshOwner->bHasVertexColors)
+		if (SkelMeshOwner && SkelMeshOwner->bHasVertexColors)
 		{
 			StaticVertexBuffers.ColorVertexBuffer.Serialize(Ar, bKeepBuffersInCPUMemory);
 		}

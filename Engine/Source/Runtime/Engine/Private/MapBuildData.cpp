@@ -403,7 +403,7 @@ void UMapBuildDataRegistry::PostLoad()
 				CaptureBuildData.EncodedHDRCapturedData.Empty();
 			}
 
-			check(CaptureBuildData.FullHDRCapturedData.Num() > 0 || CaptureBuildData.EncodedHDRCapturedData.Num() > 0);
+			check(CaptureBuildData.FullHDRCapturedData.Num() > 0 || CaptureBuildData.EncodedHDRCapturedData.Num() > 0 || FApp::CanEverRender() == false);
 		}
 	}
 }
@@ -665,6 +665,27 @@ void UMapBuildDataRegistry::InvalidateReflectionCaptures(const TSet<FGuid>* Reso
 bool UMapBuildDataRegistry::IsLegacyBuildData() const
 {
 	return GetOutermost()->ContainsMap();
+}
+
+bool UMapBuildDataRegistry::IsVTLightingValid() const
+{
+	// this code checks if AT LEAST 1 virtual textures is valid. 
+	for (auto MeshBuildDataPair : MeshBuildData)
+	{
+		const FMeshMapBuildData& Data = MeshBuildDataPair.Value;
+		if (/*Data.IsDefault() == false &&*/ Data.LightMap.IsValid())
+		{
+			const FLightMap2D* Lightmap2D = Data.LightMap->GetLightMap2D();
+			if (Lightmap2D)
+			{
+				if (Lightmap2D->GetVirtualTexture() != nullptr)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 void UMapBuildDataRegistry::ReleaseResources(const TSet<FGuid>* ResourcesToKeep)

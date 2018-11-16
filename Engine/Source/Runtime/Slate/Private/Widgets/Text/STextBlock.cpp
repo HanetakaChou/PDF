@@ -13,7 +13,7 @@ DECLARE_CYCLE_STAT(TEXT("STextBlock::ComputeVolitility"), Stat_SlateTextBlockCV,
 
 STextBlock::STextBlock()
 {
-	bCanTick = false;
+	SetCanTick(false);
 	bCanSupportFocus = false;
 }
 
@@ -47,7 +47,7 @@ void STextBlock::Construct( const FArguments& InArgs )
 	BoundText = InArgs._Text;
 
 	// We use a dummy style here (as it may not be safe to call the delegates used to compute the style), but the correct style is set by ComputeDesiredSize
-	TextLayoutCache = MakeUnique<FSlateTextBlockLayout>(FTextBlockStyle::GetDefault(), InArgs._TextShapingMethod, InArgs._TextFlowDirection, FCreateSlateTextLayout(), FPlainTextLayoutMarshaller::Create(), InArgs._LineBreakPolicy);
+	TextLayoutCache = MakeUnique<FSlateTextBlockLayout>(this, FTextBlockStyle::GetDefault(), InArgs._TextShapingMethod, InArgs._TextFlowDirection, FCreateSlateTextLayout(), FPlainTextLayoutMarshaller::Create(), InArgs._LineBreakPolicy);
 	TextLayoutCache->SetDebugSourceInfo(TAttribute<FString>::Create(TAttribute<FString>::FGetter::CreateLambda([this]{ return FReflectionMetaData::GetWidgetDebugInfo(this); })));
 }
 
@@ -159,6 +159,14 @@ int32 STextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 	// OnPaint will also update the text layout cache if required
 	LayerId = TextLayoutCache->OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
 
+	// HACK: Due to the nature of wrapping and layout, we may have been arranged in a different box than what we were cached with.  Which
+	// might update wrapping, so make sure we always set the desired size to the current size of the text layout, which may have changed
+	// during paint.
+	if (TextLayoutCache->GetDesiredSize().Y > GetDesiredSize().Y)
+	{
+		const_cast<STextBlock*>(this)->Invalidate(EInvalidateWidget::Layout);
+	}
+
 	return LayerId;
 }
 
@@ -211,8 +219,11 @@ bool STextBlock::ComputeVolatility() const
 
 void STextBlock::SetFont(const TAttribute< FSlateFontInfo >& InFont)
 {
-	Font = InFont;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!Font.IsSet() || !Font.IdenticalTo(InFont))
+	{
+		Font = InFont;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetColorAndOpacity(const TAttribute<FSlateColor>& InColorAndOpacity)
@@ -220,6 +231,7 @@ void STextBlock::SetColorAndOpacity(const TAttribute<FSlateColor>& InColorAndOpa
 	if ( !ColorAndOpacity.IsSet() || !ColorAndOpacity.IdenticalTo(InColorAndOpacity) )
 	{
 		ColorAndOpacity = InColorAndOpacity;
+		// HACK: Normally this would be Paint only, but textblocks need to recache layout.
 		Invalidate(EInvalidateWidget::LayoutAndVolatility);
 	}
 }
@@ -253,56 +265,84 @@ void STextBlock::SetTextFlowDirection(const TOptional<ETextFlowDirection>& InTex
 
 void STextBlock::SetWrapTextAt(const TAttribute<float>& InWrapTextAt)
 {
-	WrapTextAt = InWrapTextAt;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!WrapTextAt.IdenticalTo(InWrapTextAt))
+	{
+		WrapTextAt = InWrapTextAt;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetAutoWrapText(const TAttribute<bool>& InAutoWrapText)
 {
-	AutoWrapText = InAutoWrapText;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!AutoWrapText.IdenticalTo(InAutoWrapText))
+	{
+		AutoWrapText = InAutoWrapText;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetWrappingPolicy(const TAttribute<ETextWrappingPolicy>& InWrappingPolicy)
 {
-	WrappingPolicy = InWrappingPolicy;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!WrappingPolicy.IdenticalTo(InWrappingPolicy))
+	{
+		WrappingPolicy = InWrappingPolicy;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetShadowOffset(const TAttribute<FVector2D>& InShadowOffset)
 {
-	ShadowOffset = InShadowOffset;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!ShadowOffset.IdenticalTo(InShadowOffset))
+	{
+		ShadowOffset = InShadowOffset;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetShadowColorAndOpacity(const TAttribute<FLinearColor>& InShadowColorAndOpacity)
 {
-	ShadowColorAndOpacity = InShadowColorAndOpacity;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!ShadowColorAndOpacity.IdenticalTo(InShadowColorAndOpacity))
+	{
+		ShadowColorAndOpacity = InShadowColorAndOpacity;
+		// HACK: Normally this would be Paint only, but textblocks need to recache layout.
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetMinDesiredWidth(const TAttribute<float>& InMinDesiredWidth)
 {
-	MinDesiredWidth = InMinDesiredWidth;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!MinDesiredWidth.IdenticalTo(InMinDesiredWidth))
+	{
+		MinDesiredWidth = InMinDesiredWidth;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetLineHeightPercentage(const TAttribute<float>& InLineHeightPercentage)
 {
-	LineHeightPercentage = InLineHeightPercentage;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!LineHeightPercentage.IdenticalTo(InLineHeightPercentage))
+	{
+		LineHeightPercentage = InLineHeightPercentage;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetMargin(const TAttribute<FMargin>& InMargin)
 {
-	Margin = InMargin;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!Margin.IdenticalTo(InMargin))
+	{
+		Margin = InMargin;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void STextBlock::SetJustification(const TAttribute<ETextJustify::Type>& InJustification)
 {
-	Justification = InJustification;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	if(!Justification.IdenticalTo(InJustification))
+	{
+		Justification = InJustification;
+		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 FTextBlockStyle STextBlock::GetComputedTextStyle() const

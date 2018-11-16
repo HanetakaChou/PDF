@@ -1,11 +1,41 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "SynthSlateStyle.h"
-#include "IPluginManager.h"
+#include "UI/SynthSlateStyle.h"
+#include "Interfaces/IPluginManager.h"
 #include "SynthesisModule.h"
-#include "Regex.h"
+#include "Internationalization/Regex.h"
 #include "HAL/FileManager.h"
+#include "Styling/SlateStyleRegistry.h"
 #include "Brushes/SlateDynamicImageBrush.h"
+
+
+
+TSharedPtr< FSlateStyleSet > FSynthSlateStyleSet::StyleInstance = NULL;
+
+void FSynthSlateStyleSet::Initialize()
+{
+	if (!StyleInstance.IsValid())
+	{
+		StyleInstance = MakeShareable(new FSlateStyleSet("SynthesisStyle"));
+		StyleInstance->SetContentRoot(IPluginManager::Get().FindPlugin("Synthesis")->GetBaseDir() / TEXT("Resources"));
+
+		FSlateStyleRegistry::RegisterSlateStyle(*StyleInstance);
+	}
+}
+
+void FSynthSlateStyleSet::Shutdown()
+{
+	FSlateStyleRegistry::UnRegisterSlateStyle(*StyleInstance);
+	ensure(StyleInstance.IsUnique());
+	StyleInstance.Reset();
+}
+
+TSharedPtr< class FSlateStyleSet > FSynthSlateStyleSet::Get()
+{
+	return StyleInstance; 
+}
+
+
 
 ISynthSlateResources::ISynthSlateResources()
 	: bResourcesLoaded(false)

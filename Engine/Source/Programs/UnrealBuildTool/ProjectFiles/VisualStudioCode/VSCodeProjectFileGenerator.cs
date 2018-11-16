@@ -365,10 +365,6 @@ namespace UnrealBuildTool
 				{
 					foreach (ProjectTarget Target in Project.ProjectTargets)
 					{
-						TargetRules.CPPEnvironmentConfiguration CppEnvironment = new TargetRules.CPPEnvironmentConfiguration(Target.TargetRules);
-						TargetRules.LinkEnvironmentConfiguration LinkEnvironment = new TargetRules.LinkEnvironmentConfiguration(Target.TargetRules);
-						Target.TargetRules.SetupGlobalEnvironment(new TargetInfo(new ReadOnlyTargetRules(Target.TargetRules)), ref LinkEnvironment, ref CppEnvironment);
-
 						Array Configs = Enum.GetValues(typeof(UnrealTargetConfiguration));
 						List<UnrealTargetPlatform> Platforms = new List<UnrealTargetPlatform>(UEBuildTarget.GetSupportedPlatforms(Target.TargetRules));
 
@@ -395,7 +391,7 @@ namespace UnrealBuildTool
 											Config = Config,
 											UProjectFile = Target.UnrealProjectFilePath,
 											OutputType = ProjectData.EOutputType.Exe,
-											OutputFile = GetExecutableFilename(Project, Target, Platform, Config, LinkEnvironment),
+											OutputFile = GetExecutableFilename(Project, Target, Platform, Config),
 											CSharpInfo = null
 										});
 									}
@@ -413,7 +409,7 @@ namespace UnrealBuildTool
 
 					if (HostPlatform == UnrealTargetPlatform.Win64)
 					{
-						RawIncludes.AddRange(VCToolChain.GetVCIncludePaths(CppPlatform.Win64, WindowsPlatform.GetDefaultCompiler(null)).Trim(';').Split(';'));
+						RawIncludes.AddRange(VCToolChain.GetVCIncludePaths(CppPlatform.Win64, WindowsPlatform.GetDefaultCompiler(null), null).Trim(';').Split(';'));
 					}
 					else
 					{
@@ -478,7 +474,7 @@ namespace UnrealBuildTool
 
 								FileReference OutputFile = null;
 								HashSet<FileReference> ProjectBuildProducts = new HashSet<FileReference>();
-								Info.AddBuildProducts(DirectoryReference.Combine(VCSharpProject.ProjectFilePath.Directory, Info.Properties["OutputPath"]), ProjectBuildProducts);
+								Info.FindCompiledBuildProducts(DirectoryReference.Combine(VCSharpProject.ProjectFilePath.Directory, Info.Properties["OutputPath"]), ProjectBuildProducts);
 								foreach (FileReference ProjectBuildProduct in ProjectBuildProducts)
 								{
 									if ((OutputType == ProjectData.EOutputType.Exe && ProjectBuildProduct.GetExtension() == FrameworkExecutableExtension) ||
@@ -689,7 +685,7 @@ namespace UnrealBuildTool
 								OutFile.AddUnnamedField(BuildProduct.Config.ToString());
 								if (bForeignProject)
 								{
-									OutFile.AddUnnamedField(MakeQuotedPathString(BuildProduct.UProjectFile, EPathType.Relative, null, EQuoteType.Single));
+									OutFile.AddUnnamedField(MakeUnquotedPathString(BuildProduct.UProjectFile, EPathType.Relative, null));
 								}
 								OutFile.AddUnnamedField("-waitmutex");
 
@@ -863,7 +859,7 @@ namespace UnrealBuildTool
 			return Result;
 		}
 
-		private FileReference GetExecutableFilename(ProjectFile Project, ProjectTarget Target, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, TargetRules.LinkEnvironmentConfiguration LinkEnvironment)
+		private FileReference GetExecutableFilename(ProjectFile Project, ProjectTarget Target, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration)
 		{
 			TargetRules TargetRulesObject = Target.TargetRules;
 			FileReference TargetFilePath = Target.TargetFilePath;
@@ -935,7 +931,7 @@ namespace UnrealBuildTool
 				ExecutableFilename += ".app/Contents/MacOS/" + Path.GetFileName(ExecutableFilename);
 			}
 
-			return FileReference.MakeFromNormalizedFullPath(ExecutableFilename);
+			return new FileReference(ExecutableFilename);
 		}
 
 		private void WriteNativeLaunchConfig(ProjectData.Project InProject, JsonFile OutFile)
@@ -969,11 +965,6 @@ namespace UnrealBuildTool
 										{
 											OutFile.AddUnnamedField(InProject.Name);
 										}
-									}
-
-									if (BuildProduct.Config == UnrealTargetConfiguration.Debug || BuildProduct.Config == UnrealTargetConfiguration.DebugGame)
-									{
-										OutFile.AddUnnamedField("-debug");
 									}
 								}
 

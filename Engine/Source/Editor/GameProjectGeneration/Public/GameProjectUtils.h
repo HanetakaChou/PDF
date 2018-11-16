@@ -161,12 +161,17 @@ public:
 	/**
 	 * Get the information about any modules referenced in the .uproject file of the currently loaded project
 	 */
-	static TArray<FModuleContextInfo> GetCurrentProjectModules();
+	static const TArray<FModuleContextInfo>& GetCurrentProjectModules();
 
 	/**
 	* Get the information about any modules in any of the plugins in the currently loaded project (Ignores Engine Plugins)
 	*/
 	static TArray<FModuleContextInfo> GetCurrentProjectPluginModules();
+
+	/**
+	 * Reset the cached result of information about any modules referenced in the .uproject file of the currently loaded project
+	 */
+	static void ResetCurrentProjectModulesCache();
 
 	/** 
 	 * Check to see if the given path is a valid place to put source code for this project (exists within the source root path) 
@@ -355,6 +360,19 @@ private:
 
 	/** Generates a main game module header file */
 	static bool GenerateGameModuleHeaderFile(const FString& NewGameModuleHeaderFileName, const TArray<FString>& PublicHeaderIncludes, FText& OutFailReason);
+
+	/**
+	* Replace a wildcard with another string
+	*
+	* @param Input				The input string
+	* @param From				The wildcard to be replaced
+	* @param To					The text the wildcard should be replaced with
+	* @param bLeadingTab		If the line where the wildcard is located starts with a tab
+	* @param bTrailingNewLine	If the line where the wildcard is located ends with a new line
+
+	* @return the input string after replacement of the wildcard
+	*/
+	static FString ReplaceWildcard(const FString& Input, const FString& From, const FString& To, bool bLeadingTab = false, bool bTrailingNewLine = false);
 
 	/** Handler for when the user confirms a project update */
 	static void OnUpdateProjectConfirm();

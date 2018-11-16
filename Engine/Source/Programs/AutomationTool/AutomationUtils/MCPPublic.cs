@@ -81,41 +81,56 @@ namespace EpicGames.MCP.Automation
         }
     }
 
-    /// <summary>
-    /// Enum that defines the MCP backend-compatible platform
-    /// </summary>
-    public enum MCPPlatform
-    {
-        /// <summary>
+	/// <summary>
+	/// Enum that defines the MCP backend-compatible platform
+	/// </summary>
+	public enum MCPPlatform
+	{
+		/// <summary>
 		/// MCP uses Windows for Win64
-        /// </summary>
-        Windows,
+		/// </summary>
+		Windows,
 
-        /// <summary>
+		/// <summary>
 		/// 32 bit Windows
 		/// </summary>
 		Win32,
 
 		/// <summary>
-        /// Mac platform.
-        /// </summary>
-        Mac,
+		/// Mac platform.
+		/// </summary>
+		Mac,
 
 		/// <summary>
 		/// Linux platform.
 		/// </summary>
 		Linux,
 
-        /// <summary>
-        /// Linux platform.
-        /// </summary>
-        IOS,
+		/// <summary>
+		/// IOS platform.
+		/// </summary>
+		IOS,
 
-        /// <summary>
-        /// Linux platform.
-        /// </summary>
-        Android
-    }
+		/// <summary>
+		/// Android platform.
+		/// </summary>
+		Android,
+
+		/// <summary>
+		/// WindowsCN Platform.
+		/// </summary>
+		WindowsCN,
+
+		/// <summary>
+		/// IOSCN Platform.
+		/// </summary>
+		IOSCN,
+
+		/// <summary>
+		/// AndroidCN Platform.
+		/// </summary>
+		AndroidCN,
+	}
 
     /// <summary>
     /// Enum that defines CDN types
@@ -158,6 +173,10 @@ namespace EpicGames.MCP.Automation
         /// BuildVersion of the App we are staging.
         /// </summary>
         public readonly string BuildVersion;
+		/// <summary>
+		/// Metadata for the build consisting of arbitrary json data. Will be null if no metadata exists.
+		/// </summary>
+		public BuildMetadataBase Metadata;
         /// <summary>
         /// Directory where builds will be staged. Rooted at the BuildRootPath, using a subfolder passed in the ctor, 
         /// and using BuildVersion/PlatformName to give each builds their own home.
@@ -193,7 +212,7 @@ namespace EpicGames.MCP.Automation
 					return _ManifestFilename;
 				}
 
-				CommandUtils.Log("Using legacy behavior of constructing manifest filename from appname, build version and platform. Update your code to specify manifest filename when constructing BuildPatchToolStagingInfo or call RetrieveManifestFilename to query it.");
+				CommandUtils.LogInformation("Using legacy behavior of constructing manifest filename from appname, build version and platform. Update your code to specify manifest filename when constructing BuildPatchToolStagingInfo or call RetrieveManifestFilename to query it.");
 				var BaseFilename = string.Format("{0}{1}-{2}.manifest",
 					AppName,
 					BuildVersion,
@@ -289,6 +308,7 @@ namespace EpicGames.MCP.Automation
             StagingDir = CommandUtils.CombinePaths(BuildRootPath, stagingDirRelativePath, BuildVersion, Platform.ToString());
             CloudDirRelativePath = CommandUtils.CombinePaths(stagingDirRelativePath, "CloudDir");
             CloudDir = CommandUtils.CombinePaths(BuildRootPath, CloudDirRelativePath);
+			Metadata = null;
         }
 
 		/// <summary>
@@ -325,6 +345,7 @@ namespace EpicGames.MCP.Automation
 			StagingDir = CommandUtils.CombinePaths(BuildRootPath, StagingDirRelativePath, BuildVersion, StagingDirSuffix);
 			CloudDirRelativePath = CommandUtils.CombinePaths(StagingDirRelativePath, "CloudDir");
 			CloudDir = CommandUtils.CombinePaths(BuildRootPath, CloudDirRelativePath);
+			Metadata = null;
 		}
 
 		/// <summary>
@@ -338,6 +359,7 @@ namespace EpicGames.MCP.Automation
 			BuildVersion = InBuildVersion;
 			Platform = InPlatform;
 			CloudDir = InCloudDir;
+			Metadata = null;
 		}
 
 		/// <summary>
@@ -350,6 +372,7 @@ namespace EpicGames.MCP.Automation
 			AppID = InAppID;
 			BuildVersion = InBuildVersion;
 			Platform = InPlatform;
+			Metadata = null;
 			if (InStagingDir != null)
 			{
 				StagingDir = InStagingDir.FullName;
@@ -368,6 +391,38 @@ namespace EpicGames.MCP.Automation
 			{
 				_ManifestFilename = InManifestFilename;
 			}
+		}
+
+		/// <summary>
+		/// Associates a piece of metadata (in the form of a key value pair) with the build info.
+		/// </summary>
+		/// <param name="Key">The key to store the metadata against.</param>
+		/// <param name="Value">The value of the metadata to associate.</param>
+		/// <param name="bClobber">Optional, specifies whether to overwrite the existing key if it exists, default true.</param>
+		/// <returns>The BuildPatchToolStagingInfo to facilitate fluent syntax.</returns>
+		public BuildPatchToolStagingInfo WithMetadata(string Key, string Value, bool bClobber = true)
+		{
+			BuildMetadataBase NewMeta = BuildInfoPublisherBase.Get().CreateBuildMetadata(string.Format(@"{{""{0}"":""{1}""}}", Key, Value));
+			return WithMetadata(NewMeta, bClobber);
+		}
+
+		/// <summary>
+		/// Associates new metadata with the build info.
+		/// </summary>
+		/// <param name="NewMetadata">The metadata object to merge in.</param>
+		/// <param name="bClobber">Optional, specifies whether to overwrite the existing key if it exists, default true.</param>
+		/// <returns>The BuildPatchToolStagingInfo to facilitate fluent syntax.</returns>
+		public BuildPatchToolStagingInfo WithMetadata(BuildMetadataBase NewMetadata, bool bClobber = true)
+		{
+			if (Metadata != null)
+			{
+				Metadata.MergeWith(NewMetadata, bClobber);
+			}
+			else
+			{
+				Metadata = NewMetadata;
+			}
+			return this;
 		}
 
 		/// <summary>
@@ -393,7 +448,19 @@ namespace EpicGames.MCP.Automation
 
 			return _ManifestFilename;
 		}
-    }
+
+		/// <summary>
+		/// Adds and returns the metadata for this build, querying build info for any additional fields.
+		/// </summary>
+		/// <param name="McpConfigName">Optional, name of which MCP config to check against, default null which will use the one stored in this BuildPatchToolStagingInfo.</param>
+		/// <param name="bClobber">Optional, specifies whether to overwrite existing metadata keys with those received, default false.</param>
+		/// <returns>The Metadata dictionary</returns>
+		public BuildMetadataBase RetrieveBuildMetadata(string McpConfigName = null, bool bClobber = false)
+		{
+			BuildInfoPublisherBase BI = BuildInfoPublisherBase.Get();
+			return BI.GetBuildMetaData(this, McpConfigName ?? McpConfigKey, bClobber);
+		}
+	}
 
 	/// <summary>
 	/// Class that provides programmatic access to the BuildPatchTool
@@ -413,6 +480,10 @@ namespace EpicGames.MCP.Automation
 			/// The latest published build, may be untested.
 			/// </summary>
 			Next,
+			/// <summary>
+			/// An experimental build, for use when one project needs early access or unique changes.
+			/// </summary>
+			Experimental,
 			/// <summary>
 			/// Use local build from source of BuildPatchTool.
 			/// </summary>
@@ -463,6 +534,7 @@ namespace EpicGames.MCP.Automation
 			public PatchGenerationOptions()
 			{
 				DataAgeThreshold = DEFAULT_DATA_AGE_THRESHOLD;
+				ChunkWindowSize = 1048576;
 			}
 
 			/// <summary>
@@ -495,7 +567,11 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string ManifestFilename;
 			/// <summary>
-			/// A path to a text file containing BuildRoot relative files, separated by \r\n line endings, to not be included in the build.
+			/// A path to a text file containing BuildRoot relative files to be included in the build.
+			/// </summary>
+			public string FileInputList;
+			/// <summary>
+			/// A path to a text file containing BuildRoot relative files to be excluded from the build.
 			/// </summary>
 			public string FileIgnoreList;
 			/// <summary>
@@ -531,6 +607,14 @@ namespace EpicGames.MCP.Automation
 			/// two days less than the cleanup data age threshold.
 			/// </summary>
 			public int DataAgeThreshold;
+			/// <summary>
+			/// Specifies in bytes, the data window size that should be used when saving new chunks. Default is 1048576 (1MiB).
+			/// </summary>
+			public int ChunkWindowSize;
+			/// <summary>
+			/// Specifies the desired output FeatureLevel of BuildPatchTool, if this is not provided BPT will warn and default to LatestJson so that project scripts can be updated.
+			/// </summary>
+			public string FeatureLevel;
 			/// <summary>
 			/// Contains a list of custom string arguments to be embedded in the generated manifest file.
 			/// </summary>
@@ -675,11 +759,27 @@ namespace EpicGames.MCP.Automation
 			public class ManifestDiff
 			{
 				/// <summary>
-				/// The list of cloud directory relative paths for all new chunks required for a patch.
+				/// The list of build relative paths for files which were added by the patch from ManifestA to ManifestB, subject to using the tags that were provided.
+				/// </summary>
+				public List<string> NewFilePaths;
+				/// <summary>
+				/// The list of build relative paths for files which were removed by the patch from ManifestA to ManifestB, subject to using the tags that were provided.
+				/// </summary>
+				public List<string> RemovedFilePaths;
+				/// <summary>
+				/// The list of build relative paths for files which were changed between ManifestA and ManifestB, subject to using the tags that were provided.
+				/// </summary>
+				public List<string> ChangedFilePaths;
+				/// <summary>
+				/// The list of build relative paths for files which were unchanged between ManifestA and ManifestB, subject to using the tags that were provided.
+				/// </summary>
+				public List<string> UnchangedFilePaths;
+				/// <summary>
+				/// The list of cloud directory relative paths for all new chunks required by the patch from ManifestA to ManifestB, subject to using the tags that were provided.
 				/// </summary>
 				public List<string> NewChunkPaths;
 				/// <summary>
-				/// The required download size for the patch between ManifestA and ManifestB, subject to using the tags that were provided.
+				/// The required download size for the patch from ManifestA to ManifestB, subject to using the tags that were provided.
 				/// </summary>
 				public ulong DeltaDownloadSize;
 				/// <summary>
@@ -717,6 +817,10 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string ManifestFile;
 			/// <summary>
+			/// Specifies the file path to a manifest for a previous build, this will be used to filter out chunks.
+			/// </summary>
+			public string PrevManifestFile;
+			/// <summary>
 			/// Specifies the file path to the output package.  An extension of .chunkdb will be added if not present.
 			/// </summary>
 			public string OutputFile;
@@ -732,6 +836,31 @@ namespace EpicGames.MCP.Automation
 			/// required for highest numbered part.
 			/// </summary>
 			public ulong? MaxOutputFileSize;
+			/// <summary>
+			/// Optionally provide a list of tagsets to split chunkdb files on. First all data from the tagset at index 0 will be saved, then any extra data needed
+			/// for tagset at index 1, and so on. Note that this means the chunkdb files produced for tagset at index 1 will not contain some required data for that tagset if
+			/// the data already got saved out as part of tagset at index 0, and thus the chunkdb files are additive with no dupes.
+			/// If it is desired that each tagset's chunkdb files contain the duplicate data, then PackageChunks should be executed once per tagset rather than once will all tagsets.
+			/// An empty string must be included in one of the tagsets to include untagged file data in that tagset.
+			/// Leaving this variable null will include data for all files.
+			/// </summary>
+			public List<HashSet<string>> TagSetSplit;
+		}
+
+		public class PackageChunksOutput
+		{
+			/// <summary>
+			/// The list of full filepaths of all created chunkdb files.
+			/// </summary>
+			public List<string> ChunkDbFilePaths;
+			/// <summary>
+			/// If PackageChunksOptions.TagSetSplit was provided, then this variable will contain a lookup table of TagSetSplit index to List of ChunkDbFilePaths indices.
+			/// e.g.
+			/// TagSetLookupTable[0] = [ 0, 1, 2, 3, ..., n ]
+			/// TagSetLookupTable[1] = [] an empty List would mean that all data for this tagset was already included in the chunkdb(s) for previous tagset(s).
+			/// TagSetLookupTable[2] = [ n+1, n+2, ..., n+m ]
+			/// </summary>
+			public List<List<int>> TagSetLookupTable;
 		}
 
 		static BuildPatchToolBase Handler = null;
@@ -809,42 +938,64 @@ namespace EpicGames.MCP.Automation
 		/// Runs the Build Patch Tool executable to create ChunkDB file(s) consisting of multiple chunks to allow installing / patching to a specific build.
 		/// </summary>
 		/// <param name="Opts">Parameters which will be passed to the patch tool package chunks process.</param>
+		/// <param name="Output">Will receive the data back for the packaging.</param>
 		/// <param name="Version">Which version of BuildPatchTool is desired.</param>
-		public abstract void Execute(PackageChunksOptions Opts, ToolVersion Version = ToolVersion.Live);
+		public abstract void Execute(PackageChunksOptions Opts, out PackageChunksOutput Output, ToolVersion Version = ToolVersion.Live);
 	}
 
 
-    /// <summary>
-    /// Helper class
-    /// </summary>
-    public abstract class BuildInfoPublisherBase
-    {
-        static BuildInfoPublisherBase Handler = null;
- 
-        public static BuildInfoPublisherBase Get()
-        {
-            if (Handler == null)
-            {
-                Assembly[] LoadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
-                foreach (var Dll in LoadedAssemblies)
-                {
-                    Type[] AllTypes = Dll.SafeGetLoadedTypes();
-                    foreach (var PotentialConfigType in AllTypes)
-                    {
-                        if (PotentialConfigType != typeof(BuildInfoPublisherBase) && typeof(BuildInfoPublisherBase).IsAssignableFrom(PotentialConfigType))
-                        {
-                            Handler = Activator.CreateInstance(PotentialConfigType) as BuildInfoPublisherBase;
-                            break;
-                        }
-                    }
-                }
-                if (Handler == null)
-                {
-                    throw new AutomationException("Attempt to use BuildInfoPublisherBase.Get() and it doesn't appear that there are any modules that implement this class.");
-                }
-            }
-            return Handler;
-        }
+	/// <summary>
+	/// Class that provides programmatic access to the metadata field from build info.
+	/// </summary>
+	public abstract class BuildMetadataBase
+	{
+		/// <summary>
+		/// Merges provided metadata object into this one.
+		/// </summary>
+		/// <param name="Other">The other metadata to merge in.</param>
+		/// <param name="bClobber">Optional, specifies whether to overwrite existing metadata keys with those in Other, default true.</param>
+		/// <returns>this object to facilitate fluent syntax.</returns>
+		abstract public BuildMetadataBase MergeWith(BuildMetadataBase Other, bool bClobber = true);
+	}
+
+	/// <summary>
+	/// Helper class
+	/// </summary>
+	public abstract class BuildInfoPublisherBase
+	{
+		static BuildInfoPublisherBase Handler = null;
+
+		public static BuildInfoPublisherBase Get()
+		{
+			if (Handler == null)
+			{
+				Assembly[] LoadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+				foreach (var Dll in LoadedAssemblies)
+				{
+					Type[] AllTypes = Dll.SafeGetLoadedTypes();
+					foreach (var PotentialConfigType in AllTypes)
+					{
+						if (PotentialConfigType != typeof(BuildInfoPublisherBase) && typeof(BuildInfoPublisherBase).IsAssignableFrom(PotentialConfigType))
+						{
+							Handler = Activator.CreateInstance(PotentialConfigType) as BuildInfoPublisherBase;
+							break;
+						}
+					}
+				}
+				if (Handler == null)
+				{
+					throw new AutomationException("Attempt to use BuildInfoPublisherBase.Get() and it doesn't appear that there are any modules that implement this class.");
+				}
+			}
+			return Handler;
+		}
+
+		/// <summary>
+		/// Creates a metadata object implementation, initialized with the provided JSON object.
+		/// </summary>
+		/// <param name="JsonRepresentation">JSON object representation to initialize with.</param>
+		/// <returns>new instance of metadata implementation.</returns>
+		abstract public BuildMetadataBase CreateBuildMetadata(string JsonRepresentation);
 
 		/// <summary>
 		/// Determines whether a given build is registered in build info
@@ -854,11 +1005,11 @@ namespace EpicGames.MCP.Automation
 		/// <returns>true if the build is registered, false otherwise</returns>
 		abstract public bool BuildExists(BuildPatchToolStagingInfo StagingInfo, string McpConfigName);
 
-        /// <summary>
-        /// Given a MCPStagingInfo defining our build info, posts the build to the MCP BuildInfo Service.
-        /// </summary>
-        /// <param name="stagingInfo">Staging Info describing the BuildInfo to post.</param>
-        abstract public void PostBuildInfo(BuildPatchToolStagingInfo stagingInfo);
+		/// <summary>
+		/// Given a MCPStagingInfo defining our build info, posts the build to the MCP BuildInfo Service.
+		/// </summary>
+		/// <param name="stagingInfo">Staging Info describing the BuildInfo to post.</param>
+		abstract public void PostBuildInfo(BuildPatchToolStagingInfo stagingInfo);
 
 		/// <summary>
 		/// Given a MCPStagingInfo defining our build info and a MCP config name, posts the build to the requested MCP BuildInfo Service.
@@ -872,6 +1023,7 @@ namespace EpicGames.MCP.Automation
 		/// </summary>
 		/// <param name="BuildVersion">Build version to return labels for.</param>
 		/// <param name="McpConfigName">Which BuildInfo backend to get labels from for this promotion attempt.</param>
+		/// <returns>The list of build labels applied.</returns>
 		abstract public List<string> GetBuildLabels(BuildPatchToolStagingInfo StagingInfo, string McpConfigName);
 
 		/// <summary>
@@ -879,13 +1031,41 @@ namespace EpicGames.MCP.Automation
 		/// </summary>
 		/// <param name="StagingInfo">Staging Info describing the BuildInfo to query.</param>
 		/// <param name="McpConfigName">Name of which MCP config to query.</param>
-		/// <returns></returns>
+		/// <returns>The manifest url.</returns>
 		abstract public string GetBuildManifestUrl(BuildPatchToolStagingInfo StagingInfo, string McpConfigName);
+
+		/// <summary>
+		/// Given a staging info defining our build, return the manifest url for that registered build
+		/// </summary>
+		/// <param name="AppName">Application name to check the label in</param>
+		/// <param name="BuildVersion">Build version to manifest for.</param>
+		/// <param name="McpConfigName">Name of which MCP config to query.</param>
+		/// <returns></returns>
+		abstract public string GetBuildManifestUrl(string AppName, string BuildVersionWithPlatform, string McpConfigName);
+
+		/// <summary>
+		/// Given a staging info defining our build, return the manifest hash for that registered build
+		/// </summary>
+		/// <param name="StagingInfo">Staging Info describing the BuildInfo to query.</param>
+		/// <param name="McpConfigName">Name of which MCP config to query.</param>
+		/// <returns>Manifest SHA1 hash as a hex string</returns>
+		abstract public string GetBuildManifestHash(BuildPatchToolStagingInfo StagingInfo, string McpConfigName);
+
+		/// <summary>
+		/// Given a staging info defining our build, fetch and apply the metadata for that registered build.
+		/// </summary>
+		/// <param name="StagingInfo">Staging Info describing the BuildInfo to query.</param>
+		/// <param name="McpConfigName">Name of which MCP config to query.</param>
+		/// <param name="bClobber">Optional, specifies whether to overwrite existing metadata keys with those received, default false.</param>
+		/// <returns>The metadata object for convenience.</returns>
+		abstract public BuildMetadataBase GetBuildMetaData(BuildPatchToolStagingInfo StagingInfo, string McpConfigName, bool bClobber = false);
+
 		/// <summary>
 		/// Get a label string for the specific Platform requested.
 		/// </summary>
 		/// <param name="DestinationLabel">Base of label</param>
 		/// <param name="Platform">Platform to add to base label.</param>
+		/// <returns>The label string including platform postfix.</returns>
 		abstract public string GetLabelWithPlatform(string DestinationLabel, MCPPlatform Platform);
 
 		/// <summary>
@@ -893,15 +1073,16 @@ namespace EpicGames.MCP.Automation
 		/// </summary>
 		/// <param name="DestinationLabel">Base of label</param>
 		/// <param name="Platform">Platform to add to base label.</param>
+		/// <returns>The BuildVersion string including platform postfix.</returns>
 		abstract public string GetBuildVersionWithPlatform(BuildPatchToolStagingInfo StagingInfo);
 
 		/// <summary>
-		/// 
+		/// Get the BuildVersion for a build that is labeled under a specific appname.
 		/// </summary>
 		/// <param name="AppName">Application name to check the label in</param>
-		/// <param name="LabelName">Label name to get the build for</param>
+		/// <param name="LabelName">Label name to get the build version for</param>
 		/// <param name="McpConfigName">Which BuildInfo backend to label the build in.</param>
-		/// <returns></returns>
+		/// <returns>The BuildVersion or null if no build labeled.</returns>
 		abstract public string GetLabeledBuildVersion(string AppName, string LabelName, string McpConfigName);
 
 		/// <summary>
@@ -912,16 +1093,16 @@ namespace EpicGames.MCP.Automation
 		/// <param name="McpConfigName">Which BuildInfo backend to label the build in.</param>
 		abstract public void LabelBuild(BuildPatchToolStagingInfo StagingInfo, string DestinationLabelWithPlatform, string McpConfigName);
 
-        /// <summary>
-        /// Informs Patcher Service of a new build availability after async labeling is complete
-        /// (this usually means the build was copied to a public file server before the label could be applied).
-        /// </summary>
-        /// <param name="Command">Parent command</param>
-        /// <param name="AppName">Application name that the patcher service will use.</param>
-        /// <param name="BuildVersion">BuildVersion string that the patcher service will use.</param>
-        /// <param name="ManifestRelativePath">Relative path to the Manifest file relative to the global build root (which is like P:\Builds) </param>
-        /// <param name="LabelName">Name of the label that we will be setting.</param>
-        abstract public void BuildPromotionCompleted(BuildPatchToolStagingInfo stagingInfo, string AppName, string BuildVersion, string ManifestRelativePath, string PlatformName, string LabelName);
+		/// <summary>
+		/// Informs Patcher Service of a new build availability after async labeling is complete
+		/// (this usually means the build was copied to a public file server before the label could be applied).
+		/// </summary>
+		/// <param name="Command">Parent command</param>
+		/// <param name="AppName">Application name that the patcher service will use.</param>
+		/// <param name="BuildVersion">BuildVersion string that the patcher service will use.</param>
+		/// <param name="ManifestRelativePath">Relative path to the Manifest file relative to the global build root (which is like P:\Builds) </param>
+		/// <param name="LabelName">Name of the label that we will be setting.</param>
+		abstract public void BuildPromotionCompleted(BuildPatchToolStagingInfo stagingInfo, string AppName, string BuildVersion, string ManifestRelativePath, string PlatformName, string LabelName);
 	}
 
     /// <summary>

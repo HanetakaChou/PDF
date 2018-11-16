@@ -6,7 +6,11 @@ public class UnrealFrontend : ModuleRules
 {
 	public UnrealFrontend( ReadOnlyTargetRules Target ) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
+		PublicIncludePaths.AddRange(
+            new string[] {
+                "Runtime/Launch/Public",
+            }
+        );
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
@@ -25,13 +29,14 @@ public class UnrealFrontend : ModuleRules
 				"DeviceManager",
 				"LauncherServices",
 				"Messaging",
+                "OutputLog",
 				"Profiler",
 				"ProfilerClient",
                 "ProjectLauncher",
 				"Projects",
 				"SessionFrontend",
-				"SessionServices",
-				"Slate",
+				"SessionServices",                
+                "Slate",
 				"SlateCore",
 				"SourceCodeAccess",
 				"StandaloneRenderer",
@@ -48,7 +53,7 @@ public class UnrealFrontend : ModuleRules
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
-				"SlateReflector",
+				"SlateReflector"
 			}
 		);
 
@@ -64,7 +69,7 @@ public class UnrealFrontend : ModuleRules
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"LinuxCommonStartup"
+					"UnixCommonStartup"
 				}
 			);
 		}

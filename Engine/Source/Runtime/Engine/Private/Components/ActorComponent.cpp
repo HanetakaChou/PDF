@@ -11,7 +11,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "ContentStreaming.h"
 #include "ComponentReregisterContext.h"
@@ -425,9 +425,9 @@ bool UActorComponent::ComponentIsInPersistentLevel(bool bIncludeLevelStreamingPe
 		return false;
 	}
 
-	return ( (MyLevel == MyWorld->PersistentLevel) || ( bIncludeLevelStreamingPersistent && MyWorld->StreamingLevels.Num() > 0 &&
-														Cast<ULevelStreamingPersistent>(MyWorld->StreamingLevels[0]) != NULL &&
-														MyWorld->StreamingLevels[0]->GetLoadedLevel() == MyLevel ) );
+	return ( (MyLevel == MyWorld->PersistentLevel) || ( bIncludeLevelStreamingPersistent && MyWorld->GetStreamingLevels().Num() > 0 &&
+														Cast<ULevelStreamingPersistent>(MyWorld->GetStreamingLevels()[0]) &&
+														MyWorld->GetStreamingLevels()[0]->GetLoadedLevel() == MyLevel ) );
 }
 
 FString UActorComponent::GetReadableName() const
@@ -704,12 +704,15 @@ void UActorComponent::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 
 void UActorComponent::OnRegister()
 {
+#if !UE_BUILD_SHIPPING
+	// These are removed in shipping because they are still likely to fail in Test and Development builds, and checks in shipping makes this rather expensive.
 	checkf(!IsUnreachable(), TEXT("%s"), *GetDetailedInfo());
 	checkf(!GetOuter()->IsTemplate(), TEXT("'%s' (%s)"), *GetOuter()->GetFullName(), *GetDetailedInfo());
 	checkf(!IsTemplate(), TEXT("'%s' (%s)"), *GetOuter()->GetFullName(), *GetDetailedInfo() );
+	checkf(!IsPendingKill(), TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
+#endif
 	checkf(WorldPrivate, TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
 	checkf(!bRegistered, TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
-	checkf(!IsPendingKill(), TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
 
 	bRegistered = true;
 
@@ -754,7 +757,10 @@ void UActorComponent::BeginPlay()
 	check(!bHasBegunPlay);
 	checkSlow(bTickFunctionsRegistered); // If this fails, someone called BeginPlay() without first calling RegisterAllComponentTickFunctions().
 
-	ReceiveBeginPlay();
+	if (GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+	{
+		ReceiveBeginPlay();
+	}
 
 	bHasBegunPlay = true;
 }
@@ -764,7 +770,7 @@ void UActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	check(bHasBegunPlay);
 
 	// If we're in the process of being garbage collected it is unsafe to call out to blueprints
-	if (!HasAnyFlags(RF_BeginDestroyed) && !IsUnreachable())
+	if (!HasAnyFlags(RF_BeginDestroyed) && !IsUnreachable() && GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 	{
 		ReceiveEndPlay(EndPlayReason);
 	}
@@ -895,18 +901,21 @@ void UActorComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, F
 {
 	check(bRegistered);
 
-	ReceiveTick(DeltaTime);
-
-	if (GTickComponentLatentActionsWithTheComponent)
+	if (GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 	{
-		// Update any latent actions we have for this component, this will update even if paused if bUpdateWhilePaused is enabled
-		// If this tick is skipped on a frame because we've got a TickInterval, our latent actions will be ticked
-		// anyway by UWorld::Tick(). Given that, our latent actions don't need to be passed a larger
-		// DeltaSeconds to make up the frames that they missed (because they wouldn't have missed any).
-		// So pass in the world's DeltaSeconds value rather than our specific DeltaSeconds value.
-		if (UWorld* ComponentWorld = GetWorld())
+		ReceiveTick(DeltaTime);
+
+		if (GTickComponentLatentActionsWithTheComponent)
 		{
-			ComponentWorld->GetLatentActionManager().ProcessLatentActions(this, ComponentWorld->GetDeltaSeconds());
+			// Update any latent actions we have for this component, this will update even if paused if bUpdateWhilePaused is enabled
+			// If this tick is skipped on a frame because we've got a TickInterval, our latent actions will be ticked
+			// anyway by UWorld::Tick(). Given that, our latent actions don't need to be passed a larger
+			// DeltaSeconds to make up the frames that they missed (because they wouldn't have missed any).
+			// So pass in the world's DeltaSeconds value rather than our specific DeltaSeconds value.
+			if (UWorld* ComponentWorld = GetWorld())
+			{
+				ComponentWorld->GetLatentActionManager().ProcessLatentActions(this, ComponentWorld->GetDeltaSeconds());
+			}
 		}
 	}
 }
@@ -1014,10 +1023,12 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld)
 
 		for (UObject* Child : Children)
 		{
-			UActorComponent* ChildComponent = Cast<UActorComponent>(Child);
-			if (ChildComponent && !ChildComponent->IsRegistered() && ChildComponent->GetOwner() == MyOwner)
+			if (UActorComponent* ChildComponent = Cast<UActorComponent>(Child))
 			{
-				ChildComponent->RegisterComponentWithWorld(InWorld);
+				if (ChildComponent->bAutoRegister && !ChildComponent->IsRegistered() && ChildComponent->GetOwner() == MyOwner)
+				{
+					ChildComponent->RegisterComponentWithWorld(InWorld);
+				}
 			}
 		}
 
@@ -1602,7 +1613,7 @@ bool UActorComponent::IsNameStableForNetworking() const
 	 *	-They were explicitly set to bNetAddressable (blueprint components created by SCS)
 	 */
 
-	return bNetAddressable || Super::IsNameStableForNetworking();
+	return bNetAddressable || (Super::IsNameStableForNetworking() && (CreationMethod != EComponentCreationMethod::UserConstructionScript));
 }
 
 bool UActorComponent::IsSupportedForNetworking() const
@@ -1704,7 +1715,7 @@ void UActorComponent::DetermineUCSModifiedProperties()
 			FComponentPropertySkipper()
 				: FArchive()
 			{
-				ArIsSaving = true;
+				this->SetIsSaving(true);
 
 				// Include properties that would normally skip tagged serialization (e.g. bulk serialization of array properties).
 				ArPortFlags |= PPF_ForceTaggedSerialization;
@@ -1777,11 +1788,11 @@ void UActorComponent::HandleCanEverAffectNavigationChange(bool bForceUpdate)
 		if (bCanEverAffectNavigation)
 		{
 			bNavigationRelevant = IsNavigationRelevant();
-			UNavigationSystem::OnComponentRegistered(this);
+			FNavigationSystem::OnComponentRegistered(*this);
 		}
 		else
 		{
-			UNavigationSystem::OnComponentUnregistered(this);
+			FNavigationSystem::OnComponentUnregistered(*this);
 		}
 	}
 }

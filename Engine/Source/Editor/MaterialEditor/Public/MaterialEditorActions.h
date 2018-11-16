@@ -96,8 +96,8 @@ public:
 	/** Toggles the material stats on the canvas pane */
 	TSharedPtr< FUICommandInfo > ToggleMaterialStats;
 
-	/** Shows material stats and errors when compiled for mobile. */
-	TSharedPtr< FUICommandInfo > ToggleMobileStats;
+	/** Shows material stats and errors for multiple shader platforms. */
+	TSharedPtr< FUICommandInfo > TogglePlatformStats;
 	
 	/** Creates a new comment node */
 	TSharedPtr< FUICommandInfo > NewComment;
@@ -166,6 +166,16 @@ public:
 	/** Create component mask node */
 	TSharedPtr< FUICommandInfo > PromoteToParameter;
 
+	TSharedPtr< FUICommandInfo > QualityLevel_All;
+	TSharedPtr< FUICommandInfo > QualityLevel_High;
+	TSharedPtr< FUICommandInfo > QualityLevel_Medium;
+	TSharedPtr< FUICommandInfo > QualityLevel_Low;
+
+	TSharedPtr< FUICommandInfo > FeatureLevel_All;
+	TSharedPtr< FUICommandInfo > FeatureLevel_ES2;
+	TSharedPtr< FUICommandInfo > FeatureLevel_ES31;
+	TSharedPtr< FUICommandInfo > FeatureLevel_SM4;
+	TSharedPtr< FUICommandInfo > FeatureLevel_SM5;
 
 	/**
 	 * Initialize commands

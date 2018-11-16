@@ -12,17 +12,21 @@
 #include "OculusHMD_StressTester.h"
 #include "OculusHMD_ConsoleCommands.h"
 #include "OculusHMD_SpectatorScreenController.h"
+#include "OculusHMD_DynamicResolutionState.h"
 
 #include "OculusAssetManager.h"
 
 #include "HeadMountedDisplayBase.h"
 #include "HeadMountedDisplay.h"
 #include "XRRenderTargetManager.h"
+#include "XRRenderBridge.h"
 #include "IStereoLayers.h"
-#include "Stats.h"
+#include "Stats/Stats.h"
 #include "SceneViewExtension.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMeshActor.h"
+#include "XRThreadUtils.h"
+#include "ProceduralMeshComponent.h"
 
 
 namespace OculusHMD
@@ -77,6 +81,7 @@ public:
 	virtual bool GetTrackingSensorProperties(int32 InDeviceId, FQuat& OutOrientation, FVector& OutPosition, FXRSensorProperties& OutSensorProperties) override;
 	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override;
 	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() override;
+	virtual bool GetFloorToEyeTrackingTransform(FTransform& OutFloorToEye) const override;
 	//virtual FVector GetAudioListenerOffset(int32 InDeviceId = HMDDeviceId) const override;
 	virtual void ResetOrientationAndPosition(float Yaw = 0.f) override;
 	virtual void ResetOrientation(float Yaw = 0.f) override;
@@ -108,6 +113,7 @@ public:
 	//virtual FVector GetAudioListenerOffset() const override;
 	virtual bool GetHMDDistortionEnabled(EShadingPath ShadingPath) const override;
 	//virtual void BeginRendering_RenderThread(const FTransform& NewRelativeTransform, FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily) override;
+	//virtual bool IsSpectatorScreenActive() const override;
 	//virtual class ISpectatorScreenController* GetSpectatorScreenController() override;
 	//virtual class ISpectatorScreenController const* GetSpectatorScreenController() const override;
 	//virtual float GetDistortionScalingFactor() const override;
@@ -136,7 +142,7 @@ public:
 	//virtual bool DoesAppUseVRFocus() const override;
 	//virtual bool DoesAppHaveVRFocus() const override;
 	virtual float GetPixelDenity() const override;
-	virtual void SetPixelDensity(const float NewDensity) override;
+	virtual void SetPixelDensity(const float NewPixelDensity) override;
 	virtual FIntPoint GetIdealRenderTargetSize() const override;
 
 	// IStereoRendering interface
@@ -150,11 +156,8 @@ public:
 	virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
 	virtual void InitCanvasFromView(class FSceneView* InView, class UCanvas* Canvas) override;
 	//virtual void GetEyeRenderParams_RenderThread(const struct FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
-	//virtual bool IsSpectatorScreenActive() const override;
 	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
-	virtual void GetOrthoProjection(int32 RTWidth, int32 RTHeight, float OrthoDistance, FMatrix OrthoProjection[2]) const override;
 	//virtual void SetClippingPlanes(float NCP, float FCP) override;
-	virtual FRHICustomPresent* GetCustomPresent() override { return CustomPresent; }
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 	virtual IStereoLayers* GetStereoLayers() override { return this; }
 	//virtual void UseImplicitHmdPosition(bool bInImplicitHmdPosition) override;
@@ -163,7 +166,7 @@ public:
 	// FHeadMoundedDisplayBase interface
 	virtual FVector2D GetEyeCenterPoint_RenderThread(EStereoscopicPass StereoPassType) const override;
 	virtual FIntRect GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const override;
-	virtual void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef SrcTexture, FIntRect SrcRect, FTexture2DRHIParamRef DstTexture, FIntRect DstRect, bool bClearBlack) const override;
+	virtual void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef SrcTexture, FIntRect SrcRect, FTexture2DRHIParamRef DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const override;
 	virtual bool PopulateAnalyticsAttributes(TArray<struct FAnalyticsEventAttribute>& EventAttributes) override;
 
 	// FXRRenderTargetManager interface
@@ -174,7 +177,7 @@ public:
 	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 InTargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
 	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
 	virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
-	virtual void UpdateViewportRHIBridge(bool bUseSeparateRenderTarget, const class FViewport& Viewport, FRHIViewport* const ViewportRHI) override;
+	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
 
 	// IStereoLayers interface
 	virtual uint32 CreateLayer(const IStereoLayers::FLayerDesc& InLayerDesc) override;
@@ -184,6 +187,7 @@ public:
 	virtual void MarkTextureForUpdate(uint32 LayerId) override;
 	virtual void UpdateSplashScreen() override;
 	virtual IStereoLayers::FLayerDesc GetDebugCanvasLayerDesc(FTextureRHIRef Texture) override;
+	virtual void GetAllocatedTexture(uint32 LayerId, FTextureRHIRef &Texture, FTextureRHIRef &LeftTexture) override;
 
 	// ISceneViewExtension
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
@@ -217,7 +221,6 @@ protected:
 	void ApplySystemOverridesOnStereo(bool force = false);
 	bool OnOculusStateChange(bool bIsEnabledNow);
 	bool ShouldDisableHiddenAndVisibileAreaMeshForSpectatorScreen_RenderThread() const;
-	void RenderPokeAHole(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily);
 #if !UE_BUILD_SHIPPING
 	void DrawDebug(UCanvas* InCanvas, APlayerController* InPlayerController);
 #endif
@@ -264,6 +267,9 @@ public:
 	/** Turns ovrVector3f in Unreal World space to a scaled FVector and applies translation and rotation corresponding to player movement */
 	FVector ScaleAndMovePointWithPlayer(ovrpVector3f& OculusHMDPoint);
 
+	/** The inverse of ScaleAndMovePointWithPlayer */
+	ovrpVector3f WorldLocationToOculusPoint(const FVector& InUnrealPosition);
+
 	/** Convert dimension of a float (e.g., a distance) from meters to Unreal Units */
 	float ConvertFloat_M2U(float OculusFloat) const;
 	FVector ConvertVector_M2U(ovrpVector3f OculusPoint) const;
@@ -301,6 +307,8 @@ public:
 	FSettings* GetSettings_RHIThread() { CheckInRHIThread(); return Settings_RHIThread.Get(); }
 	const FSettings* GetSettings_RHIThread() const { CheckInRHIThread(); return Settings_RHIThread.Get(); }
 
+	const int GetNextFrameNumber() const { return NextFrameNumber; }
+
 	void StartGameFrame_GameThread(); // Called from OnStartGameFrame
 	void FinishGameFrame_GameThread(); // Called from OnEndGameFrame
 	void StartRenderFrame_GameThread(); // Called from BeginRenderViewFamily
@@ -309,6 +317,8 @@ public:
 	void FinishRHIFrame_RHIThread(); // Called from FinishRendering_RHIThread
 
 	void SetTiledMultiResLevel(ETiledMultiResLevel multiresLevel);
+
+	OCULUSHMD_API void UpdateRTPoses();
 
 protected:
 	FConsoleCommands ConsoleCommands;

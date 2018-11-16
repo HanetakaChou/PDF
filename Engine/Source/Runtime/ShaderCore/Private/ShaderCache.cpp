@@ -15,8 +15,9 @@
 #include "Shader.h"
 #include "Misc/EngineVersion.h"
 #include "PipelineStateCache.h"
-#include "ScopeRWLock.h"
-#include "CoreDelegates.h"
+#include "Misc/ScopeRWLock.h"
+#include "Misc/CoreDelegates.h"
+
 
 DECLARE_STATS_GROUP(TEXT("Shader Cache"),STATGROUP_ShaderCache, STATCAT_Advanced);
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Num Shaders Cached"),STATGROUP_NumShadersCached,STATGROUP_ShaderCache);
@@ -36,7 +37,7 @@ const FGuid FShaderCacheCustomVersion::GameKey(0x03D4EB48, 0xB50B4CC3, 0xA598DE4
 FCustomVersionRegistration GRegisterShaderCacheVersion(FShaderCacheCustomVersion::Key, FShaderCacheCustomVersion::Latest, TEXT("ShaderCacheVersion"));
 FCustomVersionRegistration GRegisterShaderCacheGameVersion(FShaderCacheCustomVersion::GameKey, (int32)FEngineVersion::Current().GetChangelist(), TEXT("ShaderCacheGameVersion"));
 
-#define SHADER_CACHE_ENABLED (0)
+#define SHADER_CACHE_ENABLED 0
 
 static const ECompressionFlags ShaderCacheCompressionFlag = ECompressionFlags::COMPRESS_ZLIB;
 
@@ -49,7 +50,7 @@ FAutoConsoleVariableRef FShaderCache::CVarUseShaderCaching(
 														   ECVF_ReadOnly|ECVF_RenderThreadSafe
 														   );
 
-int32 FShaderCache::bUseUserShaderCache = 1;
+int32 FShaderCache::bUseUserShaderCache = 0;
 FAutoConsoleVariableRef FShaderCache::CVarUseUserShaderCache(
 	TEXT("r.UseUserShaderCache"),
 	bUseUserShaderCache,
@@ -199,6 +200,9 @@ public:
 	
 	FComputeShaderRHIRef CreateComputeShader(const FSHAHash& Hash) override final;
 	
+	virtual bool RequestEntry(const FSHAHash& Hash, FArchive* Ar) override final;
+	virtual bool ContainsEntry(const FSHAHash& Hash) override final;
+	
 	FName GetFormat( void ) const;
 	
 	//Archive override add Shader
@@ -266,7 +270,7 @@ private:
 };
 
 FShaderCacheLibrary::FShaderCacheLibrary(EShaderPlatform InPlatform, FString Name)
-: FShaderFactoryInterface(InPlatform)
+: FShaderFactoryInterface(InPlatform, Name)
 , FileName(Name)
 {
 }
@@ -316,7 +320,7 @@ FPixelShaderRHIRef FShaderCacheLibrary::CreatePixelShader(const FSHAHash& Hash)
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -344,7 +348,7 @@ FVertexShaderRHIRef FShaderCacheLibrary::CreateVertexShader(const FSHAHash& Hash
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -372,7 +376,7 @@ FHullShaderRHIRef FShaderCacheLibrary::CreateHullShader(const FSHAHash& Hash)
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -400,7 +404,7 @@ FDomainShaderRHIRef FShaderCacheLibrary::CreateDomainShader(const FSHAHash& Hash
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -428,7 +432,7 @@ FGeometryShaderRHIRef FShaderCacheLibrary::CreateGeometryShader(const FSHAHash& 
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -456,7 +460,7 @@ FGeometryShaderRHIRef FShaderCacheLibrary::CreateGeometryShaderWithStreamOutput(
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -484,7 +488,7 @@ FComputeShaderRHIRef FShaderCacheLibrary::CreateComputeShader(const FSHAHash& Ha
 	TPair<uint32,TArray<uint8>> const* CacheCode = Shaders.Find(Key);
 	if (CacheCode && CacheCode->Value.Num())
 	{
-		if (CacheCode->Key != CacheCode->Value.Num() && RHISupportsShaderCompression(Platform))
+		if (CacheCode->Key != CacheCode->Value.Num())
 		{
 			TArray<uint8> UncompressedCode;
 			FShaderCacheHelperUncompressCode(CacheCode->Key, CacheCode->Value, UncompressedCode);
@@ -501,6 +505,18 @@ FComputeShaderRHIRef FShaderCacheLibrary::CreateComputeShader(const FSHAHash& Ha
 	return Shader;
 }
 
+bool FShaderCacheLibrary::RequestEntry(const FSHAHash& Hash, FArchive* Ar)
+{
+	// FShaderCache is deprecated - so it doesn't need to work with other systems anymore
+	return false;
+}
+
+bool FShaderCacheLibrary::ContainsEntry(const FSHAHash& Hash)
+{
+	// FShaderCache is deprecated - so it doesn't need to work with other systems anymore
+	return false;
+}
+
 FName FShaderCacheLibrary::GetFormat( void ) const
 {
 	return LegacyShaderPlatformToShaderFormat(Platform);
@@ -512,7 +528,7 @@ bool FShaderCacheLibrary::AddShader( uint8 Frequency, const FSHAHash& Hash, TArr
 	TArray<uint8> CompressedCode;
 	
 	// Perform in-memory compression
-	if (RHISupportsShaderCompression(Platform) && (UncompressedCode.Num() == UncompressedSize))
+	if (UncompressedCode.Num() == UncompressedSize)
 	{
 		// Recompress
 		int32 CompressedSize = UncompressedCode.Num();
@@ -635,6 +651,8 @@ static bool ShaderPlatformCanPrebindBoundShaderState(EShaderPlatform Platform)
 		case SP_PCD3D_ES2:
 		case SP_METAL:
 		case SP_METAL_MRT:
+		case SP_METAL_TVOS:
+		case SP_METAL_MRT_TVOS:
 		case SP_METAL_MRT_MAC:
 		case SP_METAL_SM5:
 		case SP_METAL_SM5_NOTESS:
@@ -662,7 +680,7 @@ static bool ShaderPlatformCanPrebindBoundShaderState(EShaderPlatform Platform)
 
 static inline bool ShaderPlatformPrebindRequiresResource(EShaderPlatform Platform)
 {
-	return IsOpenGLPlatform(Platform);
+	return IsOpenGLPlatform(Platform) || IsSwitchPlatform(Platform);
 }
 
 static inline bool ShaderPlatformPSOOnly(EShaderPlatform Platform)
@@ -719,14 +737,12 @@ FShaderCache::FShaderCache(uint32 InOptions, EShaderPlatform InShaderPlatform)
 	// We expect the RHI to be created at this point
 	CurrentShaderPlatformCache.ShaderPlatform = CurrentPlatform;
 
-	if (IsMobilePlatform(CurrentPlatform))
-	{
-		// Make sure this is disabled on mobile
-		// Mobile only needs FShaderCache::bUseShaderCaching
-		FShaderCache::bUseShaderPredraw = 0;
-		FShaderCache::bUseShaderDrawLog = 0;
-	}
-		
+    const bool bOverridesShaderDrawLog = FParse::Param( FCommandLine::Get(), TEXT( "UseShaderDrawLog" ) );
+    if (bOverridesShaderDrawLog)
+    {
+        FShaderCache::bUseShaderDrawLog = 1;
+    }
+
 	DefaultCacheState = InternalCreateOrFindCacheStateForContext(GDynamicRHI->RHIGetDefaultContext());
 			
 	// Try to load user cache, making sure that if we fail version test we still try game-content version.
@@ -792,7 +808,10 @@ void FShaderCache::InitShaderCache(uint32 Options, EShaderPlatform InShaderPlatf
 		GameVersion = (int32)FEngineVersion::Current().GetChangelist();
 	}
 	
-	if(bUseShaderCaching)
+	// Don't use FShaderCache if the newer FShaderPipelineCache is enabled.
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.ShaderPipelineCache.Enabled"));
+	bool bUsePipelineCacheInstead = (CVar && CVar->GetValueOnAnyThread() != 0);
+	if(!bUsePipelineCacheInstead && bUseShaderCaching)
 	{
 		Cache = new FShaderCache(Options, InShaderPlatform);
 	}
@@ -1256,7 +1275,7 @@ void FShaderCache::InternalLogShader(EShaderPlatform Platform, EShaderFrequency 
 
 			if (!(Cache->Options & SCO_NoShaderPreload) && bSubmit)
 			{
-				if (Code.Num() != UncompressedSize && RHISupportsShaderCompression(ShaderCache->CurrentPlatform))
+				if (Code.Num() && Code.Num() != UncompressedSize)
 				{
 					TArray<uint8> UncompressedCode;
 					FShaderCacheHelperUncompressCode(UncompressedSize, Code, UncompressedCode);
@@ -1317,8 +1336,6 @@ void FShaderCache::InternalPrelockedLogGraphicsPipelineState(EShaderPlatform Pla
 	{
 		State.RenderTargets[i] = Initializer.RenderTargetFormats[i];
 		State.RenderTargetFlags[i] = Initializer.RenderTargetFlags[i];
-		State.RenderTargetLoad[i] = (uint8)Initializer.RenderTargetLoadActions[i];
-		State.RenderTargetStore[i] = (uint8)Initializer.RenderTargetStoreActions[i];
 	}
 	State.DepthStencilTarget = Initializer.DepthStencilTargetFormat;
 	State.DepthStencilTargetFlags = Initializer.DepthStencilTargetFlag;
@@ -2336,7 +2353,7 @@ void FShaderCache::InternalPrebindShader(FShaderCacheKey const& Key, FShaderCach
 		CacheState->bIsPreBind = true;
 		
 		// This only applies to OpenGL.
-		if(IsOpenGLPlatform(CurrentPlatform))
+		if(IsOpenGLPlatform(CurrentPlatform) || IsSwitchPlatform(CurrentPlatform))
 		{
 			TSet<FShaderPipelineKey> const* ShaderPipelines = Pipelines.Find(Key);
 			if(ShaderPipelines && bCanPreBind)
@@ -2995,8 +3012,6 @@ void FShaderCache::InternalPreDrawShader(FRHICommandList& RHICmdList, FShaderCac
 							if (Init.RenderTargetFormats[i] > PF_Unknown && Init.RenderTargetFormats[i] < PF_MAX)
 							{
 								Init.RenderTargetFlags[i] = PSOState.RenderTargetFlags[i];
-								Init.RenderTargetLoadActions[i] = (ERenderTargetLoadAction)PSOState.RenderTargetLoad[i];
-								Init.RenderTargetStoreActions[i] = (ERenderTargetStoreAction)PSOState.RenderTargetStore[i];
 							}
 							else
 							{

@@ -174,6 +174,7 @@ struct FMallocBinned::Private
 		uint64 IndirectPoolBlockSizeBytes = Allocator.IndirectPoolBlockSize * sizeof(FPoolInfo);
 
 		checkSlow(IndirectPoolBlockSizeBytes <= Allocator.PageSize);
+        LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 		FPoolInfo* Indirect = (FPoolInfo*)FPlatformMemory::BinnedAllocFromOS(IndirectPoolBlockSizeBytes);
 		if( !Indirect )
 		{
@@ -197,6 +198,7 @@ struct FMallocBinned::Private
 		if (!Allocator.HashBuckets)
 		{
 			// Init tables.
+            LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 			Allocator.HashBuckets = (PoolHashBucket*)FPlatformMemory::BinnedAllocFromOS(Align(Allocator.MaxHashBuckets * sizeof(PoolHashBucket), Allocator.PageSize));
 
 			for (uint32 i = 0; i < Allocator.MaxHashBuckets; ++i) 
@@ -312,6 +314,7 @@ struct FMallocBinned::Private
 		{
 			const uint32 PageSize = Allocator.PageSize;
 
+            LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 			Allocator.HashBucketFreeList = (PoolHashBucket*)FPlatformMemory::BinnedAllocFromOS(PageSize);
 			BINNED_PEAK_STATCOUNTER(Allocator.OsPeak,    BINNED_ADD_STATCOUNTER(Allocator.OsCurrent,    PageSize));
 			BINNED_PEAK_STATCOUNTER(Allocator.WastePeak, BINNED_ADD_STATCOUNTER(Allocator.WasteCurrent, PageSize));
@@ -508,7 +511,7 @@ struct FMallocBinned::Private
 		Allocator.PendingFreeList->Push(Ptr);
 #else
 #ifdef USE_COARSE_GRAIN_LOCKS
-		FScopeLock ScopedLock(&AccessGuard);
+		FScopeLock ScopedLock(&Allocator.AccessGuard);
 #endif
 		FreeInternal(Allocator, Ptr);
 #endif
@@ -623,16 +626,19 @@ struct FMallocBinned::Private
 			};*/
 		}
 		OutActualSize = NewSize;
+        LLM_PLATFORM_SCOPE(ELLMTag::SmallBinnedAllocation);
 		void* Ptr = FPlatformMemory::BinnedAllocFromOS(NewSize);
 		if (!Ptr)
 		{
 			//Are we holding on to much mem? Release it all.
 			FlushAllocCache(Allocator);
+            LLM_PLATFORM_SCOPE(ELLMTag::SmallBinnedAllocation);
 			Ptr = FPlatformMemory::BinnedAllocFromOS(NewSize);
 		}
 		return Ptr;
 #else
 		(void)OutActualSize;
+        LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 		return FPlatformMemory::BinnedAllocFromOS(NewSize);
 #endif
 	}
@@ -1090,6 +1096,44 @@ bool FMallocBinned::GetAllocationSize(void *Original, SIZE_T &SizeOut)
 	}
 	return true;
 }
+
+SIZE_T FMallocBinned::QuantizeSize(SIZE_T Size, uint32 Alignment)
+{
+	// Handle DEFAULT_ALIGNMENT for binned allocator.
+	if (Alignment == DEFAULT_ALIGNMENT)
+	{
+		Alignment = Private::DEFAULT_BINNED_ALLOCATOR_ALIGNMENT;
+	}
+
+	Alignment = FMath::Max<uint32>(Alignment, Private::DEFAULT_BINNED_ALLOCATOR_ALIGNMENT);
+	SIZE_T SpareBytesCount = FMath::Min<SIZE_T>(Private::DEFAULT_BINNED_ALLOCATOR_ALIGNMENT, Size);
+	Size = FMath::Max<SIZE_T>(PoolTable[0].BlockSize, Size + (Alignment - SpareBytesCount));
+
+	SIZE_T Result;
+	if (Size < BinnedSizeLimit)
+	{
+		// Allocate from pool.
+		FPoolTable* Table = MemSizeToPoolTable[Size];
+		Result = SIZE_T(Table->BlockSize);
+	}
+	else if (((Size >= BinnedSizeLimit && Size <= PagePoolTable[0].BlockSize) ||
+		(Size > PageSize && Size <= PagePoolTable[1].BlockSize)))
+	{
+		// Bucket in a pool of 3*PageSize or 6*PageSize
+		uint32 BinType = Size < PageSize ? 0 : 1;
+		FPoolTable* Table = &PagePoolTable[BinType];
+		Result = SIZE_T(Table->BlockSize);
+	}
+	else
+	{
+		// Use OS for large allocations.
+		UPTRINT AlignedSize = Align(Size, PageSize);
+		Result = SIZE_T(AlignedSize);
+	}
+	check(Result >= Size);
+	return Result;
+}
+
 
 bool FMallocBinned::ValidateHeap()
 {

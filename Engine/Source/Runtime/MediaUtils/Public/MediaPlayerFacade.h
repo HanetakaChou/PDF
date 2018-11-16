@@ -9,6 +9,7 @@
 #include "IMediaClockSink.h"
 #include "IMediaEventSink.h"
 #include "IMediaTickable.h"
+#include "MediaPlayerOptions.h"
 #include "Math/Quat.h"
 #include "Math/Range.h"
 #include "Math/RangeSet.h"
@@ -55,6 +56,9 @@ public:
 	/** Name of the desired native player, if any. */
 	FName DesiredPlayerName;
 
+	/** Extra time to reduce from current player's time. */
+	FTimespan TimeDelay;
+
 public:
 
 	/** Default constructor. */
@@ -65,14 +69,44 @@ public:
 
 public:
 
+	/**
+	 * Add the given audio sample sink to this player.
+	 *
+	 * @param SampleSink The sink to receive audio samples.
+	 * @see  AddCaptionSampleSink, AddMetadataSampleSink, AddSubtitleSampleSink, AddVideoSampleSink
+	 */
 	void AddAudioSampleSink(const TSharedRef<FMediaAudioSampleSink, ESPMode::ThreadSafe>& SampleSink);
 
+	/**
+	 * Add the given audio sample sink to this player.
+	 *
+	 * @param SampleSink The sink to receive caption samples.
+	 * @see AddAudioSampleSink, AddMetadataSampleSink, AddSubtitleSampleSink, AddVideoSampleSink
+	 */
 	void AddCaptionSampleSink(const TSharedRef<FMediaOverlaySampleSink, ESPMode::ThreadSafe>& SampleSink);
 
+	/**
+	 * Add the given audio sample sink to this player.
+	 *
+	 * @param SampleSink The sink to receive metadata samples.
+	 * @see AddAudioSampleSink, AddCaptionSampleSink, AddSubtitleSampleSink, AddVideoSampleSink
+	 */
 	void AddMetadataSampleSink(const TSharedRef<FMediaBinarySampleSink, ESPMode::ThreadSafe>& SampleSink);
 
+	/**
+	 * Add the given audio sample sink to this player.
+	 *
+	 * @param SampleSink The sink to receive subtitle samples.
+	 * @see AddAudioSampleSink, AddCaptionSampleSink, AddMetadataSampleSink, AddVideoSampleSink
+	 */
 	void AddSubtitleSampleSink(const TSharedRef<FMediaOverlaySampleSink, ESPMode::ThreadSafe>& SampleSink);
 
+	/**
+	 * Add the given audio sample sink to this player.
+	 *
+	 * @param SampleSink The sink to receive video samples.
+	 * @see AddAudioSampleSink, AddCaptionSampleSink, AddMetadataSampleSink, AddSubtitleSampleSink
+	 */
 	void AddVideoSampleSink(const TSharedRef<FMediaTextureSampleSink, ESPMode::ThreadSafe>& SampleSink);
 
 	/**
@@ -451,9 +485,10 @@ public:
 	 *
 	 * @param Url The URL of the media to open (file name or web address).
 	 * @param Options Optional media parameters.
+	 * @param PlayerOptions Optional player parameters.
 	 * @return true if the media is being opened, false otherwise.
 	 */
-	bool Open(const FString& Url, const IMediaOptions* Options);
+	bool Open(const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions = nullptr);
 
 	/**
 	 * Query the time ranges of cached media samples for the specified caching state.
@@ -485,6 +520,17 @@ public:
 	 * @see GetNumTracks, GetSelectedTrack, SetTrackFormat
 	 */
 	bool SelectTrack(EMediaTrackType TrackType, int32 TrackIndex);
+
+	/**
+	 * Set the time on which to block.
+	 *
+	 * If set, this player will block in TickFetch until the video sample
+	 * for the specified time are actually available.
+	 *
+	 * @param Time The time to block on, or FTimespan::MinValue to disable.
+	 * @see TickFetch
+	 */
+	void SetBlockOnTime(const FTimespan& Time);
 
 	/**
 	 * Set sample caching options.
@@ -519,6 +565,15 @@ public:
 	 * @see GetRate, SupportsRate
 	 */
 	bool SetRate(float Rate);
+
+	/**
+	 * Changes the media's native volume.
+	 *
+	 * @param Rate The volume to set.
+	 * @return true on success, false otherwise.
+	 * @see NativeAudioOut
+	 */
+	bool SetNativeVolume(float Volume);
 
 	/**
 	 * Set the format on the specified track.
@@ -601,6 +656,13 @@ public:
 
 protected:
 
+	/**
+	 * Whether sample fetching should block.
+	 *
+	 * @return true if sample fetching should block, false otherwise.
+	 */
+	bool BlockOnFetch() const;
+
 	/** Flush all media sample sinks. */
 	void FlushSinks();
 
@@ -647,12 +709,6 @@ protected:
 
 protected:
 
-	//~ IMediaEventSink interface
-
-	void ReceiveMediaEvent(EMediaEvent Event) override;
-
-protected:
-
 	/** Fetch audio samples from the player and forward them to the registered sinks. */
 	void ProcessAudioSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
 
@@ -667,6 +723,12 @@ protected:
 
 	/** Fetch video samples from the player and forward them to the registered sinks. */
 	void ProcessVideoSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
+
+protected:
+
+	//~ IMediaEventSink interface
+
+	void ReceiveMediaEvent(EMediaEvent Event) override;
 
 private:
 
@@ -687,13 +749,16 @@ private:
 
 private:
 
+	/** The time to block on sample fetching. */
+	FTimespan BlockOnTime;
+
 	/** Media sample cache. */
 	FMediaSampleCache* Cache;
 
 	/** Synchronizes access to Player. */
 	FCriticalSection CriticalSection;
 
-	/** Holds the URL of the currently loaded media source. */
+	/** The URL of the currently loaded media source. */
 	FString CurrentUrl;
 
 	/** The last used non-zero play rate (zero if playback never started). */
@@ -701,6 +766,9 @@ private:
 
 	/** An event delegate that is invoked when a media event occurred. */
 	FOnMediaEvent MediaEvent;
+
+	/** Time of the next expected video sample (used for block on fetch). */
+	FTimespan NextVideoSampleTime;
 
 	/** The low-level player used to play the media source. */
 	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> Player;
@@ -710,4 +778,7 @@ private:
 
 	/** Media player event queue. */
 	TQueue<EMediaEvent, EQueueMode::Mpsc> QueuedEvents;
+
+	/** Active media player options. */
+	TOptional<FMediaPlayerOptions> ActivePlayerOptions;
 };

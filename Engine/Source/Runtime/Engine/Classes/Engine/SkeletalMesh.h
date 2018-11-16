@@ -21,6 +21,9 @@
 #include "Interfaces/Interface_CollisionDataProvider.h"
 #include "EngineTypes.h"
 #include "SkeletalMeshSampling.h"
+#include "PerPlatformProperties.h"
+#include "SkeletalMeshLODSettings.h"
+#include "Animation/NodeMappingProviderInterface.h"
 
 #include "SkeletalMesh.generated.h"
 
@@ -50,28 +53,6 @@ namespace nvidia
 	}
 }
 #endif
-
-/** Enum specifying the importance of properties when simplifying skeletal meshes. */
-UENUM()
-enum SkeletalMeshOptimizationImportance
-{	
-	SMOI_Off,
-	SMOI_Lowest,
-	SMOI_Low,
-	SMOI_Normal,
-	SMOI_High,
-	SMOI_Highest,
-	SMOI_MAX,
-};
-
-/** Enum specifying the reduction type to use when simplifying skeletal meshes. */
-UENUM()
-enum SkeletalMeshOptimizationType
-{
-	SMOT_NumOfTriangles,
-	SMOT_MaxDeviation,
-	SMOT_MAX,
-};
 
 USTRUCT()
 struct FBoneMirrorInfo
@@ -115,116 +96,6 @@ struct FBoneMirrorExport
 	{
 	}
 
-};
-
-/**
-* FSkeletalMeshOptimizationSettings - The settings used to optimize a skeletal mesh LOD.
-*/
-USTRUCT()
-struct FSkeletalMeshOptimizationSettings
-{
-	GENERATED_USTRUCT_BODY()
-
-	/** The method to use when optimizing the skeletal mesh LOD */
-	UPROPERTY()
-	TEnumAsByte<enum SkeletalMeshOptimizationType> ReductionMethod;
-
-	/** If ReductionMethod equals SMOT_NumOfTriangles this value is the ratio of triangles [0-1] to remove from the mesh */
-	UPROPERTY()
-	float NumOfTrianglesPercentage;
-
-	/**If ReductionMethod equals SMOT_MaxDeviation this value is the maximum deviation from the base mesh as a percentage of the bounding sphere. */
-	UPROPERTY()
-	float MaxDeviationPercentage;
-
-	/** The welding threshold distance. Vertices under this distance will be welded. */
-	UPROPERTY()
-	float WeldingThreshold;
-
-	/** Whether Normal smoothing groups should be preserved. If false then NormalsThreshold is used **/
-	UPROPERTY()
-	bool bRecalcNormals;
-
-	/** If the angle between two triangles are above this value, the normals will not be
-	smooth over the edge between those two triangles. Set in degrees. This is only used when PreserveNormals is set to false*/
-	UPROPERTY()
-	float NormalsThreshold;
-
-	/** How important the shape of the geometry is. */
-	UPROPERTY()
-	TEnumAsByte<enum SkeletalMeshOptimizationImportance> SilhouetteImportance;
-
-	/** How important texture density is. */
-	UPROPERTY()
-	TEnumAsByte<enum SkeletalMeshOptimizationImportance> TextureImportance;
-
-	/** How important shading quality is. */
-	UPROPERTY()
-	TEnumAsByte<enum SkeletalMeshOptimizationImportance> ShadingImportance;
-
-	/** How important skinning quality is. */
-	UPROPERTY()
-	TEnumAsByte<enum SkeletalMeshOptimizationImportance> SkinningImportance;
-
-	/** The ratio of bones that will be removed from the mesh */
-	UPROPERTY()
-	float BoneReductionRatio;
-
-	/** Maximum number of bones that can be assigned to each vertex. */
-	UPROPERTY()
-	int32 MaxBonesPerVertex;
-
-	UPROPERTY()
-	TArray<FBoneReference> BonesToRemove_DEPRECATED;
-
-	/** Maximum number of bones that can be assigned to each vertex. */
-	UPROPERTY()
-	int32 BaseLOD;
-
-	UPROPERTY()
-	class UAnimSequence* BakePose_DEPRECATED;
-
-	FSkeletalMeshOptimizationSettings()
-		: ReductionMethod(SMOT_MaxDeviation)
-		, NumOfTrianglesPercentage(1.0f)
-		, MaxDeviationPercentage(0)
-		, WeldingThreshold(0.1f)
-		, bRecalcNormals(true)
-		, NormalsThreshold(60.0f)
-		, SilhouetteImportance(SMOI_Normal)
-		, TextureImportance(SMOI_Normal)
-		, ShadingImportance(SMOI_Normal)
-		, SkinningImportance(SMOI_Normal)
-		, BoneReductionRatio(100.0f)
-		, MaxBonesPerVertex(4)
-		, BaseLOD(0)
-		, BakePose_DEPRECATED(nullptr)
-	{
-	}
-
-	/** Equality operator. */
-	bool operator==(const FSkeletalMeshOptimizationSettings& Other) const
-	{
-		return ReductionMethod == Other.ReductionMethod
-			&& NumOfTrianglesPercentage == Other.NumOfTrianglesPercentage
-			&& MaxDeviationPercentage == Other.MaxDeviationPercentage
-			&& WeldingThreshold == Other.WeldingThreshold
-			&& NormalsThreshold == Other.NormalsThreshold
-			&& SilhouetteImportance == Other.SilhouetteImportance
-			&& TextureImportance == Other.TextureImportance
-			&& ShadingImportance == Other.ShadingImportance
-			&& SkinningImportance == Other.SkinningImportance
-			&& bRecalcNormals == Other.bRecalcNormals
-			&& BoneReductionRatio == Other.BoneReductionRatio
-			&& MaxBonesPerVertex == Other.MaxBonesPerVertex
-			&& BaseLOD == Other.BaseLOD;
-	}
-
-	/** Inequality. */
-	bool operator!=(const FSkeletalMeshOptimizationSettings& Other) const
-	{
-		return !(*this == Other);
-	}
 };
 
 /** Struct holding parameters needed when creating a new clothing asset or sub asset (LOD) */
@@ -281,31 +152,29 @@ struct FSkeletalMeshLODInfo
 	 * sphere of the model. i.e. 0.5 means half the screen's maximum dimension.
 	 */
 	UPROPERTY(EditAnywhere, Category=SkeletalMeshLODInfo)
-	float ScreenSize;
+	FPerPlatformFloat ScreenSize;
 
 	/**	Used to avoid 'flickering' when on LOD boundary. Only taken into account when moving from complex->simple. */
-	UPROPERTY(EditAnywhere, Category=SkeletalMeshLODInfo)
+	UPROPERTY(EditAnywhere, Category=SkeletalMeshLODInfo, meta=(DisplayName="LOD Hysteresis"))
 	float LODHysteresis;
 
 	/** Mapping table from this LOD's materials to the USkeletalMesh materials array. */
 	UPROPERTY()
 	TArray<int32> LODMaterialMap;
 
+#if WITH_EDITORONLY_DATA
 	/** Per-section control over whether to enable shadow casting. */
 	UPROPERTY()
 	TArray<bool> bEnableShadowCasting_DEPRECATED;
 
-	/** Whether to disable morph targets for this LOD. */
+	/** This has been removed in editor. We could re-apply this in import time or by mesh reduction utilities*/
 	UPROPERTY()
-	uint32 bHasBeenSimplified:1;
+	TArray<FName> RemovedBones_DEPRECATED;
+#endif
 
 	/** Reduction settings to apply when building render data. */
 	UPROPERTY(EditAnywhere, Category = ReductionSettings)
 	FSkeletalMeshOptimizationSettings ReductionSettings;
-
-	/** This has been removed in editor. We could re-apply this in import time or by mesh reduction utilities*/
-	UPROPERTY()
-	TArray<FName> RemovedBones_DEPRECATED;
 
 	/** Bones which should be removed from the skeleton for the LOD level */
 	UPROPERTY(EditAnywhere, Category = ReductionSettings)
@@ -319,12 +188,16 @@ struct FSkeletalMeshLODInfo
 	UPROPERTY(VisibleAnywhere, Category= SkeletalMeshLODInfo, AdvancedDisplay)
 	FString SourceImportFilename;
 
+	/** Whether to disable morph targets for this LOD. */
 	UPROPERTY()
-	uint32 bHasPerLODVertexColors : 1;
+	uint8 bHasBeenSimplified:1;
+
+	UPROPERTY()
+	uint8 bHasPerLODVertexColors : 1;
 
 	/** Keeps this LODs data on the CPU so it can be used for things such as sampling in FX. */
 	UPROPERTY(EditAnywhere, Category = SkeletalMeshLODInfo)
-	uint32 bAllowCPUAccess : 1;
+	uint8 bAllowCPUAccess : 1;
 
 	/**
 	Mesh supports uniformly distributed sampling in constant time.
@@ -332,16 +205,27 @@ struct FSkeletalMeshLODInfo
 	Example usage is uniform spawning of particles.
 	*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = SkeletalMeshLODInfo, meta=(EditCondition="bAllowCPUAccess"))
-	uint32 bSupportUniformlyDistributedSampling : 1;
+	uint8 bSupportUniformlyDistributedSampling : 1;
+
+#if WITH_EDITORONLY_DATA
+	/*
+	 * This boolean specify if the LOD was imported with the base mesh or not.
+	 */
+	UPROPERTY()
+	uint8 bImportWithBaseMesh:1;
+#endif
 
 	FSkeletalMeshLODInfo()
-		: ScreenSize(0)
-		, LODHysteresis(0)
-		, bHasBeenSimplified(false)
+		: ScreenSize(1.0)
+		, LODHysteresis(0.0f)
 		, BakePose(nullptr)
+		, bHasBeenSimplified(false)
 		, bHasPerLODVertexColors(false)
 		, bAllowCPUAccess(false)
 		, bSupportUniformlyDistributedSampling(false)
+#if WITH_EDITORONLY_DATA
+		, bImportWithBaseMesh(false)
+#endif
 	{
 	}
 
@@ -396,6 +280,29 @@ struct FClothPhysicsProperties_Legacy
 	UPROPERTY()
 	float FiberResistance;
 
+	FClothPhysicsProperties_Legacy()
+		: VerticalResistance(0.f)
+		, HorizontalResistance(0.f)
+		, BendResistance(0.f)
+		, ShearResistance(0.f)
+		, Friction(0.f)
+		, Damping(0.f)
+		, TetherStiffness(0.f)
+		, TetherLimit(0.f)
+		, Drag(0.f)
+		, StiffnessFrequency(0.f)
+		, GravityScale(0.f)
+		, MassScale(0.f)
+		, InertiaBlend(0.f)
+		, SelfCollisionThickness(0.f)
+		, SelfCollisionSquashScale(0.f)
+		, SelfCollisionStiffness(0.f)
+		, SolverFrequency(0.f)
+		, FiberCompression(0.f)
+		, FiberExpansion(0.f)
+		, FiberResistance(0.f)
+	{
+	}
 };
 
 
@@ -413,13 +320,19 @@ struct FClothingAssetData_Legacy
 	bool bClothPropertiesChanged;
 	UPROPERTY()
 	FClothPhysicsProperties_Legacy PhysicsProperties;
+
 #if WITH_APEX_CLOTHING
 	nvidia::apex::ClothingAsset* ApexClothingAsset;
+#endif// #if WITH_APEX_CLOTHING
+
 	FClothingAssetData_Legacy()
-		:ApexClothingAsset(NULL)
+		: bClothPropertiesChanged(false), PhysicsProperties()
+#if WITH_APEX_CLOTHING
+		, ApexClothingAsset(nullptr)
+#endif// #if WITH_APEX_CLOTHING
 	{
 	}
-#endif// #if WITH_APEX_CLOTHING
+
 	// serialization
 	friend FArchive& operator<<(FArchive& Ar, FClothingAssetData_Legacy& A);
 };
@@ -432,10 +345,10 @@ struct FSkeletalMaterial
 
 	FSkeletalMaterial()
 		: MaterialInterface( NULL )
-		, bEnableShadowCasting_DEPRECATED( true )
-		, bRecomputeTangent_DEPRECATED( false )
 		, MaterialSlotName( NAME_None )
 #if WITH_EDITORONLY_DATA
+		, bEnableShadowCasting_DEPRECATED(true)
+		, bRecomputeTangent_DEPRECATED(false)
 		, ImportedMaterialSlotName( NAME_None )
 #endif
 	{
@@ -448,10 +361,10 @@ struct FSkeletalMaterial
 						, FName InMaterialSlotName = NAME_None
 						, FName InImportedMaterialSlotName = NAME_None)
 		: MaterialInterface( InMaterialInterface )
-		, bEnableShadowCasting_DEPRECATED( bInEnableShadowCasting )
-		, bRecomputeTangent_DEPRECATED( bInRecomputeTangent )
 		, MaterialSlotName(InMaterialSlotName)
 #if WITH_EDITORONLY_DATA
+		, bEnableShadowCasting_DEPRECATED(bInEnableShadowCasting)
+		, bRecomputeTangent_DEPRECATED(bInRecomputeTangent)
 		, ImportedMaterialSlotName(InImportedMaterialSlotName)
 #endif //WITH_EDITORONLY_DATA
 	{
@@ -466,15 +379,15 @@ struct FSkeletalMaterial
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=SkeletalMesh)
 	class UMaterialInterface *	MaterialInterface;
-	UPROPERTY()
-	bool						bEnableShadowCasting_DEPRECATED;
-	UPROPERTY()
-	bool						bRecomputeTangent_DEPRECATED;
 	
 	/*This name should be use by the gameplay to avoid error if the skeletal mesh Materials array topology change*/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SkeletalMesh)
 	FName						MaterialSlotName;
 #if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	bool						bEnableShadowCasting_DEPRECATED;
+	UPROPERTY()
+	bool						bRecomputeTangent_DEPRECATED;
 	/*This name should be use when we re-import a skeletal mesh so we can order the Materials array like it should be*/
 	UPROPERTY(VisibleAnywhere, Category = SkeletalMesh)
 	FName						ImportedMaterialSlotName;
@@ -498,7 +411,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostMeshCache, class USkeletalMesh*);
  * @see https://docs.unrealengine.com/latest/INT/Engine/Content/Types/SkeletalMeshes/
  */
 UCLASS(hidecategories=Object, BlueprintType)
-class ENGINE_API USkeletalMesh : public UObject, public IInterface_CollisionDataProvider, public IInterface_AssetUserData
+class ENGINE_API USkeletalMesh : public UObject, public IInterface_CollisionDataProvider, public IInterface_AssetUserData, public INodeMappingProviderInterface
 {
 	GENERATED_UCLASS_BODY()
 
@@ -605,34 +518,59 @@ public:
 	UPROPERTY(EditAnywhere, editfixedsize, Category=Mirroring)
 	TArray<struct FBoneMirrorInfo> SkelMirrorTable;
 
+private:
+	/** Struct containing information for each LOD level, such as materials to use, and when use the LOD. */
+	UPROPERTY(EditAnywhere, EditFixedSize, Category=LevelOfDetail)
+	TArray<struct FSkeletalMeshLODInfo> LODInfo;
+
+public:
+	/** Minimum LOD to render. Can be overridden per component as well as set here for all mesh instances here */
+	UPROPERTY(EditAnywhere, Category = LODSettings)
+	FPerPlatformInt MinLod;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AssetRegistrySearchable, BlueprintSetter = SetLODSettings, Category = LODSettings)
+	USkeletalMeshLODSettings* LODSettings;
+
+#endif // WITH_EDITORONLY_DATA
+
+	UFUNCTION(BlueprintSetter)
+	void SetLODSettings(USkeletalMeshLODSettings* InLODSettings);
+
 	UPROPERTY(EditAnywhere, Category=Mirroring)
 	TEnumAsByte<EAxis::Type> SkelMirrorAxis;
 
 	UPROPERTY(EditAnywhere, Category=Mirroring)
 	TEnumAsByte<EAxis::Type> SkelMirrorFlipAxis;
 
-	/** Struct containing information for each LOD level, such as materials to use, and when use the LOD. */
-	UPROPERTY(EditAnywhere, EditFixedSize, Category=LevelOfDetail)
-	TArray<struct FSkeletalMeshLODInfo> LODInfo;
-
 	/** If true, use 32 bit UVs. If false, use 16 bit UVs to save memory */
 	UPROPERTY(EditAnywhere, Category=Mesh)
-	uint32 bUseFullPrecisionUVs:1;
+	uint8 bUseFullPrecisionUVs:1;
+
+	/** If true, tangents will be stored at 16 bit vs 8 bit precision */
+	UPROPERTY(EditAnywhere, Category = Mesh)
+	uint8 bUseHighPrecisionTangentBasis : 1;
 
 	/** true if this mesh has ever been simplified with Simplygon. */
 	UPROPERTY()
-	uint32 bHasBeenSimplified:1;
+	uint8 bHasBeenSimplified:1;
 
 	/** Whether or not the mesh has vertex colors */
 	UPROPERTY()
-	uint32 bHasVertexColors:1;
+	uint8 bHasVertexColors:1;
 
 	//caching optimization to avoid recalculating in non-editor builds
-	uint32 bHasActiveClothingAssets:1;
+	uint8 bHasActiveClothingAssets:1;
 
 	/** Uses skinned data for collision data. Per poly collision cannot be used for simulation, in most cases you are better off using the physics asset */
 	UPROPERTY(EditAnywhere, Category = Physics)
-	uint32 bEnablePerPolyCollision : 1;
+	uint8 bEnablePerPolyCollision : 1;
+
+#if WITH_EDITORONLY_DATA
+	/** The guid to compute the ddc key, it must be dirty when we change the vertex color. */
+	UPROPERTY()
+	FGuid VertexColorGuid;
+#endif
 
 	// Physics data for the per poly collision case. In 99% of cases you will not need this and are better off using simple ragdoll collision (physics asset)
 	UPROPERTY(transient)
@@ -693,11 +631,7 @@ public:
 	UPROPERTY()
 	float DefaultEditorCameraOrthoZoom;
 
-
-	/** Optimization settings used to simplify LODs of this mesh. */
-	UPROPERTY()
-	TArray<struct FSkeletalMeshOptimizationSettings> OptimizationSettings;
-
+ 
 	/* Attached assets component for this mesh */
 	UPROPERTY()
 	FPreviewAssetAttachContainer PreviewAttachedAssetContainer;
@@ -741,11 +675,10 @@ public:
 	UPROPERTY()
 	TArray<FTransform> RetargetBasePose;
 
-#endif
-
 	/** Legacy clothing asset data, will be converted to new assets after loading */
 	UPROPERTY()
 	TArray<FClothingAssetData_Legacy>		ClothingAssets_DEPRECATED;
+#endif
 
 	/** Animation Blueprint class to run as a post process for this mesh.
 	 *  This blueprint will be ran before physics, but after the main
@@ -803,6 +736,10 @@ public:
 
 	/* Get whether or not any bound clothing assets exist for this mesh **/
 	bool HasActiveClothingAssets() const;
+
+	/* Get whether or not any bound clothing assets exist for this mesh's given LOD**/
+	bool HasActiveClothingAssetsForLOD(int32 LODIndex) const;
+
 	/* Compute whether or not any bound clothing assets exist for this mesh **/
 	bool ComputeActiveClothingAssets() const;
 
@@ -894,6 +831,8 @@ public:
 
 	virtual void PostEditUndo() override;
 	virtual void GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMetadata>& OutMetadata) const override;
+
+	void UpdateGenerateUpToData();
 #endif // WITH_EDITOR
 	virtual void BeginDestroy() override;
 	virtual bool IsReadyForFinishDestroy() override;
@@ -1017,8 +956,11 @@ public:
 	UMorphTarget* FindMorphTarget(FName MorphTargetName) const;
 	UMorphTarget* FindMorphTargetAndIndex(FName MorphTargetName, int32& OutIndex) const;
 
+	/* Initialize morph targets and rebuild the render data */
+	void InitMorphTargetsAndRebuildRenderData();
+
 	/** if name conflicts, it will overwrite the reference */
-	void RegisterMorphTarget(UMorphTarget* MorphTarget);
+	bool RegisterMorphTarget(UMorphTarget* MorphTarget, bool bInvalidateRenderData = true);
 
 	void UnregisterMorphTarget(UMorphTarget* MorphTarget);
 
@@ -1035,7 +977,7 @@ public:
 	 * @param InSectionIndex Index to check
 	 * @param bCheckCorrespondingSections Whether to check corresponding sections for disabled sections
 	 */
-	UFUNCTION(BlueprintCallable, Category="Cloth")
+	UFUNCTION(BlueprintCallable, Category="Clothing Simulation")
 	bool IsSectionUsingCloth(int32 InSectionIndex, bool bCheckCorrespondingSections = true) const;
 
 	void CreateBodySetup();
@@ -1127,18 +1069,76 @@ private:
 	bool AreAllFlagsIdentical( const TArray<bool>& BoolArray ) const;
 
 #if WITH_EDITOR
-	public:
+public:
 	/** Delegates for asset editor events */
 
 	FDelegateHandle RegisterOnClothingChange(const FSimpleMulticastDelegate::FDelegate& InDelegate);
 	void UnregisterOnClothingChange(const FDelegateHandle& InHandle);
 
-	private:
+private:
 
-		/** Called to notify a change to the clothing object array */
-		FSimpleMulticastDelegate OnClothingChange;
-
+	/** Called to notify a change to the clothing object array */
+	FSimpleMulticastDelegate OnClothingChange;
 #endif // WITH_EDITOR
+	// INodeMappingProviderInterface
+	virtual void GetMappableNodeData(TArray<FName>& OutNames, TArray<FNodeItem>& OutTransforms) const override;
+
+public:
+	/*
+	 * Add New LOD info entry to LODInfo array
+	 * 
+	 * This adds one entry with correct setting
+	 * If it's using LODSettings, it will copy from that setting
+	 * If not, it will auto calculate based on what is previous LOD setting
+	 *
+	 */
+	FSkeletalMeshLODInfo& AddLODInfo();
+	/*
+	 * Add New LOD info entry with entry
+	 * 
+	 * This is used by  import code, where they want to override this
+	 *
+	 * @param NewLODInfo : new LOD info to be added
+	 */
+	void AddLODInfo(const FSkeletalMeshLODInfo& NewLODInfo) { LODInfo.Add(NewLODInfo);  }
+	
+	/* 
+	 * Remove LOD info of given index
+	 */
+	void RemoveLODInfo(int32 Index);
+	
+	/*
+	 * Reset whole entry
+	 */
+	void ResetLODInfo();
+	/*
+	 * Returns whole array of LODInfo
+	 */
+	TArray<FSkeletalMeshLODInfo>& GetLODInfoArray() { return LODInfo;  }
+	
+	/* 
+	 * Get LODInfo of the given index non-const
+	 */
+	FSkeletalMeshLODInfo* GetLODInfo(int32 Index) { return LODInfo.IsValidIndex(Index) ? &LODInfo[Index] : nullptr;  }
+	
+	/* 
+	 * Get LODInfo of the given index const
+	 */	
+	const FSkeletalMeshLODInfo* GetLODInfo(int32 Index) const { return LODInfo.IsValidIndex(Index) ? &LODInfo[Index] : nullptr; }
+	
+	/* 
+	 * Get Default LOD Setting of this mesh
+	 */
+	const USkeletalMeshLODSettings* GetDefaultLODSetting() const; 
+
+	/* 
+	 * Return true if given index's LOD is valid
+	 */
+	bool IsValidLODIndex(int32 Index) const { return LODInfo.IsValidIndex(Index);  }
+	/* 
+	 * Returns total number of LOD
+	 */
+	int32 GetLODNum() const { return LODInfo.Num();  }
 };
 
 

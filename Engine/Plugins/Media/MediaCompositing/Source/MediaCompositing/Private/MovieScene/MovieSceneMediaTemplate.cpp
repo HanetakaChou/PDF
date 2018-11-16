@@ -2,7 +2,9 @@
 
 #include "MovieSceneMediaTemplate.h"
 
+#include "Math/UnrealMathUtility.h"
 #include "MediaPlayer.h"
+#include "MediaPlayerFacade.h"
 #include "MediaSoundComponent.h"
 #include "MediaSource.h"
 #include "MediaTexture.h"
@@ -12,6 +14,9 @@
 #include "MovieSceneMediaData.h"
 #include "MovieSceneMediaSection.h"
 #include "MovieSceneMediaTrack.h"
+
+
+#define MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION 0
 
 
 /* Local helpers
@@ -32,7 +37,7 @@ struct FMediaSectionPreRollExecutionToken
 		FMovieSceneMediaData& SectionData = PersistentData.GetSectionData<FMovieSceneMediaData>();
 		UMediaPlayer* MediaPlayer = SectionData.GetMediaPlayer();
 
-		if (!ensure(MediaPlayer != nullptr))
+		if (MediaPlayer == nullptr || MediaSource == nullptr)
 		{
 			return;
 		}
@@ -66,7 +71,7 @@ struct FMediaSectionExecutionToken
 		FMovieSceneMediaData& SectionData = PersistentData.GetSectionData<FMovieSceneMediaData>();
 		UMediaPlayer* MediaPlayer = SectionData.GetMediaPlayer();
 
-		if (!ensure(MediaPlayer != nullptr))
+		if (MediaPlayer == nullptr || MediaSource == nullptr)
 		{
 			return;
 		}
@@ -80,6 +85,7 @@ struct FMediaSectionExecutionToken
 			return;
 		}
 
+		// seek on open if necessary
 		if (MediaPlayer->IsPreparing())
 		{
 			SectionData.SeekOnOpen(CurrentTime);
@@ -87,8 +93,19 @@ struct FMediaSectionExecutionToken
 			return;
 		}
 
+		const FTimespan MediaDuration = MediaPlayer->GetDuration();
+
+		if (MediaDuration.IsZero())
+		{
+			return; // media has no length
+		}
+
 		// update media player
-		const FTimespan MediaTime = CurrentTime % MediaPlayer->GetDuration();
+		const FTimespan MediaTime = CurrentTime % MediaDuration;
+
+		#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+			GLog->Logf(ELogVerbosity::Log, TEXT("Executing time %s, MediaTime %s"), *CurrentTime.ToString(TEXT("%h:%m:%s.%t")), *MediaTime.ToString(TEXT("%h:%m:%s.%t")));
+		#endif
 
 		if (Context.GetStatus() == EMovieScenePlayerStatus::Playing)
 		{
@@ -101,6 +118,8 @@ struct FMediaSectionExecutionToken
 			{
 				MediaPlayer->Seek(MediaTime);
 			}
+
+			MediaPlayer->SetBlockOnTime(MediaPlayer->GetTime());
 		}
 		else
 		{
@@ -110,6 +129,7 @@ struct FMediaSectionExecutionToken
 			}
 
 			MediaPlayer->Seek(MediaTime);
+			MediaPlayer->SetBlockOnTime(FTimespan::MinValue());
 		}
 	}
 
@@ -126,11 +146,22 @@ private:
 
 FMovieSceneMediaSectionTemplate::FMovieSceneMediaSectionTemplate(const UMovieSceneMediaSection& InSection, const UMovieSceneMediaTrack& InTrack)
 {
-	Params.MediaSoundComponent = InSection.MediaSoundComponent;
 	Params.MediaSource = InSection.GetMediaSource();
-	Params.MediaTexture = InSection.MediaTexture;
-	Params.SectionEndTime = InSection.GetEndTime();
-	Params.SectionStartTime = InSection.GetStartTime();
+	Params.MediaSoundComponent = InSection.MediaSoundComponent;
+	Params.bLooping = InSection.bLooping;
+
+	// If using an external media player link it here so we don't automatically create it later.
+	Params.MediaPlayer = InSection.bUseExternalMediaPlayer ? InSection.ExternalMediaPlayer : nullptr;
+	Params.MediaTexture = InSection.bUseExternalMediaPlayer ? nullptr : InSection.MediaTexture;
+
+	if (InSection.HasStartFrame())
+	{
+		Params.SectionStartFrame = InSection.GetRange().GetLowerBoundValue();
+	}
+	if (InSection.HasEndFrame())
+	{
+		Params.SectionEndFrame = InSection.GetRange().GetUpperBoundValue();
+	}
 }
 
 
@@ -144,22 +175,37 @@ void FMovieSceneMediaSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 		return;
 	}
 
-	const int64 RoundingErrorHack = 100;
-
 	// @todo: account for start offset and video time dilation if/when these are added
 
 	if (Context.IsPreRoll())
 	{
-		if (Context.GetDirection() == EPlayDirection::Forwards)
-		{
-			float StartTimeSeconds = Context.HasPreRollEndTime() ? (Context.GetPreRollEndTime() - Params.SectionStartTime) : 0.f;
-			ExecutionTokens.Add(FMediaSectionPreRollExecutionToken(Params.MediaSource, FTimespan(int64(StartTimeSeconds * ETimespan::TicksPerSecond + RoundingErrorHack))));
-		}
+		const FFrameRate FrameRate = Context.GetFrameRate();
+		const FFrameNumber StartFrame = Context.HasPreRollEndTime() ? Context.GetPreRollEndFrame() - Params.SectionStartFrame : 0;
+		const int64 DenominatorTicks = FrameRate.Denominator * ETimespan::TicksPerSecond;
+		const int64 StartTicks = FMath::DivideAndRoundNearest(int64(StartFrame.Value * DenominatorTicks), int64(FrameRate.Numerator));
+
+		ExecutionTokens.Add(FMediaSectionPreRollExecutionToken(Params.MediaSource, FTimespan(StartTicks)));
 	}
-	else if (!Context.IsPostRoll() && (Context.GetTime() < Params.SectionEndTime))
+	else if (!Context.IsPostRoll() && (Context.GetTime().FrameNumber < Params.SectionEndFrame))
 	{
-		float CurrentTimeSeconds = Context.GetTime() - Params.SectionStartTime;
-		ExecutionTokens.Add(FMediaSectionExecutionToken(Params.MediaSource, int64(CurrentTimeSeconds * ETimespan::TicksPerSecond + RoundingErrorHack)));
+		const FFrameRate FrameRate = Context.GetFrameRate();
+		const FFrameTime FrameTime(Context.GetTime().FrameNumber - Params.SectionStartFrame);
+		const int64 DenominatorTicks = FrameRate.Denominator * ETimespan::TicksPerSecond;
+		const int64 FrameTicks = FMath::DivideAndRoundNearest(int64(FrameTime.GetFrame().Value * DenominatorTicks), int64(FrameRate.Numerator));
+		const int64 FrameSubTicks = FMath::DivideAndRoundNearest(int64(FrameTime.GetSubFrame() * DenominatorTicks), int64(FrameRate.Numerator));
+
+		#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+			GLog->Logf(ELogVerbosity::Log, TEXT("Evaluating frame %i+%f, FrameRate %i/%i, FrameTicks %d+%d"),
+				Context.GetTime().GetFrame().Value,
+				Context.GetTime().GetSubFrame(),
+				FrameRate.Numerator,
+				FrameRate.Denominator,
+				FrameTicks,
+				FrameSubTicks
+			);
+		#endif
+
+		ExecutionTokens.Add(FMediaSectionExecutionToken(Params.MediaSource, FTimespan(FrameTicks + FrameSubTicks)));
 	}
 }
 
@@ -181,21 +227,29 @@ void FMovieSceneMediaSectionTemplate::Initialize(const FMovieSceneEvaluationOper
 
 	UMediaPlayer* MediaPlayer = SectionData->GetMediaPlayer();
 
-	if (!ensure(MediaPlayer != nullptr))
+	if (MediaPlayer == nullptr)
 	{
 		return;
 	}
 
-	const bool IsEvaluating = !(Context.IsPreRoll() || Context.IsPostRoll() || (Context.GetTime() >= Params.SectionEndTime));
+	const bool IsEvaluating = !(Context.IsPreRoll() || Context.IsPostRoll() || (Context.GetTime().FrameNumber >= Params.SectionEndFrame));
 
 	if (Params.MediaSoundComponent != nullptr)
 	{
 		if (IsEvaluating)
 		{
+			#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+				GLog->Logf(ELogVerbosity::Log, TEXT("Setting media player %p on media sound component %p"), MediaPlayer, Params.MediaSoundComponent);
+			#endif
+
 			Params.MediaSoundComponent->SetMediaPlayer(MediaPlayer);
 		}
 		else if (Params.MediaSoundComponent->GetMediaPlayer() == MediaPlayer)
 		{
+			#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+				GLog->Logf(ELogVerbosity::Log, TEXT("Resetting media player on media sound component %p"), Params.MediaSoundComponent);
+			#endif
+
 			Params.MediaSoundComponent->SetMediaPlayer(nullptr);
 		}
 	}
@@ -204,19 +258,29 @@ void FMovieSceneMediaSectionTemplate::Initialize(const FMovieSceneEvaluationOper
 	{
 		if (IsEvaluating)
 		{
+			#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+				GLog->Logf(ELogVerbosity::Log, TEXT("Setting media player %p on media texture %p"), MediaPlayer, Params.MediaTexture);
+			#endif
+
 			Params.MediaTexture->SetMediaPlayer(MediaPlayer);
 		}
 		else if (Params.MediaTexture->GetMediaPlayer() == MediaPlayer)
 		{
+			#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
+				GLog->Logf(ELogVerbosity::Log, TEXT("Resetting media player on media texture %p"), Params.MediaTexture);
+			#endif
+
 			Params.MediaTexture->SetMediaPlayer(nullptr);
 		}
 	}
+
+	MediaPlayer->SetLooping(Params.bLooping);
 }
 
 
 void FMovieSceneMediaSectionTemplate::Setup(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
 {
-	PersistentData.AddSectionData<FMovieSceneMediaData>().Setup();
+	PersistentData.AddSectionData<FMovieSceneMediaData>().Setup(Params.MediaPlayer);
 }
 
 
@@ -237,7 +301,7 @@ void FMovieSceneMediaSectionTemplate::TearDown(FPersistentEvaluationData& Persis
 
 	UMediaPlayer* MediaPlayer = SectionData->GetMediaPlayer();
 
-	if (!ensure(MediaPlayer != nullptr))
+	if (MediaPlayer == nullptr)
 	{
 		return;
 	}

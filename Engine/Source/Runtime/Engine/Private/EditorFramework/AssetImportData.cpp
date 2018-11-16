@@ -7,7 +7,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
-#include "AnimPhysObjectVersion.h"
+#include "UObject/AnimPhysObjectVersion.h"
 
 #if WITH_EDITOR
 #include "Editor/EditorPerProjectUserSettings.h"
@@ -35,7 +35,7 @@ FString FAssetImportInfo::ToJson() const
 		Json += FString::Printf(TEXT("{ \"RelativeFilename\" : \"%s\", \"Timestamp\" : \"%d\", \"FileMD5\" : \"%s\" }"),
 			*SourceFiles[Index].RelativeFilename,
 			SourceFiles[Index].Timestamp.ToUnixTimestamp(),
-			*Lex::ToString(SourceFiles[Index].FileHash)
+			*LexToString(SourceFiles[Index].FileHash)
 			);
 
 		if (Index != SourceFiles.Num() - 1)
@@ -80,10 +80,10 @@ TOptional<FAssetImportInfo> FAssetImportInfo::FromJson(FString InJsonString)
 		}
 
 		int64 UnixTimestamp = 0;
-		Lex::FromString(UnixTimestamp, *TimestampString);
+		LexFromString(UnixTimestamp, *TimestampString);
 
 		FMD5Hash FileHash;
-		Lex::FromString(FileHash, *MD5String);
+		LexFromString(FileHash, *MD5String);
 
 		Info.SourceFiles.Emplace(MoveTemp(RelativeFilename), FDateTime::FromUnixTimestamp(UnixTimestamp), FileHash);
 	}
@@ -145,10 +145,24 @@ void UAssetImportData::Update(const FString& InPath, const FMD5Hash InPreCompute
 }
 //@third party END SIMPLYGON
 
+#if WITH_EDITOR
+FString UAssetImportData::K2_GetFirstFilename() const
+{
+	return GetFirstFilename();
+}
+#endif
+
 FString UAssetImportData::GetFirstFilename() const
 {
 	return SourceData.SourceFiles.Num() > 0 ? ResolveImportFilename(SourceData.SourceFiles[0].RelativeFilename) : FString();
 }
+
+#if WITH_EDITOR
+TArray<FString> UAssetImportData::K2_ExtractFilenames() const
+{
+	return ExtractFilenames();
+}
+#endif
 
 void UAssetImportData::ExtractFilenames(TArray<FString>& AbsoluteFilenames) const
 {
@@ -167,17 +181,26 @@ TArray<FString> UAssetImportData::ExtractFilenames() const
 
 FString UAssetImportData::SanitizeImportFilename(const FString& InPath) const
 {
-	const UPackage* Package = GetOutermost();
-	if (Package)
+	return SanitizeImportFilename(InPath, GetOutermost());
+}
+
+FString UAssetImportData::SanitizeImportFilename(const FString& InPath, const UPackage* Outermost)
+{
+	return SanitizeImportFilename(InPath, Outermost ? Outermost->GetPathName() : FString());
+}
+
+FString UAssetImportData::SanitizeImportFilename(const FString& InPath, const FString& PackagePath)
+{
+	if (!PackagePath.IsEmpty())
 	{
 		const bool		bIncludeDot = true;
-		const FString	PackagePath	= Package->GetPathName();
 		const FName		MountPoint	= FPackageName::GetPackageMountPoint(PackagePath);
 		const FString	PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPaths::GetExtension(InPath, bIncludeDot));
 		const FString	AbsolutePath = FPaths::ConvertRelativePathToFull(InPath);
 
 		if ((MountPoint == FName("Engine") && AbsolutePath.StartsWith(FPaths::ConvertRelativePathToFull(FPaths::EngineContentDir()))) ||
-			(MountPoint == FName("Game") &&	AbsolutePath.StartsWith(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()))))
+			(MountPoint == FName("Game") &&	AbsolutePath.StartsWith(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()))) ||
+			(AbsolutePath.StartsWith(FPaths::ConvertRelativePathToFull(FPaths::ProjectPluginsDir()).Append(MountPoint.ToString()))))
 		{
 			FString RelativePath = InPath;
 			FPaths::MakePathRelativeTo(RelativePath, *PackageFilename);
@@ -212,8 +235,6 @@ FString UAssetImportData::SanitizeImportFilename(const FString& InPath) const
 
 FString UAssetImportData::ResolveImportFilename(const FString& InRelativePath, const UPackage* Outermost)
 {
-	FString RelativePath = InRelativePath;
-
 	if (Outermost)
 	{
 		// Relative to the package filename?
@@ -252,7 +273,7 @@ FString UAssetImportData::ResolveImportFilename(const FString& InRelativePath, c
 #endif
 
 	// Convert relative paths
-	return FPaths::ConvertRelativePathToFull(RelativePath);	
+	return FPaths::ConvertRelativePathToFull(InRelativePath);
 }
 
 FString UAssetImportData::ResolveImportFilename(const FString& InRelativePath) const

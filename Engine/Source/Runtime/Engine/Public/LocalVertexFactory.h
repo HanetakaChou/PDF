@@ -15,6 +15,15 @@ struct FMeshBatchElement;
 	LocalVertexFactory.h: Local vertex factory definitions.
 =============================================================================*/
 
+BEGIN_UNIFORM_BUFFER_STRUCT(FLocalVertexFactoryUniformShaderParameters,ENGINE_API)
+	UNIFORM_MEMBER(FIntVector,VertexFetch_Parameters)
+	UNIFORM_MEMBER_SRV(Buffer<float2>, VertexFetch_TexCoordBuffer)
+	UNIFORM_MEMBER_SRV(Buffer<float4>, VertexFetch_PackedTangentsBuffer)
+	UNIFORM_MEMBER_SRV(Buffer<float4>, VertexFetch_ColorComponentsBuffer)
+END_UNIFORM_BUFFER_STRUCT(FLocalVertexFactoryUniformShaderParameters)
+
+extern TUniformBufferRef<FLocalVertexFactoryUniformShaderParameters> CreateLocalVFUniformBuffer(const class FLocalVertexFactory* VertexFactory, class FColorVertexBuffer* OverrideColorVertexBuffer);
+
 /**
  * A vertex factory which simply transforms explicit vertex attributes from local to world space.
  */
@@ -23,12 +32,11 @@ class ENGINE_API FLocalVertexFactory : public FVertexFactory
 	DECLARE_VERTEX_FACTORY_TYPE(FLocalVertexFactory);
 public:
 
-	FLocalVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName, const FStaticMeshDataType* InStaticMeshDataType = nullptr)
+	FLocalVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName)
 		: FVertexFactory(InFeatureLevel)
 		, ColorStreamIndex(-1)
 		, DebugName(InDebugName)
 	{
-		StaticMeshDataType = InStaticMeshDataType ? InStaticMeshDataType : &Data;
 		bSupportsManualVertexFetch = true;
 	}
 
@@ -65,6 +73,11 @@ public:
 
 	// FRenderResource interface.
 	virtual void InitRHI() override;
+	virtual void ReleaseRHI()
+	{
+		UniformBuffer.SafeRelease();
+		FVertexFactory::ReleaseRHI();
+	}
 
 	static bool SupportsTessellationShaders() { return true; }
 
@@ -79,44 +92,49 @@ public:
 
 	inline const FShaderResourceViewRHIParamRef GetPositionsSRV() const
 	{
-		return StaticMeshDataType->PositionComponentSRV;
+		return Data.PositionComponentSRV;
 	}
 
 	inline const FShaderResourceViewRHIParamRef GetTangentsSRV() const
 	{
-		return StaticMeshDataType->TangentsSRV;
+		return Data.TangentsSRV;
 	}
 
 	inline const FShaderResourceViewRHIParamRef GetTextureCoordinatesSRV() const
 	{
-		return StaticMeshDataType->TextureCoordinatesSRV;
+		return Data.TextureCoordinatesSRV;
 	}
 
 	inline const FShaderResourceViewRHIParamRef GetColorComponentsSRV() const
 	{
-		return StaticMeshDataType->ColorComponentsSRV;
+		return Data.ColorComponentsSRV;
 	}
 
 	inline const uint32 GetColorIndexMask() const
 	{
-		return StaticMeshDataType->ColorIndexMask;
+		return Data.ColorIndexMask;
 	}
 
 	inline const int GetLightMapCoordinateIndex() const
 	{
-		return StaticMeshDataType->LightMapCoordinateIndex;
+		return Data.LightMapCoordinateIndex;
 	}
 
 	inline const int GetNumTexcoords() const
 	{
-		return StaticMeshDataType->NumTexCoords;
+		return Data.NumTexCoords;
+	}
+
+	FUniformBufferRHIParamRef GetUniformBuffer() const
+	{
+		return UniformBuffer.GetReference();
 	}
 
 protected:
 	const FDataType& GetData() const { return Data; }
 
 	FDataType Data;
-	const FStaticMeshDataType* StaticMeshDataType;
+	TUniformBufferRef<FLocalVertexFactoryUniformShaderParameters> UniformBuffer;
 
 	int32 ColorStreamIndex;
 
@@ -151,13 +169,6 @@ public:
 
 	// SpeedTree LOD parameter
 	FShaderParameter LODParameter;
-
-	//Parameters to manually load TexCoords
-	FShaderParameter VertexFetch_VertexFetchParameters;
-	FShaderResourceParameter VertexFetch_PositionBufferParameter;
-	FShaderResourceParameter VertexFetch_TexCoordBufferParameter;
-	FShaderResourceParameter VertexFetch_PackedTangentsBufferParameter;
-	FShaderResourceParameter VertexFetch_ColorComponentsBufferParameter;
 
 	// True if LODParameter is bound, which puts us on the slow path in SetMesh
 	bool bAnySpeedTreeParamIsBound;

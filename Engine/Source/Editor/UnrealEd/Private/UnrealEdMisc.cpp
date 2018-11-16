@@ -37,7 +37,7 @@
 #include "Kismet2/DebuggerCommands.h"
 #include "Toolkits/AssetEditorCommonCommands.h"
 #include "SoundCueGraphEditorCommands.h"
-#include "RichCurveEditorCommands.h"
+#include "CurveEditorCommands.h"
 #include "EditorBuildUtils.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -268,7 +268,7 @@ void FUnrealEdMisc::OnInit()
 	FViewportNavigationCommands::Register();
 
 	// Register curve editor commands.
-	FRichCurveEditorCommands::Register();
+	FCurveEditorCommands::Register();
 
 	// Have the User Activity Tracker reject non-editor activities for this run
 	FUserActivityTracking::SetContextFilter(EUserActivityContext::Editor);
@@ -342,9 +342,7 @@ void FUnrealEdMisc::OnInit()
 		{
 			if (!bMapLoaded && GEditor)
 			{
-				const FString StartupMap = GetDefault<UGameMapsSettings>()->EditorStartupMap.ToString();
-
-				if ((StartupMap.Len() > 0) && (GetDefault<UEditorLoadingSavingSettings>()->LoadLevelAtStartup != ELoadLevelAtStartup::None))
+				if (GetDefault<UEditorLoadingSavingSettings>()->LoadLevelAtStartup != ELoadLevelAtStartup::None)
 				{
 					FEditorFileUtils::LoadDefaultMapAtStartup();
 					BeginPerformanceSurvey();
@@ -566,6 +564,8 @@ void FUnrealEdMisc::InitEngineAnalytics()
 			}
 			ProjectAttributes.Add( FAnalyticsEventAttribute( FString( "ObjectClasses" ), UObjectClasses ));
 			ProjectAttributes.Add( FAnalyticsEventAttribute( FString( "BlueprintClasses" ), UBlueprintClasses ));
+			ProjectAttributes.Emplace( TEXT("Enterprise"), IProjectManager::Get().IsEnterpriseProject() );
+
 			// Send project analytics
 			EngineAnalytics.RecordEvent( FString( "Editor.Usage.Project" ), ProjectAttributes );
 			// Trigger pending asset survey
@@ -624,7 +624,20 @@ void FUnrealEdMisc::EditorAnalyticsHeartbeat()
 		return;
 	}
 
-	static double LastHeartbeatTime = FPlatformTime::Seconds();
+	// Analytics has had some very rare instances where a user spams heartbeats at an incredibly high frequency.
+	// So while it's technically impossible to trigger this event more than once per HeartbeatIntervalSeconds,
+	// put an additional guard band around this function in absolute wall-clock time to ensure it doesn't fire too quickly for some strange reason.
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	const double HeartbeatInvervalSec = (double)(UnrealEdMiscDefs::HeartbeatIntervalSeconds);
+	const double Now = FPlatformTime::Seconds();
+	// Initialize to ensure the first time this is called we will DEF execute the heartbeat.
+	static double LastHeartbeatTime = Now - HeartbeatInvervalSec;
+	// allow a little bit of slop in the timing in case the event is only firing slightly too soon, even though that is technically impossible.
+	if (Now <= LastHeartbeatTime + HeartbeatInvervalSec*0.9)
+	{
+		UE_LOG(LogUnrealEdMisc, Warning, TEXT("Heartbeat event firing too frequently (%.3f sec). This should never happen. Something is wrong with the timer delegate!"), (float)(Now - LastHeartbeatTime) );
+		return;
+	}
 
 	bool bIsDebuggerPresent = FPlatformMisc::IsDebuggerPresent();
 	static bool bWasDebuggerPresent = false;
@@ -633,6 +646,8 @@ void FUnrealEdMisc::EditorAnalyticsHeartbeat()
 		bWasDebuggerPresent = bIsDebuggerPresent;
 	}
 	const bool bInVRMode = IVREditorModule::Get().IsVREditorModeActive();
+	const bool bIsEnterprise = IProjectManager::Get().IsEnterpriseProject();
+
 	double LastInteractionTime = FSlateApplication::Get().GetLastUserInteractionTime();
 	
 	// Did the user interact since the last heartbeat
@@ -655,6 +670,8 @@ void FUnrealEdMisc::EditorAnalyticsHeartbeat()
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("IsDebugger"), bIsDebuggerPresent));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("WasDebuggerPresent"), bWasDebuggerPresent));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("IsInVRMode"), bInVRMode));
+	Attributes.Add(FAnalyticsEventAttribute(TEXT("Enterprise"), bIsEnterprise));
+
 	FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.Heartbeat"), Attributes);
 	
 	LastHeartbeatTime = FPlatformTime::Seconds();
@@ -704,6 +721,8 @@ void FUnrealEdMisc::TickAssetAnalytics()
 			AssetAttributes.Add( FAnalyticsEventAttribute( FString( "ProjectId" ), *ProjectSettings.ProjectID.ToString() ));
 			AssetAttributes.Add( FAnalyticsEventAttribute( FString( "AssetPackageCount" ), PackageNames.Num() ));
 			AssetAttributes.Add( FAnalyticsEventAttribute( FString( "Maps" ), NumMapFiles ));
+			AssetAttributes.Emplace( TEXT("Enterprise"), IProjectManager::Get().IsEnterpriseProject() );
+
 			// Send project analytics
 			FEngineAnalytics::GetProvider().RecordEvent( FString( "Editor.Usage.AssetCounts" ), AssetAttributes );
 
@@ -751,7 +770,7 @@ bool FUnrealEdMisc::EnableWorldComposition(UWorld* InWorld, bool bEnable)
 		}
 			
 		// All existing sub-levels on this map should be removed
-		int32 NumExistingSublevels = InWorld->StreamingLevels.Num();
+		int32 NumExistingSublevels = InWorld->GetStreamingLevels().Num();
 		if (NumExistingSublevels > 0)
 		{
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("EnableWorldCompositionExistingSublevels_Message", "World Composition cannot be enabled because there are already sub-levels manually added to the persistent level. World Composition uses auto-discovery so you must first remove any manually added sub-levels from the Levels window"));
@@ -845,6 +864,8 @@ void FUnrealEdMisc::OnExit()
 		{
 			AssetUpdateCountAttribs.Add(FAnalyticsEventAttribute(UpdatedAssetPair.Key.ToString(), UpdatedAssetPair.Value));
 		}
+		AssetUpdateCountAttribs.Emplace( TEXT("Enterprise"), IProjectManager::Get().IsEnterpriseProject() );
+
 		FEngineAnalytics::GetProvider().RecordEvent(FString("Editor.Usage.AssetsSaved"), AssetUpdateCountAttribs);
 
 		FSlateApplication::Get().GetPlatformApplication()->SendAnalytics(&FEngineAnalytics::GetProvider());
@@ -919,7 +940,7 @@ void FUnrealEdMisc::OnExit()
 	if( PendingProjName.Len() > 0 )
 	{
 		// If there is a pending project switch, spawn that process now and use the same command line parameters that were used for this editor instance.
-		FString Cmd = PendingProjName + FCommandLine::Get();
+		FString Cmd = FString::Printf(TEXT("%s %s"), *PendingProjName, FCommandLine::Get());
 
 		FString ExeFilename = CreateProjectPath();
 		FProcHandle Handle = FPlatformProcess::CreateProc( *ExeFilename, *Cmd, true, false, false, NULL, 0, NULL, NULL );
@@ -1492,7 +1513,7 @@ void FUnrealEdMisc::OnGotoAsset(const FString& InAssetPath) const
 			TArray<UPackage*> Packages;
 			Packages.Add(CastChecked<UPackage>(AssetData.GetAsset()));
 			TArray<UObject*> ObjectsInPackages;
-			PackageTools::GetObjectsInPackages(&Packages, ObjectsInPackages);
+			UPackageTools::GetObjectsInPackages(&Packages, ObjectsInPackages);
 
 			for(auto It(ObjectsInPackages.CreateConstIterator()); It; ++It)
 			{
@@ -1709,7 +1730,12 @@ void FUnrealEdMisc::TickPerformanceAnalytics()
 		{
 			FString AveFrameRateString = FString::Printf( TEXT( "%.1f" ), AveFrameRate);
 			IAnalyticsProvider& EngineAnalytics = FEngineAnalytics::GetProvider();
-			EngineAnalytics.RecordEvent(TEXT( "Editor.Performance.FrameRate" ), TEXT( "MeanFrameRate" ), AveFrameRateString);
+
+			TArray< FAnalyticsEventAttribute > EventAttributes;
+			EventAttributes.Emplace( TEXT( "MeanFrameRate" ), AveFrameRateString );
+			EventAttributes.Emplace( TEXT( "Enterprise" ), IProjectManager::Get().IsEnterpriseProject() );
+
+			EngineAnalytics.RecordEvent(TEXT( "Editor.Performance.FrameRate" ), EventAttributes);
 		}
 
 		CancelPerformanceSurvey();

@@ -12,10 +12,13 @@ struct ENGINE_API AudioPluginUtilities
 	static const EAudioPlatform CurrentPlatform = EAudioPlatform::Windows;
 #elif PLATFORM_MAC
 	static const EAudioPlatform CurrentPlatform = EAudioPlatform::Mac;
-#elif PLATFORM_LINUX
+#elif PLATFORM_UNIX
 	static const EAudioPlatform CurrentPlatform = EAudioPlatform::Linux;
 #elif PLATFORM_IOS
 	static const EAudioPlatform CurrentPlatform = EAudioPlatform::IOS;
+//Lumin needs to be before Android because it derives off of it, therefore defines PLATFORM_ANDROID=1
+#elif PLATFORM_LUMIN
+	static const EAudioPlatform CurrentPlatform = EAudioPlatform::Lumin;
 #elif PLATFORM_ANDROID
 	static const EAudioPlatform CurrentPlatform = EAudioPlatform::Android;
 #elif PLATFORM_XBOXONE

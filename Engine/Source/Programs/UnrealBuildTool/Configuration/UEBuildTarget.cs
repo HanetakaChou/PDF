@@ -83,6 +83,16 @@ namespace UnrealBuildTool
 		/// Nintendo Switch
 		/// </summary>
 		Switch,
+
+		/// <summary>
+		/// NDA'd platform Quail
+		/// </summary>
+		Quail,
+
+		/// <summary>
+		/// Confidential platform
+		/// </summary>
+		Lumin,
 	}
 
 	/// <summary>
@@ -124,22 +134,6 @@ namespace UnrealBuildTool
 		/// Sony platforms
 		/// </summary>
 		Sony,
-
-		/// <summary>
-		/// These two groups can be further used to conditionally compile files for a given platform. e.g
-		/// Core/Private/HTML5/Simulator/{VC tool chain files}
-		/// Core/Private/HTML5/Device/{emscripten toolchain files}.  
-		/// Note: There's no default group - if the platform is not registered as device or simulator - both are rejected. 
-		/// </summary>
-		Device,
-
-		/// <summary>
-		/// These two groups can be further used to conditionally compile files for a given platform. e.g
-		/// Core/Private/HTML5/Simulator/{VC tool chain files}
-		/// Core/Private/HTML5/Device/{emscripten toolchain files}.  
-		/// Note: There's no default group - if the platform is not registered as device or simulator - both are rejected. 
-		/// </summary>
-		Simulator,
 
 		/// <summary>
 		/// Target all desktop platforms (Win64, Mac, Linux) simultaneously
@@ -222,11 +216,6 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// 
 		/// </summary>
-		public readonly List<string> LibraryBuildProducts = new List<string>();
-
-		/// <summary>
-		/// 
-		/// </summary>
 		public readonly List<string> DeployTargetFiles = new List<string>();
 
 		/// <summary>
@@ -267,19 +256,6 @@ namespace UnrealBuildTool
 				AddBuildProduct(Path.ChangeExtension(FileName, DebugInfoExtension));
 			}
 		}
-
-		/// <summary>
-		/// 
-		/// </summary>
-		/// <param name="FileName"></param>
-		public void AddLibraryBuildProduct(string FileName)
-		{
-			string FullFileName = Path.GetFullPath(FileName);
-			if (!LibraryBuildProducts.Contains(FullFileName))
-			{
-				LibraryBuildProducts.Add(FullFileName);
-			}
-		}
 	}
 
 	[Serializable]
@@ -287,6 +263,7 @@ namespace UnrealBuildTool
 	{
 		public FlatModuleCsDataType(SerializationInfo Info, StreamingContext Context)
 		{
+			ModuleName = Info.GetString("mn");
 			BuildCsFilename = Info.GetString("bf");
 			ModuleSourceFolder = (DirectoryReference)Info.GetValue("mf", typeof(DirectoryReference));
 			ExternalDependencies = (List<string>)Info.GetValue("ed", typeof(List<string>));
@@ -295,18 +272,21 @@ namespace UnrealBuildTool
 
 		public void GetObjectData(SerializationInfo Info, StreamingContext Context)
 		{
+			Info.AddValue("mn", ModuleName);
 			Info.AddValue("bf", BuildCsFilename);
 			Info.AddValue("mf", ModuleSourceFolder);
 			Info.AddValue("ed", ExternalDependencies);
 			Info.AddValue("hn", UHTHeaderNames);
 		}
 
-		public FlatModuleCsDataType(string InBuildCsFilename, IEnumerable<string> InExternalDependencies)
+		public FlatModuleCsDataType(string InModuleName, string InBuildCsFilename, IEnumerable<string> InExternalDependencies)
 		{
+			ModuleName = InModuleName;
 			BuildCsFilename = InBuildCsFilename;
 			ExternalDependencies = new List<string>(InExternalDependencies);
 		}
 
+		public string ModuleName;
 		public string BuildCsFilename;
 		public DirectoryReference ModuleSourceFolder;
 		public List<string> ExternalDependencies;
@@ -351,23 +331,6 @@ namespace UnrealBuildTool
 		public readonly string OnlyModuleSuffix;
 	}
 
-
-	/// <summary>
-	/// Describes all of the information needed to initialize a UEBuildTarget object
-	/// </summary>
-	class TargetDescriptor
-	{
-		public FileReference ProjectFile;
-		public string TargetName;
-		public UnrealTargetPlatform Platform;
-		public UnrealTargetConfiguration Configuration;
-		public string Architecture;
-		public bool bIsEditorRecompile;
-		public List<OnlyModule> OnlyModules;
-		public List<FileReference> ForeignPlugins;
-		public string ForceReceiptFileName;
-	}
-
 	/// <summary>
 	/// A target that can be built
 	/// </summary>
@@ -382,160 +345,6 @@ namespace UnrealBuildTool
 		public string GetTargetName()
 		{
 			return TargetName;
-		}
-
-		public static List<TargetDescriptor> ParseTargetCommandLine(string[] Arguments, ref FileReference ProjectFile)
-		{
-			UnrealTargetPlatform Platform = UnrealTargetPlatform.Unknown;
-			UnrealTargetConfiguration Configuration = UnrealTargetConfiguration.Unknown;
-			List<string> TargetNames = new List<string>();
-			string Architecture = null;
-			List<OnlyModule> OnlyModules = new List<OnlyModule>();
-			List<FileReference> ForeignPlugins = new List<FileReference>();
-			string ForceReceiptFileName = null;
-
-			// If true, the recompile was launched by the editor.
-			bool bIsEditorRecompile = false;
-
-			// Settings for creating/using static libraries for the engine
-			List<string> PossibleTargetNames = new List<string>();
-			for (int ArgumentIndex = 0; ArgumentIndex < Arguments.Length; ArgumentIndex++)
-			{
-				string Argument = Arguments[ArgumentIndex];
-				if(!Argument.StartsWith("-"))
-				{
-					UnrealTargetPlatform ParsedPlatform;
-					if(Enum.TryParse(Argument, true, out ParsedPlatform) && ParsedPlatform != UnrealTargetPlatform.Unknown)
-					{
-						if(Platform != UnrealTargetPlatform.Unknown)
-						{
-							throw new BuildException("Multiple platforms specified on command line (first {0}, then {1})", Platform, ParsedPlatform);
-						}
-						Platform = ParsedPlatform;
-						continue;
-					}
-
-					UnrealTargetConfiguration ParsedConfiguration;
-					if(Enum.TryParse(Argument, true, out ParsedConfiguration) && ParsedConfiguration != UnrealTargetConfiguration.Unknown)
-					{
-						if(Configuration != UnrealTargetConfiguration.Unknown)
-						{
-							throw new BuildException("Multiple configurations specified on command line (first {0}, then {1})", Configuration, ParsedConfiguration);
-						}
-						Configuration = ParsedConfiguration;
-						continue;
-					}
-
-					PossibleTargetNames.Add(Argument);
-				}
-				else
-				{
-					string Value;
-					if(ParseArgumentValue(Argument, "-Module=", out Value))
-					{
-						OnlyModules.Add(new OnlyModule(Value));
-					}
-					else if(ParseArgumentValue(Argument, "-ModuleWithSuffix=", out Value))
-					{
-						int SuffixIdx = Value.LastIndexOf(',');
-						if(SuffixIdx == -1)
-						{
-							throw new BuildException("Missing suffix argument from -ModuleWithSuffix=Name,Suffix");
-						}
-						OnlyModules.Add(new OnlyModule(Value.Substring(0, SuffixIdx), Value.Substring(SuffixIdx + 1)));
-					}
-					else if(ParseArgumentValue(Argument, "-Plugin=", out Value))
-					{
-						ForeignPlugins.Add(new FileReference(Value));
-					}
-					else if(ParseArgumentValue(Argument, "-Receipt=", out Value))
-					{
-						ForceReceiptFileName = Value;
-					}
-					else if(Argument.Equals("-EditorRecompile", StringComparison.InvariantCultureIgnoreCase))
-					{
-						bIsEditorRecompile = true;
-					}
-					else
-					{
-						switch (Arguments[ArgumentIndex].ToUpperInvariant())
-						{
-							case "-MODULE":
-								throw new BuildException("'-Module <Name>' syntax is no longer supported on the command line. Use '-Module=<Name>' instead.");
-							case "-MODULEWITHSUFFIX":
-								throw new BuildException("'-ModuleWithSuffix <Name> <Suffix>' syntax is no longer supported on the command line. Use '-Module=<Name>,<Suffix>' instead.");
-							case "-PLUGIN":
-								throw new BuildException("'-Plugin <Path>' syntax is no longer supported on the command line. Use '-Plugin=<Path>' instead.");
-							case "-RECEIPT":
-								throw new BuildException("'-Receipt <Path>' syntax is no longer supported on the command line. Use '-Receipt=<Path>' instead.");
-						}
-					}
-				}
-			}
-
-			if (Platform == UnrealTargetPlatform.Unknown)
-			{
-				throw new BuildException("Couldn't find platform name.");
-			}
-			if (Configuration == UnrealTargetConfiguration.Unknown)
-			{
-				throw new BuildException("Couldn't determine configuration name.");
-			}
-
-			List<TargetDescriptor> Targets = new List<TargetDescriptor>();
-			if (PossibleTargetNames.Count > 0)
-			{
-				// We have possible targets!
-				string PossibleTargetName = PossibleTargetNames[0];
-
-				// If Engine is installed, the PossibleTargetName could contain a path
-				string TargetName = PossibleTargetName;
-
-				// If a project file was not specified see if we can find one
-				if (ProjectFile == null && UProjectInfo.TryGetProjectForTarget(TargetName, out ProjectFile))
-				{
-					Log.TraceVerbose("Found project file for {0} - {1}", TargetName, ProjectFile);
-				}
-
-				UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform);
-
-				if(Architecture == null)
-				{
-					Architecture = BuildPlatform.GetDefaultArchitecture(ProjectFile);
-				}
-
-				Targets.Add(new TargetDescriptor()
-					{
-						ProjectFile = ProjectFile,
-						TargetName = TargetName,
-						Platform = Platform,
-						Configuration = Configuration,
-						Architecture = Architecture,
-						bIsEditorRecompile = bIsEditorRecompile,
-						OnlyModules = OnlyModules,
-						ForeignPlugins = ForeignPlugins,
-						ForceReceiptFileName = ForceReceiptFileName
-					});
-			}
-			if (Targets.Count == 0)
-			{
-				throw new BuildException("No target name was specified on the command-line.");
-			}
-			return Targets;
-		}
-
-		private static bool ParseArgumentValue(string Argument, string Prefix, out string Value)
-		{
-			if(Argument.StartsWith(Prefix, StringComparison.InvariantCultureIgnoreCase))
-			{
-				Value = Argument.Substring(Prefix.Length);
-				return true;
-			}
-			else
-			{
-				Value = null;
-				return false;
-			}
 		}
 
 		public static UnrealTargetPlatform[] GetSupportedPlatforms(TargetRules Rules)
@@ -570,118 +379,66 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Desc">Information about the target</param>
 		/// <param name="Arguments">Command line arguments</param>
+		/// <param name="bSkipRulesCompile">Whether to skip compiling any rules assemblies</param>
 		/// <param name="bCompilingSingleFile">Whether we're compiling a single file</param>
+		/// <param name="bUsePrecompiled">Whether to use a precompiled engine/enterprise build</param>
 		/// <param name="Version">The current build version</param>
 		/// <returns>The build target object for the specified build rules source file</returns>
-		public static UEBuildTarget CreateTarget(TargetDescriptor Desc, string[] Arguments, bool bCompilingSingleFile, ReadOnlyBuildVersion Version)
+		public static UEBuildTarget CreateTarget(TargetDescriptor Desc, string[] Arguments, bool bSkipRulesCompile, bool bCompilingSingleFile, bool bUsePrecompiled, ReadOnlyBuildVersion Version)
 		{
 			DateTime CreateTargetStartTime = DateTime.UtcNow;
 
-			RulesAssembly RulesAssembly;
-			if (Desc.ProjectFile != null)
-			{
-				RulesAssembly = RulesCompiler.CreateProjectRulesAssembly(Desc.ProjectFile);
-			}
-			else
-			{
-				RulesAssembly = RulesCompiler.CreateEngineRulesAssembly();
-
-				if (RulesAssembly.GetTargetFileName(Desc.TargetName) == null)
-				{
-					// Target isn't part of the engine assembly, try the enterprise assembly
-					RulesAssembly EnterpriseRulesAssembly = RulesCompiler.CreateEnterpriseRulesAssembly();
-
-					if (EnterpriseRulesAssembly != null)
-					{
-						RulesAssembly = EnterpriseRulesAssembly;
-					}
-				}
-			}
-			if (Desc.ForeignPlugins != null)
-			{
-				foreach (FileReference ForeignPlugin in Desc.ForeignPlugins)
-				{
-					RulesAssembly = RulesCompiler.CreatePluginRulesAssembly(ForeignPlugin, RulesAssembly);
-				}
-			}
+			RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(Desc.ProjectFile, Desc.Name, bSkipRulesCompile, bUsePrecompiled, Desc.ForeignPlugin);
 
 			FileReference TargetFileName;
-			TargetRules RulesObject = RulesAssembly.CreateTargetRules(Desc.TargetName, Desc.Platform, Desc.Configuration, Desc.Architecture, Desc.ProjectFile, Version, Desc.bIsEditorRecompile, out TargetFileName);
+			TargetRules RulesObject = RulesAssembly.CreateTargetRules(Desc.Name, Desc.Platform, Desc.Configuration, Desc.Architecture, Desc.ProjectFile, Version, Arguments, out TargetFileName);
 			if ((ProjectFileGenerator.bGenerateProjectFiles == false) && !GetSupportedPlatforms(RulesObject).Contains(Desc.Platform))
 			{
-				throw new BuildException("{0} does not support the {1} platform.", Desc.TargetName, Desc.Platform.ToString());
+				throw new BuildException("{0} does not support the {1} platform.", Desc.Name, Desc.Platform.ToString());
 			}
 
 			// Now that we found the actual Editor target, make sure we're no longer using the old TargetName (which is the Game target)
-			Desc.TargetName = RulesObject.Name;
+			Desc.Name = RulesObject.Name;
 
-			// Parse any additional command-line arguments. These override default settings specified in config files or the .target.cs files.
-			foreach(object ConfigurableObject in RulesObject.GetConfigurableObjects())
+			// If we're using the shared build environment, make sure all the settings are valid
+			if(RulesObject.BuildEnvironment == TargetBuildEnvironment.Shared)
 			{
-				CommandLine.ParseArguments(Arguments, ConfigurableObject);
+				ValidateSharedEnvironment(RulesAssembly, Desc.Name, RulesObject);
 			}
 
-			// Set the final value for the link type in the target rules
-			if(RulesObject.LinkType == TargetLinkType.Default)
+			// Make sure that we don't explicitly enable or disable any plugins through the target rules. We can't 
+			if(RulesObject.BuildEnvironment == TargetBuildEnvironment.Shared && Desc.OnlyModules.Count == 0)
 			{
-				throw new BuildException("TargetRules.LinkType should be inferred from TargetType");
-			}
-
-			// Set the default value for whether to use the shared build environment
-			if(RulesObject.BuildEnvironment == TargetBuildEnvironment.Default)
-			{
-				if(RulesObject.Type != TargetType.Program && (UnrealBuildTool.IsEngineInstalled() || RulesObject.LinkType != TargetLinkType.Monolithic))
+				if(RulesObject.EnablePlugins.Count > 0 || RulesObject.DisablePlugins.Count > 0)
 				{
-					RulesObject.BuildEnvironment = TargetBuildEnvironment.Shared;
+					throw new BuildException("Explicitly enabling and disabling plugins for a target is only supported when using a unique build environment (eg. for monolithic game targets).");
+				}
+			}
+
+			// If we're precompiling, generate a list of all the files that we depend on
+			if (RulesObject.bPrecompile)
+			{
+				DirectoryReference DependencyListDir;
+				if(RulesObject.ProjectFile == null)
+				{
+					DependencyListDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "DependencyLists", RulesObject.Name, RulesObject.Configuration.ToString(), RulesObject.Platform.ToString());
 				}
 				else
 				{
-					RulesObject.BuildEnvironment = TargetBuildEnvironment.Unique;
+					DependencyListDir = DirectoryReference.Combine(RulesObject.ProjectFile.Directory, "Intermediate", "DependencyLists", RulesObject.Name, RulesObject.Configuration.ToString(), RulesObject.Platform.ToString());
 				}
-			}
 
-			// Invoke the legacy callback for configuring the global environment
-			if(RulesObject.BuildEnvironment == TargetBuildEnvironment.Unique)
-			{
-				TargetRules.CPPEnvironmentConfiguration CppEnvironment = new TargetRules.CPPEnvironmentConfiguration(RulesObject);
-				TargetRules.LinkEnvironmentConfiguration LinkEnvironment = new TargetRules.LinkEnvironmentConfiguration(RulesObject);
-				RulesObject.SetupGlobalEnvironment(new TargetInfo(new ReadOnlyTargetRules(RulesObject)), ref LinkEnvironment, ref CppEnvironment);
-			}
-			else
-			{
-				ValidateSharedEnvironment(RulesAssembly, Desc.TargetName, RulesObject);
-			}
-
-			// Setup the malloc profiler
-			if (RulesObject.bUseMallocProfiler)
-			{
-				RulesObject.bOmitFramePointers = false;
-				RulesObject.GlobalDefinitions.Add("USE_MALLOC_PROFILER=1");
-			}
-
-			// handle some special case defines (so build system can pass -DEFINE as normal instead of needing
-			// to know about special parameters)
-			foreach (string Define in RulesObject.GlobalDefinitions)
-			{
-				switch (Define)
+				FileReference DependencyListFile;
+				if(RulesObject.bBuildAllModules)
 				{
-					case "WITH_EDITOR=0":
-						RulesObject.bBuildEditor = false;
-						break;
-
-					case "WITH_EDITORONLY_DATA=0":
-						RulesObject.bBuildWithEditorOnlyData = false;
-						break;
-
-					// Memory profiler doesn't work if frame pointers are omitted
-					case "USE_MALLOC_PROFILER=1":
-						RulesObject.bOmitFramePointers = false;
-						break;
-
-					case "WITH_LEAN_AND_MEAN_UE=1":
-						RulesObject.bCompileLeanAndMeanUE = true;
-						break;
+					DependencyListFile = FileReference.Combine(DependencyListDir, "DependencyList-AllModules.txt");
 				}
+				else
+				{
+					DependencyListFile = FileReference.Combine(DependencyListDir, "DependencyList.txt");
+				}
+
+				RulesObject.DependencyListFileNames.Add(DependencyListFile);
 			}
 
 			// If we're compiling just a single file, we need to prevent unity builds from running
@@ -693,51 +450,16 @@ namespace UnrealBuildTool
 				RulesObject.bDisableLinking = true;
 			}
 
-			// Lean and mean means no Editor and other frills.
-			if (RulesObject.bCompileLeanAndMeanUE)
-			{
-				RulesObject.bBuildEditor = false;
-				RulesObject.bBuildDeveloperTools = false;
-				RulesObject.bCompileSimplygon = false;
-                RulesObject.bCompileSimplygonSSF = false;
-				RulesObject.bCompileSpeedTree = false;
-			}
-
-			// Automatically include CoreUObject
-			if (RulesObject.bCompileAgainstEngine)
-			{
-				RulesObject.bCompileAgainstCoreUObject = true;
-			}
-
-			// Disable editor when its not needed
-			UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(RulesObject.Platform);
-			if (BuildPlatform.ShouldNotBuildEditor(Desc.Platform, Desc.Configuration) == true)
-			{
-				RulesObject.bBuildEditor = false;
-			}
-
 			// Disable the DDC and a few other things related to preparing assets
+			UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(RulesObject.Platform);
 			if (BuildPlatform.BuildRequiresCookedData(Desc.Platform, Desc.Configuration) == true)
 			{
 				RulesObject.bBuildRequiresCookedData = true;
 			}
 
-			// Must have editor only data if building the editor.
-			if (RulesObject.bBuildEditor)
+			if (!RulesObject.bAllowNonUFSIniWhenCooked)
 			{
-				RulesObject.bBuildWithEditorOnlyData = true;
-			}
-
-			// Apply the override to force debug info to be enabled
-			if (RulesObject.bForceDebugInfo)
-			{
-				RulesObject.bDisableDebugInfo = false;
-				RulesObject.bOmitPCDebugInfoInDevelopment = false;
-			}
-
-			if (!RulesObject.bAllowGeneratedIniWhenCooked)
-			{
-				RulesObject.GlobalDefinitions.Add("DISABLE_GENERATED_INI_WHEN_COOKED=1");
+				RulesObject.GlobalDefinitions.Add("DISABLE_NONUFS_INI_WHEN_COOKED=1");
 			}
 
 			// Allow the platform to finalize the settings
@@ -749,44 +471,24 @@ namespace UnrealBuildTool
 				&& RulesObject.Platform == UnrealTargetPlatform.Android) // TODO: if safe on other platforms
 			{
 				RulesObject.bDeployAfterCompile = false;
-            }
-			
-            // Include generated code plugin if not building an editor target and project is configured for nativization
-            if (RulesObject.ProjectFile != null && RulesObject.Type != TargetType.Editor && ShouldIncludeNativizedAssets(RulesObject.ProjectFile.Directory))
-            {
-                string PlatformName;
-                if (RulesObject.Platform == UnrealTargetPlatform.Win32 || RulesObject.Platform == UnrealTargetPlatform.Win64)
-                {
-                    PlatformName = "Windows";
-                }
-                else
-                {
-                    PlatformName = RulesObject.Platform.ToString();
-                }
+			}
 
-                // Temp fix to force platforms that only support "Game" configurations at cook time to the correct path.
-                string ProjectTargetType;
-                if (RulesObject.Platform == UnrealTargetPlatform.Win32 || RulesObject.Platform == UnrealTargetPlatform.Win64
-                    || RulesObject.Platform == UnrealTargetPlatform.Linux || RulesObject.Platform == UnrealTargetPlatform.Mac)
-                {
-                    ProjectTargetType = RulesObject.Type.ToString();
-                }
-                else
-                {
-                    ProjectTargetType = "Game";
-                }
+			// If we're compiling a plugin, and this target is monolithic, just create the object files
+			if(Desc.ForeignPlugin != null && RulesObject.LinkType == TargetLinkType.Monolithic)
+			{
+				// Don't actually want an executable
+				RulesObject.bDisableLinking = true;
 
-                FileReference PluginFile = FileReference.Combine(RulesObject.ProjectFile.Directory, "Intermediate", "Plugins", "NativizedAssets", PlatformName, ProjectTargetType, "NativizedAssets.uplugin");
-                if (FileReference.Exists(PluginFile))
-                {
-                    Desc.ForeignPlugins.Add(PluginFile);
-                    RulesAssembly = RulesCompiler.CreatePluginRulesAssembly(PluginFile, RulesAssembly);
-                }
-                else
-                {
-                    Log.TraceWarning("{0} is configured for nativization, but is missing the generated code plugin at \"{1}\". Make sure to cook {2} data before attempting to build the {3} target. If data was cooked with nativization enabled, this can also mean there were no Blueprint assets that required conversion, in which case this warning can be safely ignored.", RulesObject.Name, PluginFile.FullName, RulesObject.Type.ToString(), RulesObject.Platform.ToString());
-                }
-            }
+				// Don't allow using shared PCHs; they won't be distributed with the plugin
+				RulesObject.bUseSharedPCHs = false;
+			}
+
+			// Include generated code plugin if not building an editor target and project is configured for nativization
+			FileReference NativizedPluginFile = RulesObject.GetNativizedPlugin();
+			if(NativizedPluginFile != null)
+			{
+				RulesAssembly = RulesCompiler.CreatePluginRulesAssembly(NativizedPluginFile, bSkipRulesCompile, RulesAssembly, false);
+			}
 
 			// Generate a build target from this rules module
 			UEBuildTarget BuildTarget = new UEBuildTarget(Desc, new ReadOnlyTargetRules(RulesObject), RulesAssembly, TargetFileName);
@@ -794,7 +496,7 @@ namespace UnrealBuildTool
 			if (UnrealBuildTool.bPrintPerformanceInfo)
 			{
 				double CreateTargetTime = (DateTime.UtcNow - CreateTargetStartTime).TotalSeconds;
-				Log.TraceInformation("CreateTarget for " + Desc.TargetName + " took " + CreateTargetTime + "s");
+				Log.TraceInformation("CreateTarget for " + Desc.Name + " took " + CreateTargetTime + "s");
 			}
 
 			return BuildTarget;
@@ -826,36 +528,48 @@ namespace UnrealBuildTool
 			}
 
 			// Create the target rules for it
-			TargetRules BaseRules = RulesAssembly.CreateTargetRules(BaseTargetName, ThisRules.Platform, ThisRules.Configuration, ThisRules.Architecture, null, ThisRules.Version, false);
+			TargetRules BaseRules = RulesAssembly.CreateTargetRules(BaseTargetName, ThisRules.Platform, ThisRules.Configuration, ThisRules.Architecture, null, ThisRules.Version, null);
+
+			// Get all the configurable objects
+			object[] BaseObjects = BaseRules.GetConfigurableObjects().ToArray();
+			object[] ThisObjects = ThisRules.GetConfigurableObjects().ToArray();
+			if(BaseObjects.Length != ThisObjects.Length)
+			{
+				throw new BuildException("Expected same number of configurable objects from base rules object.");
+			}
 
 			// Iterate through all fields with the [SharedBuildEnvironment] attribute
-			foreach(FieldInfo Field in typeof(TargetRules).GetFields())
+			for(int Idx = 0; Idx < BaseObjects.Length; Idx++)
 			{
-				if(Field.GetCustomAttribute<RequiresUniqueBuildEnvironmentAttribute>() != null)
+				Type ObjectType = BaseObjects[Idx].GetType();
+				foreach(FieldInfo Field in ObjectType.GetFields())
 				{
-					// Get the values for the current target and for the base target
-					object ThisValue = Field.GetValue(ThisRules);
-					object BaseValue = Field.GetValue(BaseRules);
+					if(Field.GetCustomAttribute<RequiresUniqueBuildEnvironmentAttribute>() != null)
+					{
+						// Get the values for the current target and for the base target
+						object ThisValue = Field.GetValue(ThisObjects[Idx]);
+						object BaseValue = Field.GetValue(BaseObjects[Idx]);
 
-					// Check if the fields match, treating lists of strings (eg. definitions) differently to value types.
-					bool bFieldsMatch;
-					if(ThisValue == null || BaseValue == null)
-					{
-						bFieldsMatch = (ThisValue == BaseValue);
-					}
-					else if(typeof(IEnumerable<string>).IsAssignableFrom(Field.FieldType))
-					{
-						bFieldsMatch = Enumerable.SequenceEqual((IEnumerable<string>)ThisValue, (IEnumerable<string>)BaseValue);
-					}
-					else
-					{
-						bFieldsMatch = ThisValue.Equals(BaseValue);
-					}
+						// Check if the fields match, treating lists of strings (eg. definitions) differently to value types.
+						bool bFieldsMatch;
+						if(ThisValue == null || BaseValue == null)
+						{
+							bFieldsMatch = (ThisValue == BaseValue);
+						}
+						else if(typeof(IEnumerable<string>).IsAssignableFrom(Field.FieldType))
+						{
+							bFieldsMatch = Enumerable.SequenceEqual((IEnumerable<string>)ThisValue, (IEnumerable<string>)BaseValue);
+						}
+						else
+						{
+							bFieldsMatch = ThisValue.Equals(BaseValue);
+						}
 
-					// Throw an exception if they don't match
-					if(!bFieldsMatch)
-					{
-						throw new BuildException("{0} modifies the value of {1}. This is not allowed, as {0} has build products in common with {2}.\nRemove the modified setting or change {0} to use a unique build environment by setting 'BuildEnvironment = TargetBuildEnvironment.Unique;' in the {3} constructor.", ThisTargetName, Field.Name, BaseTargetName, ThisRules.GetType().Name);
+						// Throw an exception if they don't match
+						if(!bFieldsMatch)
+						{
+							throw new BuildException("{0} modifies the value of {1}. This is not allowed, as {0} has build products in common with {2}.\nRemove the modified setting or change {0} to use a unique build environment by setting 'BuildEnvironment = TargetBuildEnvironment.Unique;' in the {3} constructor.", ThisTargetName, Field.Name, BaseTargetName, ThisRules.GetType().Name);
+						}
 					}
 				}
 			}
@@ -970,11 +684,6 @@ namespace UnrealBuildTool
 		public bool bPrecompile;
 
 		/// <summary>
-		/// Whether to use precompiled engine modules
-		/// </summary>
-		public bool bUsePrecompiled;
-
-		/// <summary>
 		/// Identifies whether the project contains a script plugin. This will cause UHT to be rebuilt, even in installed builds.
 		/// </summary>
 		public bool bHasProjectScriptPlugin;
@@ -992,32 +701,15 @@ namespace UnrealBuildTool
 		public List<UEBuildPlugin> EnabledPlugins;
 
 		/// <summary>
-		/// All plugins which should be precompiled for this target
+		/// Specifies the path to a specific plugin to compile.
 		/// </summary>
-		[NonSerialized]
-		public List<UEBuildPlugin> PrecompilePlugins;
-
-		/// <summary>
-		/// Additional plugin filenames to include when building UnrealHeaderTool for the current target
-		/// </summary>
-		public List<FileReference> ForeignPlugins = new List<FileReference>();
+		public FileReference ForeignPlugin;
 
 		/// <summary>
 		/// All application binaries; may include binaries not built by this target.
 		/// </summary>
 		[NonSerialized]
-		public List<UEBuildBinary> AppBinaries = new List<UEBuildBinary>();
-
-		/// <summary>
-		/// Extra engine module names to either include in the binary (monolithic) or create side-by-side DLLs for (modular)
-		/// </summary>
-		[NonSerialized]
-		public List<string> ExtraModuleNames = new List<string>();
-
-		/// <summary>
-		/// True if re-compiling this target from the editor
-		/// </summary>
-		public bool bEditorRecompile;
+		public List<UEBuildBinary> Binaries = new List<UEBuildBinary>();
 
 		/// <summary>
 		/// If building only a specific set of modules, these are the modules to build
@@ -1044,7 +736,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Used to map names of modules to their .Build.cs filename
 		/// </summary>
-		public Dictionary<string, FlatModuleCsDataType> FlatModuleCsData = new Dictionary<string, FlatModuleCsDataType>(StringComparer.InvariantCultureIgnoreCase);
+		public List<FlatModuleCsDataType> FlatModuleCsData = new List<FlatModuleCsDataType>();
 
 		/// <summary>
 		/// The receipt for this target, which contains a record of this build.
@@ -1096,12 +788,17 @@ namespace UnrealBuildTool
 		public FileReference DeployTargetFile;
 
 		/// <summary>
+		/// Directories which are scanned for source files. The UBT makefile uses this to check for files being added/removed.
+		/// </summary>
+		public HashSet<DirectoryReference> SourceDirectories = new HashSet<DirectoryReference>();
+
+		/// <summary>
 		/// A list of the module filenames which were used to build this target.
 		/// </summary>
 		/// <returns></returns>
 		public IEnumerable<string> GetAllModuleBuildCsFilenames()
 		{
-			return FlatModuleCsData.Values.Select(Data => Data.BuildCsFilename);
+			return FlatModuleCsData.Select(Data => Data.BuildCsFilename);
 		}
 
 		/// <summary>
@@ -1110,7 +807,7 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public IEnumerable<string> GetAllModuleFolders()
 		{
-			return FlatModuleCsData.Values.SelectMany(Data => Data.UHTHeaderNames);
+			return FlatModuleCsData.SelectMany(Data => Data.UHTHeaderNames);
 		}
 
 		/// <summary>
@@ -1139,11 +836,9 @@ namespace UnrealBuildTool
 			OutputPaths = (List<FileReference>)Info.GetValue("op", typeof(List<FileReference>));
 			VersionFile = (FileReference)Info.GetValue("vf", typeof(FileReference));
 			bPrecompile = Info.GetBoolean("pc");
-			bUsePrecompiled = Info.GetBoolean("up");
-			bEditorRecompile = Info.GetBoolean("er");
 			OnlyModules = (List<OnlyModule>)Info.GetValue("om", typeof(List<OnlyModule>));
 			bCompileMonolithic = Info.GetBoolean("cm");
-			FlatModuleCsData = (Dictionary<string, FlatModuleCsDataType>)Info.GetValue("fm", typeof(Dictionary<string, FlatModuleCsDataType>));
+			FlatModuleCsData = (List<FlatModuleCsDataType>)Info.GetValue("fm", typeof(List<FlatModuleCsDataType>));
 			Receipt = (TargetReceipt)Info.GetValue("re", typeof(TargetReceipt));
 			ReceiptFileName = (FileReference)Info.GetValue("rf", typeof(FileReference));
 			FileReferenceToModuleManifestPairs = (KeyValuePair<FileReference, ModuleManifest>[])Info.GetValue("vm", typeof(KeyValuePair<FileReference, ModuleManifest>[]));
@@ -1152,6 +847,7 @@ namespace UnrealBuildTool
 			PostBuildStepScripts = (FileReference[])Info.GetValue("po", typeof(FileReference[]));
 			DeployTargetFile = (FileReference)Info.GetValue("dt", typeof(FileReference));
 			bHasProjectScriptPlugin = Info.GetBoolean("sp");
+			SourceDirectories = (HashSet<DirectoryReference>)Info.GetValue("sd", typeof(HashSet<DirectoryReference>));
 		}
 
 		public void GetObjectData(SerializationInfo Info, StreamingContext Context)
@@ -1171,8 +867,6 @@ namespace UnrealBuildTool
 			Info.AddValue("op", OutputPaths);
 			Info.AddValue("vf", VersionFile);
 			Info.AddValue("pc", bPrecompile);
-			Info.AddValue("up", bUsePrecompiled);
-			Info.AddValue("er", bEditorRecompile);
 			Info.AddValue("om", OnlyModules);
 			Info.AddValue("cm", bCompileMonolithic);
 			Info.AddValue("fm", FlatModuleCsData);
@@ -1184,6 +878,7 @@ namespace UnrealBuildTool
 			Info.AddValue("po", PostBuildStepScripts);
 			Info.AddValue("dt", DeployTargetFile);
 			Info.AddValue("sp", bHasProjectScriptPlugin);
+			Info.AddValue("sd", SourceDirectories);
 		}
 
 		/// <summary>
@@ -1196,18 +891,16 @@ namespace UnrealBuildTool
 		public UEBuildTarget(TargetDescriptor InDesc, ReadOnlyTargetRules InRules, RulesAssembly InRulesAssembly, FileReference InTargetCsFilename)
 		{
 			ProjectFile = InDesc.ProjectFile;
-			AppName = InDesc.TargetName;
-			TargetName = InDesc.TargetName;
+			AppName = InDesc.Name;
+			TargetName = InDesc.Name;
 			Platform = InDesc.Platform;
 			Configuration = InDesc.Configuration;
 			Architecture = InDesc.Architecture;
 			Rules = InRules;
 			RulesAssembly = InRulesAssembly;
 			TargetType = Rules.Type;
-			bEditorRecompile = InDesc.bIsEditorRecompile;
 			bPrecompile = InRules.bPrecompile;
-			bUsePrecompiled = InRules.bUsePrecompiled;
-			ForeignPlugins = InDesc.ForeignPlugins;
+			ForeignPlugin = InDesc.ForeignPlugin;
 			ForceReceiptFileName = InDesc.ForceReceiptFileName;
 
 			// now that we have the platform, we can set the intermediate path to include the platform/architecture name
@@ -1226,10 +919,16 @@ namespace UnrealBuildTool
 
 			// Set the build environment
 			bUseSharedBuildEnvironment = (Rules.BuildEnvironment == TargetBuildEnvironment.Shared);
-
 			if (bUseSharedBuildEnvironment)
 			{
-				AppName = GetAppNameForTargetType(Rules.Type);
+				if(Rules.Type == TargetType.Program)
+				{
+					AppName = TargetName;
+				}
+				else
+				{
+					AppName = GetAppNameForTargetType(Rules.Type);
+				}
 			}
 
 			// Figure out what the project directory is. If we have a uproject file, use that. Otherwise use the engine directory.
@@ -1250,7 +949,14 @@ namespace UnrealBuildTool
 			}
 
 			// Build the project intermediate directory
-			ProjectIntermediateDirectory = DirectoryReference.Combine(ProjectDirectory, PlatformIntermediateFolder, GetTargetName(), Configuration.ToString());
+			if(bUseSharedBuildEnvironment && TargetRulesFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			{
+				ProjectIntermediateDirectory = DirectoryReference.Combine(ProjectDirectory, PlatformIntermediateFolder, AppName, Configuration.ToString());
+			}
+			else
+			{
+				ProjectIntermediateDirectory = DirectoryReference.Combine(ProjectDirectory, PlatformIntermediateFolder, GetTargetName(), Configuration.ToString());
+			}
 
 			// Build the engine intermediate directory. If we're building agnostic engine binaries, we can use the engine intermediates folder. Otherwise we need to use the project intermediates directory.
 			if (!bUseSharedBuildEnvironment)
@@ -1279,7 +985,7 @@ namespace UnrealBuildTool
 
 			// Construct the output paths for this target's executable
 			DirectoryReference OutputDirectory;
-			if (bCompileMonolithic || TargetType == TargetType.Program || !bUseSharedBuildEnvironment)
+			if (bCompileMonolithic || !bUseSharedBuildEnvironment)
 			{
 				OutputDirectory = ProjectDirectory;
 			}
@@ -1288,8 +994,8 @@ namespace UnrealBuildTool
 				OutputDirectory = UnrealBuildTool.EngineDirectory;
 			}
 
-            bool bCompileAsDLL = Rules.bShouldCompileAsDLL && bCompileMonolithic;
-            OutputPaths = MakeBinaryPaths(OutputDirectory, bCompileMonolithic ? TargetName : AppName, Platform, Configuration, bCompileAsDLL ? UEBuildBinaryType.DynamicLinkLibrary : UEBuildBinaryType.Executable, Rules.Architecture, Rules.UndecoratedConfiguration, bCompileMonolithic && ProjectFile != null, Rules.ExeBinariesSubFolder, Rules.OverrideExecutableFileExtension, ProjectFile, Rules);
+			bool bCompileAsDLL = Rules.bShouldCompileAsDLL && bCompileMonolithic;
+			OutputPaths = MakeBinaryPaths(OutputDirectory, bCompileMonolithic ? TargetName : AppName, Platform, Configuration, bCompileAsDLL ? UEBuildBinaryType.DynamicLinkLibrary : UEBuildBinaryType.Executable, Rules.Architecture, Rules.UndecoratedConfiguration, bCompileMonolithic && ProjectFile != null, Rules.ExeBinariesSubFolder, ProjectFile, Rules);
 
 			// Get the path to the version file unless this is a formal build (where it will be compiled in)
 			if(Rules.LinkType != TargetLinkType.Monolithic)
@@ -1347,23 +1053,7 @@ namespace UnrealBuildTool
 			}
 
 			// If we're running a precompiled build, remove anything under the engine folder
-			if (bUsePrecompiled)
-			{
-				BaseDirs.RemoveAll(x => x.IsUnderDirectory(UnrealBuildTool.EngineDirectory));
-			}
-
-			// If we're in an installed enterprise build, remove anything under the enterprise folder
-			if (UnrealBuildTool.IsEnterpriseInstalled())
-			{
-				BaseDirs.RemoveAll(x => x.IsUnderDirectory(UnrealBuildTool.EnterpriseDirectory));
-			}
-
-			// If we're in an installed project build, only allow cleaning stuff that's under the mod directories
-			if (UnrealBuildTool.IsProjectInstalled())
-			{
-				List<DirectoryReference> ModDirs = EnabledPlugins.Where(x => x.Type == PluginType.Mod).Select(x => x.Directory).ToList();
-				BaseDirs.RemoveAll(x => !ModDirs.Any(y => x.IsUnderDirectory(y)));
-			}
+			BaseDirs.RemoveAll(x => RulesAssembly.IsReadOnly(x));
 
 			// Get all the names which can prefix build products
 			List<string> NamePrefixes = new List<string>();
@@ -1389,8 +1079,8 @@ namespace UnrealBuildTool
 			List<FileReference> FilesToDelete = new List<FileReference>();
 			FilesToDelete.Add(FlatCPPIncludeDependencyCache.GetDependencyCachePathForTarget(this));
 			FilesToDelete.Add(DependencyCache.GetDependencyCachePathForTarget(ProjectFile, Platform, TargetName));
-			FilesToDelete.Add(UnrealBuildTool.GetUBTMakefilePath(ProjectFile, Platform, Configuration, TargetName, false));
-			FilesToDelete.Add(UnrealBuildTool.GetUBTMakefilePath(ProjectFile, Platform, Configuration, TargetName, true));
+			FilesToDelete.Add(UBTMakefile.GetUBTMakefilePath(ProjectFile, Platform, Configuration, TargetName, false));
+			FilesToDelete.Add(UBTMakefile.GetUBTMakefilePath(ProjectFile, Platform, Configuration, TargetName, true));
 			FilesToDelete.Add(ActionHistory.GeneratePathForTarget(this));
 
 			// Add all the intermediate folders to be deleted
@@ -1425,6 +1115,13 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Get all the additional intermediate folders created by this platform
+			List<FileReference> AdditionalFilesToDelete = new List<FileReference>();
+			List<DirectoryReference> AdditionalDirectoriesToDelete = new List<DirectoryReference>();
+			UEBuildPlatform.GetBuildPlatform(Platform).FindAdditionalBuildProductsToClean(Rules, AdditionalFilesToDelete, AdditionalDirectoriesToDelete);
+			FilesToDelete.AddRange(AdditionalFilesToDelete);
+			DirectoriesToDelete.AddRange(AdditionalDirectoriesToDelete);
+
 			// Delete all the directories, then all the files. By sorting the list of directories before we delete them, we avoid spamming the log if a parent directory is deleted first.
 			foreach (DirectoryReference DirectoryToDelete in DirectoriesToDelete.OrderBy(x => x.FullName))
 			{
@@ -1437,7 +1134,7 @@ namespace UnrealBuildTool
 					}
 					catch (Exception Ex)
 					{
-						throw new BuildException(Ex, "Unable to delete {0} ({1})", DirectoryToDelete, Ex.Message);
+						throw new BuildException(Ex, "Unable to delete {0} ({1})", DirectoryToDelete, Ex.Message.TrimEnd());
 					}
 				}
 			}
@@ -1453,44 +1150,67 @@ namespace UnrealBuildTool
 					}
 					catch (Exception Ex)
 					{
-						throw new BuildException(Ex, "Unable to delete {0} ({1})", FileToDelete, Ex.Message);
+						throw new BuildException(Ex, "Unable to delete {0} ({1})", FileToDelete, Ex.Message.TrimEnd());
 					}
 				}
 			}
 
 			// Finally clean UnrealHeaderTool if this target uses CoreUObject modules and we're not cleaning UHT already and we want UHT to be cleaned.
-			if (bIncludeUnrealHeaderTool && !bUsePrecompiled && TargetName != "UnrealHeaderTool")
+			if (bIncludeUnrealHeaderTool && !RulesAssembly.IsReadOnly(ExternalExecution.GetHeaderToolReceiptFile(ProjectFile, UnrealTargetConfiguration.Development, bHasProjectScriptPlugin)) && TargetName != "UnrealHeaderTool")
 			{
-				ExternalExecution.RunExternalDotNETExecutable(UnrealBuildTool.GetUBTPath(), String.Format("UnrealHeaderTool {0} {1} -NoMutex -Clean -IgnoreJunk", BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development));
+				ExternalExecution.RunExternalDotNETExecutable(UnrealBuildTool.GetUBTPath(), String.Format("UnrealHeaderTool {0} {1} -NoMutex -Clean -IgnoreJunk -NoLog", BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development));
 			}
 
 			return ECompilationResult.Succeeded;
 		}
 
 		/// <summary>
-		/// Create a list of all the externally referenced files
+		/// Writes a list of all the externally referenced files required to use the precompiled data for this target
 		/// </summary>
-		/// <param name="Files">Set of referenced files</param>
-		void GetExternalFileList(HashSet<FileReference> Files)
+		/// <param name="Location">Path to the dependency list</param>
+		/// <param name="RuntimeDependencies">List of all the runtime dependencies for this target</param>
+		/// <param name="RuntimeDependencyTargetFileToSourceFile">Map of runtime dependencies to their location in the source tree, before they are staged</param>
+		void WriteDependencyList(FileReference Location, List<RuntimeDependency> RuntimeDependencies, Dictionary<FileReference, FileReference> RuntimeDependencyTargetFileToSourceFile)
 		{
-			// Find all the modules we depend on
-			HashSet<UEBuildModule> Modules = new HashSet<UEBuildModule>();
-			foreach (UEBuildBinary Binary in AppBinaries)
+			HashSet<FileReference> Files = new HashSet<FileReference>();
+
+			// Find all the runtime dependency files in their original location
+			foreach(RuntimeDependency RuntimeDependency in RuntimeDependencies)
 			{
-				foreach (UEBuildModule Module in Binary.GetAllDependencyModules(bIncludeDynamicallyLoaded: false, bForceCircular: false))
+				FileReference SourceFile;
+				if(!RuntimeDependencyTargetFileToSourceFile.TryGetValue(RuntimeDependency.Path, out SourceFile))
+				{
+					SourceFile = RuntimeDependency.Path;
+				}
+				if(RuntimeDependency.Type != StagedFileType.DebugNonUFS || FileReference.Exists(SourceFile))
+				{
+					Files.Add(SourceFile);
+				}
+			}
+
+			// Figure out all the modules referenced by this target. This includes all the modules that are referenced, not just the ones compiled into binaries.
+			HashSet<UEBuildModule> Modules = new HashSet<UEBuildModule>();
+			foreach (UEBuildBinary Binary in Binaries)
+			{
+				foreach(UEBuildModule Module in Binary.Modules)
 				{
 					Modules.Add(Module);
+					Modules.UnionWith(Module.GetDependencies(true, true));
 				}
 			}
 
 			// Get the platform we're building for
 			UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform);
-
 			foreach (UEBuildModule Module in Modules)
 			{
+				// Skip artificial modules
+				if(Module.RulesFile == null)
+				{
+					continue;
+				}
+
 				// Create the module rules
-				FileReference ModuleRulesFileName;
-				ModuleRules Rules = CreateModuleRulesAndSetDefaults(Module.Name, "external file list option", out ModuleRulesFileName);
+				ModuleRules Rules = CreateModuleRulesAndSetDefaults(Module.Name, "external file list option");
 
 				// Add Additional Bundle Resources for all modules
 				foreach (UEBuildBundleResource Resource in Rules.AdditionalBundleResources)
@@ -1515,7 +1235,7 @@ namespace UnrealBuildTool
 				}
 
 				// Add the rules file itself
-				Files.Add(ModuleRulesFileName);
+				Files.Add(Rules.File);
 
 				// Get a list of all the library paths
 				List<string> LibraryPaths = new List<string>();
@@ -1575,7 +1295,7 @@ namespace UnrealBuildTool
 						foreach (string IncludeFileName in Directory.EnumerateFiles(IncludePath, "*", SearchOption.AllDirectories))
 						{
 							string Extension = Path.GetExtension(IncludeFileName).ToLower();
-							if (Extension == ".h" || Extension == ".inl")
+							if (Extension == ".h" || Extension == ".inl" || Extension == ".hpp")
 							{
 								Files.Add(new FileReference(IncludeFileName));
 							}
@@ -1583,12 +1303,17 @@ namespace UnrealBuildTool
 					}
 				}
 			}
+
+			// Write the file
+			Log.TraceInformation("Writing dependency list to {0}", Location);
+			DirectoryReference.CreateDirectory(Location.Directory);
+			FileReference.WriteAllLines(Location, Files.Where(x => x.IsUnderDirectory(UnrealBuildTool.RootDirectory)).Select(x => x.MakeRelativeTo(UnrealBuildTool.RootDirectory).Replace(Path.DirectorySeparatorChar, '/')).OrderBy(x => x));
 		}
 
 		/// <summary>
 		/// Generates a public manifest file for writing out
 		/// </summary>
-		public void GenerateManifest()
+		public void GenerateManifest(List<KeyValuePair<FileReference, BuildProductType>> BuildProducts)
 		{
 			FileReference ManifestPath;
 			if (UnrealBuildTool.IsEngineInstalled() && ProjectFile != null)
@@ -1599,25 +1324,30 @@ namespace UnrealBuildTool
 			{
 				ManifestPath = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "Build", "Manifest.xml");
 			}
+			GenerateManifest(ManifestPath, BuildProducts);
+		}
 
+		/// <summary>
+		/// Generates a public manifest file for writing out
+		/// </summary>
+		public void GenerateManifest(FileReference ManifestPath, List<KeyValuePair<FileReference, BuildProductType>> BuildProducts)
+		{
 			BuildManifest Manifest = new BuildManifest();
+
+			// Add the regular build products
+			foreach (KeyValuePair<FileReference, BuildProductType> BuildProductPair in BuildProducts)
+			{
+				Manifest.BuildProducts.Add(BuildProductPair.Key.FullName);
+			}
+
+			// Add all the dependency lists
+			foreach(FileReference DependencyListFileName in Rules.DependencyListFileNames)
+			{
+				Manifest.BuildProducts.Add(DependencyListFileName.FullName);
+			}
 
 			if (!Rules.bDisableLinking)
 			{
-				// Expand all the paths in the receipt; they'll currently use variables for the engine and project directories
-				foreach (BuildProduct BuildProduct in Receipt.BuildProducts)
-				{
-					// Don't add static libraries into the manifest unless we're explicitly building them; we don't submit them to Perforce.
-					if (!bPrecompile && (BuildProduct.Type == BuildProductType.StaticLibrary || BuildProduct.Type == BuildProductType.ImportLibrary))
-					{
-						Manifest.LibraryBuildProducts.Add(BuildProduct.Path.FullName);
-					}
-					else
-					{
-						Manifest.AddBuildProduct(BuildProduct.Path.FullName);
-					}
-				}
-
 				// Also add the version file if it's been specified
 				if (VersionFile != null)
 				{
@@ -1647,13 +1377,29 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Remove anything that's not part of the plugin
+			if(ForeignPlugin != null)
+			{
+				DirectoryReference ForeignPluginDir = ForeignPlugin.Directory;
+				Manifest.BuildProducts.RemoveAll(x => !new FileReference(x).IsUnderDirectory(ForeignPluginDir));
+			}
+
+			Manifest.BuildProducts.Sort();
+			Manifest.DeployTargetFiles.Sort();
+			Manifest.PostBuildScripts.Sort();
+
+			Log.TraceInformation("Writing manifest to {0}", ManifestPath);
 			Utils.WriteClass<BuildManifest>(Manifest, ManifestPath.FullName, "");
 		}
 
 		/// <summary>
 		/// Prepare all the receipts this target (all the .target and .modules files). See the VersionManifest class for an explanation of what these files are.
 		/// </summary>
-		void PrepareReceipts(UEToolChain ToolChain, bool bCreateDebugInfo, EHotReload HotReload)
+		/// <param name="ToolChain">The toolchain used to build the target</param>
+		/// <param name="BuildProducts">Artifacts from the build</param>
+		/// <param name="RuntimeDependencies">Output runtime dependencies</param>
+		/// <param name="HotReload">The hot-reload mode</param>
+		void PrepareReceipts(UEToolChain ToolChain, List<KeyValuePair<FileReference, BuildProductType>> BuildProducts, List<RuntimeDependency> RuntimeDependencies, EHotReload HotReload)
 		{
 			// If linking is disabled, don't generate any receipt
 			if(Rules.bDisableLinking)
@@ -1697,20 +1443,22 @@ namespace UnrealBuildTool
 					Version.BuildId = Guid.NewGuid().ToString();
 				}
 			}
-			
-			// Find all the build products and modules from this binary
-			Receipt = new TargetReceipt(TargetName, Platform, Configuration, Version);
-			foreach (UEBuildBinary Binary in AppBinaries)
-			{
-				// Get all the build products for this binary
-				Dictionary<FileReference, BuildProductType> BuildProducts = new Dictionary<FileReference, BuildProductType>();
-				Binary.GetBuildProducts(Rules, ToolChain, BuildProducts, bCreateDebugInfo);
 
-				// Add them to the receipt
-				foreach (KeyValuePair<FileReference, BuildProductType> BuildProductPair in BuildProducts)
+			// Create the receipt
+			Receipt = new TargetReceipt(TargetName, Platform, Configuration, Version);
+
+			// Set the launch executable if there is one
+			if(!Rules.bShouldCompileAsDLL)
+			{
+				Receipt.Launch = OutputPaths[0];
+			}
+
+			// Find all the build products and modules from this binary
+			foreach (KeyValuePair<FileReference, BuildProductType> BuildProductPair in BuildProducts)
+			{
+				if(BuildProductPair.Value != BuildProductType.BuildResource)
 				{
-					BuildProduct BuildProduct = Receipt.AddBuildProduct(BuildProductPair.Key, BuildProductPair.Value);
-					BuildProduct.IsPrecompiled = !Binary.Config.bAllowCompilation;
+					Receipt.AddBuildProduct(BuildProductPair.Key, BuildProductPair.Value);
 				}
 			}
 
@@ -1729,75 +1477,25 @@ namespace UnrealBuildTool
 				}
 			}
 
-			// Add slate runtime dependencies
-            if (Rules.bUsesSlate)
-            {
-				AddRuntimeDependenciesFromDir(DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Content", "Slate"), StagedFileType.UFS);
-				if (Configuration != UnrealTargetConfiguration.Shipping)
+			// Add all the other runtime dependencies
+			HashSet<FileReference> UniqueRuntimeDependencyFiles = new HashSet<FileReference>();
+			foreach(RuntimeDependency RuntimeDependency in RuntimeDependencies)
+			{
+				if(UniqueRuntimeDependencyFiles.Add(RuntimeDependency.Path))
 				{
-					AddRuntimeDependenciesFromDir(DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Content", "SlateDebug"), StagedFileType.UFS);
-				}
-				if (ProjectFile != null)
-				{
-					AddRuntimeDependenciesFromDir(DirectoryReference.Combine(ProjectDirectory, "Content", "Slate"), StagedFileType.UFS);
-					if (Configuration != UnrealTargetConfiguration.Shipping)
-					{
-						AddRuntimeDependenciesFromDir(DirectoryReference.Combine(ProjectDirectory, "Content", "SlateDebug"), StagedFileType.UFS);
-					}
+					Receipt.RuntimeDependencies.Add(RuntimeDependency);
 				}
 			}
 
 			// Find all the modules which are part of this target
 			HashSet<UEBuildModule> UniqueLinkedModules = new HashSet<UEBuildModule>();
-			foreach (UEBuildBinary Binary in AppBinaries)
+			foreach (UEBuildBinary Binary in Binaries)
 			{
-				if (!Binary.Config.bPrecompileOnly)
+				foreach (UEBuildModule Module in Binary.Modules)
 				{
-					foreach (UEBuildModule Module in Binary.Modules)
+					if (UniqueLinkedModules.Add(Module))
 					{
-						if (UniqueLinkedModules.Add(Module))
-						{
-							foreach (RuntimeDependency RuntimeDependency in Module.RuntimeDependencies)
-							{
-								Receipt.RuntimeDependencies.Add(RuntimeDependency.Path, RuntimeDependency.Type);
-							}
-							Receipt.AdditionalProperties.AddRange(Module.Rules.AdditionalPropertiesForReceipt.Inner);
-						}
-					}
-				}
-			}
-
-			// Add any dependencies of precompiled modules into the receipt
-			if(bPrecompile)
-			{
-				// Add the runtime dependencies of precompiled modules that are not directly part of this target
-				foreach (UEBuildBinary Binary in AppBinaries)
-				{
-					if(Binary.Config.bPrecompileOnly)
-					{
-						foreach (UEBuildModule Module in Binary.Modules)
-						{
-							if (UniqueLinkedModules.Add(Module))
-							{
-								foreach (RuntimeDependency RuntimeDependency in Module.RuntimeDependencies)
-								{
-									Receipt.PrecompiledRuntimeDependencies.Add(RuntimeDependency.Path);
-								}
-							}
-						}
-					}
-				}
-
-				// Add all the files which are required to use the precompiled modules
-				HashSet<FileReference> ExternalFiles = new HashSet<FileReference>();
-				GetExternalFileList(ExternalFiles);
-
-				// Convert them into relative to the target receipt
-				foreach(FileReference ExternalFile in ExternalFiles)
-				{
-					if(ExternalFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory) || ExternalFile.IsUnderDirectory(ProjectDirectory))
-					{
-						Receipt.PrecompiledBuildDependencies.Add(ExternalFile);
+						Receipt.AdditionalProperties.AddRange(Module.Rules.AdditionalPropertiesForReceipt.Inner);
 					}
 				}
 			}
@@ -1813,11 +1511,11 @@ namespace UnrealBuildTool
 			if (!bCompileMonolithic)
 			{
 				// Create the receipts for each folder
-				foreach (UEBuildBinary Binary in AppBinaries)
+				foreach (UEBuildBinary Binary in Binaries)
 				{
-					if(Binary.Config.Type == UEBuildBinaryType.DynamicLinkLibrary && Binary.Config.bAllowCompilation)
+					if(Binary.Type == UEBuildBinaryType.DynamicLinkLibrary)
 					{
-						DirectoryReference DirectoryName = Binary.Config.OutputFilePath.Directory;
+						DirectoryReference DirectoryName = Binary.OutputFilePath.Directory;
 						bool bIsGameDirectory = !DirectoryName.IsUnderDirectory(UnrealBuildTool.EngineDirectory);
 						FileReference ManifestFileName = FileReference.Combine(DirectoryName, ModuleManifest.GetStandardFileName(AppName, Platform, Configuration, Architecture, bIsGameDirectory));
 
@@ -1844,9 +1542,9 @@ namespace UnrealBuildTool
 							FileNameToModuleManifest.Add(ManifestFileName, Manifest);
 						}
 
-						foreach (string ModuleName in Binary.Config.ModuleNames)
+						foreach (UEBuildModuleCPP Module in Binary.Modules.OfType<UEBuildModuleCPP>())
 						{
-							Manifest.ModuleNameToFileName[ModuleName] = Binary.Config.OutputFilePath.GetFileName();
+							Manifest.ModuleNameToFileName[Module.Name] = Binary.OutputFilePath.GetFileName();
 						}
 					}
 				}
@@ -1859,24 +1557,8 @@ namespace UnrealBuildTool
 				Receipt.AddBuildProduct(VersionManifestFile, BuildProductType.RequiredResource);
 			}
 
-            // add the SDK used by the tool chain
-            Receipt.AdditionalProperties.Add(new ReceiptProperty("SDK", ToolChain.GetSDKVersion()));
-		}
-
-		/// <summary>
-		/// Add the contents of a directory as runtime dependencies
-		/// </summary>
-		/// <param name="BaseDir">The base directory to enumerate files from</param>
-		/// <param name="Type">How the file should be staged</param>
-		void AddRuntimeDependenciesFromDir(DirectoryReference BaseDir, StagedFileType Type)
-		{
-			if (DirectoryReference.Exists(BaseDir))
-			{
-				foreach (FileReference File in DirectoryReference.EnumerateFiles(BaseDir, "*", SearchOption.AllDirectories))
-				{
-					Receipt.RuntimeDependencies.Add(File, Type);
-				}
-			}
+			// add the SDK used by the tool chain
+			Receipt.AdditionalProperties.Add(new ReceiptProperty("SDK", ToolChain.GetSDKVersion()));
 		}
 
 		/// <summary>
@@ -1885,30 +1567,46 @@ namespace UnrealBuildTool
 		/// additional engine modules to be built, so we don't prohibit files being added or removed.
 		/// </summary>
 		/// <param name="OutputFiles">List of files being modified by this build</param>
+		/// <param name="bNoManifestChanges">Whether manifest changes are allowed. If a manifest has to be changed, an error will be output.</param>
 		/// <returns>True if the existing version manifests will remain valid during this build, false if they are invalidated</returns>
-		public bool TryRecycleVersionManifests(HashSet<FileReference> OutputFiles)
+		public bool TryRecycleVersionManifests(HashSet<FileReference> OutputFiles, bool bNoManifestChanges)
 		{
 			// Make sure we've got a list of version manifests to check against
 			if(FileReferenceToModuleManifestPairs == null)
 			{
+				Log.TraceLog("No file to version manifest mapping; unable to recycle version.");
+				return false;
+			}
+
+			// If there is no version file, don't bother trying to read it
+			if(VersionFile == null)
+			{
+				Log.TraceLog("Target is not using a version file.");
 				return false;
 			}
 
 			// Make sure we've got a file containing the last build id
 			BuildVersion CurrentVersion;
-			if(VersionFile == null || !BuildVersion.TryRead(VersionFile, out CurrentVersion))
+			if(!BuildVersion.TryRead(VersionFile, out CurrentVersion))
 			{
+				Log.TraceLog("Unable to read version file from {0}.", VersionFile);
 				return false;
 			}
+
+			// Get the project directory. We will ignore any manifests under this directory (ie. anything not under engine/enterprise folders).
+			DirectoryReference ProjectDir = DirectoryReference.FromFile(ProjectFile);
 
 			// Read any the existing module manifests under the engine directory
 			Dictionary<FileReference, ModuleManifest> ExistingFileToManifest = new Dictionary<FileReference, ModuleManifest>();
 			foreach(FileReference ExistingFile in FileReferenceToModuleManifestPairs.Select(x => x.Key))
 			{
-				ModuleManifest ExistingManifest;
-				if(ExistingFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory) && ModuleManifest.TryRead(ExistingFile, out ExistingManifest))
+				if(ProjectDir == null || !ExistingFile.IsUnderDirectory(ProjectDir))
 				{
-					ExistingFileToManifest.Add(ExistingFile, ExistingManifest);
+					ModuleManifest ExistingManifest;
+					if(ModuleManifest.TryRead(ExistingFile, out ExistingManifest))
+					{
+						ExistingFileToManifest.Add(ExistingFile, ExistingManifest);
+					}
 				}
 			}
 
@@ -1922,6 +1620,14 @@ namespace UnrealBuildTool
 					{
 						if(OutputFiles.Contains(ExistingFile))
 						{
+							if(bNoManifestChanges)
+							{
+								Log.TraceError("Previous build product would be overwritten: {0}.", ExistingFile);
+							}
+							else
+							{
+								Log.TraceLog("Unable to recycle manifests - modifying {0} invalidates {1}. Using build id {2}.", ExistingFile, ExistingPair.Key, Receipt.Version.BuildId);
+							}
 							return false;
 						}
 					}
@@ -1951,6 +1657,9 @@ namespace UnrealBuildTool
 					}
 				}
 			}
+
+			// Return success
+			Log.TraceLog("Recycled previous build ID ({0})", CurrentVersion.BuildId);
 			return true;
 		}
 
@@ -1966,7 +1675,7 @@ namespace UnrealBuildTool
 				foreach (FileReference VersionManifestFile in FileReferenceToModuleManifestPairs.Select(x => x.Key))
 				{
 					// Make sure the file (and directory) exists before trying to delete it
-					if(FileReference.Exists(VersionManifestFile))
+					if(FileReference.Exists(VersionManifestFile) && !IsFileInstalled(VersionManifestFile))
 					{
 						FileReference.Delete(VersionManifestFile);
 					}
@@ -2001,32 +1710,42 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Writes out the version manifest
 		/// </summary>
-		public void WriteReceipts()
+		public void WriteReceipts(bool bNoManifestChanges)
 		{
 			if (Receipt != null)
 			{
 				UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform);
 				if (OnlyModules == null || OnlyModules.Count == 0)
 				{
-					DirectoryReference.CreateDirectory(ReceiptFileName.Directory);
-					Receipt.Write(ReceiptFileName, UnrealBuildTool.EngineDirectory, ProjectDirectory);
+					if(!IsFileInstalled(ReceiptFileName))
+					{
+						DirectoryReference.CreateDirectory(ReceiptFileName.Directory);
+						Receipt.Write(ReceiptFileName, UnrealBuildTool.EngineDirectory, ProjectDirectory);
+					}
 				}
 				if (ForceReceiptFileName != null)
 				{
-					Directory.CreateDirectory(Path.GetDirectoryName(ForceReceiptFileName));
-					Receipt.Write(new FileReference(ForceReceiptFileName), UnrealBuildTool.EngineDirectory, ProjectDirectory);
+					FileReference ForceReceiptFile = new FileReference(ForceReceiptFileName);
+					if(!IsFileInstalled(ForceReceiptFile))
+					{
+						DirectoryReference.CreateDirectory(ForceReceiptFile.Directory);
+						Receipt.Write(ForceReceiptFile, UnrealBuildTool.EngineDirectory, ProjectDirectory);
+					}
 				}
 				if(VersionFile != null)
 				{
-					DirectoryReference.CreateDirectory(VersionFile.Directory);
-
-					StringWriter Writer = new StringWriter();
-					Receipt.Version.Write(Writer);
-
-					string Text = Writer.ToString();
-					if(!FileReference.Exists(VersionFile) || File.ReadAllText(VersionFile.FullName) != Text)
+					if(!IsFileInstalled(VersionFile))
 					{
-						File.WriteAllText(VersionFile.FullName, Text);
+						DirectoryReference.CreateDirectory(VersionFile.Directory);
+
+						StringWriter Writer = new StringWriter();
+						Receipt.Version.Write(Writer);
+
+						string Text = Writer.ToString();
+						if(!FileReference.Exists(VersionFile) || File.ReadAllText(VersionFile.FullName) != Text)
+						{
+							File.WriteAllText(VersionFile.FullName, Text);
+						}
 					}
 				}
 			}
@@ -2034,20 +1753,80 @@ namespace UnrealBuildTool
 			{
 				foreach (KeyValuePair<FileReference, ModuleManifest> FileNameToVersionManifest in FileReferenceToModuleManifestPairs)
 				{
-					// Write the manifest out to a string buffer, then only write it to disk if it's changed.
-					string OutputText;
-					using (StringWriter Writer = new StringWriter())
+					if(!IsFileInstalled(FileNameToVersionManifest.Key))
 					{
-						FileNameToVersionManifest.Value.Write(Writer);
-						OutputText = Writer.ToString();
-					}
-					if(!FileReference.Exists(FileNameToVersionManifest.Key) || File.ReadAllText(FileNameToVersionManifest.Key.FullName) != OutputText)
-					{
-						Directory.CreateDirectory(Path.GetDirectoryName(FileNameToVersionManifest.Key.FullName));
-						FileNameToVersionManifest.Value.Write(FileNameToVersionManifest.Key.FullName);
+						if(!FileReference.Exists(FileNameToVersionManifest.Key))
+						{
+							// If the file doesn't already exist, just write it out
+							Directory.CreateDirectory(Path.GetDirectoryName(FileNameToVersionManifest.Key.FullName));
+							FileNameToVersionManifest.Value.Write(FileNameToVersionManifest.Key.FullName);
+						}
+						else
+						{
+							// Otherwise write it to a buffer first
+							string OutputText;
+							using (StringWriter Writer = new StringWriter())
+							{
+								FileNameToVersionManifest.Value.Write(Writer);
+								OutputText = Writer.ToString();
+							}
+
+							// And only write it to disk if it's been modified
+							string CurrentText = FileReference.ReadAllText(FileNameToVersionManifest.Key);
+							if(CurrentText != OutputText)
+							{
+								if(bNoManifestChanges)
+								{
+									Log.TraceError("Build modifies {0}. This is not permitted. Before:\n    {1}\nAfter:\n    {2}", FileNameToVersionManifest.Key, CurrentText.Replace("\n", "\n    "), OutputText.Replace("\n", "\n    "));
+								}
+								else
+								{
+									FileReference.WriteAllText(FileNameToVersionManifest.Key, OutputText);
+								}
+							}
+						}
 					}
 				}
 			}
+		}
+
+		/// <summary>
+		/// Removes any receipt files in the case of a failed build
+		/// </summary>
+		public void DeleteReceipts()
+		{
+			if (Receipt != null)
+			{
+				if (OnlyModules == null || OnlyModules.Count == 0)
+				{
+					if(!IsFileInstalled(ReceiptFileName) && FileReference.Exists(ReceiptFileName))
+					{
+						FileReference.Delete(ReceiptFileName);
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// Checks whether the given file is under an installed directory, and should not be overridden
+		/// </summary>
+		/// <param name="File">File to test</param>
+		/// <returns>True if the file is part of the installed distribution, false otherwise</returns>
+		bool IsFileInstalled(FileReference File)
+		{
+			if(UnrealBuildTool.IsEngineInstalled() && File.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			{
+				return true;
+			}
+			if(UnrealBuildTool.IsEnterpriseInstalled() && File.IsUnderDirectory(UnrealBuildTool.EnterpriseDirectory))
+			{
+				return true;
+			}
+			if(UnrealBuildTool.IsProjectInstalled() && ProjectFile != null && File.IsUnderDirectory(ProjectFile.Directory))
+			{
+				return true;
+			}
+			return false;
 		}
 
 		/// <summary>
@@ -2077,34 +1856,40 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Builds the target, appending list of output files and returns building result.
 		/// </summary>
-		public ECompilationResult Build(BuildConfiguration BuildConfiguration, CPPHeaders Headers, List<FileItem> OutputItems, List<UHTModuleInfo> UObjectModules, ISourceFileWorkingSet WorkingSet, ActionGraph ActionGraph, EHotReload HotReload)
+		public ECompilationResult Build(BuildConfiguration BuildConfiguration, CPPHeaders Headers, List<FileItem> OutputItems, List<UHTModuleInfo> UObjectModules, ISourceFileWorkingSet WorkingSet, ActionGraph ActionGraph, EHotReload HotReload, bool bIsAssemblingBuild)
 		{
 			CppPlatform CppPlatform = UEBuildPlatform.GetBuildPlatform(Platform).DefaultCppPlatform;
 			CppConfiguration CppConfiguration = GetCppConfiguration(Configuration);
 
 			CppCompileEnvironment GlobalCompileEnvironment = new CppCompileEnvironment(CppPlatform, CppConfiguration, Architecture, Headers);
-			UEToolChain TargetToolChain = UEBuildPlatform.GetBuildPlatform(Platform).CreateToolChain(GlobalCompileEnvironment.Platform, Rules);
+			UEToolChain TargetToolChain = CreateToolchain(CppPlatform);
+			if(!ProjectFileGenerator.bGenerateProjectFiles)
+			{
+				TargetToolChain.PrintVersionInfo();
+			}
 			LinkEnvironment GlobalLinkEnvironment = new LinkEnvironment(GlobalCompileEnvironment.Platform, GlobalCompileEnvironment.Configuration, GlobalCompileEnvironment.Architecture);
+			SetupGlobalEnvironment(TargetToolChain, GlobalCompileEnvironment, GlobalLinkEnvironment);
 
-			PreBuildSetup(TargetToolChain, GlobalCompileEnvironment, GlobalLinkEnvironment);
+			// Create all the binaries and modules
+			PreBuildSetup(TargetToolChain);
 
 			// Save off the original list of binaries. We'll use this to figure out which PCHs to create later, to avoid switching PCHs when compiling single modules.
-			List<UEBuildBinary> OriginalBinaries = AppBinaries;
+			List<UEBuildBinary> OriginalBinaries = Binaries;
 
 			// If we're building a single module, then find the binary for that module and add it to our target
 			if (OnlyModules.Count > 0)
 			{
-				NonFilteredModules = AppBinaries;
-				AppBinaries = GetFilteredOnlyModules(AppBinaries, OnlyModules);
-				if (AppBinaries.Count == 0)
+				NonFilteredModules = Binaries;
+				Binaries = GetFilteredOnlyModules(Binaries, OnlyModules);
+				if (Binaries.Count == 0)
 				{
 					throw new BuildException("One or more of the modules specified using the '-module' argument could not be found.");
 				}
 			}
 			else if (HotReload == EHotReload.FromIDE)
 			{
-				AppBinaries = GetFilteredGameModules(AppBinaries);
-				if (AppBinaries.Count == 0)
+				Binaries = GetFilteredGameModules(Binaries);
+				if (Binaries.Count == 0)
 				{
 					throw new BuildException("One or more of the modules specified using the '-module' argument could not be found.");
 				}
@@ -2116,16 +1901,16 @@ namespace UnrealBuildTool
 				List<DirectoryReference> ModDirectories = EnabledPlugins.Where(x => x.Type == PluginType.Mod).Select(x => x.Directory).ToList();
 
 				List<UEBuildBinary> FilteredBinaries = new List<UEBuildBinary>();
-				foreach (UEBuildBinary DLLBinary in AppBinaries)
+				foreach (UEBuildBinary DLLBinary in Binaries)
 				{
-					if(ModDirectories.Any(x => DLLBinary.Config.OutputFilePath.IsUnderDirectory(x)))
+					if(ModDirectories.Any(x => DLLBinary.OutputFilePath.IsUnderDirectory(x)))
 					{
 						FilteredBinaries.Add(DLLBinary);
 					}
 				}
-				AppBinaries = FilteredBinaries;
+				Binaries = FilteredBinaries;
 
-				if (AppBinaries.Count == 0)
+				if (Binaries.Count == 0)
 				{
 					throw new BuildException("No modules found to build. All requested binaries were already part of the installed data.");
 				}
@@ -2136,7 +1921,7 @@ namespace UnrealBuildTool
 			{
 				FileItem SingleFileItem = FileItem.GetItemByPath(BuildConfiguration.SingleFileToCompile);
 
-				HashSet<UEBuildModuleCPP> Dependencies = GatherDependencyModules(AppBinaries);
+				HashSet<UEBuildModuleCPP> Dependencies = GatherDependencyModules(Binaries);
 
 				// We only want to build the binaries for this single file
 				List<UEBuildBinary> FilteredBinaries = new List<UEBuildBinary>();
@@ -2152,36 +1937,39 @@ namespace UnrealBuildTool
 						Dependency.SourceFilesToBuild.CPPFiles.Add(SingleFileItem);
 					}
 				}
-				AppBinaries = FilteredBinaries;
+				Binaries = FilteredBinaries;
 
 				// Check we have at least one match
-				if(AppBinaries.Count == 0)
+				if(Binaries.Count == 0)
 				{
-					throw new BuildException("Couldn't find any module containing {0} in {1}.", SingleFileItem.Reference, TargetName);
+					throw new BuildException("Couldn't find any module containing {0} in {1}.", SingleFileItem.Location, TargetName);
 				}
 			}
 
 			if(!ProjectFileGenerator.bGenerateProjectFiles)
 			{
-				// Check the distribution level of all binaries based on the dependencies they have
-				if(ProjectFile == null && !Rules.bOutputPubliclyDistributable)
+				if(!Rules.bDisableLinking)
 				{
-					Dictionary<UEBuildModule, Dictionary<RestrictedFolder, DirectoryReference>> ModuleRestrictedFolderCache = new Dictionary<UEBuildModule, Dictionary<RestrictedFolder, DirectoryReference>>();
-
-					bool bResult = true;
-					foreach (UEBuildBinary Binary in AppBinaries)
+					// Check the distribution level of all binaries based on the dependencies they have
+					if(ProjectFile == null && !Rules.bOutputPubliclyDistributable)
 					{
-						bResult &= Binary.CheckRestrictedFolders(DirectoryReference.FromFile(ProjectFile), ModuleRestrictedFolderCache);
+						Dictionary<UEBuildModule, Dictionary<RestrictedFolder, DirectoryReference>> ModuleRestrictedFolderCache = new Dictionary<UEBuildModule, Dictionary<RestrictedFolder, DirectoryReference>>();
+
+						bool bResult = true;
+						foreach (UEBuildBinary Binary in Binaries)
+						{
+							bResult &= Binary.CheckRestrictedFolders(DirectoryReference.FromFile(ProjectFile), ModuleRestrictedFolderCache);
+						}
+
+						if(!bResult)
+						{
+							throw new BuildException("Unable to create binaries in less restricted locations than their input files.");
+						}
 					}
 
-					if(!bResult)
-					{
-						throw new BuildException("Unable to create binaries in less restricted locations than their input files.");
-					}
+					// Check for linking against modules prohibited by the EULA
+					CheckForEULAViolation();
 				}
-
-				// Check for linking against modules prohibited by the EULA
-				CheckForEULAViolation();
 
 				// Build a mapping from module to its plugin
 				Dictionary<UEBuildModule, UEBuildPlugin> ModuleToPlugin = new Dictionary<UEBuildModule, UEBuildPlugin>();
@@ -2189,10 +1977,10 @@ namespace UnrealBuildTool
 				{
 					foreach(UEBuildModule Module in Plugin.Modules)
 					{
-                        if (!ModuleToPlugin.ContainsKey(Module))
-                        {
-                            ModuleToPlugin.Add(Module, Plugin);
-                        }
+						if (!ModuleToPlugin.ContainsKey(Module))
+						{
+							ModuleToPlugin.Add(Module, Plugin);
+						}
 					}
 				}
 
@@ -2267,13 +2055,13 @@ namespace UnrealBuildTool
 			// If we're compiling monolithic, make sure the executable knows about all referenced modules
 			if (ShouldCompileMonolithic())
 			{
-				UEBuildBinary ExecutableBinary = AppBinaries[0];
+				UEBuildBinary ExecutableBinary = Binaries[0];
 
 				// Add all the modules that the executable depends on. Plugins will be already included in this list.
 				List<UEBuildModule> AllReferencedModules = ExecutableBinary.GetAllDependencyModules(bIncludeDynamicallyLoaded: true, bForceCircular: true);
 				foreach (UEBuildModule CurModule in AllReferencedModules)
 				{
-					if (CurModule.Binary == null || CurModule.Binary == ExecutableBinary || CurModule.Binary.Config.Type == UEBuildBinaryType.StaticLibrary)
+					if (CurModule.Binary == null || CurModule.Binary == ExecutableBinary || CurModule.Binary.Type == UEBuildBinaryType.StaticLibrary)
 					{
 						ExecutableBinary.AddModule(CurModule);
 					}
@@ -2283,12 +2071,12 @@ namespace UnrealBuildTool
 			// Add global definitions for project-specific binaries. HACK: Also defining for monolithic builds in binary releases. Might be better to set this via command line instead?
 			if(!bUseSharedBuildEnvironment || bCompileMonolithic)
 			{
-				UEBuildBinary ExecutableBinary = AppBinaries[0];
+				UEBuildBinary ExecutableBinary = Binaries[0];
 
 				bool IsCurrentPlatform;
 				if (Utils.IsRunningOnMono)
 				{
-					IsCurrentPlatform = Platform == UnrealTargetPlatform.Mac;
+					IsCurrentPlatform = Platform == UnrealTargetPlatform.Mac || (UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Unix) && Platform == BuildHostPlatform.Current.Platform);
 				}
 				else
 				{
@@ -2299,28 +2087,22 @@ namespace UnrealBuildTool
 					&& IsCurrentPlatform)
 				{
 					// The hardcoded engine directory needs to be a relative path to match the normal EngineDir format. Not doing so breaks the network file system (TTP#315861).
-					string OutputFilePath = ExecutableBinary.Config.OutputFilePath.FullName;
+					string OutputFilePath = ExecutableBinary.OutputFilePath.FullName;
 					if (Platform == UnrealTargetPlatform.Mac && OutputFilePath.Contains(".app/Contents/MacOS"))
 					{
 						OutputFilePath = OutputFilePath.Substring(0, OutputFilePath.LastIndexOf(".app/Contents/MacOS") + 4);
 					}
-					string EnginePath = Utils.CleanDirectorySeparators(UnrealBuildTool.EngineDirectory.MakeRelativeTo(ExecutableBinary.Config.OutputFilePath.Directory), '/');
+					string EnginePath = Utils.CleanDirectorySeparators(UnrealBuildTool.EngineDirectory.MakeRelativeTo(ExecutableBinary.OutputFilePath.Directory), '/');
 					if (EnginePath.EndsWith("/") == false)
 					{
 						EnginePath += "/";
 					}
-					GlobalCompileEnvironment.Definitions.Add("UE_ENGINE_DIRECTORY=" + EnginePath);
+					GlobalCompileEnvironment.Definitions.Add(String.Format("UE_ENGINE_DIRECTORY=\"{0}\"", EnginePath));
 				}
 			}
 
 			// On Mac and Linux we have actions that should be executed after all the binaries are created
-			TargetToolChain.SetupBundleDependencies(AppBinaries, TargetName);
-
-			// Create a receipt for the target
-			if (!ProjectFileGenerator.bGenerateProjectFiles)
-			{
-				PrepareReceipts(TargetToolChain, GlobalLinkEnvironment.bCreateDebugInfo, HotReload);
-			}
+			TargetToolChain.SetupBundleDependencies(Binaries, TargetName);
 
 			// Write out the deployment context, if necessary
 			if(Rules.bDeployAfterCompile && !Rules.bDisableLinking)
@@ -2330,19 +2112,9 @@ namespace UnrealBuildTool
 				DeployTarget.Write(DeployTargetFile);
 			}
 
-			// If we're only generating the manifest, return now
-			if (BuildConfiguration.bGenerateManifest)
+			if (!ProjectFileGenerator.bGenerateProjectFiles)
 			{
-				GenerateManifest();
-				if (!BuildConfiguration.bXGEExport)
-				{
-					return ECompilationResult.Succeeded;
-				}
-			}
-
-			if ((BuildConfiguration.bXGEExport && BuildConfiguration.bGenerateManifest) || (!BuildConfiguration.bGenerateManifest && !ProjectFileGenerator.bGenerateProjectFiles))
-			{
-				HashSet<UEBuildModuleCPP> ModulesToGenerateHeadersFor = GatherDependencyModules(OriginalBinaries);
+				HashSet<UEBuildModuleCPP> ModulesToGenerateHeadersFor = GatherDependencyModules(OriginalBinaries.ToList());
 
 				if (OnlyModules.Count > 0)
 				{
@@ -2352,7 +2124,13 @@ namespace UnrealBuildTool
 					ModulesToGenerateHeadersFor = CorrectlyOrderedModules;
 				}
 
-				ExternalExecution.SetupUObjectModules(ModulesToGenerateHeadersFor, Rules, GlobalCompileEnvironment, UObjectModules, FlatModuleCsData, Rules.GeneratedCodeVersion);
+				Dictionary<string, FlatModuleCsDataType> NameToFlatModuleData = new Dictionary<string, FlatModuleCsDataType>(StringComparer.InvariantCultureIgnoreCase);
+				foreach(FlatModuleCsDataType FlatModuleData in FlatModuleCsData)
+				{
+					NameToFlatModuleData[FlatModuleData.ModuleName] = FlatModuleData;
+				}
+
+				ExternalExecution.SetupUObjectModules(ModulesToGenerateHeadersFor, Rules.Platform, ProjectDescriptor, UObjectModules, NameToFlatModuleData, Rules.GeneratedCodeVersion, bIsAssemblingBuild);
 
 				// NOTE: Even in Gather mode, we need to run UHT to make sure the files exist for the static action graph to be setup correctly.  This is because UHT generates .cpp
 				// files that are injected as top level prerequisites.  If UHT only emitted included header files, we wouldn't need to run it during the Gather phase at all.
@@ -2361,20 +2139,12 @@ namespace UnrealBuildTool
 					// Execute the header tool
 					FileReference ModuleInfoFileName = FileReference.Combine(ProjectIntermediateDirectory, GetTargetName() + ".uhtmanifest");
 					ECompilationResult UHTResult = ECompilationResult.OtherCompilationError;
-					if (!ExternalExecution.ExecuteHeaderToolIfNecessary(BuildConfiguration, this, GlobalCompileEnvironment, UObjectModules, ModuleInfoFileName, ref UHTResult, HotReload))
+					if (!ExternalExecution.ExecuteHeaderToolIfNecessary(BuildConfiguration, this, GlobalCompileEnvironment, UObjectModules, ModuleInfoFileName, ref UHTResult, HotReload, true, bIsAssemblingBuild))
 					{
 						Log.TraceInformation(String.Format("Error: UnrealHeaderTool failed for target '{0}' (platform: {1}, module info: {2}, exit code: {3} ({4})).", GetTargetName(), Platform.ToString(), ModuleInfoFileName, UHTResult.ToString(), (int)UHTResult));
 						return UHTResult;
 					}
 				}
-			}
-
-			if (ShouldCompileMonolithic() && !ProjectFileGenerator.bGenerateProjectFiles && Rules != null && TargetType != TargetType.Program)
-			{
-				// All non-program monolithic binaries implicitly depend on all static plugin libraries so they are always linked appropriately
-				// In order to do this, we create a new module here with a cpp file we emit that invokes an empty function in each library.
-				// If we do not do this, there will be no static initialization for libs if no symbols are referenced in them.
-				CreateLinkerFixupsCPPFile(GlobalCompileEnvironment);
 			}
 
 			GlobalLinkEnvironment.bShouldCompileMonolithic = ShouldCompileMonolithic();
@@ -2391,36 +2161,77 @@ namespace UnrealBuildTool
 			{
 				if (Platform == UnrealTargetPlatform.Win32 || Platform == UnrealTargetPlatform.Win64)
 				{
-					FileItem VersionFile = FileItem.GetExistingItemByFileReference(FileReference.Combine(UnrealBuildTool.EngineSourceDirectory, "Runtime", "Core", "Resources", "Windows", "ModuleVersionResource.rc.inl"));
-					VersionFile.CachedIncludePaths = GlobalCompileEnvironment.IncludePaths;
-					CPPOutput VersionOutput = TargetToolChain.CompileRCFiles(GlobalCompileEnvironment, new List<FileItem> { VersionFile }, ActionGraph);
-					GlobalLinkEnvironment.CommonResourceFiles.AddRange(VersionOutput.ObjectFiles);
-
 					if(!Rules.bFormalBuild)
 					{
 						CppCompileEnvironment DefaultResourceCompileEnvironment = new CppCompileEnvironment(GlobalCompileEnvironment);
-						DefaultResourceCompileEnvironment.Definitions.Add("ORIGINAL_FILE_NAME=\"UE4\"");
 
 						FileItem DefaultResourceFile = FileItem.GetExistingItemByFileReference(FileReference.Combine(UnrealBuildTool.EngineSourceDirectory, "Runtime", "Launch", "Resources", "Windows", "PCLaunch.rc"));
 						DefaultResourceFile.CachedIncludePaths = DefaultResourceCompileEnvironment.IncludePaths;
-						CPPOutput DefaultResourceOutput = TargetToolChain.CompileRCFiles(DefaultResourceCompileEnvironment, new List<FileItem> { DefaultResourceFile }, ActionGraph);
 
+						WindowsPlatform.SetupResourceCompileEnvironment(DefaultResourceCompileEnvironment, EngineIntermediateDirectory, Rules);
+
+						CPPOutput DefaultResourceOutput = TargetToolChain.CompileRCFiles(DefaultResourceCompileEnvironment, new List<FileItem> { DefaultResourceFile }, EngineIntermediateDirectory, ActionGraph);
 						GlobalLinkEnvironment.DefaultResourceFiles.AddRange(DefaultResourceOutput.ObjectFiles);
 					}
 				}
 			}
 
-			// Build the target's binaries.
-			foreach (UEBuildBinary Binary in AppBinaries)
+			// For the project file generator, just generate all the include paths
+			if(ProjectFileGenerator.bGenerateProjectFiles)
 			{
-				if(Binary.Config.bAllowCompilation)
+				foreach(UEBuildBinary Binary in Binaries)
 				{
-					OutputItems.AddRange(Binary.Build(Rules, TargetToolChain, GlobalCompileEnvironment, GlobalLinkEnvironment, SharedPCHs, WorkingSet, ActionGraph));
+					Binary.GatherDataForProjectFiles(Rules, GlobalCompileEnvironment);
 				}
+				return ECompilationResult.Succeeded;
+			}
+
+			// Build the target's binaries.
+			DirectoryReference ExeDir = OutputPaths[0].Directory;
+			foreach (UEBuildBinary Binary in Binaries)
+			{
+				OutputItems.AddRange(Binary.Build(Rules, TargetToolChain, GlobalCompileEnvironment, GlobalLinkEnvironment, SharedPCHs, WorkingSet, ExeDir, ActionGraph));
+			}
+
+			// Prepare all the runtime dependencies, copying them from their source folders if necessary
+			List<RuntimeDependency> RuntimeDependencies = new List<RuntimeDependency>();
+			Dictionary<FileReference, FileReference> RuntimeDependencyTargetFileToSourceFile = new Dictionary<FileReference, FileReference>();
+			foreach(UEBuildBinary Binary in Binaries)
+			{
+				Binary.PrepareRuntimeDependencies(RuntimeDependencies, RuntimeDependencyTargetFileToSourceFile, ExeDir);
+			}
+			foreach(KeyValuePair<FileReference, FileReference> Pair in RuntimeDependencyTargetFileToSourceFile)
+			{
+				if(!IsFileInstalled(Pair.Key))
+				{
+					OutputItems.Add(CreateCopyAction(Pair.Value, Pair.Key, ActionGraph));
+				}
+			}
+
+			// If we're just precompiling a plugin, only include output items which are under that directory
+			if(ForeignPlugin != null)
+			{
+				OutputItems.RemoveAll(x => !x.Location.IsUnderDirectory(ForeignPlugin.Directory));
 			}
 
 			// Allow the toolchain to modify the final output items
 			TargetToolChain.FinalizeOutput(Rules, OutputItems, ActionGraph);
+
+			// Get all the regular build products
+			List<KeyValuePair<FileReference, BuildProductType>> BuildProducts = new List<KeyValuePair<FileReference, BuildProductType>>();
+			foreach (UEBuildBinary Binary in Binaries)
+			{
+				Dictionary<FileReference, BuildProductType> BinaryBuildProducts = new Dictionary<FileReference, BuildProductType>();
+				Binary.GetBuildProducts(Rules, TargetToolChain, BinaryBuildProducts, GlobalLinkEnvironment.bCreateDebugInfo);
+				BuildProducts.AddRange(BinaryBuildProducts);
+			}
+			BuildProducts.AddRange(RuntimeDependencyTargetFileToSourceFile.Select(x => new KeyValuePair<FileReference, BuildProductType>(x.Key, BuildProductType.RequiredResource)));
+
+			// Create a receipt for the target
+			if (!ProjectFileGenerator.bGenerateProjectFiles)
+			{
+				PrepareReceipts(TargetToolChain, BuildProducts, RuntimeDependencies, HotReload);
+			}
 
 			// Make sure all the checked headers were valid
 			List<string> InvalidIncludeDirectiveMessages = Modules.Values.OfType<UEBuildModuleCPP>().Where(x => x.InvalidIncludeDirectiveMessages != null).SelectMany(x => x.InvalidIncludeDirectiveMessages).ToList();
@@ -2434,9 +2245,80 @@ namespace UnrealBuildTool
 				return ECompilationResult.Canceled;
 			}
 
+			// Build a list of all the files required to build
+			foreach(FileReference DependencyListFileName in Rules.DependencyListFileNames)
+			{
+				WriteDependencyList(DependencyListFileName, RuntimeDependencies, RuntimeDependencyTargetFileToSourceFile);
+			}
+
+			// If we're only generating the manifest, return now
+			if (BuildConfiguration.bGenerateManifest)
+			{
+				GenerateManifest(BuildProducts);
+			}
+			foreach(FileReference ManifestFileName in Rules.ManifestFileNames)
+			{
+				GenerateManifest(ManifestFileName, BuildProducts);
+			}
+
 			// Clean any stale modules which exist in multiple output directories. This can lead to the wrong DLL being loaded on Windows.
 			CleanStaleModules();
 			return ECompilationResult.Succeeded;
+		}
+
+		/// <summary>
+		/// Creates an action which copies a file from one location to another
+		/// </summary>
+		/// <param name="SourceFile">The source file location</param>
+		/// <param name="TargetFile">The target file location</param>
+		/// <param name="ActionGraph">The action graph</param>
+		/// <returns>File item for the output file</returns>
+		static FileItem CreateCopyAction(FileReference SourceFile, FileReference TargetFile, ActionGraph ActionGraph)
+		{
+			FileItem SourceFileItem = FileItem.GetItemByFileReference(SourceFile);
+			FileItem TargetFileItem = FileItem.GetItemByFileReference(TargetFile);
+
+			Action CopyAction = ActionGraph.Add(ActionType.BuildProject);
+			CopyAction.CommandDescription = "Copy";
+			if(BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
+			{
+				CopyAction.CommandPath = "cmd.exe";
+				CopyAction.CommandArguments = String.Format("/C \"copy /Y \"{0}\" \"{1}\" 1>nul\"", SourceFile, TargetFile);
+			}
+			else
+			{
+				CopyAction.CommandPath = "/bin/sh";
+				CopyAction.CommandArguments = String.Format("cp -f {0} {1}", Utils.EscapeShellArgument(SourceFile.FullName), Utils.EscapeShellArgument(TargetFile.FullName));
+			}
+			CopyAction.WorkingDirectory = Environment.CurrentDirectory;
+			CopyAction.PrerequisiteItems.Add(SourceFileItem);
+			CopyAction.ProducedItems.Add(TargetFileItem);
+			CopyAction.DeleteItems.Add(TargetFileItem);
+			CopyAction.StatusDescription = TargetFileItem.Location.GetFileName();
+			CopyAction.bCanExecuteRemotely = false;
+
+			return TargetFileItem;
+		}
+
+		/// <summary>
+		/// Creates a toolchain for the current target. May be overridden by the target rules.
+		/// </summary>
+		/// <returns>New toolchain instance</returns>
+		private UEToolChain CreateToolchain(CppPlatform CppPlatform)
+		{
+			if (Rules.ToolChainName == null)
+			{
+				return UEBuildPlatform.GetBuildPlatform(Platform).CreateToolChain(CppPlatform, Rules);
+			}
+			else
+			{
+				Type ToolchainType = Assembly.GetExecutingAssembly().GetType(String.Format("UnrealBuildTool.{0}", Rules.ToolChainName), false, true);
+				if (ToolchainType == null)
+				{
+					throw new BuildException("Unable to create toolchain '{0}'. Check that the name is correct.", Rules.ToolChainName);
+				}
+				return (UEToolChain)Activator.CreateInstance(ToolchainType, Rules);
+			}
 		}
 
 		/// <summary>
@@ -2449,9 +2331,9 @@ namespace UnrealBuildTool
 		{
 			// Find all the output files
 			HashSet<FileReference> OutputFiles = new HashSet<FileReference>();
-			foreach(UEBuildBinary Binary in AppBinaries)
+			foreach(UEBuildBinary Binary in Binaries)
 			{
-				OutputFiles.UnionWith(Binary.Config.OutputFilePaths);
+				OutputFiles.UnionWith(Binary.OutputFilePaths);
 			}
 
 			// Build a map of base filenames to their full path
@@ -2464,25 +2346,25 @@ namespace UnrealBuildTool
 			// Search all the output directories for files with a name matching one of our output files
 			foreach(DirectoryReference OutputDirectory in OutputFiles.Select(x => x.Directory).Distinct())
 			{
-                if (DirectoryReference.Exists(OutputDirectory))
-                {
-                    foreach (FileReference ExistingFile in DirectoryReference.EnumerateFiles(OutputDirectory))
-                    {
-                        FileReference OutputFile;
-                        if (OutputNameToLocation.TryGetValue(ExistingFile.GetFileName(), out OutputFile) && !OutputFiles.Contains(ExistingFile))
-                        {
-                            Log.TraceInformation("Deleting '{0}' to avoid ambiguity with '{1}'", ExistingFile, OutputFile);
+				if (DirectoryReference.Exists(OutputDirectory))
+				{
+					foreach (FileReference ExistingFile in DirectoryReference.EnumerateFiles(OutputDirectory))
+					{
+						FileReference OutputFile;
+						if (OutputNameToLocation.TryGetValue(ExistingFile.GetFileName(), out OutputFile) && !OutputFiles.Contains(ExistingFile))
+						{
+							Log.TraceInformation("Deleting '{0}' to avoid ambiguity with '{1}'", ExistingFile, OutputFile);
 							try
 							{
 								FileReference.Delete(ExistingFile);
 							}
 							catch (Exception Ex)
 							{
-								Log.TraceError("Unable to delete {0} ({1})", ExistingFile, Ex.Message);
+								Log.TraceError("Unable to delete {0} ({1})", ExistingFile, Ex.Message.TrimEnd());
 							}
-                        }
-                    }
-                }
+						}
+					}
+				}
 			}
 		}
 
@@ -2524,7 +2406,7 @@ namespace UnrealBuildTool
 				}
 
 				Writer.WriteArrayStart("Binaries");
-				foreach (UEBuildBinary Binary in AppBinaries)
+				foreach (UEBuildBinary Binary in Binaries)
 				{
 					Writer.WriteObjectStart();
 					Binary.ExportJson(Writer);
@@ -2554,7 +2436,7 @@ namespace UnrealBuildTool
 				Rules.bCheckLicenseViolations)
 			{
 				bool bLicenseViolation = false;
-				foreach (UEBuildBinary Binary in AppBinaries)
+				foreach (UEBuildBinary Binary in Binaries)
 				{
 					List<UEBuildModule> AllDependencies = Binary.GetAllDependencyModules(true, false);
 					IEnumerable<UEBuildModule> NonRedistModules = AllDependencies.Where((DependencyModule) =>
@@ -2610,13 +2492,10 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Setup target before build. This method finds dependencies, sets up global environment etc.
 		/// </summary>
-		public void PreBuildSetup(UEToolChain TargetToolChain, CppCompileEnvironment GlobalCompileEnvironment, LinkEnvironment GlobalLinkEnvironment)
+		public void PreBuildSetup(UEToolChain TargetToolChain)
 		{
-			// Set up the global compile and link environment in GlobalCompileEnvironment and GlobalLinkEnvironment.
-			SetupGlobalEnvironment(TargetToolChain, GlobalCompileEnvironment, GlobalLinkEnvironment);
-
-			// Setup the target's modules.
-			SetupModules();
+			// Describe what's being built.
+			Log.TraceVerbose("Building {0} - {1} - {2} - {3}", AppName, TargetName, Platform, Configuration);
 
 			// Setup the target's binaries.
 			SetupBinaries();
@@ -2627,45 +2506,14 @@ namespace UnrealBuildTool
 			// Setup the custom build steps for this target
 			SetupCustomBuildSteps();
 
-			// Create all the modules for each binary
-			foreach (UEBuildBinary Binary in AppBinaries)
-			{
-				foreach (string ModuleName in Binary.Config.ModuleNames)
-				{
-					UEBuildModule Module = FindOrCreateModuleByName(ModuleName, TargetRulesFile.GetFileName());
-					Module.Binary = Binary;
-					Binary.AddModule(Module);
-				}
-			}
-
 			// Add the plugin binaries to the build
-			UEBuildBinaryType BinaryType = ShouldCompileMonolithic() ? UEBuildBinaryType.StaticLibrary : UEBuildBinaryType.DynamicLinkLibrary;
 			foreach (UEBuildPlugin Plugin in BuildPlugins)
 			{
-				foreach(UEBuildModule Module in Plugin.Modules)
+				foreach(UEBuildModuleCPP Module in Plugin.Modules)
 				{
-					// Add the corresponding binary for it
-					bool bAllowCompilation = RulesAssembly.DoesModuleHaveSource(Module.Name);
-					bool bPrecompileOnly = !EnabledPlugins.Contains(Plugin);
-					Module.Binary = CreateBinaryForModule(Module, BinaryType, bAllowCompilation: bAllowCompilation, bIsCrossTarget: false, bPrecompileOnly: bPrecompileOnly);
-
-					// Add it to the binary if we're compiling monolithic (and it's enabled)
-					if (ShouldCompileMonolithic() && EnabledPlugins.Contains(Plugin))
-					{
-						AppBinaries[0].AddModule(Module);
-					}
+					AddModuleToBinary(Module);
 				}
 			}
-
-			// Describe what's being built.
-			Log.TraceVerbose("Building {0} - {1} - {2} - {3}", AppName, TargetName, Platform, Configuration);
-
-			// Put the non-executable output files (PDB, import library, etc) in the intermediate directory.
-			GlobalLinkEnvironment.IntermediateDirectory = GlobalCompileEnvironment.OutputDirectory;
-			GlobalLinkEnvironment.OutputDirectory = GlobalLinkEnvironment.IntermediateDirectory;
-
-			// By default, shadow source files for this target in the root OutputDirectory
-			GlobalLinkEnvironment.LocalShadowDirectory = GlobalLinkEnvironment.OutputDirectory;
 
 			// Add all of the extra modules, including game modules, that need to be compiled along
 			// with this app.  These modules are always statically linked in monolithic targets, but not necessarily linked to anything in modular targets,
@@ -2673,26 +2521,29 @@ namespace UnrealBuildTool
 			AddExtraModules();
 
 			// Create all the modules referenced by the existing binaries
-			foreach(UEBuildBinary Binary in AppBinaries)
+			foreach(UEBuildBinary Binary in Binaries)
 			{
 				Binary.CreateAllDependentModules(FindOrCreateModuleByName);
 			}
 
 			// Bind every referenced C++ module to a binary
-			for (int Idx = 0; Idx < AppBinaries.Count; Idx++)
+			for (int Idx = 0; Idx < Binaries.Count; Idx++)
 			{
-				List<UEBuildModule> DependencyModules = AppBinaries[Idx].GetAllDependencyModules(true, true);
+				List<UEBuildModule> DependencyModules = Binaries[Idx].GetAllDependencyModules(true, true);
 				foreach (UEBuildModuleCPP DependencyModule in DependencyModules.OfType<UEBuildModuleCPP>())
 				{
 					if(DependencyModule.Binary == null)
 					{
-						AddModuleToBinary(DependencyModule, false);
+						AddModuleToBinary(DependencyModule);
 					}
 				}
 			}
 
-			// Add all the precompiled modules to the target. In contrast to "Extra Modules", these modules are not compiled into monolithic targets by default.
-			AddPrecompiledModules();
+			// Add all the modules to the target if necessary.
+			if(Rules.bBuildAllModules)
+			{
+				AddAllValidModulesToTarget();
+			}
 
 			// Add the external and non-C++ referenced modules to the binaries that reference them.
 			foreach (UEBuildModuleCPP Module in Modules.Values.OfType<UEBuildModuleCPP>())
@@ -2708,10 +2559,10 @@ namespace UnrealBuildTool
 
 			if (!bCompileMonolithic)
 			{
-				if (GlobalLinkEnvironment.Platform == CppPlatform.Win64 || GlobalLinkEnvironment.Platform == CppPlatform.Win32)
+				if (Platform == UnrealTargetPlatform.Win64 || Platform == UnrealTargetPlatform.Win32)
 				{
 					// On Windows create import libraries for all binaries ahead of time, since linking binaries often causes bottlenecks
-					foreach (UEBuildBinary Binary in AppBinaries)
+					foreach (UEBuildBinary Binary in Binaries)
 					{
 						Binary.SetCreateImportLibrarySeparately(true);
 					}
@@ -2734,9 +2585,9 @@ namespace UnrealBuildTool
 			}
 
 			// On Mac AppBinaries paths for non-console targets need to be adjusted to be inside the app bundle
-			if (GlobalLinkEnvironment.Platform == CppPlatform.Mac && !GlobalLinkEnvironment.bIsBuildingConsoleApplication)
+			if (Platform == UnrealTargetPlatform.Mac && !Rules.bIsBuildingConsoleApplication)
 			{
-				TargetToolChain.FixBundleBinariesPaths(this, AppBinaries);
+				TargetToolChain.FixBundleBinariesPaths(this, Binaries);
 			}
 		}
 
@@ -2747,10 +2598,6 @@ namespace UnrealBuildTool
 		{
 			// Make sure the intermediate directory exists
 			DirectoryReference ScriptDirectory = ProjectIntermediateDirectory;
-			if(!DirectoryReference.Exists(ScriptDirectory))
-			{
-				DirectoryReference.CreateDirectory(ScriptDirectory);
-			}
 
 			// Find all the pre-build steps
 			List<Tuple<string[], UEBuildPlugin>> PreBuildCommandBatches = new List<Tuple<string[], UEBuildPlugin>>();
@@ -2770,17 +2617,20 @@ namespace UnrealBuildTool
 
 			// Find all the post-build steps
 			List<Tuple<string[], UEBuildPlugin>> PostBuildCommandBatches = new List<Tuple<string[], UEBuildPlugin>>();
-			if(ProjectDescriptor != null && ProjectDescriptor.PostBuildSteps != null)
+			if(!Rules.bDisableLinking)
 			{
-				AddCustomBuildSteps(ProjectDescriptor.PostBuildSteps, null, PostBuildCommandBatches);
-			}
-			if(Rules.PostBuildSteps.Count > 0)
-			{
-				PostBuildCommandBatches.Add(new Tuple<string[], UEBuildPlugin>(Rules.PostBuildSteps.ToArray(), null));
-			}
-			foreach(UEBuildPlugin BuildPlugin in BuildPlugins.Where(x => x.Descriptor.PostBuildSteps != null))
-			{
-				AddCustomBuildSteps(BuildPlugin.Descriptor.PostBuildSteps, BuildPlugin, PostBuildCommandBatches);
+				if(ProjectDescriptor != null && ProjectDescriptor.PostBuildSteps != null)
+				{
+					AddCustomBuildSteps(ProjectDescriptor.PostBuildSteps, null, PostBuildCommandBatches);
+				}
+				if(Rules.PostBuildSteps.Count > 0)
+				{
+					PostBuildCommandBatches.Add(new Tuple<string[], UEBuildPlugin>(Rules.PostBuildSteps.ToArray(), null));
+				}
+				foreach(UEBuildPlugin BuildPlugin in BuildPlugins.Where(x => x.Descriptor.PostBuildSteps != null))
+				{
+					AddCustomBuildSteps(BuildPlugin.Descriptor.PostBuildSteps, BuildPlugin, PostBuildCommandBatches);
+				}
 			}
 			PostBuildStepScripts = WriteCustomBuildStepScripts(BuildHostPlatform.Current.Platform, ScriptDirectory, "PostBuild", PostBuildCommandBatches);
 		}
@@ -2815,7 +2665,9 @@ namespace UnrealBuildTool
 			{
 				// Find all the standard variables
 				Dictionary<string, string> Variables = new Dictionary<string,string>();
+				Variables.Add("RootDir", UnrealBuildTool.RootDirectory.FullName);
 				Variables.Add("EngineDir", UnrealBuildTool.EngineDirectory.FullName);
+				Variables.Add("EnterpriseDir", UnrealBuildTool.EnterpriseDirectory.FullName);
 				Variables.Add("ProjectDir", ProjectDirectory.FullName);
 				Variables.Add("TargetName", TargetName);
 				Variables.Add("TargetPlatform", Platform.ToString());
@@ -2843,6 +2695,10 @@ namespace UnrealBuildTool
 				foreach(string Command in CommandBatch.Item1)
 				{
 					Contents.Add(Utils.ExpandVariables(Command, Variables));
+				}
+				if(!DirectoryReference.Exists(ScriptFile.Directory))
+				{
+					DirectoryReference.CreateDirectory(ScriptFile.Directory);
 				}
 				File.WriteAllLines(ScriptFile.FullName, Contents);
 
@@ -2886,7 +2742,7 @@ namespace UnrealBuildTool
 			foreach (UEBuildBinary Binary in Binaries)
 			{
 				// If we're doing an OnlyModule compile, we never want the executable that static libraries are linked into for monolithic builds
-				if(Binary.Config.Type != UEBuildBinaryType.Executable)
+				if(Binary.Type != UEBuildBinaryType.Executable)
 				{
 					OnlyModule FoundOnlyModule = Binary.FindOnlyModule(OnlyModules);
 					if (FoundOnlyModule != null)
@@ -2895,8 +2751,8 @@ namespace UnrealBuildTool
 
 						if (!String.IsNullOrEmpty(FoundOnlyModule.OnlyModuleSuffix))
 						{
-							Binary.Config.OriginalOutputFilePaths = Binary.Config.OutputFilePaths;
-							Binary.Config.OutputFilePaths = Binary.Config.OutputFilePaths.Select(Path => AddModuleFilenameSuffix(FoundOnlyModule.OnlyModuleName, Path, FoundOnlyModule.OnlyModuleSuffix)).ToList();
+							Binary.OriginalOutputFilePaths = Binary.OutputFilePaths;
+							Binary.OutputFilePaths = Binary.OutputFilePaths.Select(Path => AddModuleFilenameSuffix(FoundOnlyModule.OnlyModuleName, Path, FoundOnlyModule.OnlyModuleSuffix)).ToList();
 						}
 					}
 				}
@@ -2914,294 +2770,19 @@ namespace UnrealBuildTool
 				List<UEBuildModule> GameModules = DLLBinary.FindGameModules();
 				if (GameModules != null && GameModules.Count > 0)
 				{
-					if(!UnrealBuildTool.IsProjectInstalled() || EnabledPlugins.Where(x => x.Type == PluginType.Mod).Any(x => DLLBinary.Config.OutputFilePaths[0].IsUnderDirectory(x.Directory)))
+					if(!UnrealBuildTool.IsProjectInstalled() || EnabledPlugins.Where(x => x.Type == PluginType.Mod).Any(x => DLLBinary.OutputFilePaths[0].IsUnderDirectory(x.Directory)))
 					{
 						Result.Add(DLLBinary);
 
 						string UniqueSuffix = (new Random((int)(DateTime.Now.Ticks % Int32.MaxValue)).Next(10000)).ToString();
 
-						DLLBinary.Config.OriginalOutputFilePaths = DLLBinary.Config.OutputFilePaths;
-						DLLBinary.Config.OutputFilePaths = DLLBinary.Config.OutputFilePaths.Select(Path => AddModuleFilenameSuffix(GameModules[0].Name, Path, UniqueSuffix)).ToList();
+						DLLBinary.OriginalOutputFilePaths = DLLBinary.OutputFilePaths;
+						DLLBinary.OutputFilePaths = DLLBinary.OutputFilePaths.Select(Path => AddModuleFilenameSuffix(GameModules[0].Name, Path, UniqueSuffix)).ToList();
 					}
 				}
 			}
 
 			return Result;
-		}
-
-		/// <summary>
-		/// All non-program monolithic binaries implicitly depend on all static plugin libraries so they are always linked appropriately
-		/// In order to do this, we create a new module here with a cpp file we emit that invokes an empty function in each library.
-		/// If we do not do this, there will be no static initialization for libs if no symbols are referenced in them.
-		/// </summary>
-		private void CreateLinkerFixupsCPPFile(CppCompileEnvironment GlobalCompileEnvironment)
-		{
-			UEBuildBinary ExecutableBinary = AppBinaries[0];
-
-			List<string> PrivateDependencyModuleNames = new List<string>();
-
-			foreach (UEBuildModule TargetModule in ExecutableBinary.Modules)
-			{
-				ModuleRules CheckRules = TargetModule.Rules;
-				if (CheckRules.Type != ModuleRules.ModuleType.External)
-				{
-					PrivateDependencyModuleNames.Add(TargetModule.Name);
-				}
-			}
-
-			// We ALWAYS have to write this file as the IMPLEMENT_PRIMARY_GAME_MODULE function depends on the UELinkerFixups function existing.
-			{
-				string LinkerFixupsName = "UELinkerFixups";
-
-				// Include an empty header so UEBuildModule.Compile does not complain about a lack of PCH
-				string HeaderFilename = LinkerFixupsName + "Name.h";
-				FileReference LinkerFixupHeaderFilenameWithPath = FileReference.Combine(GlobalCompileEnvironment.OutputDirectory, HeaderFilename);
-
-				// Create the cpp filename
-				FileReference LinkerFixupCPPFilename = FileReference.Combine(GlobalCompileEnvironment.OutputDirectory, LinkerFixupsName + ".cpp");
-				if (!FileReference.Exists(LinkerFixupCPPFilename))
-				{
-					// Create a dummy file in case it doesn't exist yet so that the module does not complain it's not there
-					ResponseFile.Create(LinkerFixupHeaderFilenameWithPath, new List<string>());
-					ResponseFile.Create(LinkerFixupCPPFilename, new List<string>(new string[] { String.Format("#include \"{0}\"", LinkerFixupHeaderFilenameWithPath) }));
-				}
-
-				// Create the source file list (just the one cpp file)
-				List<FileItem> SourceFiles = new List<FileItem>();
-				FileItem LinkerFixupCPPFileItem = FileItem.GetItemByFileReference(LinkerFixupCPPFilename);
-				SourceFiles.Add(LinkerFixupCPPFileItem);
-
-				// Create the CPP module
-				DirectoryReference FakeModuleDirectory = LinkerFixupCPPFilename.Directory;
-				UEBuildModuleCPP NewModule = CreateArtificialModule(LinkerFixupsName, FakeModuleDirectory, SourceFiles, PrivateDependencyModuleNames);
-
-				// Now bind this new module to the executable binary so it will link the plugin libs correctly
-				NewModule.bSkipDefinitionsForCompileEnvironment = true;
-				NewModule.Rules.PCHUsage = ModuleRules.PCHUsageMode.NoSharedPCHs;
-				NewModule.RecursivelyCreateModules(FindOrCreateModuleByName, LinkerFixupsName);
-				BindArtificialModuleToBinary(NewModule, ExecutableBinary, GlobalCompileEnvironment);
-
-				// Create the cpp file
-				NewModule.bSkipDefinitionsForCompileEnvironment = false;
-				List<string> LinkerFixupsFileContents = GenerateLinkerFixupsContents(ExecutableBinary, NewModule.CreateModuleCompileEnvironment(Rules, GlobalCompileEnvironment), HeaderFilename, LinkerFixupsName, PrivateDependencyModuleNames);
-				NewModule.bSkipDefinitionsForCompileEnvironment = true;
-
-				// Determine if the file changed. Write it if it either doesn't exist or the contents are different.
-				bool bShouldWriteFile = true;
-				if (FileReference.Exists(LinkerFixupCPPFilename))
-				{
-					string[] ExistingFixupText = File.ReadAllLines(LinkerFixupCPPFilename.FullName);
-					string JoinedNewContents = string.Join("", LinkerFixupsFileContents.ToArray());
-					string JoinedOldContents = string.Join("", ExistingFixupText);
-					bShouldWriteFile = (JoinedNewContents != JoinedOldContents);
-				}
-
-				// If we determined that we should write the file, write it now.
-				if (bShouldWriteFile)
-				{
-					ResponseFile.Create(LinkerFixupHeaderFilenameWithPath, new List<string>());
-					ResponseFile.Create(LinkerFixupCPPFilename, LinkerFixupsFileContents);
-
-					// Update the cached file states so that the linker fixups definitely get rebuilt
-					FileItem.GetItemByFileReference(LinkerFixupHeaderFilenameWithPath).ResetFileInfo();
-					LinkerFixupCPPFileItem.ResetFileInfo();
-				}
-			}
-		}
-
-		private string ByteArrayToString(byte[] InOriginal)
-		{
-			List<string> Bytes = new List<string>();
-			string ArrayString = "";
-
-			foreach (byte Byte in InOriginal)
-			{
-				ArrayString += "0x" + Byte.ToString("X2") + ",";
-			}
-
-			return ArrayString.TrimEnd(',');
-		}
-
-		private List<string> GenerateLinkerFixupsContents(UEBuildBinary ExecutableBinary, CppCompileEnvironment CompileEnvironment, string HeaderFilename, string LinkerFixupsName, List<string> PrivateDependencyModuleNames)
-		{
-			List<string> Result = new List<string>(); 
-
-			Result.Add("#include \"" + HeaderFilename + "\"");
-
-			// To reduce the size of the command line for the compiler, we're going to put all definitions inside of the cpp file.
-			foreach (string Definition in CompileEnvironment.Definitions)
-			{
-				string MacroName;
-				string MacroValue = String.Empty;
-				int EqualsIndex = Definition.IndexOf('=');
-				if (EqualsIndex >= 0)
-				{
-					MacroName = Definition.Substring(0, EqualsIndex);
-					MacroValue = Definition.Substring(EqualsIndex + 1);
-				}
-				else
-				{
-					MacroName = Definition;
-				}
-				Result.Add("#ifndef " + MacroName);
-				Result.Add(String.Format("\t#define {0} {1}", MacroName, MacroValue));
-				Result.Add("#endif");
-			}
-
-			// Write functions for accessing embedded pak signing keys
-			EncryptionAndSigning.CryptoSettings CryptoSettings = EncryptionAndSigning.ParseCryptoSettings(ProjectDirectory, Platform);
-			bool bRegisterEncryptionKey = false;
-			bool bRegisterPakSigningKeys = false;
-
-			if (CryptoSettings.IsAnyEncryptionEnabled())
-			{
-				Result.Add("typedef void(*TEncryptionKeyFunc)(unsigned char[32]);");
-				Result.Add("extern void RegisterEncryptionKeyCallback(TEncryptionKeyFunc);");
-				bRegisterEncryptionKey = true;
-			}
-
-			if (CryptoSettings.bEnablePakSigning)
-			{
-				Result.Add("typedef void(*TSigningKeyFunc)(unsigned char[64], unsigned char[64]);");
-				Result.Add("extern void RegisterSigningKeyCallback(TSigningKeyFunc);");
-				bRegisterPakSigningKeys = true;
-			}
-
-			if (bRegisterEncryptionKey || bRegisterPakSigningKeys)
-			{
-				Result.Add("struct FEncryptionAndSigningKeyRegistration");
-				Result.Add("{");
-
-				if (bRegisterPakSigningKeys)
-				{
-					Result.Add("\tstatic void SigningKeyCallback(unsigned char OutExponent[64], unsigned char OutModulus[64])");
-					Result.Add("\t{");
-
-					string PublicExponentString = ByteArrayToString(CryptoSettings.SigningKey.PublicKey.Exponent);
-					string PublicModulusString = ByteArrayToString(CryptoSettings.SigningKey.PublicKey.Modulus);
-
-					Result.Add("\t\tconst unsigned char Exponent[64] = {" + PublicExponentString + "};");
-					Result.Add("\t\tconst unsigned char Modulus[64] = {" + PublicModulusString + "};");
-					Result.Add("\t\tfor (int ByteIndex = 0; ByteIndex < 64; ++ByteIndex)");
-					Result.Add("\t\t{");
-					Result.Add("\t\t\tOutExponent[ByteIndex] = Exponent[ByteIndex];");
-					Result.Add("\t\t\tOutModulus[ByteIndex] = Modulus[ByteIndex];");
-					Result.Add("\t\t}");
-					Result.Add("\t}");
-				}
-
-				if (bRegisterEncryptionKey)
-				{
-					Result.Add("\tstatic void EncryptionKeyCallback(unsigned char OutKey[32])");
-					Result.Add("\t{");
-
-					string KeyArrayString = ByteArrayToString(CryptoSettings.EncryptionKey.Key);
-
-					Result.Add("\t\tconst unsigned char Key[32] = {" + KeyArrayString + "};");
-					Result.Add("\t\tfor (int ByteIndex = 0; ByteIndex < 32; ++ByteIndex)");
-					Result.Add("\t\t{");
-					Result.Add("\t\t\tOutKey[ByteIndex] = Key[ByteIndex];");
-					Result.Add("\t\t}");
-					Result.Add("\t}");
-				}
-
-				Result.Add("\tFEncryptionAndSigningKeyRegistration()");
-				Result.Add("\t{");
-				if (bRegisterEncryptionKey)
-				{
-					Result.Add(string.Format("\t\tRegisterEncryptionKeyCallback(EncryptionKeyCallback);"));
-				}
-				if (bRegisterPakSigningKeys)
-				{
-					Result.Add(string.Format("\t\tRegisterSigningKeyCallback(SigningKeyCallback);"));
-				}
-				Result.Add("\t}");
-				Result.Add("};");
-				Result.Add("FEncryptionAndSigningKeyRegistration GEncryptionAndSigningKeyRegistration;");
-			}
-
-			// Add a function that is not referenced by anything that invokes all the empty functions in the different static libraries
-			Result.Add("void " + LinkerFixupsName + "()");
-			Result.Add("{");
-
-			// Fill out the body of the function with the empty function calls. This is what causes the static libraries to be considered relevant
-			List<UEBuildModule> DependencyModules = ExecutableBinary.GetAllDependencyModules(bIncludeDynamicallyLoaded: false, bForceCircular: false);
-			HashSet<string> AlreadyAddedEmptyLinkFunctions = new HashSet<string>();
-			foreach (UEBuildModuleCPP BuildModuleCPP in DependencyModules.OfType<UEBuildModuleCPP>().Where(CPPModule => CPPModule.AutoGenerateCppInfo != null))
-			{
-				IEnumerable<string> GeneratedCppFilesWithTheFunction = BuildModuleCPP.FindGeneratedCppFiles();
-
-				bool bFound = false;
-				foreach (string CppFile in GeneratedCppFilesWithTheFunction)
-				{
-					bFound = true;
-
-					string FunctionName = "EmptyLinkFunctionForGeneratedCode" + Path.GetFileName(CppFile).Replace(".gen.cpp", "").Replace(".", "_");
-					if (AlreadyAddedEmptyLinkFunctions.Add(FunctionName))
-					{
-						Result.Add("    extern void " + FunctionName + "();");
-						Result.Add("    " + FunctionName + "();");
-					}
-				}
-
-				if (!bFound)
-				{
-					Result.Add("    //" + BuildModuleCPP.Name + " has no generated files, path: " + BuildModuleCPP.GeneratedCodeDirectory.ToString());
-				}
-			}
-			foreach (string DependencyModuleName in PrivateDependencyModuleNames)
-			{
-				Result.Add("    extern void EmptyLinkFunctionForStaticInitialization" + DependencyModuleName + "();");
-				Result.Add("    EmptyLinkFunctionForStaticInitialization" + DependencyModuleName + "();");
-			}
-
-			// End the function body that was started above
-			Result.Add("}");
-
-			return Result;
-		}
-
-		/// <summary>
-		/// Binds artificial module to given binary.
-		/// </summary>
-		/// <param name="Module">Module to bind.</param>
-		/// <param name="Binary">Binary to bind.</param>
-		/// <param name="GlobalCompileEnvironment">The global C++ compile environment</param>
-		private void BindArtificialModuleToBinary(UEBuildModuleCPP Module, UEBuildBinary Binary, CppCompileEnvironment GlobalCompileEnvironment)
-		{
-			Module.Binary = Binary;
-
-			// Process dependencies for this new module
-			Module.CachePCHUsageForModuleSourceFiles(Rules, Module.CreateModuleCompileEnvironment(Rules, GlobalCompileEnvironment));
-
-			// Add module to binary
-			Binary.AddModule(Module);
-		}
-
-		/// <summary>
-		/// Creates artificial module.
-		/// </summary>
-		/// <param name="Name">Name of the module.</param>
-		/// <param name="Directory">Directory of the module.</param>
-		/// <param name="SourceFiles">Source files.</param>
-		/// <param name="PrivateDependencyModuleNames">Private dependency list.</param>
-		/// <returns>Created module.</returns>
-		private UEBuildModuleCPP CreateArtificialModule(string Name, DirectoryReference Directory, IEnumerable<FileItem> SourceFiles, IEnumerable<string> PrivateDependencyModuleNames)
-		{
-			ModuleRules Rules = new ModuleRules(this.Rules);
-			Rules.PrivateDependencyModuleNames.AddRange(PrivateDependencyModuleNames);
-
-			return new UEBuildModuleCPP(
-				InName: Name,
-				InType: UHTModuleType.GameRuntime,
-				InModuleDirectory: Directory,
-				InGeneratedCodeDirectory: null,
-				InIntelliSenseGatherer: null,
-				InSourceFiles: SourceFiles.ToList(),
-				InRules: Rules,
-				bInBuildSourceFiles: true,
-				InRulesFile: null,
-				InRuntimeDependencies: new List<RuntimeDependency>());
 		}
 
 		/// <summary>
@@ -3258,17 +2839,24 @@ namespace UnrealBuildTool
 			return OrderedSharedPCHModules;
 		}
 
+		/// <summary>
 		/// When building a target, this is called to add any additional modules that should be compiled along
 		/// with the main target.  If you override this in a derived class, remember to call the base implementation!
-		protected virtual void AddExtraModules()
+		/// </summary>
+		protected void AddExtraModules()
 		{
+			// Find all the extra module names
+			List<string> ExtraModuleNames = new List<string>();
+			ExtraModuleNames.AddRange(Rules.ExtraModuleNames);
+			UEBuildPlatform.GetBuildPlatform(Platform).AddExtraModules(Rules, ExtraModuleNames);
+
 			// Add extra modules that will either link into the main binary (monolithic), or be linked into separate DLL files (modular)
 			foreach (string ModuleName in ExtraModuleNames)
 			{
-				UEBuildModule Module = FindOrCreateModuleByName(ModuleName, TargetRulesFile.GetFileName());
+				UEBuildModuleCPP Module = FindOrCreateCppModuleByName(ModuleName, TargetRulesFile.GetFileName());
 				if (Module.Binary == null)
 				{
-					AddModuleToBinary(Module, false);
+					AddModuleToBinary(Module);
 				}
 			}
 		}
@@ -3276,227 +2864,213 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Adds all the precompiled modules into the target. Precompiled modules are compiled alongside the target, but not linked into it unless directly referenced.
 		/// </summary>
-		protected void AddPrecompiledModules()
+		protected void AddAllValidModulesToTarget()
 		{
-			if (bPrecompile || bUsePrecompiled)
+			// Find all the modules that are part of the target
+			HashSet<string> ValidModuleNames = new HashSet<string>();
+			foreach (UEBuildModuleCPP Module in Modules.Values.OfType<UEBuildModuleCPP>())
 			{
-				// Find all the modules that are part of the target
-				List<UEBuildModule> PrecompiledModules = new List<UEBuildModule>();
-				foreach (UEBuildModuleCPP Module in Modules.Values.OfType<UEBuildModuleCPP>())
+				if(Module.Binary != null)
 				{
-					if(!PrecompiledModules.Contains(Module) && Module.Binary != null)
+					ValidModuleNames.Add(Module.Name);
+				}
+			}
+
+			// If we're compiling a base engine target, create binaries for all the engine modules that are compatible with it.
+			if (ProjectFile == null && TargetType != TargetType.Program)
+			{
+				// Find all the known module names in this assembly
+				List<string> ModuleNames = new List<string>();
+				RulesAssembly.GetAllModuleNames(ModuleNames);
+
+				// Find all the platform folders to exclude from the list of valid modules
+				List<string> ExcludeFolders = new List<string>();
+				foreach (UnrealTargetPlatform TargetPlatform in Enum.GetValues(typeof(UnrealTargetPlatform)))
+				{
+					if (TargetPlatform != Platform)
 					{
-						if (Module.RulesFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
-						{
-							PrecompiledModules.Add(Module);
-						}
-						
-						// If engine is installed and enterprise is installed, add enterprise modules to list of precompiled modules
-						else if (bUsePrecompiled && UnrealBuildTool.IsEnterpriseInstalled() && UnrealBuildTool.IsUnderAnEngineDirectory(Module.RulesFile.Directory))
-						{
-							PrecompiledModules.Add(Module);
-						}
+						ExcludeFolders.Add(TargetPlatform.ToString());
 					}
 				}
 
-
-				// If we're precompiling a base engine target, create binaries for all the engine modules that are compatible with it.
-				if (bPrecompile && ProjectFile == null && TargetType != TargetType.Program)
+				// Also exclude all the platform groups that this platform is not a part of
+				List<UnrealPlatformGroup> IncludePlatformGroups = new List<UnrealPlatformGroup>(UEBuildPlatform.GetPlatformGroups(Platform));
+				foreach (UnrealPlatformGroup PlatformGroup in Enum.GetValues(typeof(UnrealPlatformGroup)))
 				{
-					// Find all the known module names in this assembly
-					List<string> ModuleNames = new List<string>();
-					RulesAssembly.GetAllModuleNames(ModuleNames);
-
-					// Find all the platform folders to exclude from the list of precompiled modules
-					List<string> ExcludeFolders = new List<string>();
-					foreach (UnrealTargetPlatform TargetPlatform in Enum.GetValues(typeof(UnrealTargetPlatform)))
+					if (!IncludePlatformGroups.Contains(PlatformGroup))
 					{
-						if (TargetPlatform != Platform)
+						ExcludeFolders.Add(PlatformGroup.ToString());
+					}
+				}
+
+				// Create an array of folders to exclude
+				string[] ExcludeFoldersArray = ExcludeFolders.ToArray();
+
+				// Find all the directories containing engine modules that may be compatible with this target
+				List<DirectoryReference> Directories = new List<DirectoryReference>();
+				if (TargetType == TargetType.Editor)
+				{
+					Directories.Add(UnrealBuildTool.EngineSourceEditorDirectory);
+				}
+				Directories.Add(UnrealBuildTool.EngineSourceRuntimeDirectory);
+
+				// Also allow anything in the developer directory in non-shipping configurations (though we blacklist by default unless the PrecompileForTargets
+				// setting indicates that it's actually useful at runtime).
+				bool bAllowDeveloperModules = false;
+				if(Configuration != UnrealTargetConfiguration.Shipping)
+				{
+					Directories.Add(UnrealBuildTool.EngineSourceDeveloperDirectory);
+					Directories.Add(DirectoryReference.Combine(UnrealBuildTool.EnterpriseSourceDirectory, "Developer"));
+					bAllowDeveloperModules = true;
+				}
+
+				// Find all the modules that are not part of the standard set
+				HashSet<string> FilteredModuleNames = new HashSet<string>();
+				foreach (string ModuleName in ModuleNames)
+				{
+					FileReference ModuleFileName = RulesAssembly.GetModuleFileName(ModuleName);
+					foreach(DirectoryReference BaseDir in Directories)
+					{
+						if(ModuleFileName.IsUnderDirectory(BaseDir))
 						{
-							string DirectoryFragment = Path.DirectorySeparatorChar + TargetPlatform.ToString() + Path.DirectorySeparatorChar;
-							ExcludeFolders.Add(DirectoryFragment);
-						}
-					}
+							Type RulesType = RulesAssembly.GetModuleRulesType(ModuleName);
 
-					// Also exclude all the platform groups that this platform is not a part of
-					List<UnrealPlatformGroup> IncludePlatformGroups = new List<UnrealPlatformGroup>(UEBuildPlatform.GetPlatformGroups(Platform));
-					foreach (UnrealPlatformGroup PlatformGroup in Enum.GetValues(typeof(UnrealPlatformGroup)))
-					{
-						if (!IncludePlatformGroups.Contains(PlatformGroup))
-						{
-							string DirectoryFragment = Path.DirectorySeparatorChar + PlatformGroup.ToString() + Path.DirectorySeparatorChar;
-							ExcludeFolders.Add(DirectoryFragment);
-						}
-					}
-
-					// Find all the directories containing engine modules that may be compatible with this target
-					List<DirectoryReference> Directories = new List<DirectoryReference>();
-					if (TargetType == TargetType.Editor)
-					{
-						Directories.Add(UnrealBuildTool.EngineSourceEditorDirectory);
-					}
-					Directories.Add(UnrealBuildTool.EngineSourceRuntimeDirectory);
-
-					// Also allow anything in the developer directory in non-shipping configurations (though we blacklist by default unless the PrecompileForTargets
-					// setting indicates that it's actually useful at runtime).
-					bool bAllowDeveloperModules = false;
-					if(Configuration != UnrealTargetConfiguration.Shipping)
-					{
-						Directories.Add(UnrealBuildTool.EngineSourceDeveloperDirectory);
-						bAllowDeveloperModules = true;
-					}
-
-					// Find all the modules that are not part of the standard set
-					HashSet<string> FilteredModuleNames = new HashSet<string>();
-					foreach (string ModuleName in ModuleNames)
-					{
-						FileReference ModuleFileName = RulesAssembly.GetModuleFileName(ModuleName);
-						if (Directories.Any(x => ModuleFileName.IsUnderDirectory(x)))
-						{
-							string RelativeFileName = ModuleFileName.MakeRelativeTo(UnrealBuildTool.EngineSourceDirectory);
-							if (ExcludeFolders.All(x => RelativeFileName.IndexOf(x, StringComparison.InvariantCultureIgnoreCase) == -1) && !PrecompiledModules.Any(x => x.Name == ModuleName))
+							SupportedPlatformsAttribute SupportedPlatforms = RulesType.GetCustomAttribute<SupportedPlatformsAttribute>();
+							if(SupportedPlatforms != null)
 							{
-								FilteredModuleNames.Add(ModuleName);
-							}
-						}
-					}
-
-					// Add all the plugins which aren't already being built
-					foreach(UEBuildPlugin PrecompilePlugin in PrecompilePlugins)
-					{
-						foreach (ModuleDescriptor ModuleDescriptor in PrecompilePlugin.Descriptor.Modules)
-						{
-							if (ModuleDescriptor.IsCompiledInConfiguration(Platform, TargetType, bAllowDeveloperModules && Rules.bBuildDeveloperTools, Rules.bBuildEditor, Rules.bBuildRequiresCookedData))
-							{
-								string RelativeFileName = RulesAssembly.GetModuleFileName(ModuleDescriptor.Name).MakeRelativeTo(UnrealBuildTool.EngineDirectory);
-								if (!ExcludeFolders.Any(x => RelativeFileName.Contains(x)) && !PrecompiledModules.Any(x => x.Name == ModuleDescriptor.Name))
+								if(SupportedPlatforms.Platforms.Contains(Platform))
 								{
-									FilteredModuleNames.Add(ModuleDescriptor.Name);
+									FilteredModuleNames.Add(ModuleName);
+								}
+							}
+							else
+							{
+								if(!ModuleFileName.ContainsAnyNames(ExcludeFoldersArray, BaseDir))
+								{
+									FilteredModuleNames.Add(ModuleName);
 								}
 							}
 						}
 					}
+				}
 
-					// Create rules for each remaining module, and check that it's set to be precompiled
-					const string PrecompileReferenceChain = "precompile option";
-					foreach(string FilteredModuleName in FilteredModuleNames)
+				// Add all the plugin modules that need to be compiled
+				List<PluginInfo> Plugins = RulesAssembly.EnumeratePlugins().ToList();
+				foreach(PluginInfo Plugin in Plugins)
+				{
+					if(Rules.bIncludePluginsForTargetPlatforms || Plugin.Descriptor.SupportsTargetPlatform(Platform))
 					{
-						FileReference ModuleFileName = null;
-
-						// Try to create the rules object, but catch any exceptions if it fails. Some modules (eg. SQLite) may determine that they are unavailable in the constructor.
-						ModuleRules ModuleRules;
-						try
+						if(Plugin.Descriptor.Modules != null && (!Plugin.Descriptor.bRequiresBuildPlatform || !Plugin.File.ContainsAnyNames(ExcludeFoldersArray, UnrealBuildTool.EngineDirectory)))
 						{
-							ModuleRules = RulesAssembly.CreateModuleRules(FilteredModuleName, this.Rules, PrecompileReferenceChain, out ModuleFileName);
-						}
-						catch (BuildException)
-						{
-							ModuleRules = null;
-						}
-
-						// Figure out if it can be precompiled
-						bool bCanPrecompile = false;
-						if (ModuleRules != null && ModuleRules.Type == ModuleRules.ModuleType.CPlusPlus)
-						{
-							switch (ModuleRules.PrecompileForTargets)
+							foreach (ModuleDescriptor ModuleDescriptor in Plugin.Descriptor.Modules)
 							{
-								case ModuleRules.PrecompileTargetsType.None:
-									bCanPrecompile = false;
-									break;
-								case ModuleRules.PrecompileTargetsType.Default:
-									bCanPrecompile = !ModuleFileName.IsUnderDirectory(UnrealBuildTool.EngineSourceDeveloperDirectory) || TargetType == TargetType.Editor;
-									break;
-								case ModuleRules.PrecompileTargetsType.Game:
-									bCanPrecompile = (TargetType == TargetType.Client || TargetType == TargetType.Server || TargetType == TargetType.Game);
-									break;
-								case ModuleRules.PrecompileTargetsType.Editor:
-									bCanPrecompile = (TargetType == TargetType.Editor);
-									break;
-								case ModuleRules.PrecompileTargetsType.Any:
-									bCanPrecompile = true;
-									break;
+								if (ModuleDescriptor.IsCompiledInConfiguration(Platform, Configuration, TargetName, TargetType, bAllowDeveloperModules && Rules.bBuildDeveloperTools, Rules.bBuildEditor, Rules.bBuildRequiresCookedData))
+								{
+									FileReference ModuleFileName = RulesAssembly.GetModuleFileName(ModuleDescriptor.Name);
+									if(ModuleFileName == null)
+									{
+										throw new BuildException("Unable to find module '{0}' referenced by {1}", ModuleDescriptor.Name, Plugin.File);
+									}
+									if(!ModuleFileName.ContainsAnyNames(ExcludeFoldersArray, Plugin.Directory))
+									{
+										FilteredModuleNames.Add(ModuleDescriptor.Name);
+									}
+								}
 							}
-						}
-
-						// Create the module
-						if (bCanPrecompile)
-						{
-							UEBuildModule Module = FindOrCreateModuleByName(FilteredModuleName, PrecompileReferenceChain);
-							Module.RecursivelyCreateModules(FindOrCreateModuleByName, PrecompileReferenceChain);
-							PrecompiledModules.Add(Module);
 						}
 					}
 				}
 
-				// In monolithic, make sure every module is compiled into a static library first. Even if it's linked into an existing executable, we can add it into a static library and link it into
-				// the executable afterwards. In modular builds, just compile every module into a DLL.
-				UEBuildBinaryType PrecompiledBinaryType = bCompileMonolithic ? UEBuildBinaryType.StaticLibrary : UEBuildBinaryType.DynamicLinkLibrary;
-				foreach (UEBuildModule PrecompiledModule in PrecompiledModules)
+				// Create rules for each remaining module, and check that it's set to be compiled
+				foreach(string FilteredModuleName in FilteredModuleNames)
 				{
-					if (PrecompiledModule.Binary == null || (bCompileMonolithic && PrecompiledModule.Binary.Config.Type != UEBuildBinaryType.StaticLibrary))
+					// Try to create the rules object, but catch any exceptions if it fails. Some modules (eg. SQLite) may determine that they are unavailable in the constructor.
+					ModuleRules ModuleRules;
+					try
 					{
-						PrecompiledModule.Binary = CreateBinaryForModule(PrecompiledModule, PrecompiledBinaryType, bAllowCompilation: !bUsePrecompiled, bIsCrossTarget: false, bPrecompileOnly: bPrecompile);
+						ModuleRules = RulesAssembly.CreateModuleRules(FilteredModuleName, this.Rules, "precompile option");
 					}
-					else if (bUsePrecompiled && !ProjectFileGenerator.bGenerateProjectFiles)
+					catch (BuildException)
 					{
-						// Even if there's already a binary for this module, we never want to compile it.
-						PrecompiledModule.Binary.Config.bAllowCompilation = false;
+						ModuleRules = null;
 					}
+
+					// Figure out if it can be precompiled
+					if (ModuleRules != null && ModuleRules.IsValidForTarget(ModuleRules.File))
+					{
+						ValidModuleNames.Add(FilteredModuleName);
+					}
+				}
+			}
+
+			// Now create all the precompiled modules, making sure they don't reference anything that's not in the precompiled set
+			HashSet<UEBuildModuleCPP> ValidModules = new HashSet<UEBuildModuleCPP>();
+			foreach(string ModuleName in ValidModuleNames)
+			{
+				const string PrecompileReferenceChain = "allmodules option";
+				UEBuildModuleCPP Module = (UEBuildModuleCPP)FindOrCreateModuleByName(ModuleName, PrecompileReferenceChain);
+				Module.RecursivelyCreateModules(FindOrCreateModuleByName, PrecompileReferenceChain);
+				ValidModules.Add(Module);
+			}
+
+			// Make sure precompiled modules don't reference any non-precompiled modules
+			foreach(UEBuildModuleCPP ValidModule in ValidModules)
+			{
+				foreach(UEBuildModuleCPP ReferencedModule in ValidModule.GetDependencies(false, true).OfType<UEBuildModuleCPP>())
+				{
+					if(!ValidModules.Contains(ReferencedModule))
+					{
+						Log.TraceWarning("Module '{0}' is not usable without module '{1}', which is not valid for this target.", ValidModule.Name, ReferencedModule.Name);
+					}
+				}
+			}
+
+			// Make sure every module is built
+			foreach(UEBuildModuleCPP Module in ValidModules)
+			{
+				if(Module.Binary == null)
+				{
+					AddModuleToBinary(Module);
 				}
 			}
 		}
 
-		public void AddModuleToBinary(UEBuildModule Module, bool bIsCrossTarget)
+		public void AddModuleToBinary(UEBuildModuleCPP Module)
 		{
 			if (ShouldCompileMonolithic())
 			{
 				// When linking monolithically, any unbound modules will be linked into the main executable
-				Module.Binary = AppBinaries[0];
+				Module.Binary = Binaries[0];
 				Module.Binary.AddModule(Module);
 			}
 			else
 			{
 				// Otherwise create a new module for it
-				Module.Binary = CreateBinaryForModule(Module, UEBuildBinaryType.DynamicLinkLibrary, bAllowCompilation: true, bIsCrossTarget: bIsCrossTarget, bPrecompileOnly: false);
+				Module.Binary = CreateDynamicLibraryForModule(Module);
+				Binaries.Add(Module.Binary);
 			}
-
-            if (Module.Binary == null)
-            {
-                throw new BuildException("Failed to set up binary for module {0}", Module.Name);
-            }
 		}
 
 		/// <summary>
-		/// Adds a binary for the given module. Does not check whether a binary already exists, or whether a binary should be created for this build configuration.
+		/// Finds the base output directory for build products of the given module
 		/// </summary>
-		/// <param name="Module">The module to create a binary for</param>
-		/// <param name="BinaryType">Type of binary to be created</param>
-		/// <param name="bAllowCompilation">Whether this binary can be compiled. The function will check whether plugin binaries can be compiled.</param>
-		/// <param name="bIsCrossTarget"></param>
-		/// <param name="bPrecompileOnly">This module is not part of the target, but is being built due to -precompile</param>
-		/// <returns>The new binary</returns>
-		private UEBuildBinary CreateBinaryForModule(UEBuildModule Module, UEBuildBinaryType BinaryType, bool bAllowCompilation, bool bIsCrossTarget, bool bPrecompileOnly)
+		/// <param name="ModuleRules">The rules object created for this module</param>
+		/// <returns>The base output directory for compiled object files for this module</returns>
+		private DirectoryReference GetBaseOutputDirectory(ModuleRules ModuleRules)
 		{
-			// Get the plugin info for this module
-			PluginInfo Plugin = null;
-			if (Module.RulesFile != null)
-			{
-				RulesAssembly.TryGetPluginForModule(Module.RulesFile, out Plugin);
-			}
-
 			// Get the root output directory and base name (target name/app name) for this binary
 			DirectoryReference BaseOutputDirectory;
-			if (Plugin != null)
+			if (ModuleRules.Plugin != null)
 			{
-				BaseOutputDirectory = Plugin.Directory;
+				BaseOutputDirectory = ModuleRules.Plugin.Directory;
 			}
-			else if (RulesAssembly.IsGameModule(Module.Name) || !bUseSharedBuildEnvironment)
+			else if (RulesAssembly.IsGameModule(ModuleRules.Name) || !bUseSharedBuildEnvironment)
 			{
 				BaseOutputDirectory = ProjectDirectory;
 			}
 			else
 			{
-				if (Module.ModuleDirectory.IsUnderDirectory(UnrealBuildTool.EnterpriseDirectory))
+				if (RulesAssembly.GetModuleFileName(ModuleRules.Name).IsUnderDirectory(UnrealBuildTool.EnterpriseDirectory))
 				{
 					BaseOutputDirectory = UnrealBuildTool.EnterpriseDirectory;
 				}
@@ -3504,6 +3078,54 @@ namespace UnrealBuildTool
 				{
 					BaseOutputDirectory = UnrealBuildTool.EngineDirectory;
 				}
+			}
+			return BaseOutputDirectory;
+		}
+
+		/// <summary>
+		/// Finds the base output directory for a module
+		/// </summary>
+		/// <param name="ModuleRules">The rules object created for this module</param>
+		/// <returns>The output directory for compiled object files for this module</returns>
+		private DirectoryReference GetModuleIntermediateDirectory(ModuleRules ModuleRules)
+		{
+			// Get the root output directory and base name (target name/app name) for this binary
+			DirectoryReference BaseOutputDirectory = GetBaseOutputDirectory(ModuleRules);
+
+			// Get the configuration that this module will be built in. Engine modules compiled in DebugGame will use Development.
+			UnrealTargetConfiguration ModuleConfiguration = Configuration;
+			if (Configuration == UnrealTargetConfiguration.DebugGame && !RulesAssembly.IsGameModule(ModuleRules.Name) && !ModuleRules.Name.Equals(Rules.LaunchModuleName, StringComparison.InvariantCultureIgnoreCase))
+			{
+				ModuleConfiguration = UnrealTargetConfiguration.Development;
+			}
+
+			// Get the output and intermediate directories for this module
+			DirectoryReference IntermediateDirectory = DirectoryReference.Combine(BaseOutputDirectory, PlatformIntermediateFolder, AppName, ModuleConfiguration.ToString());
+
+			// Append a subdirectory if the module rules specifies one
+			if (ModuleRules != null && !String.IsNullOrEmpty(ModuleRules.BinariesSubFolder))
+			{
+				IntermediateDirectory = DirectoryReference.Combine(IntermediateDirectory, ModuleRules.BinariesSubFolder);
+			}
+
+			return DirectoryReference.Combine(IntermediateDirectory, ModuleRules.ShortName ?? ModuleRules.Name);
+		}
+
+		/// <summary>
+		/// Adds a dynamic library for the given module. Does not check whether a binary already exists, or whether a binary should be created for this build configuration.
+		/// </summary>
+		/// <param name="Module">The module to create a binary for</param>
+		/// <returns>The new binary. This has not been added to the target.</returns>
+		private UEBuildBinary CreateDynamicLibraryForModule(UEBuildModuleCPP Module)
+		{
+			// Get the root output directory and base name (target name/app name) for this binary
+			DirectoryReference BaseOutputDirectory = GetBaseOutputDirectory(Module.Rules);
+			DirectoryReference OutputDirectory = DirectoryReference.Combine(BaseOutputDirectory, "Binaries", Platform.ToString());
+
+			// Append a subdirectory if the module rules specifies one
+			if (Module.Rules != null && !String.IsNullOrEmpty(Module.Rules.BinariesSubFolder))
+			{
+				OutputDirectory = DirectoryReference.Combine(OutputDirectory, Module.Rules.BinariesSubFolder);
 			}
 
 			// Get the configuration that this module will be built in. Engine modules compiled in DebugGame will use Development.
@@ -3513,39 +3135,19 @@ namespace UnrealBuildTool
 				ModuleConfiguration = UnrealTargetConfiguration.Development;
 			}
 
-			// Get the output and intermediate directories for this module
-			DirectoryReference OutputDirectory = DirectoryReference.Combine(BaseOutputDirectory, "Binaries", Platform.ToString());
-			DirectoryReference IntermediateDirectory = DirectoryReference.Combine(BaseOutputDirectory, PlatformIntermediateFolder, AppName, ModuleConfiguration.ToString());
-
-			// Append a subdirectory if the module rules specifies one
-			if (Module.Rules != null && !String.IsNullOrEmpty(Module.Rules.BinariesSubFolder))
-			{
-				OutputDirectory = DirectoryReference.Combine(OutputDirectory, Module.Rules.BinariesSubFolder);
-				IntermediateDirectory = DirectoryReference.Combine(IntermediateDirectory, Module.Rules.BinariesSubFolder);
-			}
-
             // Get the output filenames
-            FileReference BaseBinaryPath = FileReference.Combine(OutputDirectory, MakeBinaryFileName(AppName + "-" + Module.Name, Platform, ModuleConfiguration, Architecture, Rules.UndecoratedConfiguration, BinaryType, Rules.OverrideExecutableFileExtension));
+            FileReference BaseBinaryPath = FileReference.Combine(OutputDirectory, MakeBinaryFileName(AppName + "-" + Module.Name, Platform, ModuleConfiguration, Architecture, Rules.UndecoratedConfiguration, UEBuildBinaryType.DynamicLinkLibrary));
 			List<FileReference> OutputFilePaths = UEBuildPlatform.GetBuildPlatform(Platform).FinalizeBinaryPaths(BaseBinaryPath, ProjectFile, Rules);
 
-			// Prepare the configuration object
-			UEBuildBinaryConfiguration Config = new UEBuildBinaryConfiguration(
-				InType: BinaryType,
-				InOutputFilePaths: OutputFilePaths,
-				InIntermediateDirectory: IntermediateDirectory,
-				bInHasModuleRules: Module.Rules != null,
-				bInAllowExports: BinaryType == UEBuildBinaryType.DynamicLinkLibrary,
-				bInAllowCompilation: bAllowCompilation,
-				bInIsCrossTarget: bIsCrossTarget,
-				bInPrecompileOnly: bPrecompileOnly,
-				InModuleNames: new string[] { Module.Name }
+			// Create the binary
+			return new UEBuildBinary(
+				Type: UEBuildBinaryType.DynamicLinkLibrary,
+				OutputFilePaths: OutputFilePaths,
+				IntermediateDirectory: Module.IntermediateDirectory,
+				bAllowExports: true,
+				PrimaryModule: Module,
+				bUsePrecompiled: Module.Rules.bUsePrecompiled
 			);
-
-			// Create the new binary
-			UEBuildBinary Binary = new UEBuildBinary(Config);
-			Binary.AddModule(Module);
-			AppBinaries.Add(Binary);
-			return Binary;
 		}
 
         /// <summary>
@@ -3557,9 +3159,8 @@ namespace UnrealBuildTool
 		/// <param name="Architecture">The target architecture being built</param>
         /// <param name="UndecoratedConfiguration">The target configuration which doesn't require a platform and configuration suffix. Development by default.</param>
         /// <param name="BinaryType">Type of binary</param>
-        /// /// <param name="OverrideExecutableFileExtension">If not empty, will override the file extension of the executable</param>
         /// <returns>Name of the binary</returns>
-        public static string MakeBinaryFileName(string BinaryName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, UnrealTargetConfiguration UndecoratedConfiguration, UEBuildBinaryType BinaryType, string OverrideExecutableFileExtension)
+        public static string MakeBinaryFileName(string BinaryName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, UnrealTargetConfiguration UndecoratedConfiguration, UEBuildBinaryType BinaryType)
 		{
 			StringBuilder Result = new StringBuilder();
 
@@ -3581,14 +3182,7 @@ namespace UnrealBuildTool
 				Result.Append(Architecture);
 			}
 
-			if (!String.IsNullOrEmpty(OverrideExecutableFileExtension))
-			{
-				Result.Append(OverrideExecutableFileExtension);
-			}
-			else
-			{
-				Result.Append(BuildPlatform.GetBinaryExtension(BinaryType));
-			}
+			Result.Append(BuildPlatform.GetBinaryExtension(BinaryType));
 
             return Result.ToString();
 		}
@@ -3605,18 +3199,13 @@ namespace UnrealBuildTool
         /// <param name="UndecoratedConfiguration">The configuration which doesn't have a "-{Platform}-{Configuration}" suffix added to the binary</param>
         /// <param name="bIncludesGameModules">Whether this executable contains game modules</param>
         /// <param name="ExeSubFolder">Subfolder for executables. May be null.</param>
-		/// <param name="OverrideExecutableFileExtension">Override for the executable file extension</param>
 		/// <param name="ProjectFile">The project file containing the target being built</param>
 		/// <param name="Rules">Rules for the target being built</param>
         /// <returns>List of executable paths for this target</returns>
-        public static List<FileReference> MakeBinaryPaths(DirectoryReference BaseDirectory, string BinaryName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UEBuildBinaryType BinaryType, string Architecture, UnrealTargetConfiguration UndecoratedConfiguration, bool bIncludesGameModules, string ExeSubFolder, string OverrideExecutableFileExtension, FileReference ProjectFile, ReadOnlyTargetRules Rules)
+        public static List<FileReference> MakeBinaryPaths(DirectoryReference BaseDirectory, string BinaryName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UEBuildBinaryType BinaryType, string Architecture, UnrealTargetConfiguration UndecoratedConfiguration, bool bIncludesGameModules, string ExeSubFolder, FileReference ProjectFile, ReadOnlyTargetRules Rules)
 		{
 			// Get the configuration for the executable. If we're building DebugGame, and this executable only contains engine modules, use the same name as development.
 			UnrealTargetConfiguration ExeConfiguration = Configuration;
-			if (Configuration == UnrealTargetConfiguration.DebugGame && !bIncludesGameModules)
-			{
-				ExeConfiguration = UnrealTargetConfiguration.Development;
-			}
 
 			// Build the binary path
 			DirectoryReference BinaryDirectory = DirectoryReference.Combine(BaseDirectory, "Binaries", Platform.ToString());
@@ -3624,20 +3213,10 @@ namespace UnrealBuildTool
 			{
 				BinaryDirectory = DirectoryReference.Combine(BinaryDirectory, ExeSubFolder);
 			}
-			FileReference BinaryFile = FileReference.Combine(BinaryDirectory, MakeBinaryFileName(BinaryName, Platform, ExeConfiguration, Architecture, UndecoratedConfiguration, BinaryType, OverrideExecutableFileExtension));
+			FileReference BinaryFile = FileReference.Combine(BinaryDirectory, MakeBinaryFileName(BinaryName, Platform, ExeConfiguration, Architecture, UndecoratedConfiguration, BinaryType));
 
 			// Allow the platform to customize the output path (and output several executables at once if necessary)
 			return UEBuildPlatform.GetBuildPlatform(Platform).FinalizeBinaryPaths(BinaryFile, ProjectFile, Rules);
-		}
-
-		/// <summary>
-		/// Sets up the modules for the target.
-		/// </summary>
-		protected void SetupModules()
-		{
-			List<string> PlatformExtraModules = new List<string>();
-			UEBuildPlatform.GetBuildPlatform(Platform).AddExtraModules(Rules, PlatformExtraModules);
-			ExtraModuleNames.AddRange(PlatformExtraModules);
 		}
 
 		/// <summary>
@@ -3659,7 +3238,7 @@ namespace UnrealBuildTool
 			}
 
 			// Get an array of folders to filter out
-			FileSystemName[] ExcludeFolders = MissingPlatforms.Select(x => new FileSystemName(x.ToString())).ToArray();
+			string[] ExcludeFolders = MissingPlatforms.Select(x => x.ToString()).ToArray();
 
 			// Set of all the plugins that have been referenced
 			HashSet<string> ReferencedNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
@@ -3667,40 +3246,67 @@ namespace UnrealBuildTool
 			// Map of plugin names to instances of that plugin
 			Dictionary<string, UEBuildPlugin> NameToInstance = new Dictionary<string, UEBuildPlugin>(StringComparer.InvariantCultureIgnoreCase);
 
+			// Set up the foreign plugin
+			if(ForeignPlugin != null)
+			{
+				PluginReferenceDescriptor PluginReference = new PluginReferenceDescriptor(ForeignPlugin.GetFileNameWithoutExtension(), null, true);
+				AddPlugin(PluginReference, "command line", ExcludeFolders, NameToInstance, NameToInfo);
+			}
+
+			// Configure plugins explicitly enabled via target settings
+			foreach(string PluginName in Rules.EnablePlugins)
+			{
+				if(ReferencedNames.Add(PluginName))
+				{
+					PluginReferenceDescriptor PluginReference = new PluginReferenceDescriptor(PluginName, null, true);
+					AddPlugin(PluginReference, "target settings", ExcludeFolders, NameToInstance, NameToInfo);
+				}
+			}
+
+			// Configure plugins explicitly disabled via target settings
+			foreach(string PluginName in Rules.DisablePlugins)
+			{
+				if(ReferencedNames.Add(PluginName))
+				{
+					PluginReferenceDescriptor PluginReference = new PluginReferenceDescriptor(PluginName, null, false);
+					AddPlugin(PluginReference, "target settings", ExcludeFolders, NameToInstance, NameToInfo);
+				}
+			}
+
 			// Find a map of plugins which are explicitly referenced in the project file
 			if(ProjectDescriptor != null && ProjectDescriptor.Plugins != null)
 			{
 				string ProjectReferenceChain = ProjectFile.GetFileName();
 				foreach(PluginReferenceDescriptor PluginReference in ProjectDescriptor.Plugins)
 				{
-					// Make sure we don't have multiple references to the same plugin
-					if(!ReferencedNames.Add(PluginReference.Name))
+					if(!Rules.EnablePlugins.Contains(PluginReference.Name, StringComparer.InvariantCultureIgnoreCase) && !Rules.DisablePlugins.Contains(PluginReference.Name, StringComparer.InvariantCultureIgnoreCase))
 					{
-						Log.TraceWarning("Plugin '{0}' is listed multiple times in project file '{1}'.", PluginReference.Name, ProjectFile);
-					}
-					else
-					{
-						AddPlugin(PluginReference, ProjectReferenceChain, ExcludeFolders, NameToInstance, NameToInfo);
+						// Make sure we don't have multiple references to the same plugin
+						if(!ReferencedNames.Add(PluginReference.Name))
+						{
+							Log.TraceWarning("Plugin '{0}' is listed multiple times in project file '{1}'.", PluginReference.Name, ProjectFile);
+						}
+						else
+						{
+							AddPlugin(PluginReference, ProjectReferenceChain, ExcludeFolders, NameToInstance, NameToInfo);
+						}
 					}
 				}
 			}
 
 			// Also synthesize references for plugins which are enabled by default
-			if (Rules.bCompileAgainstEngine)
+			if (Rules.bCompileAgainstEngine || Rules.bCompileWithPluginSupport)
 			{
 				foreach(PluginInfo Plugin in NameToInfo.Values)
 				{
 					if(Plugin.EnabledByDefault && !ReferencedNames.Contains(Plugin.Name))
 					{
-						if (Plugin.Descriptor.bCanContainContent || Plugin.Descriptor.Modules.Any(x => x.IsCompiledInConfiguration(Platform, TargetType, Rules.bBuildDeveloperTools, Rules.bBuildEditor, Rules.bBuildRequiresCookedData)))
-						{
-							ReferencedNames.Add(Plugin.Name);
+						ReferencedNames.Add(Plugin.Name);
 
-							PluginReferenceDescriptor PluginReference = new PluginReferenceDescriptor(Plugin.Name, null, true);
-							PluginReference.bOptional = true;
+						PluginReferenceDescriptor PluginReference = new PluginReferenceDescriptor(Plugin.Name, null, true);
+						PluginReference.bOptional = true;
 
-							AddPlugin(PluginReference, "default plugins", ExcludeFolders, NameToInstance, NameToInfo);
-						}
+						AddPlugin(PluginReference, "default plugins", ExcludeFolders, NameToInstance, NameToInfo);
 					}
 				}
 			}
@@ -3727,53 +3333,11 @@ namespace UnrealBuildTool
 			// Create the list of enabled plugins
 			EnabledPlugins = new List<UEBuildPlugin>(NameToInstance.Values);
 
-			// Try to add any the other plugins that are valid
-			if(Rules.bBuildAllPlugins)
-			{
-				foreach(PluginInfo Plugin in NameToInfo.Values)
-				{
-					if(!NameToInstance.ContainsKey(Plugin.Name) && !Plugin.Descriptor.bCanBeUsedWithUnrealHeaderTool)
-					{
-						PluginReferenceDescriptor Reference = new PluginReferenceDescriptor(Plugin.Name, null, true);
-						AddPlugin(Reference, TargetRulesFile.GetFileName(), ExcludeFolders, NameToInstance, NameToInfo);
-					}
-				}
-			}
-
-			// Add any foreign plugins to the list
-			if (ForeignPlugins != null)
-			{
-				foreach (FileReference ForeignPlugin in ForeignPlugins)
-				{
-					PluginInfo ForeignPluginInfo = NameToInfo.Values.FirstOrDefault(x => x.File == ForeignPlugin);
-					if (!NameToInstance.ContainsKey(ForeignPluginInfo.Name))
-					{
-						PluginReferenceDescriptor Reference = new PluginReferenceDescriptor(ForeignPluginInfo.Name, null, true);
-						AddPlugin(Reference, "foreign plugin argument", ExcludeFolders, NameToInstance, NameToInfo);
-					}
-				}
-			}
-
 			// Set the list of plugins that should be built
 			BuildPlugins = new List<UEBuildPlugin>(NameToInstance.Values);
 
-			// Create the list of plugins to precompile. This is separate to the list of binaries being built, because
-			// they and their dependencies won't be linked into the application binary by default on monolithic builds.
-			if (bPrecompile && ProjectFile == null && TargetType != TargetType.Program)
-			{
-				foreach(PluginInfo Plugin in NameToInfo.Values)
-				{
-					if (!NameToInstance.ContainsKey(Plugin.Name) && Plugin.Descriptor.Modules != null)
-					{
-						PluginReferenceDescriptor Reference = new PluginReferenceDescriptor(Plugin.Name, null, true);
-						AddPlugin(Reference, "precompile argument", ExcludeFolders, NameToInstance, NameToInfo);
-					}
-				}
-				PrecompilePlugins = new List<UEBuildPlugin>(NameToInstance.Values.Except(BuildPlugins));
-			}
-
 			// Determine if the project has a script plugin. We will always build UHT if there is a script plugin in the game folder.
-			bHasProjectScriptPlugin = EnabledPlugins.Any(x => x.Descriptor.bCanBeUsedWithUnrealHeaderTool && !x.File.IsUnderDirectory(UnrealBuildTool.EngineDirectory));
+			bHasProjectScriptPlugin = EnabledPlugins.Any(x => x.Descriptor.SupportedPrograms != null && x.Descriptor.SupportedPrograms.Contains("UnrealHeaderTool") && !x.File.IsUnderDirectory(UnrealBuildTool.EngineDirectory));
 		}
 
 		/// <summary>
@@ -3785,7 +3349,7 @@ namespace UnrealBuildTool
 		/// <param name="NameToInstance">Map from plugin name to instance of it</param>
 		/// <param name="NameToInfo">Map from plugin name to information</param>
 		/// <returns>Instance of the plugin, or null if it should not be used</returns>
-		private UEBuildPlugin AddPlugin(PluginReferenceDescriptor Reference, string ReferenceChain, FileSystemName[] ExcludeFolders, Dictionary<string, UEBuildPlugin> NameToInstance, Dictionary<string, PluginInfo> NameToInfo)
+		private UEBuildPlugin AddPlugin(PluginReferenceDescriptor Reference, string ReferenceChain, string[] ExcludeFolders, Dictionary<string, UEBuildPlugin> NameToInstance, Dictionary<string, PluginInfo> NameToInfo)
 		{
 			// Ignore disabled references
 			if(!Reference.bEnabled)
@@ -3814,16 +3378,16 @@ namespace UnrealBuildTool
 			else
 			{
 				// Check if the plugin is required for this platform
-				if(!Reference.IsEnabledForPlatform(Platform) || !Reference.IsEnabledForTarget(TargetType))
+				if(!Reference.IsEnabledForPlatform(Platform) || !Reference.IsEnabledForTargetConfiguration(Configuration) || !Reference.IsEnabledForTarget(TargetType))
 				{
-					Log.TraceVerbose("Ignoring plugin '{0}' (referenced via {1}) for platform/configuration", Reference.Name, ReferenceChain);
+					Log.TraceLog("Ignoring plugin '{0}' (referenced via {1}) for platform/configuration", Reference.Name, ReferenceChain);
 					return null;
 				}
 
 				// Disable any plugin reference which does not support the target platform
 				if (!Rules.bIncludePluginsForTargetPlatforms && !Reference.IsSupportedTargetPlatform(Platform))
 				{
-					Log.TraceVerbose("Ignoring plugin '{0}' (referenced via {1}) due to unsupported target platform.", Reference.Name, ReferenceChain);
+					Log.TraceLog("Ignoring plugin '{0}' (referenced via {1}) due to unsupported target platform.", Reference.Name, ReferenceChain);
 					return null;
 				}
 
@@ -3844,18 +3408,26 @@ namespace UnrealBuildTool
 				// Disable any plugin which does not support the target platform. The editor should update such references in the .uproject file on load.
 				if (!Rules.bIncludePluginsForTargetPlatforms && !Info.Descriptor.SupportsTargetPlatform(Platform))
 				{
-					Log.TraceVerbose("Ignoring plugin '{0}' (referenced via {1}) due to target platform not supported by descriptor.", Reference.Name, ReferenceChain);
+					Log.TraceLog("Ignoring plugin '{0}' (referenced via {1}) due to target platform not supported by descriptor.", Reference.Name, ReferenceChain);
 					return null;
 				}
 
 				// Disable any plugin that requires the build platform
 				if(Info.Descriptor.bRequiresBuildPlatform && ShouldExcludePlugin(Info, ExcludeFolders))
 				{
-					Log.TraceVerbose("Ignoring plugin '{0}' (referenced via {1}) due to missing build platform", Reference.Name, ReferenceChain);
+					Log.TraceLog("Ignoring plugin '{0}' (referenced via {1}) due to missing build platform", Reference.Name, ReferenceChain);
+					return null;
+				}
+
+				// Disable any plugins that aren't compatible with this program
+				if (Rules.Type == TargetType.Program && (Info.Descriptor.SupportedPrograms == null || !Info.Descriptor.SupportedPrograms.Contains(AppName)))
+				{
+					Log.TraceLog("Ignoring plugin '{0}' (referenced via {1}) due to absence from supported programs list.", Reference.Name, ReferenceChain);
 					return null;
 				}
 
 				// Create the new instance and add it to the cache
+				Log.TraceLog("Enabling plugin '{0}' (referenced via {1})", Reference.Name, ReferenceChain);
 				Instance = new UEBuildPlugin(Info);
 				Instance.bDescriptorReferencedExplicitly = !Reference.bOptional;
 				NameToInstance.Add(Info.Name, Instance);
@@ -3869,9 +3441,9 @@ namespace UnrealBuildTool
 				{
 					foreach (ModuleDescriptor ModuleInfo in Info.Descriptor.Modules)
 					{
-						if (ModuleInfo.IsCompiledInConfiguration(Platform, TargetType, Rules.bBuildDeveloperTools, Rules.bBuildEditor, Rules.bBuildRequiresCookedData))
+						if (ModuleInfo.IsCompiledInConfiguration(Platform, Configuration, TargetName, TargetType, Rules.bBuildDeveloperTools, Rules.bBuildEditor, Rules.bBuildRequiresCookedData))
 						{
-							UEBuildModule Module = FindOrCreateModuleByName(ModuleInfo.Name, PluginReferenceChain);
+							UEBuildModuleCPP Module = FindOrCreateCppModuleByName(ModuleInfo.Name, PluginReferenceChain);
 							if(!Instance.Modules.Contains(Module))
 							{
 								if (!Module.RulesFile.IsUnderDirectory(Info.Directory))
@@ -3917,7 +3489,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Checks whether a plugin path contains a platform directory fragment
 		/// </summary>
-		private bool ShouldExcludePlugin(PluginInfo Plugin, FileSystemName[] ExcludeFolders)
+		private bool ShouldExcludePlugin(PluginInfo Plugin, string[] ExcludeFolders)
 		{
 			if (Plugin.LoadedFrom == PluginLoadedFrom.Engine)
 			{
@@ -3938,55 +3510,52 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected void SetupBinaries()
 		{
-			if (Rules != null)
+			// If we're using the new method for specifying binaries, fill in the binary configurations now
+			if(Rules.LaunchModuleName == null)
 			{
-				if(TargetType == TargetType.Program)
-				{
-					// If we're using the new method for specifying binaries, fill in the binary configurations now
-					if(Rules.LaunchModuleName == null)
-					{
-						throw new BuildException("LaunchModuleName must be set for program targets.");
-					}
+				throw new BuildException("LaunchModuleName must be set for all targets.");
+			}
 
-					AppBinaries.Add(
-						new UEBuildBinary(
-							new UEBuildBinaryConfiguration(	
-								InType: Rules.bShouldCompileAsDLL? UEBuildBinaryType.DynamicLinkLibrary : UEBuildBinaryType.Executable,
-								InOutputFilePaths: OutputPaths,
-								InIntermediateDirectory: ProjectIntermediateDirectory,
-								InModuleNames: new List<string>() { Rules.LaunchModuleName } )
-							)
-						);
-				}
-				else
-				{
-					// Don't write to the Engine intermediate directory for Monolithic builds
-					DirectoryReference IntermediateDirectory = ShouldCompileMonolithic() ? ProjectIntermediateDirectory : EngineIntermediateDirectory;
+			// Create the launch module
+			UEBuildModuleCPP LaunchModule = FindOrCreateCppModuleByName(Rules.LaunchModuleName, TargetRulesFile.GetFileName());
 
-					// Editor
-					UEBuildBinaryConfiguration Config = new UEBuildBinaryConfiguration(InType: UEBuildBinaryType.Executable,
-																						InOutputFilePaths: OutputPaths,
-																						InIntermediateDirectory: IntermediateDirectory,
-																						bInCreateImportLibrarySeparately: (ShouldCompileMonolithic() ? false : true),
-																						bInAllowExports: !ShouldCompileMonolithic(),
-																						InModuleNames: new List<string>() { Rules.LaunchModuleName });
+			// Get the intermediate directory for the launch module directory. This can differ from the standard engine intermediate directory because it is always configuration-specific.
+			DirectoryReference IntermediateDirectory;
+			if(LaunchModule.RulesFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory) && !ShouldCompileMonolithic())
+			{
+				IntermediateDirectory = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, PlatformIntermediateFolder, AppName, Configuration.ToString());
+			}
+			else
+			{
+				IntermediateDirectory = ProjectIntermediateDirectory;
+			}
 
-					if (Platform == UnrealTargetPlatform.Win64 && Configuration != UnrealTargetConfiguration.Shipping && TargetType == TargetType.Editor)
-					{
-						Config.bBuildAdditionalConsoleApp = true;
-					}
+			// Create the binary
+			UEBuildBinary Binary = new UEBuildBinary(
+				Type: Rules.bShouldCompileAsDLL? UEBuildBinaryType.DynamicLinkLibrary : UEBuildBinaryType.Executable,
+				OutputFilePaths: OutputPaths,
+				IntermediateDirectory: IntermediateDirectory,
+				bAllowExports: Rules.bHasExports,
+				PrimaryModule: LaunchModule,
+				bUsePrecompiled: LaunchModule.Rules.bUsePrecompiled && OutputPaths[0].IsUnderDirectory(UnrealBuildTool.EngineDirectory)
+			);
+			Binaries.Add(Binary);
 
-					AppBinaries.Add(new UEBuildBinary(Config));
-				}
+			// Add the launch module to it
+			LaunchModule.Binary = Binary;
+			Binary.AddModule(LaunchModule);
 
-				ExtraModuleNames.AddRange(Rules.ExtraModuleNames);
+			// Create an additional console app for the editor
+			if (Platform == UnrealTargetPlatform.Win64 && Configuration != UnrealTargetConfiguration.Shipping && TargetType == TargetType.Editor)
+			{
+				Binary.bBuildAdditionalConsoleApp = true;
 			}
 		}
 
 		/// <summary>
 		/// Sets up the global compile and link environment for the target.
 		/// </summary>
-		public virtual void SetupGlobalEnvironment(UEToolChain ToolChain, CppCompileEnvironment GlobalCompileEnvironment, LinkEnvironment GlobalLinkEnvironment)
+		private void SetupGlobalEnvironment(UEToolChain ToolChain, CppCompileEnvironment GlobalCompileEnvironment, LinkEnvironment GlobalLinkEnvironment)
 		{
 			UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform);
 
@@ -4020,6 +3589,7 @@ namespace UnrealBuildTool
 			GlobalCompileEnvironment.bUseRTTI = Rules.bForceEnableRTTI;
 			GlobalCompileEnvironment.bUseInlining = Rules.bUseInlining;
 			GlobalCompileEnvironment.bHideSymbolsByDefault = Rules.bHideSymbolsByDefault;
+			GlobalCompileEnvironment.AdditionalArguments = Rules.AdditionalCompilerArguments;
 
 			GlobalLinkEnvironment.bIsBuildingConsoleApplication = Rules.bIsBuildingConsoleApplication;
 			GlobalLinkEnvironment.bOptimizeForSize = Rules.bCompileForSize;
@@ -4035,8 +3605,9 @@ namespace UnrealBuildTool
             GlobalLinkEnvironment.bPGOOptimize = Rules.bPGOOptimize;
             GlobalLinkEnvironment.bPGOProfile = Rules.bPGOProfile;
 			GlobalLinkEnvironment.bUseIncrementalLinking = Rules.bUseIncrementalLinking;
-			GlobalLinkEnvironment.bUseFastPDBLinking = Rules.bUseFastPDBLinking;
+			GlobalLinkEnvironment.bUseFastPDBLinking = Rules.bUseFastPDBLinking ?? false;
 			GlobalLinkEnvironment.bPrintTimingInfo = Rules.bPrintToolChainTimingInfo;
+			GlobalLinkEnvironment.AdditionalArguments = Rules.AdditionalLinkerArguments;
 		
             if (Rules.bPGOOptimize && Rules.bPGOProfile)
             {
@@ -4053,19 +3624,14 @@ namespace UnrealBuildTool
             }
 
 			// Add the 'Engine/Source' path as a global include path for all modules
-			string EngineSourceDirectory = Path.GetFullPath(Path.Combine("..", "..", "Engine", "Source"));
-			if (!Directory.Exists(EngineSourceDirectory))
-			{
-				throw new BuildException("Couldn't find Engine/Source directory using relative path");
-			}
-			GlobalCompileEnvironment.IncludePaths.UserIncludePaths.Add(EngineSourceDirectory);
+			GlobalCompileEnvironment.IncludePaths.UserIncludePaths.Add(UnrealBuildTool.EngineSourceDirectory);
 
 			//@todo.PLATFORM: Do any platform specific tool chain initialization here if required
 
 			string OutputAppName = GetAppName();
 
 			UnrealTargetConfiguration EngineTargetConfiguration = Configuration == UnrealTargetConfiguration.DebugGame ? UnrealTargetConfiguration.Development : Configuration;
-			GlobalCompileEnvironment.OutputDirectory = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, PlatformIntermediateFolder, OutputAppName, EngineTargetConfiguration.ToString());
+			DirectoryReference LinkIntermediateDirectory = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, PlatformIntermediateFolder, OutputAppName, EngineTargetConfiguration.ToString());
 
 			// Installed Engine intermediates go to the project's intermediate folder. Installed Engine never writes to the engine intermediate folder. (Those files are immutable)
 			// Also, when compiling in monolithic, all intermediates go to the project's folder.  This is because a project can change definitions that affects all engine translation
@@ -4076,19 +3642,21 @@ namespace UnrealBuildTool
 				{
 					if (ProjectFile != null)
 					{
-						GlobalCompileEnvironment.OutputDirectory = DirectoryReference.Combine(ProjectFile.Directory, PlatformIntermediateFolder, OutputAppName, Configuration.ToString());
+						LinkIntermediateDirectory = DirectoryReference.Combine(ProjectFile.Directory, PlatformIntermediateFolder, OutputAppName, Configuration.ToString());
 					}
-					else if (ForeignPlugins.Count > 0)
+					else if (ForeignPlugin != null)
 					{
-						GlobalCompileEnvironment.OutputDirectory = DirectoryReference.Combine(ForeignPlugins[0].Directory, PlatformIntermediateFolder, OutputAppName, Configuration.ToString());
+						LinkIntermediateDirectory = DirectoryReference.Combine(ForeignPlugin.Directory, PlatformIntermediateFolder, OutputAppName, Configuration.ToString());
 					}
 				}
 			}
 
-			if(Rules.PCHOutputDirectory != null)
-			{
-				GlobalCompileEnvironment.PCHOutputDirectory = DirectoryReference.Combine(new DirectoryReference(Rules.PCHOutputDirectory), PlatformIntermediateFolder, OutputAppName, Configuration.ToString());
-			}
+			// Put the non-executable output files (PDB, import library, etc) in the intermediate directory.
+			GlobalLinkEnvironment.IntermediateDirectory = LinkIntermediateDirectory;
+			GlobalLinkEnvironment.OutputDirectory = GlobalLinkEnvironment.IntermediateDirectory;
+
+			// By default, shadow source files for this target in the root OutputDirectory
+			GlobalLinkEnvironment.LocalShadowDirectory = GlobalLinkEnvironment.OutputDirectory;
 
 			if(!String.IsNullOrEmpty(Rules.ExeBinariesSubFolder))
 			{
@@ -4131,7 +3699,7 @@ namespace UnrealBuildTool
             }
 
 			// By default, shadow source files for this target in the root OutputDirectory
-			GlobalCompileEnvironment.LocalShadowDirectory = GlobalCompileEnvironment.OutputDirectory;
+			GlobalCompileEnvironment.LocalShadowDirectory = LinkIntermediateDirectory;
 
 			GlobalCompileEnvironment.Definitions.Add("UNICODE");
 			GlobalCompileEnvironment.Definitions.Add("_UNICODE");
@@ -4139,17 +3707,17 @@ namespace UnrealBuildTool
 
 			GlobalCompileEnvironment.Definitions.Add(String.Format("IS_MONOLITHIC={0}", ShouldCompileMonolithic() ? "1" : "0"));
 
-			if (Rules.bCompileAgainstEngine)
+			GlobalCompileEnvironment.Definitions.Add(String.Format("WITH_ENGINE={0}", Rules.bCompileAgainstEngine ? "1" : "0"));
+			GlobalCompileEnvironment.Definitions.Add(String.Format("WITH_UNREAL_DEVELOPER_TOOLS={0}", Rules.bBuildDeveloperTools ? "1" : "0"));
+
+			// Set a macro to control whether to initialize ApplicationCore. Command line utilities should not generally need this.
+			if (Rules.bCompileAgainstApplicationCore)
 			{
-				GlobalCompileEnvironment.Definitions.Add("WITH_ENGINE=1");
-				GlobalCompileEnvironment.Definitions.Add(
-					String.Format("WITH_UNREAL_DEVELOPER_TOOLS={0}", Rules.bBuildDeveloperTools ? "1" : "0"));
+				GlobalCompileEnvironment.Definitions.Add("WITH_APPLICATION_CORE=1");
 			}
 			else
 			{
-				GlobalCompileEnvironment.Definitions.Add("WITH_ENGINE=0");
-				// Can't have developer tools w/out engine
-				GlobalCompileEnvironment.Definitions.Add("WITH_UNREAL_DEVELOPER_TOOLS=0");
+				GlobalCompileEnvironment.Definitions.Add("WITH_APPLICATION_CORE=0");
 			}
 
 			if (Rules.bCompileAgainstCoreUObject)
@@ -4280,9 +3848,16 @@ namespace UnrealBuildTool
 				GlobalCompileEnvironment.Definitions.Add("WITH_XGE_CONTROLLER=0");
 			}
 
+			// Compile in the names of the module manifests
+			GlobalCompileEnvironment.Definitions.Add(String.Format("UBT_MODULE_MANIFEST=\"{0}\"", ModuleManifest.GetStandardFileName(AppName, Platform, Configuration, Architecture, false)));
+			GlobalCompileEnvironment.Definitions.Add(String.Format("UBT_MODULE_MANIFEST_DEBUGGAME=\"{0}\"", ModuleManifest.GetStandardFileName(AppName, Platform, UnrealTargetConfiguration.DebugGame, Architecture, true)));
+
 			// tell the compiled code the name of the UBT platform (this affects folder on disk, etc that the game may need to know)
 			GlobalCompileEnvironment.Definitions.Add("UBT_COMPILED_PLATFORM=" + Platform.ToString());
 			GlobalCompileEnvironment.Definitions.Add("UBT_COMPILED_TARGET=" + TargetType.ToString());
+
+			// Set the global app name
+			GlobalCompileEnvironment.Definitions.Add(String.Format("UE_APP_NAME=\"{0}\"", AppName));
 
 			// Initialize the compile and link environments for the platform, configuration, and project.
 			BuildPlatform.SetUpEnvironment(Rules, GlobalCompileEnvironment, GlobalLinkEnvironment);
@@ -4310,10 +3885,10 @@ namespace UnrealBuildTool
         /// <summary>
         /// Create a rules object for the given module, and set any default values for this target
         /// </summary>
-        private ModuleRules CreateModuleRulesAndSetDefaults(string ModuleName, string ReferenceChain, out FileReference ModuleFileName)
+        private ModuleRules CreateModuleRulesAndSetDefaults(string ModuleName, string ReferenceChain)
 		{
 			// Create the rules from the assembly
-			ModuleRules RulesObject = RulesAssembly.CreateModuleRules(ModuleName, Rules, ReferenceChain, out ModuleFileName);
+			ModuleRules RulesObject = RulesAssembly.CreateModuleRules(ModuleName, Rules, ReferenceChain);
 
 			// Reads additional dependencies array for project module from project file and fills PrivateDependencyModuleNames. 
 			if (ProjectDescriptor != null && ProjectDescriptor.Modules != null)
@@ -4343,7 +3918,7 @@ namespace UnrealBuildTool
 				// Make sure that engine modules use shared PCHs or have an explicit private PCH
 				if(RulesObject.PCHUsage == ModuleRules.PCHUsageMode.NoSharedPCHs && RulesObject.PrivatePCHHeaderFile == null)
 				{
-					if(ProjectFile == null || !ModuleFileName.IsUnderDirectory(ProjectFile.Directory))
+					if(ProjectFile == null || !RulesObject.File.IsUnderDirectory(ProjectFile.Directory))
 					{
 						Log.TraceWarning("{0} module has shared PCHs disabled, but does not have a private PCH set", ModuleName);
 					}
@@ -4352,15 +3927,9 @@ namespace UnrealBuildTool
 				// Disable shared PCHs for game modules by default (but not game plugins, since they won't depend on the game's PCH!)
 				if (RulesObject.PCHUsage == ModuleRules.PCHUsageMode.Default)
 				{
-					if (ProjectFile == null || !ModuleFileName.IsUnderDirectory(ProjectFile.Directory) || Rules.bIWYU)
+					if(RulesObject.bUseBackwardsCompatibleDefaults && !Rules.bIWYU)
 					{
-						// Engine module or plugin module -- allow shared PCHs
-						RulesObject.PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-					}
-					else
-					{
-						PluginInfo Plugin;
-						if(RulesAssembly.TryGetPluginForModule(ModuleFileName, out Plugin))
+						if(RulesObject.Plugin != null)
 						{
 							// Game plugin.  Enable shared PCHs by default, since they aren't typically large enough to warrant their own PCH.
 							RulesObject.PCHUsage = ModuleRules.PCHUsageMode.UseSharedPCHs;
@@ -4370,6 +3939,40 @@ namespace UnrealBuildTool
 							// Game module.  Do not enable shared PCHs by default, because games usually have a large precompiled header of their own and compile times would suffer.
 							RulesObject.PCHUsage = ModuleRules.PCHUsageMode.NoSharedPCHs;
 						}
+					}
+					else
+					{
+						// Engine module or plugin module -- allow shared PCHs
+						RulesObject.PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+					}
+				}
+
+				// If we can't use a shared PCH, check there's a private PCH set
+				if(RulesObject.PCHUsage != ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs && RulesObject.PrivatePCHHeaderFile == null)
+				{
+					// Try to figure out the legacy PCH file
+					FileReference CppFile = DirectoryReference.EnumerateFiles(RulesObject.Directory, "*.cpp", SearchOption.AllDirectories).FirstOrDefault();
+					if(CppFile != null)
+					{
+						List<DependencyInclude> Includes = CPPHeaders.GetUncachedDirectIncludeDependencies(CppFile, ProjectFile);
+						if(Includes.Count > 0)
+						{
+							FileReference PchIncludeFile = DirectoryReference.EnumerateFiles(RulesObject.Directory, Path.GetFileName(Includes[0].IncludeName), SearchOption.AllDirectories).FirstOrDefault();
+							if(PchIncludeFile != null)
+							{
+								RulesObject.PrivatePCHHeaderFile = PchIncludeFile.MakeRelativeTo(RulesObject.Directory).Replace(Path.DirectorySeparatorChar, '/');
+							}
+						}
+					}
+
+					// Print a suggestion for which file to include
+					if(RulesObject.PrivatePCHHeaderFile == null)
+					{
+						Log.TraceWarningOnce(RulesObject.File, "Modules must specify an explicit precompiled header (eg. PrivatePCHHeaderFile = \"Private/{0}PrivatePCH.h\") from UE 4.21 onwards.", ModuleName);
+					}
+					else
+					{
+						Log.TraceWarningOnce(RulesObject.File, "Modules must specify an explicit precompiled header (eg. PrivatePCHHeaderFile = \"{0}\") from UE 4.21 onwards.", RulesObject.PrivatePCHHeaderFile);
 					}
 				}
 			}
@@ -4391,6 +3994,8 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Finds a module given its name.  Throws an exception if the module couldn't be found.
 		/// </summary>
+		/// <param name="ModuleName">Name of the module</param>
+		/// <param name="ReferenceChain">Chain of references causing this module to be instantiated, for display in error messages</param>
 		public UEBuildModule FindOrCreateModuleByName(string ModuleName, string ReferenceChain)
 		{
 			UEBuildModule Module;
@@ -4398,96 +4003,21 @@ namespace UnrealBuildTool
 			{
 				// @todo projectfiles: Cross-platform modules can appear here during project generation, but they may have already
 				//   been filtered out by the project generator.  This causes the projects to not be added to directories properly.
-				FileReference ModuleFileName;
-				ModuleRules RulesObject = CreateModuleRulesAndSetDefaults(ModuleName, ReferenceChain, out ModuleFileName);
-				DirectoryReference ModuleDirectory = ModuleFileName.Directory;
+				ModuleRules RulesObject = CreateModuleRulesAndSetDefaults(ModuleName, ReferenceChain);
+				DirectoryReference ModuleDirectory = RulesObject.File.Directory;
 
-				// Get the type of module we're creating
-				UHTModuleType? ModuleType = null;
-
-				// Get the plugin for this module
-				PluginInfo Plugin;
-				RulesAssembly.TryGetPluginForModule(ModuleFileName, out Plugin);
-
-				// Get the module descriptor for this module if it's a plugin
-				ModuleDescriptor PluginModuleDesc = null;
-				if (Plugin != null)
+				// Clear the bUsePrecompiled flag if we're compiling a foreign plugin; since it's treated like an engine module, it will default to true in an installed build.
+				if(RulesObject.Plugin != null && RulesObject.Plugin.File == ForeignPlugin)
 				{
-					PluginModuleDesc = Plugin.Descriptor.Modules.FirstOrDefault(x => x.Name == ModuleName);
-					if (PluginModuleDesc != null && PluginModuleDesc.Type == ModuleHostType.Program)
-					{
-						ModuleType = UHTModuleType.Program;
-					}
-				}
-
-				if (UnrealBuildTool.IsUnderAnEngineDirectory(ModuleFileName.Directory))
-				{
-					if (RulesObject.Type == ModuleRules.ModuleType.External)
-					{
-						ModuleType = UHTModuleType.EngineThirdParty;
-					}
-					else
-					{
-						if (!ModuleType.HasValue && PluginModuleDesc != null)
-						{
-							ModuleType = ExternalExecution.GetEngineModuleTypeFromDescriptor(PluginModuleDesc);
-						}
-
-						if (!ModuleType.HasValue)
-						{
-							if (ModuleFileName.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
-							{
-								ModuleType = ExternalExecution.GetEngineModuleTypeBasedOnLocation(UnrealBuildTool.EngineSourceDirectory, ModuleFileName);
-							}
-							else if (ModuleFileName.IsUnderDirectory(UnrealBuildTool.EnterpriseSourceDirectory))
-							{
-								ModuleType = ExternalExecution.GetEngineModuleTypeBasedOnLocation(UnrealBuildTool.EnterpriseSourceDirectory, ModuleFileName);
-							}
-						}
-					}
-				}
-				else
-				{
-					if (RulesObject.Type == ModuleRules.ModuleType.External)
-					{
-						ModuleType = UHTModuleType.GameThirdParty;
-					}
-					else
-					{
-						if (!ModuleType.HasValue && PluginModuleDesc != null)
-						{
-							ModuleType = ExternalExecution.GetGameModuleTypeFromDescriptor(PluginModuleDesc);
-						}
-
-						if (!ModuleType.HasValue)
-						{
-							if (ProjectDescriptor != null && ProjectDescriptor.Modules != null)
-							{
-								ModuleDescriptor ProjectModule = ProjectDescriptor.Modules.FirstOrDefault(x => x.Name == ModuleName);
-								if (ProjectModule != null)
-								{
-									ModuleType = UHTModuleTypeExtensions.GameModuleTypeFromHostType(ProjectModule.Type);
-								}
-								else
-								{
-									// No descriptor file or module was not on the list
-									ModuleType = UHTModuleType.GameRuntime;
-								}
-							}
-						}
-					}
-				}
-
-				if (!ModuleType.HasValue)
-				{
-					throw new BuildException("Unable to determine module type for {0}\n(referenced via {1})", ModuleFileName, ReferenceChain);
+					RulesObject.bPrecompile = true;
+					RulesObject.bUsePrecompiled = false;
 				}
 
 				// Get the base directory for paths referenced by the module. If the module's under the UProject source directory use that, otherwise leave it relative to the Engine source directory.
 				if (ProjectFile != null)
 				{
 					DirectoryReference ProjectSourceDirectoryName = DirectoryReference.Combine(ProjectFile.Directory, "Source");
-					if (ModuleFileName.IsUnderDirectory(ProjectSourceDirectoryName))
+					if (RulesObject.File.IsUnderDirectory(ProjectSourceDirectoryName))
 					{
 						RulesObject.PublicIncludePaths = CombinePathList(ProjectSourceDirectoryName, RulesObject.PublicIncludePaths);
 						RulesObject.PrivateIncludePaths = CombinePathList(ProjectSourceDirectoryName, RulesObject.PrivateIncludePaths);
@@ -4501,41 +4031,82 @@ namespace UnrealBuildTool
 				DirectoryReference GeneratedCodeDirectory = null;
 				if (RulesObject.Type != ModuleRules.ModuleType.External)
 				{
-					if (Plugin != null)
+					// Get the base directory
+					if (RulesObject.Plugin != null)
 					{
-						GeneratedCodeDirectory = Plugin.Directory;
+						GeneratedCodeDirectory = RulesObject.Plugin.Directory;
 					}
-					else if (bUseSharedBuildEnvironment)
+					else if (bUseSharedBuildEnvironment && RulesObject.File.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
 					{
-						if(ModuleFileName.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
-						{
-							GeneratedCodeDirectory = UnrealBuildTool.EngineDirectory;
-						}
-						else if (UnrealBuildTool.IsUnderAnEngineDirectory(ModuleFileName.Directory))
-						{
-							GeneratedCodeDirectory = UnrealBuildTool.EnterpriseDirectory;
-						}
+						GeneratedCodeDirectory = UnrealBuildTool.EngineDirectory;
 					}
-					
-					if(GeneratedCodeDirectory == null)
+					else if (bUseSharedBuildEnvironment && UnrealBuildTool.IsUnderAnEngineDirectory(RulesObject.File.Directory))
+					{
+						GeneratedCodeDirectory = UnrealBuildTool.EnterpriseDirectory;
+					}
+					else
 					{
 						GeneratedCodeDirectory = ProjectDirectory;
 					}
-					GeneratedCodeDirectory = DirectoryReference.Combine(GeneratedCodeDirectory, PlatformIntermediateFolder, AppName, "Inc", ModuleName);
+
+					// Get the subfolder containing generated code
+					GeneratedCodeDirectory = DirectoryReference.Combine(GeneratedCodeDirectory, PlatformIntermediateFolder, AppName, "Inc");
+
+					// Append the binaries subfolder, if present. We rely on this to ensure that build products can be filtered correctly.
+					if(RulesObject.BinariesSubFolder != null)
+					{
+						GeneratedCodeDirectory = DirectoryReference.Combine(GeneratedCodeDirectory, RulesObject.BinariesSubFolder);
+					}
+
+					// Finally, append the module name.
+					GeneratedCodeDirectory = DirectoryReference.Combine(GeneratedCodeDirectory, ModuleName);
 				}
 
-				// Don't generate include paths for third party modules; they don't follow our conventions. Core is a special-case... leave it alone
-				if (RulesObject.Type != ModuleRules.ModuleType.External && RulesObject.bAddDefaultIncludePaths)
+				// For legacy modules, add a bunch of default include paths.
+				if (RulesObject.Type == ModuleRules.ModuleType.CPlusPlus && RulesObject.bAddDefaultIncludePaths && (RulesObject.Plugin != null || (ProjectFile != null && RulesObject.File.IsUnderDirectory(ProjectFile.Directory))))
 				{
-					// Add the default include paths to the module rules, if they exist. Would be nice not to include game plugins here, but it would be a regression to change now.
-					bool bIsGameModuleOrProgram = ModuleFileName.IsUnderDirectory(TargetRulesFile.Directory) || (Plugin != null && Plugin.LoadedFrom == PluginLoadedFrom.Project);
-					AddDefaultIncludePathsToModuleRules(ModuleFileName, bIsGameModuleOrProgram, Plugin, RulesObject);
-
-					// Add the path to the generated headers 
-					if (GeneratedCodeDirectory != null)
+					// Add the module source directory 
+					DirectoryReference BaseSourceDirectory;
+					if (RulesObject.Plugin != null)
 					{
-						string RelativeGeneratedCodeDirectory = Utils.CleanDirectorySeparators(GeneratedCodeDirectory.MakeRelativeTo(UnrealBuildTool.EngineSourceDirectory), '/');
-						RulesObject.PublicIncludePaths.Add(RelativeGeneratedCodeDirectory);
+						BaseSourceDirectory = DirectoryReference.Combine(RulesObject.Plugin.Directory, "Source");
+					}
+					else
+					{
+						BaseSourceDirectory = DirectoryReference.Combine(ProjectFile.Directory, "Source");
+					}
+
+					// If it's a game module (plugin or otherwise), add the root source directory to the include paths.
+					if (RulesObject.File.IsUnderDirectory(TargetRulesFile.Directory) || (RulesObject.Plugin != null && RulesObject.Plugin.LoadedFrom == PluginLoadedFrom.Project))
+					{
+						if(DirectoryReference.Exists(BaseSourceDirectory))
+						{
+							RulesObject.PublicIncludePaths.Add(NormalizeIncludePath(BaseSourceDirectory));
+						}
+					}
+
+					// Resolve private include paths against the project source root
+					for (int Idx = 0; Idx < RulesObject.PrivateIncludePaths.Count; Idx++)
+					{
+						string PrivateIncludePath = RulesObject.PrivateIncludePaths[Idx];
+						if (!Path.IsPathRooted(PrivateIncludePath))
+						{
+							PrivateIncludePath = DirectoryReference.Combine(BaseSourceDirectory, PrivateIncludePath).FullName;
+						}
+						RulesObject.PrivateIncludePaths[Idx] = PrivateIncludePath;
+					}
+				}
+
+				// Override the default for whether the module requires nested include paths
+				if(RulesObject.bLegacyPublicIncludePaths == null)
+				{
+					if(RulesObject.bUseBackwardsCompatibleDefaults)
+					{
+						RulesObject.bLegacyPublicIncludePaths = Rules.bLegacyPublicIncludePaths;
+					}
+					else
+					{
+						RulesObject.bLegacyPublicIncludePaths = false;
 					}
 				}
 
@@ -4544,33 +4115,14 @@ namespace UnrealBuildTool
 				bool bDiscoverFiles = !ProjectFileGenerator.bGenerateProjectFiles;
 				bool bBuildFiles = bDiscoverFiles && (OnlyModules.Count == 0 || OnlyModules.Any(x => string.Equals(x.OnlyModuleName, ModuleName, StringComparison.InvariantCultureIgnoreCase)));
 
-				IntelliSenseGatherer IntelliSenseGatherer = null;
 				List<FileItem> FoundSourceFiles = new List<FileItem>();
 				if (RulesObject.Type == ModuleRules.ModuleType.CPlusPlus)
 				{
-					ProjectFile ProjectFileForIDE = null;
-					if (ProjectFileGenerator.bGenerateProjectFiles && ProjectFileGenerator.ModuleToProjectFileMap.TryGetValue(ModuleName, out ProjectFileForIDE))
-					{
-						IntelliSenseGatherer = ProjectFileForIDE;
-					}
-
 					// So all we care about are the game module and/or plugins.
-					if (bDiscoverFiles && !UnrealBuildTool.IsUnderAnInstalledDirectory(ModuleFileName.Directory))
+					if (bDiscoverFiles && !RulesObject.bUsePrecompiled)
 					{
 						List<FileReference> SourceFilePaths = new List<FileReference>();
-
-						if (ProjectFileForIDE != null)
-						{
-							foreach (ProjectFile.SourceFile SourceFile in ProjectFileForIDE.SourceFiles)
-							{
-								SourceFilePaths.Add(SourceFile.Reference);
-							}
-						}
-						else
-						{
-							// Don't have a project file for this module with the source file names cached already, so find the source files ourselves
-							SourceFilePaths = SourceFileSearch.FindModuleSourceFiles(ModuleRulesFile: ModuleFileName);
-						}
+						SourceFilePaths = SourceFileSearch.FindModuleSourceFiles(ModuleRulesFile: RulesObject.File, SearchedDirectories: SourceDirectories);
 						FoundSourceFiles = GetCPlusPlusFilesToBuild(SourceFilePaths, ModuleDirectory, Platform);
 					}
 				}
@@ -4584,157 +4136,52 @@ namespace UnrealBuildTool
 				// locations.
 				UEBuildPlatform.PlatformModifyHostModuleRules(ModuleName, RulesObject, Rules);
 
-				// Expand the list of runtime dependencies, and update the run-time dependencies path to remove $(PluginDir) and replace with a full path. When the 
-				// receipt is saved it'll be converted to a $(ProjectDir) or $(EngineDir) equivalent.
-				List<RuntimeDependency> RuntimeDependencies = new List<RuntimeDependency>();
-				if(RulesObject.RuntimeDependencies.Inner.Count > 0)
-				{
-					// Get all the valid variables which can be expanded for this module
-					Dictionary<string, string> Variables = new Dictionary<string, string>();
-					Variables["EngineDir"] = UnrealBuildTool.EngineDirectory.FullName;
-					if (ProjectFile != null)
-					{
-						Variables["ProjectDir"] = ProjectDirectory.FullName;
-					}
-					if (Plugin != null)
-					{
-						Variables["PluginDir"] = Plugin.Directory.FullName;
-					}
-
-					// Convert them into concrete file lists. Ignore anything that still hasn't been resolved.
-					foreach (ModuleRules.RuntimeDependency Dependency in RulesObject.RuntimeDependencies.Inner)
-					{
-						string ExpandedPath = Utils.ExpandVariables(Dependency.Path, Variables);
-						if (!ExpandedPath.StartsWith("$("))
-						{
-							int WildcardIdx = FileFilter.FindWildcardIndex(ExpandedPath);
-							if (WildcardIdx == -1)
-							{
-								RuntimeDependencies.Add(new RuntimeDependency(new FileReference(ExpandedPath), Dependency.Type));
-							}
-							else
-							{
-								RuntimeDependencies.AddRange(FileFilter.ResolveWildcard(ExpandedPath).Select(x => new RuntimeDependency(x, Dependency.Type)));
-							}
-						}
-					}
-				}
-
 				// Now, go ahead and create the module builder instance
-				Module = InstantiateModule(RulesObject, ModuleName, ModuleType.Value, ModuleDirectory, GeneratedCodeDirectory, IntelliSenseGatherer, FoundSourceFiles, bBuildFiles, ModuleFileName, RuntimeDependencies);
+				Module = InstantiateModule(RulesObject, GeneratedCodeDirectory, FoundSourceFiles, bBuildFiles);
 				Modules.Add(Module.Name, Module);
-				FlatModuleCsData.Add(Module.Name, new FlatModuleCsDataType((Module.RulesFile == null) ? null : Module.RulesFile.FullName, RulesObject.ExternalDependencies));
+				FlatModuleCsData.Add(new FlatModuleCsDataType(Module.Name, (Module.RulesFile == null) ? null : Module.RulesFile.FullName, RulesObject.ExternalDependencies));
 			}
 			return Module;
 		}
 
-		protected virtual UEBuildModule InstantiateModule(
+		/// <summary>
+		/// Constructs a new C++ module
+		/// </summary>
+		/// <param name="ModuleName">Name of the module</param>
+		/// <param name="ReferenceChain">Chain of references causing this module to be instantiated, for display in error messages</param>
+		/// <returns>New C++ module</returns>
+		public UEBuildModuleCPP FindOrCreateCppModuleByName(string ModuleName, string ReferenceChain)
+		{
+			UEBuildModuleCPP CppModule = FindOrCreateModuleByName(ModuleName, ReferenceChain) as UEBuildModuleCPP;
+			if(CppModule == null)
+			{
+				throw new BuildException("'{0}' is not a C++ module (referenced via {1})", ModuleName, ReferenceChain);
+			}
+			return CppModule;
+		}
+
+		protected UEBuildModule InstantiateModule(
 			ModuleRules RulesObject,
-			string ModuleName,
-			UHTModuleType ModuleType,
-			DirectoryReference ModuleDirectory,
 			DirectoryReference GeneratedCodeDirectory,
-			IntelliSenseGatherer IntelliSenseGatherer,
 			List<FileItem> ModuleSourceFiles,
-			bool bBuildSourceFiles,
-			FileReference InRulesFile,
-			List<RuntimeDependency> InRuntimeDependencies)
+			bool bBuildSourceFiles)
 		{
 			switch (RulesObject.Type)
 			{
 				case ModuleRules.ModuleType.CPlusPlus:
 					return new UEBuildModuleCPP(
-							InName: ModuleName,
-							InType: ModuleType,
-							InModuleDirectory: ModuleDirectory,
-							InGeneratedCodeDirectory: GeneratedCodeDirectory,
-							InIntelliSenseGatherer: IntelliSenseGatherer,
-							InSourceFiles: ModuleSourceFiles,
-							InRules: RulesObject,
-							bInBuildSourceFiles: bBuildSourceFiles,
-							InRulesFile: InRulesFile,
-							InRuntimeDependencies: InRuntimeDependencies
+							Rules: RulesObject,
+							IntermediateDirectory: GetModuleIntermediateDirectory(RulesObject),
+							GeneratedCodeDirectory: GeneratedCodeDirectory,
+							SourceFiles: ModuleSourceFiles,
+							bBuildSourceFiles: bBuildSourceFiles
 						);
 
 				case ModuleRules.ModuleType.External:
-					return new UEBuildModuleExternal(
-							InName: ModuleName,
-							InType: ModuleType,
-							InModuleDirectory: ModuleDirectory,
-							InRules: RulesObject,
-							InRulesFile: InRulesFile,
-							InRuntimeDependencies: InRuntimeDependencies
-						);
+					return new UEBuildModuleExternal(RulesObject);
 
 				default:
 					throw new BuildException("Unrecognized module type specified by 'Rules' object {0}", RulesObject.ToString());
-			}
-		}
-
-		/// <summary>
-		/// Add the standard default include paths to the given modulerules object
-		/// </summary>
-		/// <param name="ModuleFile">The filename to the module rules file (Build.cs)</param>
-		/// <param name="IsGameModule">true if it is a game module, false if not</param>
-		/// <param name="Plugin">The plugin that this module belongs to</param>
-		/// <param name="RulesObject">The module rules object itself</param>
-		public void AddDefaultIncludePathsToModuleRules(FileReference ModuleFile, bool IsGameModule, PluginInfo Plugin, ModuleRules RulesObject)
-		{
-			// Get the base source directory for this module. This may be the project source directory, engine source directory, or plugin source directory.
-			if (!ModuleFile.IsUnderDirectory(UnrealBuildTool.EngineSourceDirectory) && !ModuleFile.IsUnderDirectory(UnrealBuildTool.EnterpriseSourceDirectory))
-			{
-				// Add the module source directory 
-				DirectoryReference BaseSourceDirectory;
-				if (Plugin != null)
-				{
-					BaseSourceDirectory = DirectoryReference.Combine(Plugin.Directory, "Source");
-				}
-				else
-				{
-					BaseSourceDirectory = DirectoryReference.Combine(ProjectFile.Directory, "Source");
-				}
-
-				// If it's a game module (plugin or otherwise), add the root source directory to the include paths.
-				if (IsGameModule)
-				{
-					RulesObject.PublicIncludePaths.Add(NormalizeIncludePath(BaseSourceDirectory));
-				}
-
-				// Resolve private include paths against the project source root
-				for (int Idx = 0; Idx < RulesObject.PrivateIncludePaths.Count; Idx++)
-				{
-					string PrivateIncludePath = RulesObject.PrivateIncludePaths[Idx];
-					if (!Path.IsPathRooted(PrivateIncludePath))
-					{
-						PrivateIncludePath = DirectoryReference.Combine(BaseSourceDirectory, PrivateIncludePath).FullName;
-					}
-					RulesObject.PrivateIncludePaths[Idx] = PrivateIncludePath;
-				}
-			}
-
-			// Add the 'classes' directory, if it exists
-			DirectoryReference ClassesDirectory = DirectoryReference.Combine(ModuleFile.Directory, "Classes");
-			if (DirectoryLookupCache.DirectoryExists(ClassesDirectory))
-			{
-				RulesObject.PublicIncludePaths.Add(NormalizeIncludePath(ClassesDirectory));
-			}
-
-			// Get the list of folders to exclude for this platform
-			FileSystemName[] ExcludedFolderNames = UEBuildPlatform.GetBuildPlatform(Platform).GetExcludedFolderNames();
-
-			// Add all the public directories
-			DirectoryReference PublicDirectory = DirectoryReference.Combine(ModuleFile.Directory, "Public");
-			if (DirectoryLookupCache.DirectoryExists(PublicDirectory))
-			{
-				RulesObject.PublicIncludePaths.Add(NormalizeIncludePath(PublicDirectory));
-
-				foreach (DirectoryReference PublicSubDirectory in DirectoryLookupCache.EnumerateDirectoriesRecursively(PublicDirectory))
-				{
-					if(!PublicSubDirectory.ContainsAnyNames(ExcludedFolderNames, PublicDirectory))
-					{
-						RulesObject.PublicIncludePaths.Add(NormalizeIncludePath(PublicSubDirectory));
-					}
-				}
 			}
 		}
 
@@ -4876,23 +4323,5 @@ namespace UnrealBuildTool
 
 			return FilteredFileItems;
 		}
-
-        static bool ShouldIncludeNativizedAssets(DirectoryReference GameProjectDirectory)
-        {
-            ConfigHierarchy Config = ConfigCache.ReadHierarchy(ConfigHierarchyType.Game, GameProjectDirectory, BuildHostPlatform.Current.Platform);
-            if (Config != null)
-            {
-                // Determine whether or not the user has enabled nativization of Blueprint assets at cook time (default is 'Disabled')
-                string BlueprintNativizationMethod;
-                if (!Config.TryGetValue("/Script/UnrealEd.ProjectPackagingSettings", "BlueprintNativizationMethod", out BlueprintNativizationMethod))
-                {
-                    BlueprintNativizationMethod = "Disabled";
-                }
-
-                return BlueprintNativizationMethod != "Disabled";
-            }
-
-            return false;
-        }
 	}
 }

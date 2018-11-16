@@ -119,6 +119,7 @@ FVoiceEngineImpl::FVoiceEngineImpl(IOnlineSubsystem* InSubsystem) :
 	bIsCapturing(false),
 	SerializeHelper(nullptr)
 {
+	FCoreUObjectDelegates::PostLoadMapWithWorld.AddRaw(this, &FVoiceEngineImpl::OnPostLoadMap);
 }
 
 FVoiceEngineImpl::~FVoiceEngineImpl()
@@ -127,6 +128,8 @@ FVoiceEngineImpl::~FVoiceEngineImpl()
 	{
 		VoiceCapture->Stop();
 	}
+
+	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 
 	VoiceCapture = nullptr;
 	VoiceEncoder = nullptr;
@@ -144,7 +147,7 @@ void FVoiceEngineImpl::VoiceCaptureUpdate() const
 		// If no data is available, we have finished capture the last (post-StopRecording) half-second of voice data
 		if (RecordingState == EVoiceCaptureState::NotCapturing)
 		{
-			UE_LOG(LogVoiceEngine, Log, TEXT("Internal voice capture complete."));
+			UE_LOG_ONLINE_VOICEENGINE(Log, TEXT("Internal voice capture complete."));
 
 			bPendingFinalCapture = false;
 
@@ -164,19 +167,19 @@ void FVoiceEngineImpl::VoiceCaptureUpdate() const
 
 void FVoiceEngineImpl::StartRecording() const
 {
-	UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("VOIP StartRecording"));
+	UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("VOIP StartRecording"));
 	if (VoiceCapture.IsValid())
 	{
 		if (!VoiceCapture->Start())
 		{
-			UE_LOG(LogVoiceEngine, Warning, TEXT("Failed to start voice recording"));
+			UE_LOG_ONLINE_VOICEENGINE(Warning, TEXT("Failed to start voice recording"));
 		}
 	}
 }
 
 void FVoiceEngineImpl::StopRecording() const
 {
-	UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("VOIP StopRecording"));
+	UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("VOIP StopRecording"));
 	if (VoiceCapture.IsValid())
 	{
 		VoiceCapture->Stop();
@@ -185,7 +188,7 @@ void FVoiceEngineImpl::StopRecording() const
 
 void FVoiceEngineImpl::StoppedRecording() const
 {
-	UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("VOIP StoppedRecording"));
+	UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("VOIP StoppedRecording"));
 }
 
 bool FVoiceEngineImpl::Init(int32 MaxLocalTalkers, int32 MaxRemoteTalkers)
@@ -228,7 +231,7 @@ bool FVoiceEngineImpl::Init(int32 MaxLocalTalkers, int32 MaxRemoteTalkers)
 
 uint32 FVoiceEngineImpl::StartLocalVoiceProcessing(uint32 LocalUserNum) 
 {
-	uint32 Return = E_FAIL;
+	uint32 Return = ONLINE_FAIL;
 	if (IsOwningUser(LocalUserNum))
 	{
 		if (!bIsCapturing)
@@ -244,11 +247,11 @@ uint32 FVoiceEngineImpl::StartLocalVoiceProcessing(uint32 LocalUserNum)
 			bIsCapturing = true;
 		}
 
-		Return = S_OK;
+		Return = ONLINE_SUCCESS;
 	}
 	else
 	{
-		UE_LOG(LogVoiceEngine, Error, TEXT("StartLocalVoiceProcessing(): Device is currently owned by another user"));
+		UE_LOG_ONLINE_VOICEENGINE(Error, TEXT("StartLocalVoiceProcessing(): Device is currently owned by another user"));
 	}
 
 	return Return;
@@ -256,7 +259,7 @@ uint32 FVoiceEngineImpl::StartLocalVoiceProcessing(uint32 LocalUserNum)
 
 uint32 FVoiceEngineImpl::StopLocalVoiceProcessing(uint32 LocalUserNum) 
 {
-	uint32 Return = E_FAIL;
+	uint32 Return = ONLINE_FAIL;
 	if (IsOwningUser(LocalUserNum))
 	{
 		if (bIsCapturing)
@@ -271,11 +274,11 @@ uint32 FVoiceEngineImpl::StopLocalVoiceProcessing(uint32 LocalUserNum)
 			VoiceCaptureUpdate();
 		}
 
-		Return = S_OK;
+		Return = ONLINE_SUCCESS;
 	}
 	else
 	{
-		UE_LOG(LogVoiceEngine, Error, TEXT("StopLocalVoiceProcessing: Ignoring stop request for non-owning user"));
+		UE_LOG_ONLINE_VOICEENGINE(Error, TEXT("StopLocalVoiceProcessing: Ignoring stop request for non-owning user"));
 	}
 
 	return Return;
@@ -283,16 +286,15 @@ uint32 FVoiceEngineImpl::StopLocalVoiceProcessing(uint32 LocalUserNum)
 
 uint32 FVoiceEngineImpl::UnregisterRemoteTalker(const FUniqueNetId& UniqueId)
 {
-	const FUniqueNetIdString& RemoteTalkerId = (const FUniqueNetIdString&)UniqueId;
-	FRemoteTalkerDataImpl* RemoteData = RemoteTalkerBuffers.Find(RemoteTalkerId);
+	FRemoteTalkerDataImpl* RemoteData = RemoteTalkerBuffers.Find(FUniqueNetIdWrapper(UniqueId.AsShared()));
 	if (RemoteData != nullptr)
 	{
 		// Dump the whole talker
 		RemoteData->Cleanup();
-		RemoteTalkerBuffers.Remove(RemoteTalkerId);
+		RemoteTalkerBuffers.Remove(FUniqueNetIdWrapper(UniqueId.AsShared()));
 	}
 
-	return S_OK;
+	return ONLINE_SUCCESS;
 }
 
 uint32 FVoiceEngineImpl::GetVoiceDataReadyFlags() const
@@ -328,15 +330,15 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 		EVoiceCaptureState::Type VoiceResult = VoiceCapture->GetCaptureState(NewVoiceDataBytes);
 		if (VoiceResult != EVoiceCaptureState::Ok && VoiceResult != EVoiceCaptureState::NoData)
 		{
-			UE_LOG(LogVoiceEngine, Warning, TEXT("ReadLocalVoiceData: GetAvailableVoice failure: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
-			return E_FAIL;
+			UE_LOG_ONLINE_VOICEENGINE(Warning, TEXT("ReadLocalVoiceData: GetAvailableVoice failure: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
+			return ONLINE_FAIL;
 		}
 
 		if (NewVoiceDataBytes == 0)
 		{
-			UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("ReadLocalVoiceData: No Data: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
+			UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("ReadLocalVoiceData: No Data: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
 			*Size = 0;
-			return S_OK;
+			return ONLINE_SUCCESS;
 		}
 
 		// Make space for new and any previously remaining data
@@ -348,7 +350,7 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 		// But we have a max amount we can return so clamp it to that max value if we're asking for more bytes than we're allowed
 		if (TotalVoiceBytes > UVOIPStatics::GetMaxUncompressedVoiceDataSizePerChannel())
 		{
-			UE_LOG(LogVoiceEngine, Warning, TEXT("Exceeded uncompressed voice buffer size, clamping"))
+			UE_LOG_ONLINE_VOICEENGINE(Warning, TEXT("Exceeded uncompressed voice buffer size, clamping"))
 			TotalVoiceBytes = UVOIPStatics::GetMaxUncompressedVoiceDataSizePerChannel();
 		}
 
@@ -364,7 +366,7 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 		uint8* RemainingDecompressedBufferPtr = DecompressedVoiceBuffer.GetData() + PlayerVoiceData[LocalUserNum].VoiceRemainderSize;
 		uint32 ByteWritten = 0;
 		uint64 NewSampleCount = 0;
-		VoiceResult = VoiceCapture->GetVoiceData(DecompressedVoiceBuffer.GetData() + PlayerVoiceData[LocalUserNum].VoiceRemainderSize, NewVoiceDataBytes, ByteWritten , NewSampleCount);
+		VoiceResult = VoiceCapture->GetVoiceData(DecompressedVoiceBuffer.GetData() + PlayerVoiceData[LocalUserNum].VoiceRemainderSize, NewVoiceDataBytes, ByteWritten, NewSampleCount);
 		
 		TotalVoiceBytes = ByteWritten + PlayerVoiceData[LocalUserNum].VoiceRemainderSize;
 
@@ -379,7 +381,7 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 			CompressedBytesAvailable = UVOIPStatics::GetMaxCompressedVoiceDataSize();
 			CompressedVoiceBuffer.AddUninitialized(UVOIPStatics::GetMaxCompressedVoiceDataSize());
 
-			check( ((uint32) CompressedVoiceBuffer.Num()) <= UVOIPStatics::GetMaxCompressedVoiceDataSize());
+			check(((uint32) CompressedVoiceBuffer.Num()) <= UVOIPStatics::GetMaxCompressedVoiceDataSize());
 
 			// Run the uncompressed audio through the opus decoder, note that it may not encode all data, which results in some remaining data
 			PlayerVoiceData[LocalUserNum].VoiceRemainderSize =
@@ -390,7 +392,7 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 			{
 				if (PlayerVoiceData[LocalUserNum].VoiceRemainderSize > MAX_VOICE_REMAINDER_SIZE)
 				{
-					UE_LOG(LogVoiceEngine, Warning, TEXT("Exceeded voice remainder buffer size, clamping"));
+					UE_LOG_ONLINE_VOICEENGINE(Warning, TEXT("Exceeded voice remainder buffer size, clamping"));
 					PlayerVoiceData[LocalUserNum].VoiceRemainderSize = MAX_VOICE_REMAINDER_SIZE;
 				}
 
@@ -403,35 +405,34 @@ uint32 FVoiceEngineImpl::ReadLocalVoiceData(uint32 LocalUserNum, uint8* Data, ui
 			double TimeSinceLastCall = (LastGetVoiceCallTime > 0) ? (CurTime - LastGetVoiceCallTime) : 0.0;
 			LastGetVoiceCallTime = CurTime;
 
-			UE_LOG(LogVoiceEngine, Log, TEXT("ReadLocalVoiceData: GetVoice: Result: %s, Available: %i, LastCall: %0.3f ms"), EVoiceCaptureState::ToString(VoiceResult), CompressedBytesAvailable, TimeSinceLastCall * 1000.0);
+			UE_LOG_ONLINE_VOICEENGINE(Log, TEXT("ReadLocalVoiceData: GetVoice: Result: %s, Available: %i, LastCall: %0.3f ms"), EVoiceCaptureState::ToString(VoiceResult), CompressedBytesAvailable, TimeSinceLastCall * 1000.0);
 			if (CompressedBytesAvailable > 0)
 			{
 				*Size = FMath::Min<int32>(*Size, CompressedBytesAvailable);
 				FMemory::Memcpy(Data, CompressedVoiceBuffer.GetData(), *Size);
 
-				UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("ReadLocalVoiceData: Size: %d"), *Size);
-				return S_OK;
+				UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("ReadLocalVoiceData: Size: %d"), *Size);
+				return ONLINE_SUCCESS;
 			}
 			else
 			{
 				*Size = 0;
 				CompressedVoiceBuffer.Empty(UVOIPStatics::GetMaxCompressedVoiceDataSize());
 
-				UE_LOG(LogVoiceEngine, Warning, TEXT("ReadLocalVoiceData: GetVoice failure: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
-				return E_FAIL;
+				UE_LOG_ONLINE_VOICEENGINE(Warning, TEXT("ReadLocalVoiceData: GetVoice failure: VoiceResult: %s"), EVoiceCaptureState::ToString(VoiceResult));
+				return ONLINE_FAIL;
 			}
 		}
 	}
 
-	return E_FAIL;
+	return ONLINE_FAIL;
 }
 
 uint32 FVoiceEngineImpl::SubmitRemoteVoiceData(const FUniqueNetIdWrapper& RemoteTalkerId, uint8* Data, uint32* Size, uint64& InSampleCount)
 {
-	UE_LOG(LogVoiceEngine, VeryVerbose, TEXT("SubmitRemoteVoiceData(%s) Size: %d received!"), *RemoteTalkerId.ToDebugString(), *Size);
+	UE_LOG_ONLINE_VOICEENGINE(VeryVerbose, TEXT("SubmitRemoteVoiceData(%s) Size: %d received!"), *RemoteTalkerId.ToDebugString(), *Size);
 	
-	const FUniqueNetIdString& TalkerId = (const FUniqueNetIdString&) (*RemoteTalkerId);
-	FRemoteTalkerDataImpl& QueuedData = RemoteTalkerBuffers.FindOrAdd(TalkerId);
+	FRemoteTalkerDataImpl& QueuedData = RemoteTalkerBuffers.FindOrAdd(RemoteTalkerId);
 
 	// new voice packet.
 	QueuedData.LastSeen = FPlatformTime::Seconds();
@@ -446,7 +447,7 @@ uint32 FVoiceEngineImpl::SubmitRemoteVoiceData(const FUniqueNetIdWrapper& Remote
 	if (BytesWritten <= 0)
 	{
 		*Size = 0;
-		return S_OK;
+		return ONLINE_SUCCESS;
 	}
 
 	bool bAudioComponentCreated = false;
@@ -476,9 +477,8 @@ uint32 FVoiceEngineImpl::SubmitRemoteVoiceData(const FUniqueNetIdWrapper& Remote
 			FVoiceSettings InSettings;
 			UVOIPTalker* OwningTalker = nullptr;
 
-			
 			OwningTalker = UVOIPStatics::GetVOIPTalkerForPlayer(RemoteTalkerId, InSettings);
-			
+
 			ApplyVoiceSettings(QueuedData.VoipSynthComponent, InSettings);
 
 			QueuedData.VoipSynthComponent->ResetBuffer(InSampleCount, UVOIPStatics::GetBufferingDelay());
@@ -497,10 +497,10 @@ uint32 FVoiceEngineImpl::SubmitRemoteVoiceData(const FUniqueNetIdWrapper& Remote
 			}
 		}
 
-		QueuedData.VoipSynthComponent->SubmitPacket((float*) DecompressedVoiceBuffer.GetData(), BytesWritten, InSampleCount, EVoipStreamDataFormat::Int16);
+		QueuedData.VoipSynthComponent->SubmitPacket((float*)DecompressedVoiceBuffer.GetData(), BytesWritten, InSampleCount, EVoipStreamDataFormat::Int16);
 	}
 
-	return S_OK;
+	return ONLINE_SUCCESS;
 }
 
 void FVoiceEngineImpl::TickTalkers(float DeltaTime)
@@ -547,9 +547,9 @@ void FVoiceEngineImpl::Tick(float DeltaTime)
 	TickTalkers(DeltaTime);
 }
 
-void FVoiceEngineImpl::GenerateVoiceData(USoundWaveProcedural* InProceduralWave, int32 SamplesRequired, FUniqueNetIdString TalkerId)
+void FVoiceEngineImpl::GenerateVoiceData(USoundWaveProcedural* InProceduralWave, int32 SamplesRequired, const FUniqueNetId& TalkerId)
 {
-	FRemoteTalkerDataImpl* QueuedData = RemoteTalkerBuffers.Find(TalkerId);
+	FRemoteTalkerDataImpl* QueuedData = RemoteTalkerBuffers.Find(FUniqueNetIdWrapper(TalkerId.AsShared()));
 	if (QueuedData)
 	{
 		const int32 SampleSize = sizeof(uint16) * DEFAULT_NUM_VOICE_CHANNELS;
@@ -560,7 +560,7 @@ void FVoiceEngineImpl::GenerateVoiceData(USoundWaveProcedural* InProceduralWave,
 			const int32 AvailableSamples = QueuedData->CurrentUncompressedDataQueueSize / SampleSize;
 			if (AvailableSamples >= SamplesRequired)
 			{
-				UE_LOG(LogVoiceEngine, Verbose, TEXT("GenerateVoiceData %d / %d"), AvailableSamples, SamplesRequired);
+				UE_LOG_ONLINE_VOICEENGINE(Verbose, TEXT("GenerateVoiceData %d / %d"), AvailableSamples, SamplesRequired);
 				const int32 SamplesBytesTaken = AvailableSamples * SampleSize;
 				InProceduralWave->QueueAudio(QueuedData->UncompressedDataQueue.GetData(), SamplesBytesTaken);
 				QueuedData->UncompressedDataQueue.RemoveAt(0, SamplesBytesTaken, false);
@@ -568,7 +568,7 @@ void FVoiceEngineImpl::GenerateVoiceData(USoundWaveProcedural* InProceduralWave,
 			}
 			else
 			{
-				UE_LOG(LogVoiceEngine, Verbose, TEXT("Voice underflow"));
+				UE_LOG_ONLINE_VOICEENGINE(Verbose, TEXT("Voice underflow"));
 			}
 		}
 	}
@@ -581,13 +581,25 @@ void FVoiceEngineImpl::OnAudioFinished()
 		FRemoteTalkerDataImpl& RemoteData = It.Value();
 		if (RemoteData.VoipSynthComponent->IsIdling())
 		{
-			UE_LOG(LogVoiceEngine, Log, TEXT("Removing VOIP AudioComponent for Id: %s"), *It.Key().ToDebugString());
+			UE_LOG_ONLINE_VOICEENGINE(Log, TEXT("Removing VOIP AudioComponent for Id: %s"), *It.Key().ToDebugString());
 			RemoteData.VoipSynthComponent->Stop();
 			RemoteData.bIsActive = false;
 			break;
 		}
 	}
-	UE_LOG(LogVoiceEngine, Verbose, TEXT("Audio Finished"));
+	UE_LOG_ONLINE_VOICEENGINE(Verbose, TEXT("Audio Finished"));
+}
+
+void FVoiceEngineImpl::OnPostLoadMap(UWorld*)
+{
+	for (FRemoteTalkerData::TIterator It(RemoteTalkerBuffers); It; ++It)
+	{
+		FRemoteTalkerDataImpl& RemoteData = It.Value();
+		if (RemoteData.VoipSynthComponent && RemoteData.VoipSynthComponent->GetAudioComponent() != nullptr)
+		{
+			RemoteData.VoipSynthComponent->GetAudioComponent()->Play();
+		}
+	}
 }
 
 FString FVoiceEngineImpl::GetVoiceDebugState() const

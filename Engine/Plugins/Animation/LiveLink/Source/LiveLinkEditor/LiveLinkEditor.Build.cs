@@ -15,10 +15,15 @@ namespace UnrealBuildTool.Rules
                     "Engine",
                     "Projects",
                     "DetailCustomizations",
-
+					"HeadMountedDisplay",
+                    "MovieScene",
+                    "MovieSceneTools",
+                    "MovieSceneTracks",
                     "WorkspaceMenuStructure",
                     "EditorStyle",
-                    "SlateCore",
+                    "Sequencer",
+					"SequenceRecorder",
+					"SlateCore",
                     "Slate",
                     "InputCore",
 
@@ -31,8 +36,6 @@ namespace UnrealBuildTool.Rules
                     "Persona"
                 }
 			); 
-
-			PrivateIncludePaths.Add("/LiveLinkEditor/Private");
 		}
 	}
 }

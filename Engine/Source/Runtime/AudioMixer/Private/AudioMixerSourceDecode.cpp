@@ -42,6 +42,8 @@ public:
 
 	void DoWork()
 	{
+		LLM_SCOPE(ELLMTag::AudioMixer);
+
 		switch (TaskType)
 		{
 			case EAudioTaskType::Procedural:

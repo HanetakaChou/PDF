@@ -41,7 +41,7 @@ struct FRHICommandDrawIndexedPrimitive;
 struct FRHICommandDrawIndexedPrimitiveIndirect;
 struct FRHICommandDrawPrimitive;
 struct FRHICommandDrawPrimitiveIndirect;
-struct FRHICommandEnableDepthBoundsTest;
+struct FRHICommandSetDepthBounds;
 struct FRHICommandEndDrawIndexedPrimitiveUP;
 struct FRHICommandEndDrawingViewport;
 struct FRHICommandEndDrawPrimitiveUP;
@@ -277,39 +277,25 @@ void FRHICommandSetScissorRect::Execute(FRHICommandListBase& CmdList)
 void FRHICommandBeginRenderPass::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(BeginRenderPass);
-	check(!LocalRenderPass->RenderPass.GetReference());
-	LocalRenderPass->RenderPass = INTERNAL_DECORATOR(RHIBeginRenderPass)(Info, Name);
+	INTERNAL_DECORATOR(RHIBeginRenderPass)(Info, Name);
 }
 
 void FRHICommandEndRenderPass::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(EndRenderPass);
-	check(LocalRenderPass->RenderPass.GetReference());
-	INTERNAL_DECORATOR(RHIEndRenderPass)(LocalRenderPass->RenderPass);
+	INTERNAL_DECORATOR(RHIEndRenderPass)();
 }
 
-void FRHICommandBeginParallelRenderPass::Execute(FRHICommandListBase& CmdList)
+void FRHICommandBeginComputePass::Execute(FRHICommandListBase& CmdList)
 {
-	RHISTAT(BeginParallelRenderPass);
-	LocalRenderPass->RenderPass = INTERNAL_DECORATOR(RHIBeginParallelRenderPass)(Info, Name);
+	RHISTAT(BeginComputePass);
+	INTERNAL_DECORATOR(RHIBeginComputePass)(Name);
 }
 
-void FRHICommandEndParallelRenderPass::Execute(FRHICommandListBase& CmdList)
+void FRHICommandEndComputePass::Execute(FRHICommandListBase& CmdList)
 {
-	RHISTAT(EndParallelRenderPass);
-	INTERNAL_DECORATOR(RHIEndParallelRenderPass)(LocalRenderPass->RenderPass);
-}
-
-void FRHICommandBeginRenderSubPass::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BeginRenderSubPass);
-	LocalRenderSubPass->RenderSubPass = INTERNAL_DECORATOR(RHIBeginRenderSubPass)(LocalRenderPass->RenderPass);
-}
-
-void FRHICommandEndRenderSubPass::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(EndRenderSubPass);
-	INTERNAL_DECORATOR(RHIEndRenderSubPass)(LocalRenderPass->RenderPass, LocalRenderSubPass->RenderSubPass);
+	RHISTAT(EndComputePass);
+	INTERNAL_DECORATOR(RHIEndComputePass)();
 }
 
 void FRHICommandSetRenderTargets::Execute(FRHICommandListBase& CmdList)
@@ -444,10 +430,10 @@ void FRHICommandDrawIndexedPrimitiveIndirect::Execute(FRHICommandListBase& CmdLi
 	INTERNAL_DECORATOR(RHIDrawIndexedPrimitiveIndirect)(PrimitiveType, IndexBuffer, ArgumentsBuffer, ArgumentOffset);
 }
 
-void FRHICommandEnableDepthBoundsTest::Execute(FRHICommandListBase& CmdList)
+void FRHICommandSetDepthBounds::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(EnableDepthBoundsTest);
-	INTERNAL_DECORATOR(RHIEnableDepthBoundsTest)(bEnable, MinDepth, MaxDepth);
+	INTERNAL_DECORATOR(RHISetDepthBounds)(MinDepth, MaxDepth);
 }
 
 void FRHICommandClearTinyUAV::Execute(FRHICommandListBase& CmdList)
@@ -459,13 +445,13 @@ void FRHICommandClearTinyUAV::Execute(FRHICommandListBase& CmdList)
 void FRHICommandCopyToResolveTarget::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(CopyToResolveTarget);
-	INTERNAL_DECORATOR(RHICopyToResolveTarget)(SourceTexture, DestTexture, bKeepOriginalSurface, ResolveParams);
+	INTERNAL_DECORATOR(RHICopyToResolveTarget)(SourceTexture, DestTexture, ResolveParams);
 }
 
 void FRHICommandCopyTexture::Execute(FRHICommandListBase& CmdList)
 {
-	RHISTAT(CopyToResolveTarget);
-	INTERNAL_DECORATOR(RHICopyTexture)(SourceTexture, DestTexture, ResolveParams);
+	RHISTAT(CopyTexture);
+	INTERNAL_DECORATOR(RHICopyTexture)(SourceTexture, DestTexture, CopyInfo);
 }
 
 void FRHICommandTransitionTextures::Execute(FRHICommandListBase& CmdList)
@@ -506,6 +492,15 @@ void FRHICommandWaitComputeFence<CmdListType>::Execute(FRHICommandListBase& CmdL
 }
 template struct FRHICommandWaitComputeFence<ECmdList::EGfx>;
 template struct FRHICommandWaitComputeFence<ECmdList::ECompute>;
+
+template<ECmdList CmdListType>
+void FRHICommandEnqueueStagedRead<CmdListType>::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(EnqueueStagedRead);
+	INTERNAL_DECORATOR_CONTEXT(RHIEnqueueStagedRead)(StagingBuffer, Fence, Offset, NumBytes);
+}
+template struct FRHICommandEnqueueStagedRead<ECmdList::EGfx>;
+template struct FRHICommandEnqueueStagedRead<ECmdList::ECompute>;
 
 // NVCHANGE_BEGIN: Add HBAO+
 #if WITH_GFSDK_SSAO
@@ -623,7 +618,7 @@ void FRHICommandBuildLocalUniformBuffer::Execute(FRHICommandListBase& CmdList)
 	check(WorkArea.Contents); 
 	if (WorkArea.ComputedUniformBuffer->UseCount)
 	{
-		WorkArea.ComputedUniformBuffer->UniformBuffer = RHICreateUniformBuffer(WorkArea.Contents, *WorkArea.Layout, UniformBuffer_SingleFrame); 
+		WorkArea.ComputedUniformBuffer->UniformBuffer = GDynamicRHI->RHICreateUniformBuffer(WorkArea.Contents, *WorkArea.Layout, UniformBuffer_SingleFrame);
 	}
 	WorkArea.Layout = nullptr;
 	WorkArea.Contents = nullptr;
@@ -659,18 +654,6 @@ void FRHICommandEndRenderQuery::Execute(FRHICommandListBase& CmdList)
 	INTERNAL_DECORATOR(RHIEndRenderQuery)(RenderQuery);
 }
 
-void FRHICommandBeginOcclusionQueryBatch::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(BeginOcclusionQueryBatch);
-	INTERNAL_DECORATOR(RHIBeginOcclusionQueryBatch)();
-}
-
-void FRHICommandEndOcclusionQueryBatch::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(EndOcclusionQueryBatch);
-	INTERNAL_DECORATOR(RHIEndOcclusionQueryBatch)();
-}
-
 template<ECmdList CmdListType>
 void FRHICommandSubmitCommandsHint<CmdListType>::Execute(FRHICommandListBase& CmdList)
 {
@@ -679,6 +662,12 @@ void FRHICommandSubmitCommandsHint<CmdListType>::Execute(FRHICommandListBase& Cm
 }
 template struct FRHICommandSubmitCommandsHint<ECmdList::EGfx>;
 template struct FRHICommandSubmitCommandsHint<ECmdList::ECompute>;
+
+void FRHICommandPollOcclusionQueries::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(PollOcclusionQueries);
+	INTERNAL_DECORATOR(RHIPollOcclusionQueries)();
+}
 
 void FRHICommandUpdateTextureReference::Execute(FRHICommandListBase& CmdList)
 {
@@ -726,8 +715,7 @@ template<ECmdList CmdListType>
 void FRHICommandPushEvent<CmdListType>::Execute(FRHICommandListBase& CmdList)
 {
 #if	RHI_COMMAND_LIST_DEBUG_TRACES
-	extern CORE_API bool GCommandListOnlyDrawEvents;
-	if (GCommandListOnlyDrawEvents)
+	if (GetEmitDrawEventsOnlyOnCommandlist())
 	{
 		return;
 	}
@@ -742,8 +730,7 @@ template<ECmdList CmdListType>
 void FRHICommandPopEvent<CmdListType>::Execute(FRHICommandListBase& CmdList)
 {
 #if	RHI_COMMAND_LIST_DEBUG_TRACES
-	extern CORE_API bool GCommandListOnlyDrawEvents;
-	if (GCommandListOnlyDrawEvents)
+	if (GetEmitDrawEventsOnlyOnCommandlist())
 	{
 		return;
 	}
@@ -760,4 +747,8 @@ void FRHICommandInvalidateCachedState::Execute(FRHICommandListBase& CmdList)
 	INTERNAL_DECORATOR(RHIInvalidateCachedState)();
 }
 
-
+void FRHICommandDiscardRenderTargets::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(RHIDiscardRenderTargets);
+	INTERNAL_DECORATOR(RHIDiscardRenderTargets)(Depth, Stencil, ColorBitMask);
+}

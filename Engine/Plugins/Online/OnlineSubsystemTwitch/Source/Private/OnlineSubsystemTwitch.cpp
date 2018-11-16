@@ -126,9 +126,14 @@ IOnlineTurnBasedPtr FOnlineSubsystemTwitch::GetTurnBasedInterface() const
 	return nullptr;
 }
 
+IOnlineTournamentPtr FOnlineSubsystemTwitch::GetTournamentInterface() const
+{
+	return nullptr;
+}
+
 bool FOnlineSubsystemTwitch::Init()
 {
-	UE_LOG_ONLINE(Verbose, TEXT("FOnlineSubsystemTwitch::Init() Name: %s"), *InstanceName.ToString());
+	UE_LOG_ONLINE(VeryVerbose, TEXT("FOnlineSubsystemTwitch::Init() Name: %s"), *InstanceName.ToString());
 
 	TwitchIdentity = MakeShared<FOnlineIdentityTwitch, ESPMode::ThreadSafe>(this);
 	TwitchExternalUIInterface = MakeShared<FOnlineExternalUITwitch, ESPMode::ThreadSafe>(this);
@@ -138,12 +143,12 @@ bool FOnlineSubsystemTwitch::Init()
 
 void FOnlineSubsystemTwitch::PreUnload()
 {
-	UE_LOG_ONLINE(Verbose, TEXT("FOnlineSubsystemTwitch::Preunload() Name: %s"), *InstanceName.ToString());
+	UE_LOG_ONLINE(VeryVerbose, TEXT("FOnlineSubsystemTwitch::Preunload() Name: %s"), *InstanceName.ToString());
 }
 
 bool FOnlineSubsystemTwitch::Shutdown()
 {
-	UE_LOG_ONLINE(Verbose, TEXT("FOnlineSubsystemTwitch::Shutdown() Name: %s"), *InstanceName.ToString());
+	UE_LOG_ONLINE(VeryVerbose, TEXT("FOnlineSubsystemTwitch::Shutdown() Name: %s"), *InstanceName.ToString());
 
 	FOnlineSubsystemImpl::Shutdown();
 
@@ -171,7 +176,7 @@ FString FOnlineSubsystemTwitch::GetAppId() const
 		if (!bWarned)
 		{
 			bWarned = true;
-			UE_LOG(LogOnline, Warning, TEXT("Missing ClientId= in [OnlineSubsystemTwitch] of DefaultEngine.ini"));
+			UE_LOG_ONLINE(Warning, TEXT("Missing ClientId= in [OnlineSubsystemTwitch] of DefaultEngine.ini"));
 		}
 	}
 	return ClientId;

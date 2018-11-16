@@ -5,7 +5,7 @@
 =============================================================================*/
 
 #include "Engine/GameEngine.h"
-#include "TabManager.h"
+#include "Framework/Docking/TabManager.h"
 #include "GenericPlatform/GenericPlatformSurvey.h"
 #include "Misc/CommandLine.h"
 #include "Misc/TimeGuard.h"
@@ -32,6 +32,8 @@
 #include "Misc/PackageName.h"
 #include "HAL/PlatformApplicationMisc.h"
 
+#include "Misc/ConfigCacheIni.h"
+
 #include "Slate/SceneViewport.h"
 
 #include "IMovieSceneCapture.h"
@@ -54,11 +56,18 @@
 #include "AssetRegistryModule.h"
 #include "DynamicResolutionProxy.h"
 #include "DynamicResolutionState.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 #if WITH_EDITOR
 #include "PIEPreviewDeviceProfileSelectorModule.h"
 #include "IPIEPreviewDeviceModule.h"
 #endif
+
+#if !UE_SERVER
+	#include "IMediaModule.h"
+#endif
+
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 ENGINE_API bool GDisallowNetworkTravel = false;
 
@@ -174,8 +183,8 @@ UGameEngine::UGameEngine(const FObjectInitializer& ObjectInitializer)
 
 void UGameEngine::CreateGameViewportWidget( UGameViewportClient* GameViewportClient )
 {
-	bool bRenderDirectlyToWindow = !StartupMovieCaptureHandle.IsValid() && GIsDumpingMovie == 0; 
-	const bool bStereoAllowed = bRenderDirectlyToWindow;
+	bool bRenderDirectlyToWindow = (!StartupMovieCaptureHandle.IsValid() || IMovieSceneCaptureModule::Get().IsStereoAllowed()) && GIsDumpingMovie == 0;
+
 	TSharedRef<SOverlay> ViewportOverlayWidgetRef = SNew( SOverlay );
 
 	TSharedRef<SGameLayerManager> GameLayerManagerRef = SNew(SGameLayerManager)
@@ -183,6 +192,19 @@ void UGameEngine::CreateGameViewportWidget( UGameViewportClient* GameViewportCli
 		[
 			ViewportOverlayWidgetRef
 		];
+
+	// when we're running in a "device simulation" window, render the scene to an intermediate texture
+	// in the mobile device "emulation" case this is needed to properly position the viewport (as a widget) inside its bezel
+#if WITH_EDITOR
+	auto PIEPreviewDeviceModule = FModuleManager::LoadModulePtr<IPIEPreviewDeviceModule>("PIEPreviewDeviceProfileSelector");
+	if (PIEPreviewDeviceModule && FPIEPreviewDeviceModule::IsRequestingPreviewDevice())
+	{
+		bRenderDirectlyToWindow = false;
+		PIEPreviewDeviceModule->SetGameLayerManagerWidget(GameLayerManagerRef);
+	}
+#endif
+
+	const bool bStereoAllowed = bRenderDirectlyToWindow;
 
 	TSharedRef<SViewport> GameViewportWidgetRef = 
 		SNew( SViewport )
@@ -238,12 +260,16 @@ void UGameEngine::CreateGameViewport( UGameViewportClient* GameViewportClient )
 	// The viewport widget needs an interface so it knows what should render
 	GameViewportWidgetRef->SetViewportInterface( SceneViewport.ToSharedRef() );
 
-	FViewportFrame* ViewportFrame = SceneViewport.Get();
+	FSceneViewport* ViewportFrame = SceneViewport.Get();
 
 	GameViewport->SetViewportFrame(ViewportFrame);
+
+	GameViewport->GetGameLayerManager()->SetSceneViewport(ViewportFrame);
+
+	FViewport::ViewportResizedEvent.AddUObject(this, &UGameEngine::OnViewportResized);
 }
 
-const FSceneViewport* UGameEngine::GetGameSceneViewport(UGameViewportClient* ViewportClient) const
+FSceneViewport* UGameEngine::GetGameSceneViewport(UGameViewportClient* ViewportClient) const
 {
 	return ViewportClient->GetGameViewport();
 }
@@ -277,7 +303,7 @@ void UGameEngine::ConditionallyOverrideSettings(int32& ResolutionX, int32& Resol
 	DetermineGameWindowResolution(ResolutionX, ResolutionY, WindowMode);
 }
 
-void UGameEngine::DetermineGameWindowResolution( int32& ResolutionX, int32& ResolutionY, EWindowMode::Type& WindowMode )
+void UGameEngine::DetermineGameWindowResolution( int32& ResolutionX, int32& ResolutionY, EWindowMode::Type& WindowMode, bool bUseWorkAreaForWindowed )
 {
 	//fullscreen is always supported, but don't allow windowed mode on platforms that dont' support it.
 	WindowMode = (!FPlatformProperties::SupportsWindowedMode() && (WindowMode == EWindowMode::Windowed || WindowMode == EWindowMode::WindowedFullscreen)) ? EWindowMode::Fullscreen : WindowMode;
@@ -293,13 +319,13 @@ void UGameEngine::DetermineGameWindowResolution( int32& ResolutionX, int32& Reso
 	}
 	else
 	{
-		FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+		FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 	}
 
 	// Find the maximum allowed resolution
 	// Use PrimaryDisplayWidth/Height in windowed mode
-	int32 MaxResolutionX = DisplayMetrics.PrimaryDisplayWidth;
-	int32 MaxResolutionY = DisplayMetrics.PrimaryDisplayHeight;
+	int32 MaxResolutionX = bUseWorkAreaForWindowed && WindowMode == EWindowMode::Windowed ? DisplayMetrics.PrimaryDisplayWorkAreaRect.Right - DisplayMetrics.PrimaryDisplayWorkAreaRect.Left : DisplayMetrics.PrimaryDisplayWidth;
+	int32 MaxResolutionY = bUseWorkAreaForWindowed && WindowMode == EWindowMode::Windowed ? DisplayMetrics.PrimaryDisplayWorkAreaRect.Bottom - DisplayMetrics.PrimaryDisplayWorkAreaRect.Top : DisplayMetrics.PrimaryDisplayHeight;
 	if (WindowMode == EWindowMode::Fullscreen && DisplayMetrics.MonitorInfo.Num() > 0)
 	{
 		// In fullscreen, PrimaryDisplayWidth/Height is equal to your current resolution, so we will use your max native resolution instead
@@ -398,13 +424,21 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 		}
 	}
 
-	const FText WindowTitleOverride = GetDefault<UGeneralProjectSettings>()->ProjectDisplayedTitle;
+	// bool bHaveProjectSettings = IsClassLoaded<UGeneralProjectSettings>();
+
+	/*const FText WindowTitleOverride = bHaveProjectSettings ? GetDefault<UGeneralProjectSettings>()->ProjectDisplayedTitle : FText();
+	const FText WindowTitleComponent = WindowTitleOverride.IsEmpty() ? NSLOCTEXT("UnrealEd", "GameWindowTitle", "{GameName}") : WindowTitleOverride;*/
+
+	FText WindowTitleOverride = FText();
+	GConfig->GetText(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectDisplayedTitle"), WindowTitleOverride, GGameIni);
 	const FText WindowTitleComponent = WindowTitleOverride.IsEmpty() ? NSLOCTEXT("UnrealEd", "GameWindowTitle", "{GameName}") : WindowTitleOverride;
 
-	FText WindowDebugInfoComponent;
+	FText WindowDebugInfoComponent = FText();
 #if !UE_BUILD_SHIPPING
-	const FText WindowDebugInfoOverride = GetDefault<UGeneralProjectSettings>()->ProjectDebugTitleInfo;
-	WindowDebugInfoComponent = WindowDebugInfoOverride.IsEmpty() ? NSLOCTEXT("UnrealEd", "GameWindowTitleDebugInfo", "({PlatformArchitecture}-bit, {RHIName})") : WindowDebugInfoOverride;
+	//const FText WindowDebugInfoOverride = bHaveProjectSettings ? GetDefault<UGeneralProjectSettings>()->ProjectDebugTitleInfo : FText();
+	FText WindowDebugInfoOverride = FText();
+	GConfig->GetText(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectDebugTitleInfo"), WindowDebugInfoOverride, GGameIni);
+	WindowDebugInfoComponent = WindowDebugInfoOverride.IsEmpty() ? NSLOCTEXT("UnrealEd", "GameWindowTitleDebugInfo", "({PlatformArchitecture}-bit {BuildConfiguration} {RHIName})") : WindowDebugInfoOverride;
 #endif
 
 #if PLATFORM_64BITS
@@ -419,17 +453,37 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 	Args.Add( TEXT("GameName"), FText::FromString( FApp::GetProjectName() ) );
 	Args.Add( TEXT("PlatformArchitecture"), PlatformBits );
 	Args.Add( TEXT("RHIName"), FText::FromName( LegacyShaderPlatformToShaderFormat( GMaxRHIShaderPlatform ) ) );
+	Args.Add( TEXT("BuildConfiguration"), FText::FromString(EBuildConfigurations::ToString(FApp::GetBuildConfiguration()) ) );
+
 	/************************************************************************/
 	/************************ Add device name to window title****************/
 	/************************************************************************/
 	const FText WindowTitleVar = FText::Format( FText::FromString(TEXT("{0} {1} {2}")), WindowTitleComponent, WindowDebugInfoComponent, FGlobalTabmanager::Get()->GetApplicationTitle() );
 	const FText WindowTitle = FText::Format(WindowTitleVar, Args);
-	const bool bShouldPreserveAspectRatio = GetDefault<UGeneralProjectSettings>()->bShouldWindowPreserveAspectRatio;
-	const bool bUseBorderlessWindow = GetDefault<UGeneralProjectSettings>()->bUseBorderlessWindow;
-	const bool bAllowWindowResize = GetDefault<UGeneralProjectSettings>()->bAllowWindowResize;
-	const bool bAllowClose = GetDefault<UGeneralProjectSettings>()->bAllowClose;
-	const bool bAllowMaximize = GetDefault<UGeneralProjectSettings>()->bAllowMaximize;
-	const bool bAllowMinimize = GetDefault<UGeneralProjectSettings>()->bAllowMinimize;
+
+	auto GetProjectSettingBool = [](const FString& ParamName, bool Default) -> bool
+		{
+			bool Temp = Default;
+			GConfig->GetBool(TEXT("/Script/EngineSettings.GeneralProjectSettings"), *ParamName, Temp, GGameIni);
+			return Temp;
+		};
+
+	auto GetProjectSettingInt = [](const FString& ParamName, int Default) -> int32
+	{
+		int32 Temp = Default;
+		GConfig->GetInt(TEXT("/Script/EngineSettings.GeneralProjectSettings"), *ParamName, Temp, GGameIni);
+		return Temp;
+	};
+
+	const bool bShouldPreserveAspectRatio = GetProjectSettingBool(TEXT("bShouldWindowPreserveAspectRatio"), true);
+	const bool bUseBorderlessWindow = GetProjectSettingBool(TEXT("bUseBorderlessWindow"), false) && PLATFORM_WINDOWS;
+	const bool bAllowWindowResize = GetProjectSettingBool(TEXT("bAllowWindowResize"), true);
+	const bool bAllowClose = GetProjectSettingBool(TEXT("bAllowClose"), true);
+	const bool bAllowMaximize = GetProjectSettingBool(TEXT("bAllowMaximize"), true);
+	const bool bAllowMinimize = GetProjectSettingBool(TEXT("bAllowMinimize"), true);
+
+	const int32 MinWindowWidth = GetProjectSettingInt(TEXT("MinWindowWidth"), 640);
+	const int32 MinWindowHeight = GetProjectSettingInt(TEXT("MinWindowHeight"), 480);
 
 	// Allow optional winX/winY parameters to set initial window position
 	EAutoCenter AutoCenterType = EAutoCenter::PrimaryWorkArea;
@@ -455,7 +509,7 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 		}
 		else
 		{
-			FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+			FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 		}
 
 		MaxWindowWidth = FMath::Max(DisplayMetrics.VirtualDisplayRect.Right - DisplayMetrics.VirtualDisplayRect.Left, ResX);
@@ -476,9 +530,12 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 	.Type(EWindowType::GameWindow)
 	.Style(bUseBorderlessWindow ? &BorderlessStyle : &FCoreStyle::Get().GetWidgetStyle<FWindowStyle>("Window"))
 	.ClientSize(FVector2D(ResX, ResY))
+	.AdjustInitialSizeAndPositionForDPIScale(false)
 	.Title(WindowTitle)
 	.AutoCenter(AutoCenterType)
 	.ScreenPosition(FVector2D(WinX, WinY))
+	.MinWidth(MinWindowWidth)
+	.MinHeight(MinWindowHeight)
 	.MaxWidth(MaxWindowWidth)
 	.MaxHeight(MaxWindowHeight)
 	.FocusWhenFirstShown(true)
@@ -498,7 +555,7 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 		Window = PIEPreviewDeviceModule->CreatePIEPreviewDeviceWindow(FVector2D(ResX, ResY), WindowTitle, AutoCenterType, FVector2D(WinX, WinY), MaxWindowWidth, MaxWindowHeight);
 	}
 #endif
-			
+
 	const bool bShowImmediately = false;
 
 	FSlateApplication::Get().AddWindow( Window, bShowImmediately );
@@ -515,7 +572,22 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 		Window->SetWindowMode(WindowMode);
 	}
 
-	Window->ShowWindow();
+	// No need to show window in off-screen rendering mode as it does not render to screen
+	if (FSlateApplication::Get().IsRenderingOffScreen())
+	{
+		FSlateApplicationBase::Get().GetRenderer()->CreateViewport(Window);
+	}
+	else
+	{
+		Window->ShowWindow();
+	}
+
+#if WITH_EDITOR
+	if (PIEPreviewDeviceModule && FPIEPreviewDeviceModule::IsRequestingPreviewDevice())
+	{
+		PIEPreviewDeviceModule->OnWindowReady(Window);
+	}
+#endif
 
 	// Tick now to force a redraw of the window and ensure correct fullscreen application
 	FSlateApplication::Get().Tick();
@@ -572,6 +644,7 @@ void UGameEngine::OnGameWindowMoved( const TSharedRef<SWindow>& WindowBeingMoved
 void UGameEngine::RedrawViewports( bool bShouldPresent /*= true*/ )
 {
 	SCOPE_CYCLE_COUNTER(STAT_RedrawViewports);
+	CSV_SCOPED_TIMING_STAT(Basic, RedrawViewports);
 
 	if ( GameViewport != NULL )
 	{
@@ -579,6 +652,24 @@ void UGameEngine::RedrawViewports( bool bShouldPresent /*= true*/ )
 		if ( GameViewport->Viewport != NULL )
 		{
 			GameViewport->Viewport->Draw(bShouldPresent);
+		}
+	}
+}
+
+void UGameEngine::OnViewportResized(FViewport* Viewport, uint32 Unused)
+{
+	if (Viewport && Viewport == SceneViewport.Get() && GameViewportWindow.IsValid() && GameViewportWindow.Pin()->GetWindowMode() == EWindowMode::Windowed)
+	{
+		const FIntPoint ViewportSize = Viewport->GetSizeXY();
+		if (ViewportSize.X > 0 && ViewportSize.Y > 0)
+		{
+			GSystemResolution.ResX = ViewportSize.X;
+			GSystemResolution.ResY = ViewportSize.Y;
+
+			UGameUserSettings* Settings = GetGameUserSettings();
+			Settings->SetScreenResolution(ViewportSize);
+			Settings->ConfirmVideoMode();
+			Settings->RequestUIUpdate();
 		}
 	}
 }
@@ -615,7 +706,7 @@ UEngine::UEngine(const FObjectInitializer& ObjectInitializer)
 
 	bUseSound = true;
 
-	bHardwareSurveyEnabled_DEPRECATED = true;
+	bHardwareSurveyEnabled_DEPRECATED = false;
 	bIsInitialized = false;
 
 	BeginStreamingPauseDelegate = NULL;
@@ -646,6 +737,8 @@ UEngine::UEngine(const FObjectInitializer& ObjectInitializer)
 		}
 	}
 	#endif
+
+	DefaultTimecodeFrameRate = FFrameRate(30, 1);
 }
 
 void UGameEngine::Init(IEngineLoop* InEngineLoop)
@@ -752,6 +845,8 @@ void UGameEngine::Start()
 
 void UGameEngine::PreExit()
 {
+	GetGameUserSettings()->SaveSettings();
+
 	// Stop tracking, automatically flushes.
 	NETWORK_PROFILER(GNetworkProfiler.EnableTracking(false));
 
@@ -854,12 +949,15 @@ bool UGameEngine::NetworkRemapPath(UNetDriver* Driver, FString& Str, bool bReadi
 	FWorldContext& Context = GetWorldContextFromWorldChecked(World);
 	if (Context.PIEInstance == INDEX_NONE)
 	{
-		// If this is not a PIE instance but sender is PIE, we need to strip the PIE prefix
-		const FString Stripped = UWorld::RemovePIEPrefix(Str);
-		if (!Stripped.Equals(Str, ESearchCase::CaseSensitive))
+		if (WorldList.Num() > 1)
 		{
-			Str = Stripped;
-			return true;
+			// If this is not a PIE instance but sender is PIE, we need to strip the PIE prefix
+			const FString Stripped = UWorld::RemovePIEPrefix(Str);
+			if (!Stripped.Equals(Str, ESearchCase::CaseSensitive))
+			{
+				Str = Stripped;
+				return true;
+			}
 		}
 		return false;
 	}
@@ -879,7 +977,7 @@ bool UGameEngine::NetworkRemapPath(UNetDriver* Driver, FString& Str, bool bReadi
 		return true;
 	}
 
-	for (ULevelStreaming* StreamingLevel : World->StreamingLevels)
+	for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
 	{
 		if (StreamingLevel != nullptr)
 		{
@@ -915,16 +1013,29 @@ bool UGameEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	{
 		FString CmdName = FParse::Token(Cmd, 0);
 		bool Background = false;
-		if (!CmdName.IsEmpty() && !FCString::Stricmp(*CmdName, TEXT("background")))
+		bool Forced = false;
+
+		if (!CmdName.IsEmpty())
 		{
-			Background = true;
+			if (!FCString::Stricmp(*CmdName, TEXT("background")))
+			{
+				Background = true;
+			}
+
+#if  !UE_BUILD_SHIPPING
+			// in non-shipping let things force an exit on all platforms for automation
+			if (!FCString::Stricmp(*CmdName, TEXT("force")))
+			{
+				Forced = true;
+			}
+#endif
 		}
 
 		if ( Background && FPlatformProperties::SupportsMinimize() )
 		{
 			return HandleMinimizeCommand( Cmd, Ar );
 		}
-		else if ( FPlatformProperties::SupportsQuit() )
+		else if ( FPlatformProperties::SupportsQuit() || Forced )
 		{
 			return HandleExitCommand( Cmd, Ar );
 		}
@@ -1091,20 +1202,10 @@ float UGameEngine::GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing
 {
 	float MaxTickRate = 0.f;
 
-	if (FPlatformProperties::SupportsWindowedMode() == false && !IsRunningDedicatedServer())
+	if (FPlatformProperties::SupportsWindowedMode() || IsRunningDedicatedServer())
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VSync"));
-		// Limit framerate on console if VSYNC is enabled to avoid jumps from 30 to 60 and back.
-		if( CVar->GetValueOnGameThread() != 0 )
-		{
-			if (SmoothedFrameRateRange.HasUpperBound())
-			{
-				MaxTickRate = SmoothedFrameRateRange.GetUpperBoundValue();
-			}
-		}
-	}
-	else 
-	{
+		// This applies for "non-console" platforms...
+
 		UWorld* World = NULL;
 
 		for (int32 WorldIndex = 0; WorldIndex < WorldList.Num(); ++WorldIndex)
@@ -1328,6 +1429,7 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 	// ----------------------------
 	{
 		SCOPE_TIME_GUARD(TEXT("UGameEngine::Tick - TickObjects"));
+		CSV_SCOPED_TIMING_STAT(Basic, GameEngineTickObjects);
 		FTickableGameObject::TickObjects(nullptr, LEVELTICK_All, false, DeltaSeconds);
 	}
 
@@ -1337,6 +1439,17 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_UGameEngine_Tick_GetWorldContextFromHandleChecked);
 		GWorld = GetWorldContextFromHandleChecked(OriginalGWorldContext).World();
 	}
+
+#if !UE_SERVER
+	// tick media framework
+	static const FName MediaModuleName(TEXT("Media"));
+	IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>(MediaModuleName);
+
+	if (MediaModule != nullptr)
+	{
+		MediaModule->TickPostEngine();
+	}
+#endif
 
 	// Tick the viewport
 	if ( GameViewport != NULL && !bIdleMode )
@@ -1356,7 +1469,11 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			FPlatformSplash::Hide();
 			if ( GameViewportWindow.IsValid() )
 			{
-				GameViewportWindow.Pin()->ShowWindow();
+				// Don't show window in off-screen rendering mode as it doesn't render to screen
+				if (!FSlateApplication::Get().IsRenderingOffScreen())
+				{
+					GameViewportWindow.Pin()->ShowWindow();
+				}
 				FSlateApplication::Get().RegisterGameViewport( GameViewportWidget.ToSharedRef() );
 			}
 		}

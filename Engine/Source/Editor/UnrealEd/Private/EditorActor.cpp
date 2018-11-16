@@ -14,7 +14,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Components/LightComponent.h"
 #include "Model.h"
 #include "Exporters/Exporter.h"
@@ -58,6 +58,7 @@
 #include "LevelEditor.h"
 #include "Engine/LODActor.h"
 #include "Settings/LevelEditorMiscSettings.h"
+#include "Settings/EditorProjectSettings.h"
 #include "ActorGroupingUtils.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "IAssetTools.h"
@@ -133,9 +134,9 @@ void UUnrealEdEngine::edactCopySelected( UWorld* InWorld, FString* DestinationDa
 {
 	if (GetSelectedComponentCount() > 0)
 	{
-		// Copy components
+		// Copy selected components
 		TArray<UActorComponent*> SelectedComponents;
-		for (FSelectedEditableComponentIterator It(GetSelectedEditableComponentIterator()); It; ++It)
+		for (FSelectionIterator It(GetSelectedComponentIterator()); It; ++It)
 		{
 			SelectedComponents.Add(CastChecked<UActorComponent>(*It));
 		}
@@ -236,14 +237,13 @@ bool UUnrealEdEngine::WarnIfDestinationLevelIsHidden( UWorld* InWorld )
 	FSuppressableWarningDialog PasteHiddenWarning( Info );
 
 	//check streaming levels first	
-	for (int32 i = 0; i < InWorld->StreamingLevels.Num(); i++)
+	for (ULevelStreaming* StreamedLevel : InWorld->GetStreamingLevels())
 	{
-		ULevelStreaming* StreamedLevel = InWorld->StreamingLevels[i];
 		//this is the active level - check if it is visible
-		if ( StreamedLevel != NULL && StreamedLevel->bShouldBeVisibleInEditor == false )
+		if (StreamedLevel && StreamedLevel->GetShouldBeVisibleInEditor() == false )
 		{
 			ULevel* Level = StreamedLevel->GetLoadedLevel();
-			if( Level != NULL && Level->IsCurrentLevel() )
+			if( Level && Level->IsCurrentLevel() )
 			{
 				//the streamed level is not visible - check what the user wants to do
 				FSuppressableWarningDialog::EResult DialogResult = PasteHiddenWarning.ShowModal();
@@ -470,14 +470,14 @@ void UUnrealEdEngine::edactDuplicateSelected( ULevel* InLevel, bool bOffsetLocat
 		TArray<UActorComponent*> NewComponentClones;
 		NewComponentClones.Reserve(NumSelectedComponents);
 
-		// Duplicate selected components if they are an Instance component
-		for (FSelectedEditableComponentIterator It(GetSelectedEditableComponentIterator()); It; ++It)
+		// Duplicate selected components
+		for (FSelectionIterator It(GetSelectedComponentIterator()); It; ++It)
 		{
 			UActorComponent* Component = CastChecked<UActorComponent>(*It);
-			if (Component->CreationMethod == EComponentCreationMethod::Instance)
+
+			if (FComponentEditorUtils::CanCopyComponent(Component))
 			{
-				UActorComponent* Clone = FComponentEditorUtils::DuplicateComponent(Component);
-				if (Clone)
+				if (UActorComponent* Clone = FComponentEditorUtils::DuplicateComponent(Component))
 				{
 					NewComponentClones.Add(Clone);
 				}
@@ -626,8 +626,10 @@ bool UUnrealEdEngine::CanDeleteSelectedActors( const UWorld* InWorld, const bool
 
 		// Only delete transactional actors that aren't a level's builder brush or worldsettings.
 		bool bDeletable	= false;
-		if ( Actor->HasAllFlags( RF_Transactional ) )
+		FText CannotDeleteReason;
+		if (Actor->HasAllFlags(RF_Transactional) && Actor->CanDeleteSelectedActor(CannotDeleteReason))
 		{
+			// TODO: The Brush and WorldSettings logic should be moved to use the CanDeleteSelectedActor virtual
 			ABrush* Brush = Cast< ABrush >( Actor );
 			const bool bIsDefaultBrush = Brush && FActorEditorUtils::IsABuilderBrush(Brush);
 			if ( !bIsDefaultBrush )
@@ -659,8 +661,17 @@ bool UUnrealEdEngine::CanDeleteSelectedActors( const UWorld* InWorld, const bool
 			FFormatNamedArguments Arguments;
 			Arguments.Add(TEXT("Name"), FText::FromString( Actor->GetFullName() ));
 
-			const FText LogText = FText::Format( LOCTEXT( "CannotDeleteSpecialActor", "Cannot delete special actor {Name}" ), Arguments );
-			UE_LOG(LogEditorActor, Log, TEXT("%s"), *LogText.ToString() );
+			FText LogText;
+			if (CannotDeleteReason.IsEmpty())
+			{
+				LogText = FText::Format(LOCTEXT("CannotDeleteSpecialActor", "Cannot delete special actor {Name}"), Arguments);
+			}
+			else
+			{
+				Arguments.Add(TEXT("Reason"), CannotDeleteReason);
+				LogText = FText::Format(LOCTEXT("CannotDeleteActorWithReason", "Cannot delete actor {Name} - {Reason}"), Arguments);
+			}
+			UE_LOG(LogEditorActor, Log, TEXT("%s"), *LogText.ToString());
 		}
 	}
 	return bContainsDeletable;
@@ -716,6 +727,9 @@ bool UUnrealEdEngine::edactDeleteSelected( UWorld* InWorld, bool bVerifyDeletion
 					// Make sure the selection changed event fires so the SCS trees can update their selection
 					ComponentSelection->MarkBatchDirty();
 					ComponentSelection->EndBatchSelectOperation(true);
+
+					// Notify the level editor of the new component selection
+					NoteSelectionChange();
 				}
 
 				UE_LOG(LogEditorActor, Log, TEXT("Deleted %d Components (%3.3f secs)"), NumDeletedComponents, FPlatformTime::Seconds() - StartSeconds);
@@ -819,6 +833,11 @@ bool UUnrealEdEngine::edactDeleteSelected( UWorld* InWorld, bool bVerifyDeletion
 		{
 			for (AActor* ReferencingActor : (*ReferencingActors))
 			{
+				// Skip to next if we are referencing ourselves
+				if (ReferencingActor == Actor)
+				{
+					continue;
+				}
 
 				// If the referencing actor is a child actor that is referencing us, do not treat it
 				// as referencing for the purposes of warning about deletion
@@ -1026,13 +1045,11 @@ bool UUnrealEdEngine::edactDeleteSelected( UWorld* InWorld, bool bVerifyDeletion
 
 	if( LevelsToRebuildNavigation.Num() )
 	{
-		UWorld* World = GetEditorWorldContext().World();
-		UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(World);
-		if (NavSys)
+		for (ULevel* Level : LevelsToRebuildNavigation)
 		{
-			for ( ULevel* Level : LevelsToRebuildNavigation )
+			if (Level)
 			{
-				NavSys->UpdateLevelCollision(Level);
+				FNavigationSystem::UpdateLevelCollision(*Level);
 			}
 		}
 	}
@@ -1751,7 +1768,7 @@ void UUnrealEdEngine::edactSelectAll( UWorld* InWorld )
 	for( FActorIterator It(InWorld); It; ++It )
 	{
 		AActor* Actor = *It;
-		if( !Actor->IsSelected() && !Actor->IsHiddenEd() )
+		if( !Actor->IsSelected() && !Actor->IsHiddenEd() && Actor->IsSelectable())
 		{
 			SelectActor( Actor, 1, 0 );
 		}
@@ -2203,16 +2220,15 @@ void UUnrealEdEngine::edactSelectMatchingMaterial()
 		if( CurrentActor )
 		{
 			// Find the materials by iterating over every primitive component.
-			TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-			CurrentActor->GetComponents(PrimitiveComponents);
-
-			for (int32 ComponentIdx = 0; ComponentIdx < PrimitiveComponents.Num(); ComponentIdx++)
+			for (UActorComponent* Component : CurrentActor->GetComponents())
 			{
-				UPrimitiveComponent* CurrentComponent = PrimitiveComponents[ComponentIdx];
-				TArray<UMaterialInterface*> UsedMaterials;
-				CurrentComponent->GetUsedMaterials( UsedMaterials );
-				MaterialsInSelection.Append( UsedMaterials );
-				SelectedWorlds.AddUnique( CurrentActor->GetWorld() );
+				if (UPrimitiveComponent* CurrentComponent = Cast<UPrimitiveComponent>(Component))
+				{
+					TArray<UMaterialInterface*> UsedMaterials;
+					CurrentComponent->GetUsedMaterials(UsedMaterials);
+					MaterialsInSelection.Append(UsedMaterials);
+					SelectedWorlds.AddUnique(CurrentActor->GetWorld());
+				}
 			}
 		}
 	}
@@ -2332,14 +2348,11 @@ void UUnrealEdEngine::edactSelectRelevantLights( UWorld* InWorld )
 
 		if (Actor->GetLevel()->IsCurrentLevel() )
 		{
-			TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-			Actor->GetComponents(PrimitiveComponents);
-
 			// Gather static lighting info from each of the actor's components.
-			for(int32 ComponentIndex = 0;ComponentIndex < PrimitiveComponents.Num();ComponentIndex++)
+			for (UActorComponent* Component : Actor->GetComponents())
 			{
-				UPrimitiveComponent* Primitive = PrimitiveComponents[ComponentIndex];
-				if (Primitive->IsRegistered())
+				UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Component);
+				if (Primitive && Primitive->IsRegistered())
 				{
 					TArray<const ULightComponent*> RelevantLightComponents;
 					InWorld->Scene->GetRelevantLights(Primitive, &RelevantLightComponents);

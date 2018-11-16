@@ -119,6 +119,10 @@ struct FWindowsPlatformMath : public FGenericPlatformMath
 	{
 		return 1 << CeilLogTwo(Arg);
 	}
+	static FORCEINLINE uint64 RoundUpToPowerOfTwo64(uint64 Arg)
+	{
+		return uint64(1) << CeilLogTwo64(Arg);
+	}
 #if PLATFORM_64BITS
 	static FORCEINLINE uint64 CeilLogTwo64(uint64 Arg)
 	{
@@ -136,6 +140,17 @@ struct FWindowsPlatformMath : public FGenericPlatformMath
 
 		return 64;
 	}
+	static FORCEINLINE uint64 CountTrailingZeros64(uint64 Value)
+	{
+		if (Value == 0)
+		{
+			return 64;
+		}
+		unsigned long BitIndex;	// 0-based, where the LSB is 0 and MSB is 31
+		_BitScanForward64( &BitIndex, Value );	// Scans from LSB to MSB
+		return BitIndex;
+	}
+
 #endif
 
 #if PLATFORM_ENABLE_POPCNT_INTRINSIC

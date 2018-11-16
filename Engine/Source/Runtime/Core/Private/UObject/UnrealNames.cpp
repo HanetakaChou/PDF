@@ -22,6 +22,7 @@
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "Serialization/ArchiveFromStructuredArchive.h"
 
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealNames, Log, All);
@@ -98,23 +99,33 @@ static uint16 GetRawNonCasePreservingHash(const TCharType* Source)
 	return FCrc::Strihash_DEPRECATED(Source) & 0xFFFF;
 }
 
+/*----------------------------------------------------------------------------
+	FNameBuffer.
+----------------------------------------------------------------------------*/
+
+union FNameBuffer
+{
+	ANSICHAR AnsiName[NAME_SIZE];
+	WIDECHAR WideName[NAME_SIZE];
+};
+
 /*-----------------------------------------------------------------------------
 	FNameEntry
 -----------------------------------------------------------------------------*/
-
 
 /**
  * @return FString of name portion minus number.
  */
 FString FNameEntry::GetPlainNameString() const
 {
+	FNameBuffer TempBuffer;
 	if( IsWide() )
 	{
-		return FString(WideName);
+		return FString(GetWideNamePtr(TempBuffer.WideName));
 	}
 	else
 	{
-		return FString(AnsiName);
+		return FString(GetAnsiNamePtr(TempBuffer.AnsiName));
 	}
 }
 
@@ -125,25 +136,27 @@ FString FNameEntry::GetPlainNameString() const
  */
 void FNameEntry::AppendNameToString( FString& String ) const
 {
+	FNameBuffer TempBuffer;
 	if( IsWide() )
 	{
-		String += WideName;
+		String += GetWideNamePtr(TempBuffer.WideName);
 	}
 	else
 	{
-		String += AnsiName;
+		String += GetAnsiNamePtr(TempBuffer.AnsiName);
 	}
 }
 
 void FNameEntry::AppendNameToPathString(FString& String) const
 {
+	FNameBuffer TempBuffer;
 	if (IsWide())
 	{
-		String /= WideName;
+		String /= GetWideNamePtr(TempBuffer.WideName);
 	}
 	else
 	{
-		String /= AnsiName;
+		String /= GetAnsiNamePtr(TempBuffer.AnsiName);
 	}
 }
 
@@ -152,13 +165,14 @@ void FNameEntry::AppendNameToPathString(FString& String) const
  */
 int32 FNameEntry::GetNameLength() const
 {
+	FNameBuffer TempBuffer;
 	if( IsWide() )
 	{
-		return FCStringWide::Strlen( WideName );
+		return FCStringWide::Strlen( GetWideNamePtr(TempBuffer.WideName) );
 	}
 	else
 	{
-		return FCStringAnsi::Strlen( AnsiName );
+		return FCStringAnsi::Strlen( GetAnsiNamePtr(TempBuffer.AnsiName) );
 	}
 }
 
@@ -177,7 +191,9 @@ bool FNameEntry::IsEqual( const ANSICHAR* InName, const ENameCase CompareMethod 
 	}
 	else
 	{
-		return ( (CompareMethod == ENameCase::CaseSensitive) ? FCStringAnsi::Strcmp( AnsiName, InName ) : FCStringAnsi::Stricmp( AnsiName, InName ) ) == 0;
+		ANSICHAR TempBuffer[NAME_SIZE];
+		const ANSICHAR* CompareName = GetAnsiNamePtr(TempBuffer);
+		return ( (CompareMethod == ENameCase::CaseSensitive) ? FCStringAnsi::Strcmp( CompareName, InName ) : FCStringAnsi::Stricmp( CompareName, InName ) ) == 0;
 	}
 }
 
@@ -196,7 +212,9 @@ bool FNameEntry::IsEqual( const WIDECHAR* InName, const ENameCase CompareMethod 
 	}
 	else
 	{
-		return ( (CompareMethod == ENameCase::CaseSensitive) ? FCStringWide::Strcmp( WideName, InName ) : FCStringWide::Stricmp( WideName, InName ) ) == 0;
+		WIDECHAR TempBuffer[NAME_SIZE];
+		const WIDECHAR* CompareName = GetWideNamePtr(TempBuffer);
+		return ( (CompareMethod == ENameCase::CaseSensitive) ? FCStringWide::Strcmp( CompareName, InName ) : FCStringWide::Stricmp( CompareName, InName ) ) == 0;
 	}
 }
 
@@ -230,16 +248,16 @@ FNameEntrySerialized::FNameEntrySerialized(const FNameEntry& NameEntry)
 	if (NameEntry.IsWide())
 	{
 		PreSetIsWideForSerialization(true);
-		FCString::Strcpy(WideName, NAME_SIZE, NameEntry.GetWideName());
-		NonCasePreservingHash = GetRawNonCasePreservingHash(NameEntry.GetWideName());
-		CasePreservingHash = GetRawCasePreservingHash(NameEntry.GetWideName());
+		NameEntry.GetWideName(WideName);
+		NonCasePreservingHash = GetRawNonCasePreservingHash(WideName);
+		CasePreservingHash = GetRawCasePreservingHash(WideName);
 	}
 	else
 	{
 		PreSetIsWideForSerialization(false);
-		FCStringAnsi::Strcpy(AnsiName, NAME_SIZE, NameEntry.GetAnsiName());
-		NonCasePreservingHash = GetRawNonCasePreservingHash(NameEntry.GetAnsiName());
-		CasePreservingHash = GetRawCasePreservingHash(NameEntry.GetAnsiName());
+		NameEntry.GetAnsiName(AnsiName);
+		NonCasePreservingHash = GetRawNonCasePreservingHash(AnsiName);
+		CasePreservingHash = GetRawCasePreservingHash(AnsiName);
 	}
 }
 
@@ -305,6 +323,9 @@ FString FName::NameToDisplayString( const FString& InDisplayName, const bool bIs
 	bool bInARun = false;
 	bool bWasSpace = false;
 	bool bWasOpenParen = false;
+	bool bWasNumber = false;
+	bool bWasMinusSign = false;
+
 	FString OutDisplayName;
 	OutDisplayName.GetCharArray().Reserve(Chars.Num());
 	for( int32 CharIndex = 0 ; CharIndex < Chars.Num() ; ++CharIndex )
@@ -327,7 +348,8 @@ FString FName::NameToDisplayString( const FString& InDisplayName, const bool bIs
 		}
 
 		// If the current character is upper case or a digit, and the previous character wasn't, then we need to insert a space if there wasn't one previously
-		if( (bUpperCase || bIsDigit) && !bInARun && !bWasOpenParen)
+		// We don't do this for numerical expressions, for example "-1.2" should not be formatted as "- 1. 2"
+		if( (bUpperCase || (bIsDigit && !bWasMinusSign)) && !bInARun && !bWasOpenParen && !bWasNumber)
 		{
 			if( !bWasSpace && OutDisplayName.Len() > 0 )
 			{
@@ -355,7 +377,7 @@ FString FName::NameToDisplayString( const FString& InDisplayName, const bool bIs
 		{
 			ch = FChar::ToUpper( ch );
 		}
-		else if( bWasSpace || bWasOpenParen)	// If this is first character after a space, then make sure it is case-correct
+		else if( !bIsDigit && (bWasSpace || bWasOpenParen))	// If this is first character after a space, then make sure it is case-correct
 		{
 			// Some words are always forced lowercase
 			const TCHAR* Articles[] =
@@ -407,6 +429,12 @@ FString FName::NameToDisplayString( const FString& InDisplayName, const bool bIs
 
 		bWasSpace = ( ch == TEXT( ' ' ) ? true : false );
 		bWasOpenParen = ( ch == TEXT( '(' ) ? true : false );
+
+		// What could be included as part of a numerical representation.
+		// For example -1.2
+		bWasMinusSign = (ch == TEXT('-'));
+		const bool bPotentialNumericalChar = bWasMinusSign || (ch == TEXT('.'));
+		bWasNumber = bIsDigit || (bWasNumber && bPotentialNumericalChar);
 
 		OutDisplayName += ch;
 	}
@@ -526,6 +554,9 @@ int32 FName::Compare( const FName& Other ) const
 		const FNameEntry* const ThisEntry = GetComparisonNameEntry();
 		const FNameEntry* const OtherEntry = Other.GetComparisonNameEntry();
 
+		FNameBuffer TempBuffer1;
+		FNameBuffer TempBuffer2;
+
 		// If one or both entries return an invalid name entry, the comparison fails - fallback to comparing the index
 		if (ThisEntry == nullptr || OtherEntry == nullptr)
 		{
@@ -534,18 +565,19 @@ int32 FName::Compare( const FName& Other ) const
 		// Ansi/Wide mismatch, convert to wide
 		else if( ThisEntry->IsWide() != OtherEntry->IsWide() )
 		{
-			return FCStringWide::Stricmp(	ThisEntry->IsWide() ? ThisEntry->GetWideName() : StringCast<WIDECHAR>(ThisEntry->GetAnsiName()).Get(),
-								OtherEntry->IsWide() ? OtherEntry->GetWideName() : StringCast<WIDECHAR>(OtherEntry->GetAnsiName()).Get() );
+			return FCStringWide::Stricmp(
+				ThisEntry->IsWide() ?  ThisEntry->GetWideNamePtr(TempBuffer1.WideName)  : StringCast<WIDECHAR>(ThisEntry->GetAnsiNamePtr(TempBuffer1.AnsiName)).Get(),
+				OtherEntry->IsWide() ? OtherEntry->GetWideNamePtr(TempBuffer2.WideName) : StringCast<WIDECHAR>(OtherEntry->GetAnsiNamePtr(TempBuffer2.AnsiName)).Get() );
 		}
 		// Both are wide.
 		else if( ThisEntry->IsWide() )
 		{
-			return FCStringWide::Stricmp( ThisEntry->GetWideName(), OtherEntry->GetWideName() );
+			return FCStringWide::Stricmp( ThisEntry->GetWideNamePtr(TempBuffer1.WideName), OtherEntry->GetWideNamePtr(TempBuffer2.WideName) );
 		}
 		// Both are ansi.
 		else
 		{
-			return FCStringAnsi::Stricmp( ThisEntry->GetAnsiName(), OtherEntry->GetAnsiName() );
+			return FCStringAnsi::Stricmp( ThisEntry->GetAnsiNamePtr(TempBuffer1.AnsiName), OtherEntry->GetAnsiNamePtr(TempBuffer2.AnsiName) );
 		}		
 	}
 }
@@ -699,23 +731,14 @@ struct FNameInitHelper<ANSICHAR>
 {
 	static const bool IsAnsi = true;
 
-	static const ANSICHAR* GetNameString(const FNameEntry* const NameEntry)
+	static const ANSICHAR* GetNameString(const FNameEntry* const NameEntry, ANSICHAR(&OptionalTempBuffer)[NAME_SIZE])
 	{
-		return NameEntry->GetAnsiName();
+		return NameEntry->GetAnsiNamePtr(OptionalTempBuffer);
 	}
 
-	static void SetNameString(FNameEntry* const DestNameEntry, const ANSICHAR* SrcName)
+	static void SetNameString(FNameEntry* DestNameEntry, const ANSICHAR* SrcName, const int32 NameLength)
 	{
-		// Can't rely on the template override for static arrays since the safe crt version of strcpy will fill in
-		// the remainder of the array of NAME_SIZE with 0xfd.  So, we have to pass in the length of the dynamically allocated array instead.
-		FCStringAnsi::Strcpy(const_cast<ANSICHAR*>(DestNameEntry->GetAnsiName()), DestNameEntry->GetNameLength()+1, SrcName);
-	}
-
-	static void SetNameString(FNameEntry* const DestNameEntry, const ANSICHAR* SrcName, const int32 NameLength)
-	{
-		// Can't rely on the template override for static arrays since the safe crt version of strcpy will fill in
-		// the remainder of the array of NAME_SIZE with 0xfd.  So, we have to pass in the length of the dynamically allocated array instead.
-		FCStringAnsi::Strcpy(const_cast<ANSICHAR*>(DestNameEntry->GetAnsiName()), NameLength + 1, SrcName);
+		DestNameEntry->SetAnsiName(SrcName, NameLength);
 	}
 
 	static int32 GetIndexShiftValue()
@@ -736,23 +759,14 @@ struct FNameInitHelper<WIDECHAR>
 {
 	static const bool IsAnsi = false;
 
-	static const WIDECHAR* GetNameString(const FNameEntry* const NameEntry)
+	static const WIDECHAR* GetNameString(const FNameEntry* const NameEntry, WIDECHAR(&OptionalTempBuffer)[NAME_SIZE])
 	{
-		return NameEntry->GetWideName();
+		return NameEntry->GetWideNamePtr(OptionalTempBuffer);
 	}
 
-	static void SetNameString(FNameEntry* const DestNameEntry, const WIDECHAR* SrcName)
+	static void SetNameString(FNameEntry* DestNameEntry, const WIDECHAR* SrcName, const int32 NameLength)
 	{
-		// Can't rely on the template override for static arrays since the safe crt version of strcpy will fill in
-		// the remainder of the array of NAME_SIZE with 0xfd.  So, we have to pass in the length of the dynamically allocated array instead.
-		FCStringWide::Strcpy(const_cast<WIDECHAR*>(DestNameEntry->GetWideName()), DestNameEntry->GetNameLength()+1, SrcName);
-	}
-
-	static void SetNameString(FNameEntry* const DestNameEntry, const WIDECHAR* SrcName, const int32 NameLength)
-	{
-		// Can't rely on the template override for static arrays since the safe crt version of strcpy will fill in
-		// the remainder of the array of NAME_SIZE with 0xfd.  So, we have to pass in the length of the dynamically allocated array instead.
-		FCStringWide::Strcpy(const_cast<WIDECHAR*>(DestNameEntry->GetWideName()), NameLength + 1, SrcName);
+		DestNameEntry->SetWideName(SrcName, NameLength);
 	}
 
 	static int32 GetIndexShiftValue()
@@ -780,7 +794,8 @@ bool FName::InitInternal_FindOrAdd(const TCharType* InName, const EFindName Find
 		const FNameEntry* const NameEntry = Names[OutComparisonIndex];
 
 		// If the string we got back doesn't match the case of the string we provided, also add a case variant version for display purposes
-		if(TCString<TCharType>::Strcmp(InName, FNameInitHelper<TCharType>::GetNameString(NameEntry)) != 0)
+		TCharType TempBuffer[NAME_SIZE];
+		if(TCString<TCharType>::Strcmp(InName, FNameInitHelper<TCharType>::GetNameString(NameEntry, TempBuffer)) != 0)
 		{
 			if(!InitInternal_FindOrAddNameEntry<TCharType>(InName, FindType, ENameCase::CaseSensitive, CasePreservingHash, OutDisplayIndex))
 			{
@@ -832,9 +847,10 @@ bool FName::InitInternal_FindOrAddNameEntry(const TCharType* InName, const EFind
 
 					// This *must* be true, or we'll overwrite memory when the
 					// copy happens if it is longer
-					check(TCString<TCharType>::Strlen(InName) == Hash->GetNameLength());
+					int32 NewLength = TCString<TCharType>::Strlen(InName);
+					check(NewLength == Hash->GetNameLength());
 
-					FNameInitHelper<TCharType>::SetNameString(Hash, InName);
+					FNameInitHelper<TCharType>::SetNameString(Hash, InName, NewLength);
 				}
 				check(OutIndex >= 0);
 				return true;
@@ -1218,6 +1234,16 @@ void FNameEntry::Write( FArchive& Ar ) const
 	Ar << EntrySerialized;
 }
 
+void FNameEntry::Write(FStructuredArchive::FSlot Slot) const
+{
+	// This path should be unused - since FNameEntry structs are allocated with a dynamic size, we can only save them. Use FNameEntrySerialized to read them back into an intermediate buffer.
+	checkf(!Slot.GetUnderlyingArchive().IsLoading(), TEXT("FNameEntry does not support reading from an archive. Serialize into a FNameEntrySerialized and construct a FNameEntry from that."));
+
+	// Convert to our serialized type
+	FNameEntrySerialized EntrySerialized(*this);
+	Slot << EntrySerialized;
+}
+
 FArchive& operator<<(FArchive& Ar, FNameEntrySerialized& E)
 {
 	if (Ar.IsLoading())
@@ -1260,6 +1286,12 @@ FArchive& operator<<(FArchive& Ar, FNameEntrySerialized& E)
 			Ar << E.NonCasePreservingHash;
 			Ar << E.CasePreservingHash;
 			E.bWereHashesLoaded = true;
+
+			if (Ar.UE4Ver() < VER_UE4_FIX_WIDE_STRING_CRC && E.IsWide())
+			{
+				// Regenerate hashes for packages saved before a fix to how hashes are generated
+				E.NonCasePreservingHash = GetRawNonCasePreservingHash(E.GetWideName());
+			}
 		}
 	}
 	else
@@ -1271,6 +1303,32 @@ FArchive& operator<<(FArchive& Ar, FNameEntrySerialized& E)
 	}
 
 	return Ar;
+}
+
+void operator<<(FStructuredArchive::FSlot Slot, FNameEntrySerialized& E)
+{
+	if (Slot.GetUnderlyingArchive().IsTextFormat())
+	{
+		FString Str = E.GetPlainNameString();
+		Slot << Str;
+
+		if (Slot.GetUnderlyingArchive().IsLoading())
+		{
+			// mark the name will be wide
+			E.PreSetIsWideForSerialization(true);
+
+			// get the pointer to the wide array 
+			WIDECHAR* WideName = const_cast<WIDECHAR*>(E.GetWideName());
+			FCString::Strcpy(WideName, 1024, *Str);
+
+			E.bWereHashesLoaded = false;
+		}
+	}
+	else
+	{
+		FArchiveFromStructuredArchive Ar(Slot);
+		Ar << E;
+	}
 }
 
 /**

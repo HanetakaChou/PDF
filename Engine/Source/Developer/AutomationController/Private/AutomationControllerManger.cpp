@@ -41,6 +41,8 @@ FAutomationControllerManager::FAutomationControllerManager()
 		}
 	}
 
+	FParse::Value(FCommandLine::Get(), TEXT("DisplayReportOutputPath="), DisplayReportOutputPath, false);
+
 	if ( FParse::Value(FCommandLine::Get(), TEXT("DeveloperReportUrl="), DeveloperReportUrl, false) )
 	{
 		DeveloperReportUrl = DeveloperReportUrl / TEXT("dev") / FString(FPlatformProcess::UserName()).ToLower() / TEXT("index.html");
@@ -158,6 +160,20 @@ void FAutomationControllerManager::StopTests()
 	// Inform the UI we have stopped running tests
 	if ( DeviceClusterManager.HasActiveDevice() )
 	{
+		for (int32 ClusterIndex = 0; ClusterIndex < DeviceClusterManager.GetNumClusters(); ++ClusterIndex)
+		{
+			//for each device in this cluster
+			for (int32 DeviceIndex = 0; DeviceIndex < DeviceClusterManager.GetNumDevicesInCluster(ClusterIndex); ++DeviceIndex)
+			{
+				//mark the device as idle
+				DeviceClusterManager.SetTest(ClusterIndex, DeviceIndex, NULL);
+
+				// Send command to reset tests (delete local files, etc)
+				FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, DeviceIndex);
+				MessageEndpoint->Send(new FAutomationWorkerStopTests(), MessageAddress);
+			}
+		}
+
 		SetControllerStatus(EAutomationControllerModuleState::Ready);
 	}
 	else
@@ -201,10 +217,18 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 
 			FImageComparisonResult Result = Entry->PendingComparison.Get();
 
+			const FGuid UniqueId = FGuid::NewGuid();
+
 			// Send the message back to the automation worker letting it know the results of the comparison test.
 			{
 				FAutomationWorkerImageComparisonResults* Message = new FAutomationWorkerImageComparisonResults(
-					Result.IsNew(), Result.AreSimilar(), Result.MaxLocalDifference, Result.GlobalDifference, Result.ErrorMessage.ToString());
+					UniqueId,
+					Result.IsNew(),
+					Result.AreSimilar(),
+					Result.MaxLocalDifference,
+					Result.GlobalDifference,
+					Result.ErrorMessage.ToString()
+				);
 
 				MessageEndpoint->Send(Message, Entry->Sender);
 			}
@@ -219,16 +243,16 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 			if (Report.IsValid())
 			{
 				// Record the artifacts for the test.
-				FString ApprovedFolder = ScreenshotManager->GetLocalApprovedFolder();
-				FString UnapprovedFolder = ScreenshotManager->GetLocalUnapprovedFolder();
-				FString ComparisonFolder = ScreenshotManager->GetLocalComparisonFolder();
+				const FString ApprovedFolder = ScreenshotManager->GetLocalApprovedFolder();
+				const FString UnapprovedFolder = ScreenshotManager->GetLocalUnapprovedFolder();
+				const FString ComparisonFolder = ScreenshotManager->GetLocalComparisonFolder();
 
 				TMap<FString, FString> LocalFiles;
 				LocalFiles.Add(TEXT("approved"), ApprovedFolder / Result.ApprovedFile);
 				LocalFiles.Add(TEXT("unapproved"), UnapprovedFolder / Result.IncomingFile);
 				LocalFiles.Add(TEXT("difference"), ComparisonFolder / Result.ComparisonFile);
 
-				Report->AddArtifact(ClusterIndex, CurrentTestPass, FAutomationArtifact(Entry->Name, EAutomationArtifactType::Comparison, LocalFiles));
+				Report->AddArtifact(ClusterIndex, CurrentTestPass, FAutomationArtifact(UniqueId, Entry->Name, EAutomationArtifactType::Comparison, LocalFiles));
 			}
 			else
 			{
@@ -294,9 +318,9 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 		FAutomatedTestResult& ReportResult = OurPassResults.Tests[i];
 		if ( ReportResult.FullTestPath == Report->GetFullTestPath() )
 		{
-			ReportResult.SetEvents(Results.GetEvents(), Results.GetWarningTotal(), Results.GetErrorTotal());
 			ReportResult.State = Results.State;
-			ReportResult.Artifacts = Results.Artifacts;
+			ReportResult.SetEvents(Results.GetEntries(), Results.GetWarningTotal(), Results.GetErrorTotal());
+			ReportResult.SetArtifacts(Results.Artifacts);
 
 			switch ( Results.State )
 			{
@@ -649,7 +673,14 @@ void FAutomationControllerManager::ProcessResults()
 		FAutomatedTestPassResults SerializedPassResults = OurPassResults;
 
 		SerializedPassResults.ComparisonExported = ExportResults.Success;
-		SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
+		if (DisplayReportOutputPath.IsEmpty())
+		{
+			SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
+		}
+		else
+		{
+			SerializedPassResults.ComparisonExportDirectory = DisplayReportOutputPath / FString::FromInt(FEngineVersion::Current().GetChangelist());
+		}
 
 		{
 			SerializedPassResults.Tests.StableSort([] (const FAutomatedTestResult& A, const FAutomatedTestResult& B) {
@@ -682,7 +713,7 @@ void FAutomationControllerManager::ProcessResults()
 
 			for ( FAutomatedTestResult& Test : SerializedPassResults.Tests )
 			{
-				for ( FAutomationArtifact& Artifact : Test.Artifacts )
+				for (FAutomationArtifact& Artifact : Test.GetArtifacts() )
 				{
 					for ( const auto& Entry : Artifact.LocalFiles )
 					{
@@ -1062,69 +1093,66 @@ void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationW
 		verify(DeviceClusterManager.FindDevice(Context->GetSender(), ClusterIndex, DeviceIndex));
 
 		TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
-		TestResults.SetEvents(Message.Events, Message.WarningTotal, Message.ErrorTotal);
+		TestResults.SetEvents(Message.Entries, Message.WarningTotal, Message.ErrorTotal);
 
 		// Verify this device thought it was busy
 		TSharedPtr<IAutomationReport> Report = DeviceClusterManager.GetTest(ClusterIndex, DeviceIndex);
-		check(Report.IsValid());
-
-		Report->SetResults(ClusterIndex, CurrentTestPass, TestResults);
-
-		const FAutomationTestResults& FinalResults = Report->GetResults(ClusterIndex, CurrentTestPass);
-
-		// Gather all of the data relevant to this test for our json reporting.
-		CollectTestResults(Report, FinalResults);
-
-#if WITH_EDITOR
-		FMessageLog AutomationTestingLog("AutomationTestingLog");
-		AutomationTestingLog.Open();
-#endif
-
-		for ( const FAutomationEvent& Event : TestResults.GetEvents() )
+		if (Report.IsValid())
 		{
-			switch ( Event.Type )
+			Report->SetResults(ClusterIndex, CurrentTestPass, TestResults);
+
+			const FAutomationTestResults& FinalResults = Report->GetResults(ClusterIndex, CurrentTestPass);
+
+			// Gather all of the data relevant to this test for our json reporting.
+			CollectTestResults(Report, FinalResults);
+
+#if WITH_EDITOR
+			FMessageLog AutomationTestingLog("AutomationTestingLog");
+			AutomationTestingLog.Open();
+#endif
+
+			for (const FAutomationExecutionEntry& Entry : TestResults.GetEntries())
 			{
-			case EAutomationEventType::Info:
-				GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *Event.ToString());
+				switch (Entry.Event.Type)
+				{
+				case EAutomationEventType::Info:
+					GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-				AutomationTestingLog.Info(FText::FromString(Event.ToString()));
+					AutomationTestingLog.Info(FText::FromString(Entry.ToString()));
 #endif
-				break;
-			case EAutomationEventType::Warning:
-				GLog->Logf(ELogVerbosity::Warning, TEXT("%s"), *Event.ToString());
+					break;
+				case EAutomationEventType::Warning:
+					GLog->Logf(ELogVerbosity::Warning, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-				AutomationTestingLog.Warning(FText::FromString(Event.ToString()));
+					AutomationTestingLog.Warning(FText::FromString(Entry.ToString()));
 #endif
-				break;
-			case EAutomationEventType::Error:
-				GLog->Logf(ELogVerbosity::Error, TEXT("%s"), *Event.ToString());
+					break;
+				case EAutomationEventType::Error:
+					GLog->Logf(ELogVerbosity::Error, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-				AutomationTestingLog.Error(FText::FromString(Event.ToString()));
+					AutomationTestingLog.Error(FText::FromString(Entry.ToString()));
 #endif
-				break;
+					break;
+				}
+			}
+
+			if (TestResults.State == EAutomationState::Success)
+			{
+				FString SuccessString = FString::Printf(TEXT("...Automation Test Succeeded (%s)"), *Report->GetDisplayName());
+				GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *SuccessString);
+#if WITH_EDITOR
+				AutomationTestingLog.Info(FText::FromString(*SuccessString));
+#endif
+			}
+			else
+			{
+				FString FailureString = FString::Printf(TEXT("...Automation Test Failed (%s)"), *Report->GetDisplayName());
+				GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *FailureString);
+#if WITH_EDITOR
+				AutomationTestingLog.Error(FText::FromString(*FailureString));
+#endif
 			}
 		}
-		
-		if ( TestResults.State == EAutomationState::Success )
-		{
-			FString SuccessString = FString::Printf(TEXT("...Automation Test Succeeded (%s)"), *Report->GetDisplayName());
-			GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *SuccessString);
-#if WITH_EDITOR
-			AutomationTestingLog.Info(FText::FromString(*SuccessString));
-#endif
-		}
-		else
-		{
-			FString FailureString = FString::Printf(TEXT("...Automation Test Failed (%s)"), *Report->GetDisplayName());
-			GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *FailureString);
-#if WITH_EDITOR
-			AutomationTestingLog.Error(FText::FromString(*FailureString));
-#endif
-			//FAutomationTestFramework::Get().Lo
-		}
-
-		// const bool TestSucceeded = (TestResults.State == EAutomationState::Success);
-		//FAutomationTestFramework::Get().LogEndTestMessage(Report->GetDisplayName(), TestSucceeded);
 
 		// Device is now good to go
 		DeviceClusterManager.SetTest(ClusterIndex, DeviceIndex, NULL);
@@ -1229,6 +1257,6 @@ void FAutomationControllerManager::WriteLineToCheckpointFile(FString StringToWri
 
 void FAutomationControllerManager::ResetAutomationTestTimeout(const TCHAR* Reason)
 {
-	GLog->Logf(ELogVerbosity::Display, TEXT("Resetting automation test timeout: %s"), Reason);
+	//GLog->Logf(ELogVerbosity::Display, TEXT("Resetting automation test timeout: %s"), Reason);
 	LastTimeUpdateTicked = FPlatformTime::Seconds();
 }

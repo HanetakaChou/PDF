@@ -3,8 +3,9 @@
 #include "Engine/SkeletalMeshSampling.h"
 #include "Engine/SkeletalMesh.h"
 #include "RawIndexBuffer.h"
-#include "SkeletalMeshLODRenderData.h"
-#include "SkeletalMeshRenderData.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "UObject/NiagaraObjectVersion.h"
 
 //////////////////////////////////////////////////////////////////////////
 //FSkeletalMeshAreaWeightedTriangleSampler
@@ -21,7 +22,7 @@ void FSkeletalMeshAreaWeightedTriangleSampler::Init(USkeletalMesh* InOwner, int3
 {
 	Owner = InOwner;
 	check(InOwner);
-	check(InOwner->LODInfo.IsValidIndex(InLODIndex));
+	check(InOwner->IsValidLODIndex(InLODIndex));
 
 	LODIndex = InLODIndex;
 	TriangleIndices = InTriangleIndices;
@@ -109,9 +110,17 @@ bool FSkeletalMeshSamplingLODBuiltData::Serialize(FArchive& Ar)
 
 bool FSkeletalMeshSamplingRegionBuiltData::Serialize(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FNiagaraObjectVersion::GUID);
+
 	Ar << TriangleIndices;
 	Ar << BoneIndices;
 	AreaWeightedSampler.Serialize(Ar);
+
+	if (Ar.CustomVer(FNiagaraObjectVersion::GUID) >= FNiagaraObjectVersion::SkeletalMeshVertexSampling)
+	{
+		Ar << Vertices;
+	}
+
 	return true;
 }
 
@@ -213,9 +222,9 @@ bool FSkeletalMeshSamplingRegion::IsMaterialAllowed(FName MaterialName)
 #if WITH_EDITORONLY_DATA
 
 template<bool bExtraBoneInfluencesT>
-FORCEINLINE_DEBUGGABLE void GetRegionValidTris(USkeletalMesh* SkeletalMesh, FSkeletalMeshSamplingRegion& SamplingRegion,
+FORCEINLINE_DEBUGGABLE void GetRegionValidData(USkeletalMesh* SkeletalMesh, FSkeletalMeshSamplingRegion& SamplingRegion,
 	FSkeletalMeshLODRenderData& LODData, FReferenceSkeleton& RefSkel, FSkinWeightVertexBuffer* SkinWeightBuffer,
-	TArray<int32>& IncludedBoneIndices, TArray<int32>& ExcludedBoneIndices, TArray<int32>& OutValidTris)
+	TArray<int32>& IncludedBoneIndices, TArray<int32>& ExcludedBoneIndices, TArray<int32>& OutValidTris, TArray<int32>& OutValidVerts)
 {
 	int32 MaxBoneInfluences = bExtraBoneInfluencesT ? MAX_TOTAL_INFLUENCES : MAX_INFLUENCES_PER_STREAM;
 	auto VertIsValid = [&](FSkelMeshRenderSection& Section, int32 VertexIdx)
@@ -259,6 +268,16 @@ FORCEINLINE_DEBUGGABLE void GetRegionValidTris(USkeletalMesh* SkeletalMesh, FSke
 					OutValidTris.Add(TriBase);
 				}
 			}
+
+			int32 FirstVert = Section.BaseVertexIndex;
+			int32 MaxVert = FirstVert + Section.GetNumVertices();
+			for (int32 VertexIdx = Section.BaseVertexIndex ; VertexIdx < MaxVert; ++VertexIdx)
+			{
+				if (VertIsValid(Section, VertexIdx))
+				{
+					OutValidVerts.Add(VertexIdx);
+				}
+			}
 		}
 	}
 }
@@ -266,11 +285,11 @@ FORCEINLINE_DEBUGGABLE void GetRegionValidTris(USkeletalMesh* SkeletalMesh, FSke
 void FSkeletalMeshSamplingInfo::BuildWholeMesh(USkeletalMesh* SkeletalMesh)
 {
 	//Build data for the whole mesh at each LOD.
-	BuiltData.WholeMeshBuiltData.Reset(SkeletalMesh->LODInfo.Num());
-	BuiltData.WholeMeshBuiltData.SetNum(SkeletalMesh->LODInfo.Num());
-	for (int32 LODIndex = 0; LODIndex < SkeletalMesh->LODInfo.Num(); ++LODIndex)
+	BuiltData.WholeMeshBuiltData.Reset(SkeletalMesh->GetLODNum());
+	BuiltData.WholeMeshBuiltData.SetNum(SkeletalMesh->GetLODNum());
+	for (int32 LODIndex = 0; LODIndex < SkeletalMesh->GetLODNum(); ++LODIndex)
 	{
-		FSkeletalMeshLODInfo& LODInfo = SkeletalMesh->LODInfo[LODIndex];
+		FSkeletalMeshLODInfo& LODInfo = *SkeletalMesh->GetLODInfo(LODIndex);
 		FSkeletalMeshSamplingLODBuiltData& WholeMeshBuiltData = BuiltData.WholeMeshBuiltData[LODIndex];
 
 		if (LODInfo.bSupportUniformlyDistributedSampling)
@@ -290,7 +309,11 @@ void FSkeletalMeshSamplingInfo::BuildRegions(USkeletalMesh* SkeletalMesh)
 		FSkeletalMeshSamplingRegion& Region = Regions[RegionIndex];
 		FSkeletalMeshSamplingRegionBuiltData& RegionBuiltData = BuiltData.RegionBuiltData[RegionIndex];
 		int32 LODIndex = Region.LODIndex;
-		if (!SkeletalMesh->LODInfo.IsValidIndex(LODIndex))
+		if (LODIndex == INDEX_NONE)
+		{
+			LODIndex = SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() - 1;
+		}
+		if (!SkeletalMesh->IsValidLODIndex(LODIndex))
 		{
 			continue;
 		}
@@ -308,11 +331,11 @@ void FSkeletalMeshSamplingInfo::BuildRegions(USkeletalMesh* SkeletalMesh)
 
 		if (SkinWeightBuffer->HasExtraBoneInfluences())
 		{
-			GetRegionValidTris<true>(SkeletalMesh, Region, LODData, RefSkel, SkinWeightBuffer, IncludedBoneIndices, ExcludedBoneIndices, RegionBuiltData.TriangleIndices);
+			GetRegionValidData<true>(SkeletalMesh, Region, LODData, RefSkel, SkinWeightBuffer, IncludedBoneIndices, ExcludedBoneIndices, RegionBuiltData.TriangleIndices, RegionBuiltData.Vertices);
 		}
 		else
 		{
-			GetRegionValidTris<false>(SkeletalMesh, Region, LODData, RefSkel, SkinWeightBuffer, IncludedBoneIndices, ExcludedBoneIndices, RegionBuiltData.TriangleIndices);
+			GetRegionValidData<false>(SkeletalMesh, Region, LODData, RefSkel, SkinWeightBuffer, IncludedBoneIndices, ExcludedBoneIndices, RegionBuiltData.TriangleIndices, RegionBuiltData.Vertices);
 		}
 
 		if (Region.bSupportUniformlyDistributedSampling)
@@ -325,8 +348,8 @@ void FSkeletalMeshSamplingInfo::BuildRegions(USkeletalMesh* SkeletalMesh)
 
 bool FSkeletalMeshSamplingInfo::IsSamplingEnabled(const USkeletalMesh* OwnerMesh, int32 LODIndex)const
 {
-	check(OwnerMesh && OwnerMesh->LODInfo.IsValidIndex(LODIndex));
-	if (OwnerMesh->LODInfo[LODIndex].bAllowCPUAccess)
+	check(OwnerMesh && OwnerMesh->IsValidLODIndex(LODIndex));
+	if (OwnerMesh->GetLODInfo(LODIndex)->bAllowCPUAccess)
 	{
 		return true;
 	}

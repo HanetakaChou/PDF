@@ -37,12 +37,7 @@ public:
 		return StopTime;
 	}
 
-	double GetAccumulatedTime() const
-	{
-		return Accumulator;
-	}
-
-private:
+protected:
 	/** Start time, captured in ctor. */
 	double StartTime;
 	/** Time variable to update. */
@@ -53,7 +48,7 @@ private:
  * Utility class for tracking the duration of a scoped action (the user 
  * doesn't have to call Start() and Stop() manually).
  */
-class FScopedDurationTimer : private FDurationTimer
+class FScopedDurationTimer : public FDurationTimer
 {
 public:
 	explicit FScopedDurationTimer(double& AccumulatorIn)
@@ -66,6 +61,28 @@ public:
 	{
 		Stop();
 	}
+};
+
+/**
+ * Same as FScopedDurationTimer, except that it tracks the time value internally so you don't have to
+ * pass in a double to accumulate.  Call GetTime() to get the total time since starting.
+ */
+class FAutoScopedDurationTimer : public FScopedDurationTimer
+{
+public:
+	FAutoScopedDurationTimer()
+		: FScopedDurationTimer(AccumulatorValue)
+	{
+	}
+
+	double GetTime()
+	{
+		Stop();
+		return AccumulatorValue;
+	}
+
+private:
+	double AccumulatorValue;
 };
 
 /**
@@ -123,3 +140,61 @@ private:
 	double         Accumulator;
 	FDurationTimer Timer;
 };
+
+/**
+* Utility stopwatch class for tracking the duration of some action (tracks
+* time in seconds and adds it to the specified variable on destruction).
+* useful for timing that only wants to occur when a feature is optionally turned on 
+*/
+class FScopedSwitchedDurationTimer
+{
+public:
+	explicit FScopedSwitchedDurationTimer(double& AccumulatorIn, bool bDoFunctionalityIn)
+		: bDoFunctionality(bDoFunctionalityIn)
+		, StartTime(bDoFunctionalityIn ? FPlatformTime::Seconds() : 0)
+		, Accumulator(AccumulatorIn)		
+	{
+	}
+
+	~FScopedSwitchedDurationTimer()
+	{
+		if (bDoFunctionality)
+		{
+			Accumulator += (FPlatformTime::Seconds() - StartTime);
+		}
+	}
+
+	double Start()
+	{
+		StartTime = FPlatformTime::Seconds();
+		return StartTime;
+	}
+
+protected:
+	const bool bDoFunctionality;
+	/** Start time, captured in ctor. */
+	double StartTime;
+	/** Time variable to update. */
+	double& Accumulator;
+};
+
+/**
+* Utility stopwatch class for tracking the duration of some action (tracks
+* time in seconds and adds it to the specified variable on destruction).
+* useful for timing that only wants to occur when a feature is optionally turned on
+* Also counts the number of timings
+*/
+class FScopedSwitchedCountedDurationTimer : FScopedSwitchedDurationTimer
+{
+public:
+	explicit FScopedSwitchedCountedDurationTimer(double& TimeAccumulatorIn, int32& CountAccumlatorIn, bool bDoFunctionalityIn)
+		: FScopedSwitchedDurationTimer(TimeAccumulatorIn, bDoFunctionalityIn)
+	{
+		if (bDoFunctionalityIn)
+		{
+			++CountAccumlatorIn;
+		}
+	}
+};
+
+

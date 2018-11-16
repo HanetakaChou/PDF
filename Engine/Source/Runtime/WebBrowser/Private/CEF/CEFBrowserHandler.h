@@ -7,21 +7,27 @@
 #if WITH_CEF3
 
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
-	#include "AllowWindowsPlatformTypes.h"
-	#include "AllowWindowsPlatformAtomics.h"
+	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
+	#include "Windows/AllowWindowsPlatformAtomics.h"
 #endif
 
 #pragma push_macro("OVERRIDE")
 #undef OVERRIDE // cef headers provide their own OVERRIDE macro
 THIRD_PARTY_INCLUDES_START
+#if PLATFORM_APPLE
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+#endif
 #include "include/cef_client.h"
+#if PLATFORM_APPLE
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
 THIRD_PARTY_INCLUDES_END
 #pragma pop_macro("OVERRIDE")
 
 #if PLATFORM_WINDOWS
-	#include "HideWindowsPlatformAtomics.h"
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformAtomics.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 #include "IWebBrowserWindow.h"
@@ -48,11 +54,12 @@ class FCEFBrowserHandler
 	, public CefKeyboardHandler
 	, public CefJSDialogHandler
 	, public CefContextMenuHandler
+	, public CefDragHandler
 {
 public:
 
 	/** Default constructor. */
-	FCEFBrowserHandler(bool InUseTransparency);
+	FCEFBrowserHandler(bool InUseTransparency, const TArray<FString>& AltRetryDomains = TArray<FString>());
 
 public:
 
@@ -113,6 +120,11 @@ public:
 	}
 
 	virtual CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override
+	{
+		return this;
+	}
+
+	virtual CefRefPtr<CefDragHandler> GetDragHandler() override
 	{
 		return this;
 	}
@@ -275,6 +287,21 @@ public:
 	virtual void OnResetDialogState(CefRefPtr<CefBrowser> Browser) override;
 
 public:
+	// CefContextMenuHandler
+
+	virtual void OnBeforeContextMenu(CefRefPtr<CefBrowser> Browser,
+		CefRefPtr<CefFrame> Frame,
+		CefRefPtr<CefContextMenuParams> Params,
+		CefRefPtr<CefMenuModel> Model) override;
+
+public:
+	// CefDragHandler interface
+
+	virtual void OnDraggableRegionsChanged(
+		CefRefPtr<CefBrowser> Browser,
+		const std::vector<CefDraggableRegion>& Regions) override;
+
+public:
 
 	IWebBrowserWindow::FOnBeforePopupDelegate& OnBeforePopup()
 	{
@@ -286,17 +313,14 @@ public:
 		return CreateWindowDelegate;
 	}
 
-public:
-	virtual void OnBeforeContextMenu(CefRefPtr<CefBrowser> Browser, 
- 		CefRefPtr<CefFrame> Frame,
-		CefRefPtr<CefContextMenuParams> Params,
-		CefRefPtr<CefMenuModel> Model) override;
-
 private:
 
 	bool ShowDevTools(const CefRefPtr<CefBrowser>& Browser);
 
 	bool bUseTransparency;
+
+	TArray<FString> AltRetryDomains;
+	uint32 AltRetryDomainIdx = 0;
 
 	/** Delegate for notifying that a popup window is attempting to open. */
 	IWebBrowserWindow::FOnBeforePopupDelegate BeforePopupDelegate;

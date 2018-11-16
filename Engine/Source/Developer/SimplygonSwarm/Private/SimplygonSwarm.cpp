@@ -12,7 +12,7 @@
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/MonitoredProcess.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 THIRD_PARTY_INCLUDES_START
 #include <algorithm>
 THIRD_PARTY_INCLUDES_END
@@ -1025,9 +1025,9 @@ bool ZipContentsForUpload(FString InputDirectoryPath, FString OutputFileName)
 	
 	struct FSkeletalMeshData
 	{
-		TArray<FVertInfluence> Influences;
-		TArray<FMeshWedge> Wedges;
-		TArray<FMeshFace> Faces;
+		TArray<SkeletalMeshImportData::FVertInfluence> Influences;
+		TArray<SkeletalMeshImportData::FMeshWedge> Wedges;
+		TArray<SkeletalMeshImportData::FMeshFace> Faces;
 		TArray<FVector> Points;
 		uint32 TexCoordCount;
 	};

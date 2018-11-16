@@ -54,7 +54,7 @@
 
 #include "ObjectTools.h"
 
-#include "AI/Navigation/NavCollision.h"
+#include "AI/Navigation/NavCollisionBase.h"
 
 #define LOCTEXT_NAMESPACE "FBXSceneReImportFactory"
 
@@ -151,8 +151,8 @@ void RecursivelyCreateOriginalPath(UnFbx::FFbxImporter* FbxImporter, TSharedPtr<
 	{
 		FString AssetName = AssetPath + TEXT("/") + NodeInfo->AttributeInfo->Name;
 		NodeInfo->AttributeInfo->SetOriginalImportPath(AssetName);
-		FString OriginalFullImportName = PackageTools::SanitizePackageName(AssetName);
-		OriginalFullImportName = OriginalFullImportName + TEXT(".") + PackageTools::SanitizePackageName(NodeInfo->AttributeInfo->Name);
+		FString OriginalFullImportName = UPackageTools::SanitizePackageName(AssetName);
+		OriginalFullImportName = OriginalFullImportName + TEXT(".") + UPackageTools::SanitizePackageName(NodeInfo->AttributeInfo->Name);
 		NodeInfo->AttributeInfo->SetOriginalFullImportName(OriginalFullImportName);
 		AssetPathDone.Add(NodeInfo->AttributeInfo->UniqueId);
 	}
@@ -245,6 +245,7 @@ bool GetFbxSceneReImportOptions(UnFbx::FFbxImporter* FbxImporter
 	GlobalImportSettings->bConvertScene = true;
 	GlobalImportSettings->bConvertSceneUnit = true;
 
+	GlobalImportSettings->OverrideMaterials.Reset();
 
 	TSharedPtr<SWindow> ParentWindow;
 	if (FModuleManager::Get().IsModuleLoaded("MainFrame"))
@@ -435,8 +436,8 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 		{
 			FString AssetName = Path + TEXT("/") + MeshInfo->Name;
 			MeshInfo->SetOriginalImportPath(AssetName);
-			FString OriginalFullImportName = PackageTools::SanitizePackageName(AssetName);
-			OriginalFullImportName = OriginalFullImportName + TEXT(".") + PackageTools::SanitizePackageName(MeshInfo->Name);
+			FString OriginalFullImportName = UPackageTools::SanitizePackageName(AssetName);
+			OriginalFullImportName = OriginalFullImportName + TEXT(".") + UPackageTools::SanitizePackageName(MeshInfo->Name);
 			MeshInfo->SetOriginalFullImportName(OriginalFullImportName);
 		}
 	}
@@ -1058,7 +1059,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ImportSkeletalMesh(void* VoidRoo
 	//}
 
 	TArray< TArray<FbxNode*>* > SkelMeshArray;
-	FbxImporter->FillFbxSkelMeshArrayInScene(RootNodeToImport, SkelMeshArray, false, true);
+	FbxImporter->FillFbxSkelMeshArrayInScene(RootNodeToImport, SkelMeshArray, false, GlobalImportSettings->bImportAsSkeletalGeometry || GlobalImportSettings->bImportAsSkeletalSkinning, true);
 	UObject* NewObject = nullptr;
 	for (int32 i = 0; i < SkelMeshArray.Num(); i++)
 	{
@@ -1273,10 +1274,17 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 				int32 ResampleRate = DEFAULT_SAMPLERATE;
 				if (GlobalImportSettings->bResample)
 				{
-					int32 MaxStackResampleRate = FbxImporter->GetMaxSampleRate(SortedLinks, FBXMeshNodeArray);
-					if (MaxStackResampleRate != 0)
+					if(FbxImporter->ImportOptions->ResampleRate > 0)
 					{
-						ResampleRate = MaxStackResampleRate;
+						ResampleRate = FbxImporter->ImportOptions->ResampleRate;
+					}
+					else
+					{
+						int32 BestResampleRate = FbxImporter->GetMaxSampleRate(SortedLinks, FBXMeshNodeArray);
+						if (BestResampleRate > 0)
+						{
+							ResampleRate = BestResampleRate;
+						}
 					}
 				}
 				int32 ValidTakeCount = 0;
@@ -1285,7 +1293,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 				{
 					FbxAnimStack* CurAnimStack = FbxImporter->Scene->GetSrcObject<FbxAnimStack>(AnimStackIndex);
 
-					FbxTimeSpan AnimTimeSpan = FbxImporter->GetAnimationTimeSpan(SortedLinks[0], CurAnimStack, ResampleRate);
+					FbxTimeSpan AnimTimeSpan = FbxImporter->GetAnimationTimeSpan(SortedLinks[0], CurAnimStack);
 					bool bValidAnimStack = FbxImporter->ValidateAnimStack(SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, GlobalImportSettings->bImportMorph, AnimTimeSpan);
 					// no animation
 					if (!bValidAnimStack)
@@ -1335,9 +1343,20 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 						ResampleRate = DEFAULT_SAMPLERATE;
 						if (FbxImporter->ImportOptions->bResample)
 						{
-							ResampleRate = FbxImporter->GetMaxSampleRate(SortedLinks, FBXMeshNodeArray);
+							if(FbxImporter->ImportOptions->ResampleRate > 0)
+							{
+								ResampleRate = FbxImporter->ImportOptions->ResampleRate;
+							}
+							else
+							{
+								int32 BestResampleRate = FbxImporter->GetMaxSampleRate(SortedLinks, FBXMeshNodeArray);
+								if (BestResampleRate > 0)
+								{
+									ResampleRate = BestResampleRate;
+								}
+							}
 						}
-						FbxTimeSpan AnimTimeSpan = FbxImporter->GetAnimationTimeSpan(SortedLinks[0], CurAnimStack, ResampleRate);
+						FbxTimeSpan AnimTimeSpan = FbxImporter->GetAnimationTimeSpan(SortedLinks[0], CurAnimStack);
 
 						if (DestSeq == nullptr)
 						{
@@ -1426,8 +1445,8 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportStaticMesh(void* VoidFbx
 	}
 
 	// preserve settings in navcollision subobject
-	UNavCollision* NavCollision = Mesh->NavCollision ?
-		(UNavCollision*)StaticDuplicateObject(Mesh->NavCollision, GetTransientPackage()) :
+	UNavCollisionBase* NavCollision = Mesh->NavCollision ?
+		(UNavCollisionBase*)StaticDuplicateObject(Mesh->NavCollision, GetTransientPackage()) :
 		nullptr;
 
 	// preserve extended bound settings

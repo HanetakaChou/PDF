@@ -7,7 +7,7 @@
 #include "UObject/Class.h"
 #include "Templates/Casts.h"
 #include "UObject/SoftObjectPtr.h"
-#include "GCObject.h"
+#include "UObject/GCObject.h"
 
 /** Defines FStreamableDelegate delegate interface */
 DECLARE_DELEGATE(FStreamableDelegate);
@@ -52,6 +52,9 @@ struct ENGINE_API FStreamableHandle : public TSharedFromThis<FStreamableHandle, 
 		return bIsCombinedHandle;
 	}
 
+	/** Returns true if we've done all the loading we can now, ie all handles are either completed or stalled */
+	bool HasLoadCompletedOrStalled() const;
+
 	/** Returns the debug name for this handle. */
 	const FString& GetDebugName() const
 	{
@@ -64,11 +67,18 @@ struct ENGINE_API FStreamableHandle : public TSharedFromThis<FStreamableHandle, 
 		return Priority;
 	}
 
-	/** Release this handle. This can be called from normal gameplay code to indicate that the loaded assets are no longer needed. Will be called implicitly if all shared pointers
-	to this handle are destroyed. If called before the completion delegate, the release will be delayed until after completion. */
+	/**
+	 * Release this handle. This can be called from normal gameplay code to indicate that the loaded assets are no longer needed
+	 * This will be called implicitly if all shared pointers to this handle are destroyed
+	 * If called before the completion delegate, the release will be delayed until after completion
+	 */
 	void ReleaseHandle();
 
-	/** Cancel a request, callable from within the manager or externally. Will stop delegate from being called */
+	/**
+	 * Cancel a request, callable from within the manager or externally
+	 * This will immediately release the handle even if it is still in progress
+	 * This will normally stop the completion delegate from getting called, unless that delegate is already in the callback delay queue
+	 */
 	void CancelHandle();
 
 	/** Tells a stalled handle to start its actual request. */
@@ -83,9 +93,14 @@ struct ENGINE_API FStreamableHandle : public TSharedFromThis<FStreamableHandle, 
 	/** Bind delegate that is called periodically as delegate updates, only works if loading is in progress. This will overwrite any already bound delegate! */
 	bool BindUpdateDelegate(FStreamableUpdateDelegate NewDelegate);
 
-	/** Blocks until the requested assets have loaded. This pushes the requested asset to the top of the priority list, but does not flush all async loading, usually resulting
-	in faster completion than a LoadObject call. */
-	EAsyncPackageState::Type WaitUntilComplete(float Timeout = 0.0f);
+	/**
+	 * Blocks until the requested assets have loaded. This pushes the requested asset to the top of the priority list,
+	 * but does not flush all async loading, usually resulting in faster completion than a LoadObject call
+	 *
+	 * @param Timeout				Maximum time to wait, if this is 0 it will wait forever
+	 * @param StartStalledHandles	If true it will force all handles waiting on external resources to try and load right now
+	 */
+	EAsyncPackageState::Type WaitUntilComplete(float Timeout = 0.0f, bool bStartStalledHandles = true);
 
 	/** Gets list of assets references this load was started with. This will be the paths before redirectors, and not all of these are guaranteed to be loaded */
 	void GetRequestedAssets(TArray<FSoftObjectPath>& AssetList) const;
@@ -285,6 +300,9 @@ struct ENGINE_API FStreamableManager : public FGCObject
 	/** This will release any managed active handles pointing to the target string asset reference, even if they include other requested assets in the same load */
 	void Unload(const FSoftObjectPath& Target);
 
+	/** Checks for any redirectors that were previously loaded, and returns the redirected target if found. This will not handle redirects that it doesn't yet know about */
+	FSoftObjectPath ResolveRedirects(const FSoftObjectPath& Target) const;
+
 	DEPRECATED(4.16, "Call LoadSynchronous with bManageActiveHandle=true instead if you want the manager to keep the handle alive")
 	UObject* SynchronousLoad(FSoftObjectPath const& Target);
 
@@ -317,8 +335,8 @@ private:
 
 	void RemoveReferencedAsset(const FSoftObjectPath& Target, TSharedRef<FStreamableHandle> Handle);
 	void StartHandleRequests(TSharedRef<FStreamableHandle> Handle);
-	FSoftObjectPath ResolveRedirects(const FSoftObjectPath& Target) const;
 	void FindInMemory(FSoftObjectPath& InOutTarget, struct FStreamable* Existing);
+	FSoftObjectPath HandleLoadedRedirector(UObjectRedirector* LoadedRedirector, FSoftObjectPath RequestedPath, struct FStreamable* RequestedStreamable);
 	struct FStreamable* FindStreamable(const FSoftObjectPath& Target) const;
 	struct FStreamable* StreamInternal(const FSoftObjectPath& Target, TAsyncLoadPriority Priority, TSharedRef<FStreamableHandle> Handle);
 	UObject* GetStreamed(const FSoftObjectPath& Target) const;
@@ -341,6 +359,7 @@ private:
 		UObjectRedirector* LoadedRedirector;
 
 		FRedirectedPath() : LoadedRedirector(nullptr) {}
+		FRedirectedPath(const FSoftObjectPath& InNewPath, UObjectRedirector* InLoadedRedirector) : NewPath(InNewPath),LoadedRedirector(InLoadedRedirector) {}
 	};
 	typedef TMap<FSoftObjectPath, FRedirectedPath> TStreamableRedirects;
 	TStreamableRedirects StreamableRedirects;

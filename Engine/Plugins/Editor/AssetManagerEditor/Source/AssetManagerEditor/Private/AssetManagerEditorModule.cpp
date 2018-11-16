@@ -1,22 +1,22 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "AssetManagerEditorModule.h"
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 #include "AssetRegistryModule.h"
 #include "PrimaryAssetTypeCustomization.h"
 #include "PrimaryAssetIdCustomization.h"
 #include "SAssetAuditBrowser.h"
 #include "Engine/PrimaryAssetLabel.h"
 
-#include "JsonReader.h"
-#include "JsonSerializer.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "CollectionManagerModule.h"
 #include "GameDelegates.h"
 #include "ICollectionManager.h"
 #include "ARFilter.h"
-#include "FileHelper.h"
-#include "ProfilingHelpers.h"
-#include "StatsMisc.h"
+#include "Misc/FileHelper.h"
+#include "ProfilingDebugging/ProfilingHelpers.h"
+#include "Stats/StatsMisc.h"
 #include "Engine/AssetManager.h"
 #include "PropertyEditorModule.h"
 #include "IContentBrowserSingleton.h"
@@ -32,7 +32,7 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/SToolTip.h"
 #include "PropertyCustomizationHelpers.h"
-#include "AssetEditorToolkit.h"
+#include "Toolkits/AssetEditorToolkit.h"
 #include "LevelEditor.h"
 #include "GraphEditorModule.h"
 #include "AssetData.h"
@@ -59,6 +59,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Misc/HotReloadInterface.h"
 
 
 #define LOCTEXT_NAMESPACE "AssetManagerEditor"
@@ -351,6 +352,8 @@ private:
 	FDelegateHandle ReferenceViewerDelegateHandle;
 	FDelegateHandle AssetEditorExtenderDelegateHandle;
 	FDelegateHandle LevelEditorExtenderDelegateHandle;
+	FDelegateHandle HotReloadDelegateHandle;
+	FDelegateHandle MarkPackageDirtyDelegateHandle;
 
 	TWeakPtr<SDockTab> AssetAuditTab;
 	TWeakPtr<SDockTab> ReferenceViewerTab;
@@ -374,6 +377,8 @@ private:
 	TSharedRef<FExtender> OnExtendContentBrowserPathSelectionMenu(const TArray<FString>& SelectedPaths);
 	TSharedRef<FExtender> OnExtendAssetEditor(const TSharedRef<FUICommandList> CommandList, const TArray<UObject*> ContextSensitiveObjects);
 	TSharedRef<FExtender> OnExtendLevelEditor(const TSharedRef<FUICommandList> CommandList, const TArray<AActor*> SelectedActors);
+	void OnHotReload(bool bWasTriggeredAutomatically);
+	void OnMarkPackageDirty(UPackage* Pkg, bool bWasDirty);
 
 	TSharedRef<SDockTab> SpawnAssetAuditTab(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnReferenceViewerTab(const FSpawnTabArgs& Args);
@@ -491,6 +496,12 @@ void FAssetManagerEditorModule::StartupModule()
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SizeMapTabName, FOnSpawnTab::CreateRaw(this, &FAssetManagerEditorModule::SpawnSizeMapTab))
 			.SetDisplayName(LOCTEXT("SizeMapTitle", "Size Map"))
 			.SetMenuType(ETabSpawnerMenuType::Hidden);
+
+		// Register for hot reload and package dirty to invalidate data
+		IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
+		HotReloadDelegateHandle = HotReloadSupport.OnHotReload().AddRaw(this, &FAssetManagerEditorModule::OnHotReload);
+
+		MarkPackageDirtyDelegateHandle = UPackage::PackageMarkedDirtyEvent.AddRaw(this, &FAssetManagerEditorModule::OnMarkPackageDirty);
 	}
 }
 
@@ -569,6 +580,14 @@ void FAssetManagerEditorModule::ShutdownModule()
 		{
 			SizeMapTab.Pin()->RequestCloseTab();
 		}
+
+		if (FModuleManager::Get().IsModuleLoaded("HotReload"))
+		{
+			IHotReloadInterface& HotReloadSupport = FModuleManager::GetModuleChecked<IHotReloadInterface>("HotReload");
+			HotReloadSupport.OnHotReload().Remove(HotReloadDelegateHandle);
+		}
+
+		UPackage::PackageMarkedDirtyEvent.Remove(MarkPackageDirtyDelegateHandle);
 	}
 }
 
@@ -870,6 +889,33 @@ TSharedRef<FExtender> FAssetManagerEditorModule::OnExtendLevelEditor(const TShar
 	return Extender;
 }
 
+void FAssetManagerEditorModule::OnHotReload(bool bWasTriggeredAutomatically)
+{
+	UAssetManager* AssetManager = UAssetManager::GetIfValid();
+
+	if (AssetManager)
+	{
+		// Invalidate on a hot reload
+		AssetManager->InvalidatePrimaryAssetDirectory();
+	}
+}
+
+void FAssetManagerEditorModule::OnMarkPackageDirty(UPackage* Pkg, bool bWasDirty)
+{
+	UAssetManager* AssetManager = UAssetManager::GetIfValid();
+
+	if (AssetManager)
+	{
+		// Check if this package is managed, if so invalidate
+		FPrimaryAssetId AssetId = AssetManager->GetPrimaryAssetIdForPackage(Pkg->GetFName());
+
+		if (AssetId.IsValid())
+		{
+			AssetManager->InvalidatePrimaryAssetDirectory();
+		}
+	}
+}
+
 bool FAssetManagerEditorModule::GetManagedPackageListForAssetData(const FAssetData& AssetData, TSet<FName>& ManagedPackageSet)
 {
 	InitializeRegistrySources(true);
@@ -954,7 +1000,7 @@ bool FAssetManagerEditorModule::GetStringValueForCustomColumn(const FAssetData& 
 		int64 IntegerValue = 0;
 		if (GetIntegerValueForCustomColumn(AssetData, ColumnName, IntegerValue))
 		{
-			OutValue = Lex::ToString(IntegerValue);
+			OutValue = LexToString(IntegerValue);
 			return true;
 		}
 	}
@@ -968,6 +1014,9 @@ bool FAssetManagerEditorModule::GetStringValueForCustomColumn(const FAssetData& 
 		{
 		case EPrimaryAssetCookRule::AlwaysCook: 
 			OutValue = TEXT("Always");
+			return true;
+		case EPrimaryAssetCookRule::DevelopmentAlwaysCook:
+			OutValue = TEXT("DevelopmentAlways");
 			return true;
 		case EPrimaryAssetCookRule::DevelopmentCook: 
 			OutValue = TEXT("Development");
@@ -1004,7 +1053,7 @@ bool FAssetManagerEditorModule::GetStringValueForCustomColumn(const FAssetData& 
 			{
 				OutValue += TEXT("+");
 			}
-			OutValue += Lex::ToString(Chunk);
+			OutValue += LexToString(Chunk);
 		}
 		return true;
 	}
@@ -1054,6 +1103,9 @@ bool FAssetManagerEditorModule::GetDisplayTextForCustomColumn(const FAssetData& 
 		{
 		case EPrimaryAssetCookRule::AlwaysCook:
 			OutValue = LOCTEXT("AlwaysCook", "Always");
+			return true;
+		case EPrimaryAssetCookRule::DevelopmentAlwaysCook:
+			OutValue = LOCTEXT("DevelopmentAlwaysCook", "DevelopmentAlways");
 			return true;
 		case EPrimaryAssetCookRule::DevelopmentCook:
 			OutValue = LOCTEXT("DevelopmentCook", "Development");
@@ -1337,7 +1389,7 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 			}
 			if (!bLoaded)
 			{
-				FNotificationInfo Info(FText::Format(LOCTEXT("LoadRegistryFailed", "Failed to load asset registry from {0}!"), FText::FromString(CurrentRegistrySource->SourceFilename)));
+				FNotificationInfo Info(FText::Format(LOCTEXT("LoadRegistryFailed_FailedToLoad", "Failed to load asset registry from {0}!"), FText::FromString(CurrentRegistrySource->SourceFilename)));
 				Info.ExpireDuration = 10.0f;
 				FSlateNotificationManager::Get().AddNotification(Info);
 				CurrentRegistrySource = RegistrySourceMap.Find(FAssetManagerEditorRegistrySource::EditorSourceName);
@@ -1415,7 +1467,7 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 	}
 	else
 	{
-		FNotificationInfo Info(FText::Format(LOCTEXT("LoadRegistryFailed", "Can't find registry source {0}! Reverting to Editor."), FText::FromString(SourceName)));
+		FNotificationInfo Info(FText::Format(LOCTEXT("LoadRegistryFailed_MissingFile", "Can't find registry source {0}! Reverting to Editor."), FText::FromString(SourceName)));
 		Info.ExpireDuration = 10.0f;
 		FSlateNotificationManager::Get().AddNotification(Info);
 		CurrentRegistrySource = RegistrySourceMap.Find(FAssetManagerEditorRegistrySource::EditorSourceName);
@@ -1440,7 +1492,7 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 
 void FAssetManagerEditorModule::RefreshRegistryData()
 {
-	UAssetManager::Get().UpdateManagementDatabase();
+	UAssetManager::Get().UpdateManagementDatabase(true);
 
 	// Rescan registry sources, try to restore the current one
 	FString OldSourceName = CurrentRegistrySource->SourceName;

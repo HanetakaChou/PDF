@@ -7,15 +7,16 @@
 #include "HeadMountedDisplayBase.h"
 #include "SceneViewExtension.h"
 #include "RHIStaticStates.h"
-#include "SceneViewport.h"
+#include "Slate/SceneViewport.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "PostProcess/PostProcessHMD.h"
 #include "GoogleVRHMDViewerPreviews.h"
-#include "Classes/GoogleVRHMDFunctionLibrary.h"
+#include "GoogleVRHMDFunctionLibrary.h"
 #include "GoogleVRSplash.h"
 #include "Containers/Queue.h"
 #include "XRRenderTargetManager.h"
+#include "XRRenderBridge.h"
 #include "IXRInput.h"
 
 
@@ -95,7 +96,7 @@ public:
 		uint32 InFlags);
 };
 
-class FGoogleVRHMDCustomPresent : public FRHICustomPresent
+class FGoogleVRHMDCustomPresent : public FXRRenderBridge
 {
 public:
 
@@ -132,7 +133,8 @@ public:
 	// Frame operations
 	void UpdateRenderingViewportList(const gvr_buffer_viewport_list* BufferViewportList);
 	void UpdateRenderingPose(gvr_mat4f InHeadPose);
-	void UpdateViewport(const FViewport& Viewport, FRHIViewport* ViewportRHI);
+	/** Return true if the render bridge is ready to accept frames */
+	bool IsInitialized() { return SwapChain != nullptr; }
 
 	void BeginRendering();
 	void BeginRendering(const gvr_mat4f& RenderingHeadPose);
@@ -156,7 +158,7 @@ public:
 	// Called from RHI thread to perform custom present.
 	// @param InOutSyncInterval - in out param, indicates if vsync is on (>0) or off (==0).
 	// @return	true if native Present should be also be performed; false otherwise. If it returns
-	// true, then InOutSyncInterval could be modified to switch between VSync/NoVSync for the normal 
+	// true, then InOutSyncInterval could be modified to switch between VSync/NoVSync for the normal
 	// Present.  Must match value previously returned by NeedsNormalPresent for this frame.
 	virtual bool Present(int32& InOutSyncInterval) override;
 
@@ -281,6 +283,8 @@ public:
 	/** Get the currently set viewer vendor */
 	FString GetViewerVendor();
 
+	void SetRecenterControllerOnly(bool bIsRecenterControllerOnly);
+
 private:
 
 	/** Refresh RT so screen isn't black */
@@ -312,6 +316,8 @@ private:
 	/** Function get called when start loading a map*/
 	void OnPreLoadMap(const FString&);
 
+	void OnControllerRecentered();
+
 	/** Console command handlers */
 	void DistortEnableCommandHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar);
 	void DistortMethodCommandHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar);
@@ -325,6 +331,11 @@ private:
 	void SplashScreenDistanceCommandHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar);
 	void SplashScreenRenderScaleCommandHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar);
 	void EnableSustainedPerformanceModeHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar);
+
+	/**
+	Clutch to ensure that changes in r.ScreenPercentage are reflected in render target size.
+	*/
+	void CVarSinkHandler();
 #endif
 public:
 
@@ -383,9 +394,10 @@ private:
 	float PixelDensity;
 	FIntPoint GVRRenderTargetSize;
 	IRendererModule* RendererModule;
-	uint16* DistortionMeshIndices;
-	FDistortionVertex* DistortionMeshVerticesLeftEye;
-	FDistortionVertex* DistortionMeshVerticesRightEye;
+
+	FIndexBufferRHIRef DistortionMeshIndices;
+	FVertexBufferRHIRef DistortionMeshVerticesLeftEye;
+	FVertexBufferRHIRef DistortionMeshVerticesRightEye;
 
 #if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
 	GVROverlayView* OverlayView;
@@ -447,10 +459,16 @@ private:
 	FAutoConsoleCommand SplashScreenDistanceCommand;
 	FAutoConsoleCommand SplashScreenRenderScaleCommand;
 	FAutoConsoleCommand EnableSustainedPerformanceModeCommand;
+
+	FAutoConsoleVariableSink CVarSink;
 #endif
 
 	EHMDTrackingOrigin::Type TrackingOrigin;
 	bool bIs6DoFSupported;
+
+	bool bRecenterControllerOnly = false;
+	float yawCorrection = 0.0f;
+	bool bShouldApplyYawCorrection = false;
 
 public:
 	//////////////////////////////////////////////////////
@@ -513,21 +531,16 @@ public:
 	// through RHI bridge is implemented.
 	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
 
-	/**
-	 * Returns currently active custom present.
-	 */
-	virtual FRHICustomPresent* GetCustomPresent() override;
-
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 
 	////////////////////////////////////////////
 	// Begin FXRRenderTargetManager Interface //
 	////////////////////////////////////////////
 
-	/**
-	 * Updates viewport for direct rendering of distortion. Should be called on a game thread.
+	/** 
+	 * Returns an instance of the currently active render bridge (aka. custom present)
 	 */
-	virtual void UpdateViewportRHIBridge(bool bUseSeparateRenderTarget, const class FViewport& Viewport, FRHIViewport* const ViewportRHI) override;
+	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget) override;
 
 	/**
 	 * Calculates dimensions of the render target texture for direct rendering of distortion.
@@ -561,7 +574,7 @@ public:
 	 * @param Type Optionally limit the list of devices to a certain type.
 	 */
 	virtual bool EnumerateTrackedDevices(TArray<int32>& OutDevices, EXRTrackedDeviceType Type = EXRTrackedDeviceType::Any) override;
-	
+
     /**
 	 * Get the current pose for a device.
 	 * This method must be callable both on the render thread and the game thread.
@@ -660,7 +673,6 @@ public:
 	 */
 	virtual void OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily) override;
 
-
 	/**
 	 * Access optional HMD input override interface.
 	 *
@@ -739,7 +751,7 @@ public:
 	/////////////////////////////////////////////////
 	// Begin IHeadMountedDisplay Virtual Interface //
 	/////////////////////////////////////////////////
-	
+
 	virtual void DrawDistortionMesh_RenderThread(struct FRenderingCompositePassContext& Context, const FIntPoint& TextureSize) override;
 
 	virtual float GetPixelDenity() const override { return PixelDensity; }
@@ -813,6 +825,10 @@ public:
 	*/
 	bool GetRecenterTransform(FQuat& RecenterOrientation, FVector& RecenterPosition);
 
+#if GOOGLEVRHMD_SUPPORTED_PLATFORMS
+	gvr::ViewerType GetViewerType() const;
+#endif
+
 private :
 
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
@@ -820,4 +836,5 @@ private :
 #endif
 
 	bool Is6DOFSupported() const;
+	void TrackYawCorrection(FWorldContext& WorldContext);
 };

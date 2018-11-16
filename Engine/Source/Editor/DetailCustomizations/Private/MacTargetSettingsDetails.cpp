@@ -17,7 +17,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformModule.h"
 #include "SExternalImageReference.h"
-#include "SNumericDropDown.h"
+#include "Widgets/Input/SNumericDropDown.h"
 #include "Dialogs/Dialogs.h"
 #include "Widgets/Notifications/SErrorText.h"
 #include "IDetailPropertyRow.h"
@@ -78,7 +78,7 @@ static FString GetSplashFilename(EMacImageScope::Type Scope, bool bIsEditorSplas
 /* Helper function used to generate filenames for icons */
 static FString GetIconFilename(EMacImageScope::Type Scope)
 {
-	const FString& PlatformName = FModuleManager::GetModuleChecked<ITargetPlatformModule>("MacTargetPlatform").GetTargetPlatform()->PlatformName();
+	const FString& PlatformName = FModuleManager::GetModuleChecked<ITargetPlatformModule>("MacTargetPlatform").GetTargetPlatforms()[0]->PlatformName();
 
 	if (Scope == EMacImageScope::Engine)
 	{
@@ -104,7 +104,7 @@ void FMacTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBu
 {
 	FSimpleDelegate OnUpdateShaderStandardWarning = FSimpleDelegate::CreateSP(this, &FMacTargetSettingsDetails::UpdateShaderStandardWarning);
 	
-	ITargetPlatform* TargetPlatform = FModuleManager::GetModuleChecked<ITargetPlatformModule>("MacTargetPlatform").GetTargetPlatform();
+	ITargetPlatform* TargetPlatform = FModuleManager::GetModuleChecked<ITargetPlatformModule>("MacTargetPlatform").GetTargetPlatforms()[0];
 	
 	// Setup the supported/targeted RHI property view
 	TargetShaderFormatsDetails = MakeShareable(new FShaderFormatsPropertyDetails(&DetailBuilder, TEXT("TargetedRHIs"), TEXT("Targeted RHIs")));
@@ -285,7 +285,8 @@ static uint32 GMacTargetSettingsMinOSVers[][3] = {
 	{10,11,6},
 	{10,11,6},
 	{10,12,6},
-	{10,13,0}
+	{10,13,0},
+	{10,14,0}
 };
 
 TSharedRef<SWidget> FMacTargetSettingsDetails::OnGetShaderVersionContent()
@@ -327,6 +328,15 @@ FText FMacTargetSettingsDetails::GetShaderVersionDesc() const
 
 void FMacTargetSettingsDetails::SetShaderStandard(int32 Value)
 {
+	FText Message;
+	
+	if (Value == 2)
+	{
+		Message = LOCTEXT("DeprecatedMacMetalShaderVersion1_2","Metal Shader Standard v1.2 required for macOS 10.12 Sierra is deprecated in 4.21 and will be removed in the next version.");
+	}
+	
+	ShaderVersionWarningTextBox->SetError(Message);
+	
 	FPropertyAccess::Result Res = ShaderVersionPropertyHandle->SetValue((uint8)Value);
 	check(Res == FPropertyAccess::Success);
 }

@@ -23,6 +23,8 @@
 #define SETTING_QOS FName(TEXT("QOS"))
 /** Setting describing the region of the world you are in (value is FString) */
 #define SETTING_REGION FName(TEXT("REGION"))
+/** Setting describing the a specific subregion preference within a region (value is FString) */
+#define SETTING_SUBREGION FName(TEXT("SUBREGION"))
 /** Setting describing the unique id of a datacenter (value is FString) */
 #define SETTING_DCID FName(TEXT("DCID"))
 /** Number of players needed to fill out this session (value is int32) */
@@ -322,10 +324,10 @@ public:
 	{
 	}
 
-	FOnlineSessionSettings(const FOnlineSessionSettings& Other) = default;
-	FOnlineSessionSettings(FOnlineSessionSettings&& Other) = default;
-	FOnlineSessionSettings& operator=(const FOnlineSessionSettings& Other) = default;
-	FOnlineSessionSettings& operator=(FOnlineSessionSettings&& Other) = default;
+	FOnlineSessionSettings(FOnlineSessionSettings&&) = default;
+	FOnlineSessionSettings(const FOnlineSessionSettings&) = default;
+	FOnlineSessionSettings& operator=(FOnlineSessionSettings&&) = default;
+	FOnlineSessionSettings& operator=(const FOnlineSessionSettings&) = default;
 
 	/**
 	 *	Sets a key value pair combination that defines a session setting with an ID
@@ -434,14 +436,12 @@ public:
 	{
 	}
 
-	virtual ~FOnlineSession()
-	{
-	}
+	FOnlineSession(FOnlineSession&&) = default;
+	FOnlineSession(const FOnlineSession&) = default;
+	FOnlineSession& operator=(FOnlineSession&&) = default;
+	FOnlineSession& operator=(const FOnlineSession&) = default;
 
-	FOnlineSession(const FOnlineSession& Other) = default;
-	FOnlineSession(FOnlineSession&& Other) = default;
-	FOnlineSession& operator=(const FOnlineSession& Other) = default;
-	FOnlineSession& operator=(FOnlineSession&& Other) = default;
+	virtual ~FOnlineSession() = default;
 
 	/** @return the session id for a given session */
 	FString GetSessionIdStr() const
@@ -659,7 +659,7 @@ public:
 		, PlatformHash(0)
 		, TimeoutInSeconds(0.0f)
 	{
-		QuerySettings.Set(SETTING_MAPNAME, FString(TEXT("")), EOnlineComparisonOp::Equals);
+		QuerySettings.Set(SETTING_MAPNAME, FString(), EOnlineComparisonOp::Equals);
 		QuerySettings.Set(SEARCH_DEDICATED_ONLY, false, EOnlineComparisonOp::Equals);
 		QuerySettings.Set(SEARCH_EMPTY_SERVERS_ONLY, false, EOnlineComparisonOp::Equals);
 		QuerySettings.Set(SEARCH_SECURE_SERVERS_ONLY, false, EOnlineComparisonOp::Equals);
@@ -669,10 +669,10 @@ public:
 	{
 	}
 
-	FOnlineSessionSearch(const FOnlineSessionSearch& Other) = default;
-	FOnlineSessionSearch(FOnlineSessionSearch&& Other) = default;
-	FOnlineSessionSearch& operator=(const FOnlineSessionSearch& Other) = default;
-	FOnlineSessionSearch& operator=(FOnlineSessionSearch&& Other) = default;
+	FOnlineSessionSearch(FOnlineSessionSearch&&) = default;
+	FOnlineSessionSearch(const FOnlineSessionSearch&) = default;
+	FOnlineSessionSearch& operator=(FOnlineSessionSearch&&) = default;
+	FOnlineSessionSearch& operator=(const FOnlineSessionSearch&) = default;
 
 	/**
 	 *	Give the game a chance to sort the returned results

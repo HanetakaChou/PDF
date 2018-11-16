@@ -31,7 +31,7 @@
 #include "IPropertyUtilities.h"
 #include "Math/UnitConversion.h"
 #include "Widgets/Input/NumericUnitTypeInterface.inl"
-#include "EditorProjectSettings.h"
+#include "Settings/EditorProjectSettings.h"
 #include "HAL/PlatformApplicationMisc.h"
 
 #define LOCTEXT_NAMESPACE "FComponentTransformDetails"
@@ -1146,10 +1146,7 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 								ObjectToRelativeRotationMap.FindOrAdd(SceneComponent) = NewRotation;
 							}
 
-							SceneComponent->SetRelativeRotation(NewRotation);
-
-							// Also forcibly set it as the cache may have changed it slightly
-							SceneComponent->RelativeRotation = NewRotation;
+							SceneComponent->SetRelativeRotationExact(NewRotation);
 
 							// If it's a template, propagate the change out to any current instances of the object
 							if (bIsEditingTemplateObject)
@@ -1226,16 +1223,27 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 					// This can invalidate OldSceneComponent
 					// We don't call PostEditChange for non commit changes because most classes implement the version that doesn't check the interaction type
 					OldSceneComponent->PostEditChangeChainProperty(PropertyChangedChainEvent);
+				}
+				else
+				{
+					SnapshotTransactionBuffer(OldSceneComponent);
+				}
 
-					SceneComponent = FindObject<USceneComponent>(EditedActor, *SceneComponentPath);
+				SceneComponent = FindObject<USceneComponent>(EditedActor, *SceneComponentPath);
 
-					if (EditedActor && EditedActor->GetRootComponent() == SceneComponent)
+				if (EditedActor && EditedActor->GetRootComponent() == SceneComponent)
+				{
+					if (bCommitted)
 					{
 						EditedActor->PostEditChangeChainProperty(PropertyChangedChainEvent);
 						SceneComponent = FindObject<USceneComponent>(EditedActor, *SceneComponentPath);
 					}
+					else
+					{
+						SnapshotTransactionBuffer(EditedActor);
+					}
 				}
-
+				
 				if (!Object->IsTemplate())
 				{
 					if (TransformField == ETransformField::Rotation || TransformField == ETransformField::Location)
@@ -1257,11 +1265,11 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 
 					if (bCommitted)
 					{
-						// Broadcast the first time an actor is about to move
-						GEditor->BroadcastBeginObjectMovement(*SceneComponent);
+						// Broadcast when the actor is done moving
+						GEditor->BroadcastEndObjectMovement(*SceneComponent);
 						if (EditedActor && EditedActor->GetRootComponent() == SceneComponent)
 						{
-							GEditor->BroadcastBeginObjectMovement(*EditedActor);
+							GEditor->BroadcastEndObjectMovement(*EditedActor);
 						}
 					}
 				}

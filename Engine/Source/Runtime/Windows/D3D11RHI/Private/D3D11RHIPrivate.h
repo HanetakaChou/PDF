@@ -19,7 +19,7 @@
 DECLARE_LOG_CATEGORY_EXTERN(LogD3D11RHI, Log, All);
 
 #include "Windows/D3D11RHIBasePrivate.h"
-#include "StaticArray.h"
+#include "Containers/StaticArray.h"
 
 // NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
@@ -50,7 +50,41 @@ DECLARE_LOG_CATEGORY_EXTERN(LogD3D11RHI, Log, All);
 #define GFSDK_Aftermath_WITH_DX11 1
 #include "GFSDK_Aftermath.h"
 #undef GFSDK_Aftermath_WITH_DX11
-extern int32 GDX11NVAfterMathEnabled;
+extern bool GDX11NVAfterMathEnabled;
+#endif
+
+#if INTEL_METRICSDISCOVERY
+
+THIRD_PARTY_INCLUDES_START
+__pragma(warning(disable: 4263))
+__pragma(warning(disable: 4264))
+#include "metrics_discovery_helper_dx11.h"
+THIRD_PARTY_INCLUDES_END
+
+extern bool GDX11IntelMetricsDiscoveryEnabled;
+
+struct Intel_MetricsDiscovery_ContextData
+{
+	Intel_MetricsDiscovery_ContextData() :
+		MDMetricSet(nullptr),
+		MDConcurrentGroup(nullptr)
+	{
+		ReportInUse = 1;
+		LastGPUTime = 0.0;
+		bFrameBegun = false;
+	}
+
+	MDH_Context MDHContext;
+	MDH_RangeMetricsDX11 MDHRangeMetrics;
+	MetricsDiscovery::IMetricSet_1_0* MDMetricSet;
+	MetricsDiscovery::IConcurrentGroup_1_0* MDConcurrentGroup;
+
+	uint32 GPUTimeIndex;
+
+	uint32 ReportInUse;
+	uint64 LastGPUTime;
+	bool bFrameBegun;
+};
 #endif
 
 #if UE_BUILD_SHIPPING || UE_BUILD_TEST
@@ -68,6 +102,7 @@ extern int32 GDX11NVAfterMathEnabled;
  * The D3D RHI stats.
  */
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Present time"),STAT_D3D11PresentTime,STATGROUP_D3D11RHI, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("CustomPresent time"), STAT_D3D11CustomPresentTime, STATGROUP_D3D11RHI, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("CreateTexture time"),STAT_D3D11CreateTextureTime,STATGROUP_D3D11RHI, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("LockTexture time"),STAT_D3D11LockTextureTime,STATGROUP_D3D11RHI, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("UnlockTexture time"),STAT_D3D11UnlockTextureTime,STATGROUP_D3D11RHI, );
@@ -140,6 +175,8 @@ public:
 	 * Releases all D3D resources.
 	 */
 	virtual void ReleaseDynamicRHI() override;
+
+	static void CalibrateTimers(FD3D11DynamicRHI* InD3DRHI);
 
 private:
 	/**
@@ -380,6 +417,10 @@ public:
 	virtual FGeometryShaderRHIRef RHICreateGeometryShader(const TArray<uint8>& Code) final override;
 	virtual FGeometryShaderRHIRef RHICreateGeometryShaderWithStreamOutput(const TArray<uint8>& Code, const FStreamOutElementList& ElementList, uint32 NumStrides, const uint32* Strides, int32 RasterizedStream) final override;
 	virtual FComputeShaderRHIRef RHICreateComputeShader(const TArray<uint8>& Code) final override;
+	virtual FStagingBufferRHIRef RHICreateStagingBuffer(FVertexBufferRHIParamRef VertexBuffer) final override;
+    virtual void RHIEnqueueStagedRead(FStagingBufferRHIParamRef StagingBuffer, FGPUFenceRHIParamRef Fence, uint32 Offset, uint32 NumBytes) final override;
+	virtual void* RHILockStagingBuffer(FStagingBufferRHIParamRef StagingBuffer, uint32 Offset, uint32 SizeRHI) final override;
+    virtual void RHIUnlockStagingBuffer(FStagingBufferRHIParamRef StagingBuffer) final override;
 	virtual FBoundShaderStateRHIRef RHICreateBoundShaderState(FVertexDeclarationRHIParamRef VertexDeclaration, FVertexShaderRHIParamRef VertexShader, FHullShaderRHIParamRef HullShader, FDomainShaderRHIParamRef DomainShader, FPixelShaderRHIParamRef PixelShader, FGeometryShaderRHIParamRef GeometryShader) final override;
 	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage) final override;
 	virtual FIndexBufferRHIRef RHICreateIndexBuffer(uint32 Stride, uint32 Size, uint32 InUsage, FRHIResourceCreateInfo& CreateInfo) final override;
@@ -395,6 +436,7 @@ public:
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FStructuredBufferRHIParamRef StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer) final override;
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FTextureRHIParamRef Texture, uint32 MipLevel) final override;
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FVertexBufferRHIParamRef VertexBuffer, uint8 Format) final override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FIndexBufferRHIParamRef IndexBuffer, uint8 Format) final override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FStructuredBufferRHIParamRef StructuredBuffer) final override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FVertexBufferRHIParamRef VertexBuffer, uint32 Stride, uint8 Format) final override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FIndexBufferRHIParamRef Buffer) final override;
@@ -452,7 +494,6 @@ public:
 	virtual void RHIResizeViewport(FViewportRHIParamRef Viewport, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat) final override;
 	virtual void RHITick(float DeltaTime) final override;
 	virtual void RHISetStreamOutTargets(uint32 NumTargets,const FVertexBufferRHIParamRef* VertexBuffers,const uint32* Offsets) final override;
-	virtual void RHIDiscardRenderTargets(bool Depth,bool Stencil,uint32 ColorBitMask) final override;
 	virtual void RHIBlockUntilGPUIdle() final override;
 	virtual bool RHIGetAvailableResolutions(FScreenResolutionArray& Resolutions, bool bIgnoreRefreshRate) final override;
 	virtual void RHIGetSupportedResolution(uint32& Width, uint32& Height) final override;
@@ -463,8 +504,6 @@ public:
 	virtual class IRHICommandContext* RHIGetDefaultContext() final override;
 	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) final override;
 
-
-
 	virtual void RHISetComputeShader(FComputeShaderRHIParamRef ComputeShader) final override;
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) final override;
 	virtual void RHIDispatchIndirectComputeShader(FVertexBufferRHIParamRef ArgumentBuffer, uint32 ArgumentOffset) final override;
@@ -472,13 +511,13 @@ public:
 	virtual void RHIFlushComputeShaderCache() final override;
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) final override;
 	virtual void RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef UnorderedAccessViewRHI, const uint32* Values) final override;
-	virtual void RHICopyToResolveTarget(FTextureRHIParamRef SourceTexture, FTextureRHIParamRef DestTexture, bool bKeepOriginalSurface, const FResolveParams& ResolveParams) final override;
+	virtual void RHICopyToResolveTarget(FTextureRHIParamRef SourceTexture, FTextureRHIParamRef DestTexture, const FResolveParams& ResolveParams) final override;
 	virtual void RHITransitionResources(EResourceTransitionAccess TransitionType, FTextureRHIParamRef* InTextures, int32 NumTextures) final override;
 	virtual void RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FUnorderedAccessViewRHIParamRef* InUAVs, int32 NumUAVs, FComputeFenceRHIParamRef WriteFence) final override;
 	virtual void RHIBeginRenderQuery(FRenderQueryRHIParamRef RenderQuery) final override;
 	virtual void RHIEndRenderQuery(FRenderQueryRHIParamRef RenderQuery) final override;
-	virtual void RHIBeginOcclusionQueryBatch() final override;
-	virtual void RHIEndOcclusionQueryBatch() final override;
+	void RHIBeginOcclusionQueryBatch(uint32 NumQueriesInBatch);
+	void RHIEndOcclusionQueryBatch();
 	virtual void RHISubmitCommandsHint() final override;
 	virtual void RHIBeginDrawingViewport(FViewportRHIParamRef Viewport, FTextureRHIParamRef RenderTargetRHI) final override;
 	virtual void RHIEndDrawingViewport(FViewportRHIParamRef Viewport, bool bPresent, bool bLockToVsync) final override;
@@ -547,7 +586,20 @@ public:
 	virtual void RHIEndDrawPrimitiveUP() final override;
 	virtual void RHIBeginDrawIndexedPrimitiveUP(uint32 PrimitiveType, uint32 NumPrimitives, uint32 NumVertices, uint32 VertexDataStride, void*& OutVertexData, uint32 MinVertexIndex, uint32 NumIndices, uint32 IndexDataStride, void*& OutIndexData) final override;
 	virtual void RHIEndDrawIndexedPrimitiveUP() final override;
-	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) final override;
+	virtual void RHIEnableDepthBoundsTest(bool bEnable) final override
+	{
+		if (GSupportsDepthBoundsTest && StateCache.bDepthBoundsEnabled != bEnable)
+		{
+			EnableDepthBoundsTest(bEnable, 0.0f, 1.0f);
+		}
+	}
+	virtual void RHISetDepthBounds(float MinDepth, float MaxDepth) final override
+	{
+		if (GSupportsDepthBoundsTest && (StateCache.DepthBoundsMin != MinDepth || StateCache.DepthBoundsMax != MaxDepth))
+		{
+			EnableDepthBoundsTest(true, MinDepth, MaxDepth);
+		}
+	}
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) final override;
 	virtual void RHIPopEvent() final override;
 
@@ -556,6 +608,30 @@ public:
 	virtual FTexture2DRHIRef RHICreateTexture2DFromResource(EPixelFormat Format, uint32 TexCreateFlags, const FClearValueBinding& ClearValueBinding, ID3D11Texture2D* Resource);
 	virtual FTextureCubeRHIRef RHICreateTextureCubeFromResource(EPixelFormat Format, uint32 TexCreateFlags, const FClearValueBinding& ClearValueBinding, ID3D11Texture2D* Resource);
 	virtual void RHIAliasTextureResources(FTextureRHIParamRef DestTexture, FTextureRHIParamRef SrcTexture);
+
+	virtual void RHIPerFrameRHIFlushComplete() override;
+
+	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) final override
+	{
+		IRHICommandContext::RHIBeginRenderPass(InInfo, InName);
+		if (InInfo.bOcclusionQueries)
+		{
+			RHIBeginOcclusionQueryBatch(InInfo.NumOcclusionQueries);
+		}
+	}
+
+	virtual void RHIEndRenderPass() final override
+	{
+		if (RenderPassInfo.bOcclusionQueries)
+		{
+			RHIEndOcclusionQueryBatch();
+		}
+		IRHICommandContext::RHIEndRenderPass();
+	}
+
+	virtual void RHICalibrateTimers() override;
+
+	virtual bool RHIIsTypedUAVLoadSupported(EPixelFormat PixelFormat) override;
 
 	// NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
@@ -635,6 +711,8 @@ public:
 	void DisableQuadBufferStereo();
 
 private:
+	void EnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth);
+
 	void RHIClearMRT(bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
 	enum class EForceFullScreenClear
@@ -711,6 +789,10 @@ protected:
 	GFSDK_Aftermath_ContextHandle NVAftermathIMContextHandle;
 #endif
 
+#if INTEL_METRICSDISCOVERY
+	TUniquePtr<Intel_MetricsDiscovery_ContextData> IntelMetricsDiscoveryHandle;
+#endif
+
 	/** The global D3D device's immediate context */
 	TRefCountPtr<FD3D11Device> Direct3DDevice;
 
@@ -767,6 +849,9 @@ protected:
 
 	/** Internal frame counter that just counts calls to Present */
 	uint32 PresentCounter;
+
+	uint32 RequestedOcclusionQueriesInBatch = 0;
+	uint32 ActualOcclusionQueriesInBatch = 0;
 
 	/**
 	 * Internal counter used for resource table caching.
@@ -948,6 +1033,24 @@ protected:
 	void ReadSurfaceDataNoMSAARaw(FTextureRHIParamRef TextureRHI,FIntRect Rect,TArray<uint8>& OutData, FReadSurfaceDataFlags InFlags);
 
 	void ReadSurfaceDataMSAARaw(FRHICommandList_RecursiveHazardous& RHICmdList, FTextureRHIParamRef TextureRHI, FIntRect Rect, TArray<uint8>& OutData, FReadSurfaceDataFlags InFlags);
+
+#if NV_AFTERMATH
+	void StartNVAftermath();
+
+	void StopNVAftermath();
+#endif
+
+	void BeginUAVOverlap();
+	void EndUAVOverlap();
+
+#if INTEL_METRICSDISCOVERY
+	void CreateIntelMetricsDiscovery();
+	void StartIntelMetricsDiscovery();
+	void StopIntelMetricsDiscovery();
+	void IntelMetricsDicoveryBeginFrame();
+	void IntelMetricsDicoveryEndFrame();
+	double IntelMetricsDicoveryGetGPUTime();
+#endif
 
 	friend struct FD3DGPUProfiler;
 

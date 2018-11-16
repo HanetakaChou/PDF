@@ -39,13 +39,14 @@ public:
 	FTargetDeviceProxy(const FString& InId);
 
 	/**
-	 * Creates and initializes a new instance.
-	 *
-	 * @param InId The identifier of the target device to create this proxy for.
-	 * @param Message The message to initialize from.
-	 * @param Context The message context.
-	 */
-	FTargetDeviceProxy(const FString& InId, const FTargetDeviceServicePong& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context);
+	* Creates and initializes a new instance.
+	*
+	* @param InId The identifier of the target device to create this proxy for.
+	* @param Message The message to initialize from.
+	* @param Context The message context.
+	* @param InIsAggregated Indicates if the proxy is of type "All Devices".
+	*/
+	FTargetDeviceProxy(const FString& InName, const FTargetDeviceServicePong& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context, bool InIsAggregated);
 
 public:
 
@@ -99,7 +100,8 @@ public:
 	virtual int32 GetNumVariants() const override;
 	virtual int32 GetVariants(TArray<FName>& OutVariants) const override;
 	virtual FName GetTargetDeviceVariant(const FString& InDeviceId) const override;
-	virtual const FString& GetTargetDeviceId(FName InVariant) const override;
+	const FString GetTargetDeviceId(FName InVariant) const override;
+	virtual const TSet<FString>& GetTargetDeviceIds(FName InVariant) const override;
 	virtual FString GetTargetPlatformName(FName InVariant) const override;
 	virtual FName GetTargetPlatformId(FName InVariant) const override;
 	virtual FName GetVanillaPlatformId(FName InVariant) const override;
@@ -154,6 +156,11 @@ public:
 		return Connected;
 	}
 
+	virtual bool IsAuthorized() const override
+	{
+		return Authorized;
+	}
+
 	virtual bool IsShared() const override
 	{
 		return Shared;
@@ -161,6 +168,8 @@ public:
 
 	virtual bool DeployApp(FName InVariant, const TMap<FString, FString>& Files, const FGuid& TransactionId) override;
 	virtual bool LaunchApp(FName InVariant, const FString& AppId, EBuildConfigurations::Type BuildConfiguration, const FString& Params) override;
+	
+	virtual bool TerminateLaunchedProcess(FName InVariant, const FString& ProcessIdentifier) override;
 
 	virtual FOnTargetDeviceProxyDeployCommitted& OnDeployCommitted() override
 	{
@@ -182,6 +191,12 @@ public:
 	virtual void Reboot() override;
 	virtual void Run(FName InVariant, const FString& ExecutablePath, const FString& Params) override;
 
+	/** Returns true if this is an aggregate (All_<platform>_devices_on_<host>) proxy, false otherwise */
+	virtual bool IsAggregated() const override
+	{
+		return Aggregated;
+	}
+
 protected:
 
 	/** Initializes the message endpoint. */
@@ -199,6 +214,9 @@ private:
 
 	/** Holds a flag indicating whether the device is connected. */
 	bool Connected;
+
+	/** Holds a flag indicating whether the device is authorized */
+	bool Authorized;
 
 	/** Holds the name of the computer that hosts the device. */
 	FString HostName;
@@ -255,13 +273,16 @@ private:
 	FName DefaultVariant;
 
 
+	/** Holds a flag indicating whether the proxy is of type "All Devices". */
+	bool Aggregated;
+
 	/** Holds data about a device proxy variant. */
 	class FTargetDeviceProxyVariant
 	{
 	public:
 
-		/** Holds a string version of the variants device id. */
-		FString DeviceID;
+		/** Holds a list with the string versions of device ids. */
+		TSet<FString> DeviceIDs;
 
 		/** Holds the variant name, this is the the map key as well. */
 		FName VariantName;

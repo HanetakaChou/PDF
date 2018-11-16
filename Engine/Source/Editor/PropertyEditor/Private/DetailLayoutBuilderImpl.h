@@ -12,6 +12,7 @@
 class FDetailCategoryImpl;
 class IDetailCategoryBuilder;
 class IPropertyUtilities;
+class IPropertyGenerationUtilities;
 
 class FDetailLayoutBuilderImpl : public IDetailLayoutBuilder, public TSharedFromThis<FDetailLayoutBuilderImpl>
 {
@@ -20,6 +21,7 @@ public:
 		TSharedPtr<FComplexPropertyNode>& InRootNode,
 		FClassToPropertyMap& InPropertyMap,
 		const TSharedRef<IPropertyUtilities>& InPropertyUtilities,
+		const TSharedRef<IPropertyGenerationUtilities>& InPropertyGenerationUtilities,
 		const TSharedPtr<IDetailsViewPrivate>& InDetailsView,
 		bool bIsExternal);
 
@@ -168,6 +170,13 @@ public:
 	 */
 	void AddExternalRootPropertyNode(TSharedRef<FComplexPropertyNode> InExternalRootNode);
 
+	/**
+	* Removes an external property root node to the list of root nodes that the details new needs to manage
+	*
+	* @param InExternalRootNode		The node to remove
+	*/
+	void RemoveExternalRootPropertyNode(TSharedRef<FComplexPropertyNode> InExternalRootNode);
+
 	/** @return The details view that owns this layout */
 	IDetailsViewPrivate* GetDetailsView() { return DetailsView; }
 	/** @return The root node for this customization */
@@ -177,6 +186,18 @@ public:
 
 	/** @return True if the layout is for an external root property node and not in the main set of objects the details panel is observing */
 	bool IsLayoutForExternalRoot() const { return bLayoutForExternalRoot; }
+
+	/** Adds a handler for when a node this builder owns has had a forced visibility change. */
+	FDelegateHandle AddNodeVisibilityChangedHandler(FSimpleMulticastDelegate::FDelegate InOnNodeVisibilityChanged);
+
+	/** Removes a handler for when a node this builder owns has had a forced visibility change. */
+	void RemoveNodeVisibilityChangedHandler(FDelegateHandle DelegateHandle);
+	
+	/** Notifies this detail layout builder that a node it owns had it's visibility forcibly changed. */
+	void NotifyNodeVisibilityChanged();
+
+	/** Gets internal utilities for generating property layouts. */
+	IPropertyGenerationUtilities& GetPropertyGenerationUtilities() const;
 
 private:
 	/**
@@ -218,12 +239,16 @@ private:
 	/** The current variable name of the class being customized (inner class instances)*/
 	FName CurrentCustomizationVariableName;
 	/** The global property utilties.  This is weak to avoid circular ref but it should always be valid if this class exists*/
-	const TWeakPtr<class IPropertyUtilities> PropertyDetailsUtilities;
+	const TWeakPtr<IPropertyUtilities> PropertyDetailsUtilities;
+	/** Internal utilities for generating property layouts. */
+	const TWeakPtr<IPropertyGenerationUtilities> PropertyGenerationUtilities;
 	/** The view where this detail customizer resides */
 	class IDetailsViewPrivate* DetailsView;
 	/** The current class being customized */
 	UStruct* CurrentCustomizationClass;
 	/** True if the layout is for an external root property node and not in the main set of objects the details panel is observing */
 	bool bLayoutForExternalRoot;
+	/** A delegate which is called whenever a node owned by this layout builder has it's visibility forcibly changed. */
+	FSimpleMulticastDelegate OnNodeVisibilityChanged;
 };
 

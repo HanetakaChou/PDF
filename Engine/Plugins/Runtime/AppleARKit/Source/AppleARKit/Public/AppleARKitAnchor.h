@@ -3,11 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AppleARKitAvailability.h"
 
 // ARKit
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-#import <ARKit/ARKit.h>
-#endif // ARKIT_SUPPORT
+#if SUPPORTS_ARKIT_1_0
+	#import <ARKit/ARKit.h>
+#endif
 
 // UE4
 #include "Misc/Guid.h"
@@ -37,14 +38,14 @@ public:
 	 *
 	 * @todo arkit Fix this ^
 	 */
-	UFUNCTION( BlueprintPure, Category = "AppleARKitAnchor" )
+	UFUNCTION( BlueprintPure, Category = "AppleARKit|Anchor" )
 	FTransform GetTransform() const;
 
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
+#if SUPPORTS_ARKIT_1_0
 
 	virtual void Update_DelegateThread( ARAnchor* Anchor );
 
-#endif // ARKIT_SUPPORT
+#endif
 
 protected:
 

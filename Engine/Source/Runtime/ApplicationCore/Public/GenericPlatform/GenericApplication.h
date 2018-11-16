@@ -334,6 +334,7 @@ struct FMonitorInfo
 	FPlatformRect DisplayRect;
 	FPlatformRect WorkArea;
 	bool bIsPrimary;
+	int32 DPI = 0;
 };
 
 
@@ -342,7 +343,11 @@ struct FMonitorInfo
  */
 struct FDisplayMetrics
 {
-	FDisplayMetrics() : TitleSafePaddingSize(0, 0, 0, 0), ActionSafePaddingSize(0, 0, 0, 0) { }
+	FDisplayMetrics()
+		: TitleSafePaddingSize(0, 0, 0, 0)
+		, ActionSafePaddingSize(0, 0, 0, 0)
+	{
+	}
 
 	/** Width of the primary display in pixels */
 	int32 PrimaryDisplayWidth;
@@ -359,13 +364,22 @@ struct FDisplayMetrics
 	/** Virtual display coordinate range (includes all active displays) */
 	FPlatformRect VirtualDisplayRect;
 
-	/** The safe area for all content on TVs (see http://en.wikipedia.org/wiki/Safe_area_%28television%29) - content will be inset TitleSafePaddingSize.X on left _and_ right */
+	/**
+	 * The safe area for all content on TVs (see http://en.wikipedia.org/wiki/Safe_area_%28television%29) - content will be inset 
+	 * Left - X
+	 * Top - Y
+	 * Right - Z
+	 * Bottom - W
+	 */
 	FVector4 TitleSafePaddingSize;
 
 	/** The safe area for less important spill over on TVs (see TitleSafePaddingSize) */
 	FVector4 ActionSafePaddingSize;
 
-	APPLICATIONCORE_API static void GetDisplayMetrics(struct FDisplayMetrics& OutDisplayMetrics);
+	DEPRECATED(4.21, "Please use RebuildDisplayMetrics - it is functionally the same but is clearer about the function cost")
+	APPLICATIONCORE_API static void GetDisplayMetrics(struct FDisplayMetrics& OutDisplayMetrics) { RebuildDisplayMetrics(OutDisplayMetrics); };
+
+	APPLICATIONCORE_API static void RebuildDisplayMetrics(struct FDisplayMetrics& OutDisplayMetrics);
 
 	/** Gets the monitor work area from a position in the global display rect */
 	APPLICATIONCORE_API FPlatformRect GetMonitorWorkAreaFromPoint(const FVector2D& Point) const;
@@ -373,10 +387,9 @@ struct FDisplayMetrics
 	/** Logs out display metrics */
 	APPLICATIONCORE_API void PrintToLog() const;
 
-protected:
 	// The title safe zone ratio that will be returned by FDisplayMetrics::GetDisplayMetrics on platforms that don't have a defined safe zone
-	static float GetDebugTitleSafeZoneRatio();
-
+	APPLICATIONCORE_API static float GetDebugTitleSafeZoneRatio();
+protected:
 	// The action safe zone ratio that will be returned by FDisplayMetrics::GetDisplayMetrics on platforms that don't have a defined safe zone
 	static float GetDebugActionSafeZoneRatio();
 
@@ -481,7 +494,7 @@ public:
 	/** Notifies subscribers when any of the display metrics change: e.g. resolution changes or monitor sare re-arranged. */
 	FOnDisplayMetricsChanged& OnDisplayMetricsChanged(){ return OnDisplayMetricsChangedEvent; }
 
-	virtual void GetInitialDisplayMetrics( FDisplayMetrics& OutDisplayMetrics ) const { FDisplayMetrics::GetDisplayMetrics(OutDisplayMetrics); }
+	virtual void GetInitialDisplayMetrics( FDisplayMetrics& OutDisplayMetrics ) const { FDisplayMetrics::RebuildDisplayMetrics(OutDisplayMetrics); }
 
 	
 	/** Delegate for virtual keyboard being shown/hidden in case UI wants to slide out of the way */
@@ -518,6 +531,8 @@ public:
 	virtual void ShowSystemHelp() {}
 
 	virtual bool ApplicationLicenseValid(FPlatformUserId PlatformUser = PLATFORMUSERID_NONE) { return true; }
+
+	virtual bool IsAllowedToRender() const { return true; }
 
 public:
 

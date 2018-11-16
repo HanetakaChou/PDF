@@ -38,7 +38,9 @@ public class UEOgg : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			PublicAdditionalLibraries.Add(OggPath + "macosx/libogg.dylib");
+			string DylibPath = Target.UEThirdPartyBinariesDirectory + "Ogg/Mac/libogg.dylib";
+			PublicDelayLoadDLLs.Add(DylibPath);
+			RuntimeDependencies.Add(DylibPath);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.HTML5)
 		{
@@ -60,7 +62,7 @@ public class UEOgg : ModuleRules
 			}
 			PublicAdditionalLibraries.Add(OggLibPath + "HTML5/libogg" + OpimizationSuffix + ".bc");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Android)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
 			// Filtered in the toolchain.
 			PublicLibraryPaths.Add(OggLibPath + "Android/ARMv7");
@@ -70,7 +72,7 @@ public class UEOgg : ModuleRules
 
 			PublicAdditionalLibraries.Add("ogg");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Linux)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			if (Target.LinkType == TargetLinkType.Monolithic)
 			{

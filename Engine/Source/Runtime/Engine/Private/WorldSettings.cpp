@@ -20,19 +20,34 @@
 #include "Misc/MapErrors.h"
 #include "Particles/ParticleEventManager.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-#include "ReleaseObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
+#include "UObject/EnterpriseObjectVersion.h"
 #include "SceneManagement.h"
+#include "AI/AISystemBase.h"
+#include "AI/NavigationSystemConfig.h"
+#include "AI/NavigationSystemBase.h"
+#include "Engine/BookmarkBase.h"
+#include "Engine/BookMark.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "HierarchicalLOD.h"
+#include "IMeshMergeUtilities.h"
+#include "MeshMergeModule.h"
 #endif 
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
 
+DEFINE_LOG_CATEGORY_STATIC(LogWorldSettings, Log, All);
+
 // @todo vreditor urgent: Temporary hack to allow world-to-meters to be set before
 // input is polled for motion controller devices each frame.
 ENGINE_API float GNewWorldToMetersScale = 0.0f;
+
+#if WITH_EDITOR
+AWorldSettings::FOnBookmarkClassChanged AWorldSettings::OnBookmarkClassChanged;
+AWorldSettings::FOnNumberOfBookmarksChanged AWorldSettings::OnNumberOfBoomarksChanged;
+#endif
 
 AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite")))
@@ -50,6 +65,7 @@ AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 
 	bEnableWorldBoundsChecks = true;
 	bEnableNavigationSystem = true;
+	NavigationSystemConfig = nullptr;
 	bEnableAISystem = true;
 	bEnableWorldComposition = false;
 	bEnableWorldOriginRebasing = false;
@@ -90,6 +106,52 @@ AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 	bActorLabelEditable = false;
 #endif // WITH_EDITORONLY_DATA
+
+	bReplayRewindable = true;
+
+	MaxNumberOfBookmarks = 10;
+
+	DefaultBookmarkClass = UBookMark::StaticClass();
+	LastBookmarkClass = DefaultBookmarkClass;
+}
+
+void AWorldSettings::PostInitProperties()
+{
+	Super::PostInitProperties();
+	if (HasAnyFlags(RF_NeedLoad|RF_WasLoaded|RF_ClassDefaultObject) == false)
+	{
+		TSubclassOf<UNavigationSystemConfig> NavSystemConfigClass = UNavigationSystemConfig::GetDefaultConfigClass();
+		if (*NavSystemConfigClass)
+		{
+			NavigationSystemConfig = NewObject<UNavigationSystemConfig>(this, NavSystemConfigClass);
+		}
+	}
+
+	if (MinGlobalTimeDilation < 0)
+	{
+		MinGlobalTimeDilation = 0;
+	}
+
+	if (MaxGlobalTimeDilation < 0)
+	{
+		MaxGlobalTimeDilation = 0;
+	}
+
+	if (MinUndilatedFrameTime < 0)
+	{
+		MinUndilatedFrameTime = 0;
+	}
+
+	if (MaxUndilatedFrameTime < 0)
+	{
+		MaxUndilatedFrameTime = 0;
+	}
+
+	if (!HasAnyFlags(RF_ClassDefaultObject))
+	{
+		UpdateNumberOfBookmarks();
+		UpdateBookmarkClass();
+	}
 }
 
 void AWorldSettings::PreInitializeComponents()
@@ -214,6 +276,7 @@ void AWorldSettings::Serialize( FArchive& Ar )
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FEnterpriseObjectVersion::GUID);
 
 	if (Ar.UE4Ver() < VER_UE4_ADD_OVERRIDE_GRAVITY_FLAG)
 	{
@@ -244,6 +307,19 @@ void AWorldSettings::Serialize( FArchive& Ar )
 		}
 	}
 #endif
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (Ar.IsLoading())
+	{
+		if (Ar.CustomVer(FEnterpriseObjectVersion::GUID) < FEnterpriseObjectVersion::BookmarkExtensibilityUpgrade)
+		{
+			UBookmarkBase** LocalBookmarks = reinterpret_cast<UBookmarkBase**>(static_cast<UBookMark**>(BookMarks)); //-V777
+			const int32 NumBookmarks = sizeof(BookMarks) / sizeof(UBookMark*);
+			BookmarkArray = TArray<UBookmarkBase*>(LocalBookmarks, NumBookmarks);
+			AdjustNumberOfBookmarks();
+		}
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void AWorldSettings::AddAssetUserData(UAssetUserData* InUserData)
@@ -322,6 +398,27 @@ int32 AWorldSettings::GetNumHierarchicalLODLevels() const
 
 	return  HierarchicalLODSetup.Num();
 }
+
+UMaterialInterface* AWorldSettings::GetHierarchicalLODBaseMaterial() const
+{
+	UMaterialInterface* Material = GetDefault<UHierarchicalLODSettings>()->BaseMaterial.LoadSynchronous();
+
+	if (!OverrideBaseMaterial.IsNull())
+	{
+		Material = OverrideBaseMaterial.LoadSynchronous();
+	}
+
+	if (HLODSetupAsset.LoadSynchronous())
+	{
+		if (!HLODSetupAsset->GetDefaultObject<UHierarchicalLODSetup>()->OverrideBaseMaterial.IsNull())
+		{
+			Material = HLODSetupAsset->GetDefaultObject<UHierarchicalLODSetup>()->OverrideBaseMaterial.LoadSynchronous();
+		}
+	}
+
+	return Material;
+}
+
 #endif // WITH_EDITOR
 
 void AWorldSettings::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
@@ -348,8 +445,35 @@ void AWorldSettings::PostLoad()
 		Entry.MergeSetting.LODSelectionType = EMeshLODSelectionType::CalculateLOD;
 	}
 
-	SetIsTemporarilyHiddenInEditor(true);
 #endif// WITH_EDITOR
+
+	if (bEnableNavigationSystem && NavigationSystemConfig == nullptr)
+	{
+		ULevel* Level = GetLevel();
+		if (Level)
+		{
+			TSubclassOf<UNavigationSystemConfig> NavSystemConfigClass = UNavigationSystemConfig::GetDefaultConfigClass();
+			if (*NavSystemConfigClass)
+			{
+				NavigationSystemConfig = NewObject<UNavigationSystemConfig>(this, NavSystemConfigClass);
+			}
+			bEnableNavigationSystem = false;
+		}
+	}
+}
+
+bool AWorldSettings::IsNavigationSystemEnabled() const
+{
+	return NavigationSystemConfig && NavigationSystemConfig->NavigationSystemClass.IsValid();
+}
+
+void AWorldSettings::SetNavigationSystemConfigOverride(UNavigationSystemConfig* NewConfig)
+{
+	NavigationSystemConfigOverride = NewConfig;
+	if (NavigationSystemConfig)
+	{
+		NavigationSystemConfig->SetIsOverriden(NewConfig != nullptr && NewConfig != NavigationSystemConfig);
+	}
 }
 
 
@@ -452,12 +576,12 @@ void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
-		if (PropertyThatChanged->GetFName()==GET_MEMBER_NAME_CHECKED(AWorldSettings,bForceNoPrecomputedLighting) && bForceNoPrecomputedLighting)
+		const FName PropertyName = PropertyThatChanged->GetFName();
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings,bForceNoPrecomputedLighting) && bForceNoPrecomputedLighting)
 		{
 			FMessageDialog::Open( EAppMsgType::Ok, LOCTEXT("bForceNoPrecomputedLightingIsEnabled", "bForceNoPrecomputedLighting is now enabled, build lighting once to propagate the change (will remove existing precomputed lighting data)."));
 		}
-
-		else if (PropertyThatChanged->GetFName()==GET_MEMBER_NAME_CHECKED(AWorldSettings,bEnableWorldComposition))
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings,bEnableWorldComposition))
 		{
 			if (UWorldComposition::EnableWorldCompositionEvent.IsBound())
 			{
@@ -467,6 +591,26 @@ void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 			{
 				bEnableWorldComposition = false;
 			}
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, NavigationSystemConfig))
+		{
+			UWorld* World = GetWorld();
+			if (World)
+			{
+				World->SetNavigationSystem(nullptr);
+				if (NavigationSystemConfig)
+				{
+					FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
+				}
+			}
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, MaxNumberOfBookmarks))
+		{
+			UpdateNumberOfBookmarks();
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, DefaultBookmarkClass))
+		{
+			UpdateBookmarkClass();
 		}
 	}
 
@@ -501,6 +645,17 @@ void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 			GEditor->BroadcastHLODLevelsArrayChanged();
 			NumHLODLevels = HierarchicalLODSetup.Num();			
 		}
+		else if (PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(AWorldSettings, OverrideBaseMaterial))
+		{
+			if (!OverrideBaseMaterial.IsNull())
+			{
+				const IMeshMergeUtilities& Module = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+				if (!Module.IsValidBaseMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
+				{
+					OverrideBaseMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial"), NULL, LOAD_None, NULL);
+				}
+			}
+		}
 	}
 
 	if (PropertyThatChanged != nullptr && GetWorld() != nullptr && GetWorld()->Scene)
@@ -511,6 +666,175 @@ void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
+
+void UHierarchicalLODSetup::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UHierarchicalLODSetup, OverrideBaseMaterial))
+	{
+		if (!OverrideBaseMaterial.IsNull())
+		{
+			const IMeshMergeUtilities& Module = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+			if (!Module.IsValidBaseMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
+			{
+				OverrideBaseMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial"), NULL, LOAD_None, NULL);
+			}
+		}
+	}
+}
 #endif // WITH_EDITOR
+
+void AWorldSettings::CompactBookmarks()
+{
+	int32 LowIndex = 0;
+	int32 HighIndex = NumMappedBookmarks;
+
+	while (true)
+	{
+		// Find the next available spot.
+		while (true)
+		{
+			if (BookmarkArray.IsValidIndex(LowIndex))
+			{
+				// Found an empty spot, so we can move on.
+				if (BookmarkArray[LowIndex] == nullptr)
+				{
+					break;
+				}
+
+				++LowIndex;
+			}
+			else
+			{
+				// There's no more spots to check, so we're done.
+				return;
+			}
+		}
+
+		// Find the next filled spot.
+		HighIndex = FMath::Max(HighIndex, LowIndex + 1);
+		while (true)
+		{
+			if (BookmarkArray.IsValidIndex(HighIndex))
+			{
+				// Found a valid filled spot, so we can move on.
+				if (BookmarkArray[HighIndex] != nullptr)
+				{
+					break;
+				}
+
+				++HighIndex;
+			}
+			else
+			{
+				// There's no more spots to check, so we're done.
+				return;
+			}
+		}
+
+		// Swap the filled slot element into the empty slot.
+		BookmarkArray.Swap(LowIndex, HighIndex);
+		++LowIndex;
+		++HighIndex;
+	}
+}
+
+
+class UBookmarkBase* AWorldSettings::GetOrAddBookmark(const uint32 BookmarkIndex, const bool bRecreateOnClassMismatch)
+{
+	if (BookmarkArray.IsValidIndex(BookmarkIndex))
+	{
+		UBookmarkBase*& Bookmark = BookmarkArray[BookmarkIndex];
+
+		if (Bookmark == nullptr || (bRecreateOnClassMismatch && Bookmark->GetClass() != GetDefaultBookmarkClass()))
+		{
+			Bookmark = NewObject<UBookmarkBase>(this, GetDefaultBookmarkClass());
+		}
+
+		return Bookmark;
+	}
+
+	return nullptr;
+}
+
+void AWorldSettings::AdjustNumberOfBookmarks()
+{
+	if (MaxNumberOfBookmarks < 0)
+	{
+		UE_LOG(LogWorldSettings, Warning, TEXT("%s: MaxNumberOfBookmarks cannot be below 0 (Value=%d). Defaulting to 10"), *GetPathName(this), MaxNumberOfBookmarks);
+		MaxNumberOfBookmarks = NumMappedBookmarks;
+	}
+
+	if (MaxNumberOfBookmarks < BookmarkArray.Num())
+	{
+		UE_LOG(LogWorldSettings, Warning, TEXT("%s: MaxNumberOfBookmarks set below current number of bookmarks. Clearing %d bookmarks."), *GetPathNameSafe(this), BookmarkArray.Num() - MaxNumberOfBookmarks);
+	}
+
+	BookmarkArray.SetNumZeroed(MaxNumberOfBookmarks);
+}
+
+void AWorldSettings::UpdateNumberOfBookmarks()
+{
+	if (MaxNumberOfBookmarks != BookmarkArray.Num())
+	{
+		AdjustNumberOfBookmarks();
+
+#if WITH_EDITOR
+		OnNumberOfBoomarksChanged.Broadcast(this);
+#endif
+	}
+}
+
+void AWorldSettings::SanitizeBookmarkClasses()
+{
+	if (UClass* ExpectedClass = GetDefaultBookmarkClass().Get())
+	{
+		bool bFoundInvalidBookmarks = false;
+		for (int32 i = 0; i < BookmarkArray.Num(); ++i)
+		{
+			if (UBookmarkBase* Bookmark = BookmarkArray[i])
+			{
+				if (Bookmark->GetClass() != ExpectedClass)
+				{
+					// Just clear the reference, this bookmark should get cleaned up next GC cycle.
+					BookmarkArray[i] = nullptr;
+					bFoundInvalidBookmarks = true;
+				}
+			}
+		}
+
+		if (bFoundInvalidBookmarks)
+		{
+			UE_LOG(LogWorldSettings, Warning, TEXT("%s: Bookmarks found with invalid classes"), *GetPathName(this));
+		}
+	}
+	else
+	{
+		UE_LOG(LogWorldSettings, Warning, TEXT("%s: Invalid bookmark class, clearing existing bookmarks."), *GetPathName(this));
+		DefaultBookmarkClass = UBookMark::StaticClass();
+		SanitizeBookmarkClasses();
+	}
+}
+
+void AWorldSettings::UpdateBookmarkClass()
+{
+	if (LastBookmarkClass != DefaultBookmarkClass)
+	{
+
+#if WITH_EDITOR
+		OnBookmarkClassChanged.Broadcast(this);
+#endif
+
+		// Explicitly done after OnBookmarkClassChanged, in case there's any upgrade work
+		// that can be done.
+		SanitizeBookmarkClasses();
+		
+		LastBookmarkClass = DefaultBookmarkClass;
+	}
+}
+
+FSoftClassPath AWorldSettings::GetAISystemClassName() const
+{
+	return bEnableAISystem ? UAISystemBase::GetAISystemClassName() : FSoftClassPath();
+}
 
 #undef LOCTEXT_NAMESPACE

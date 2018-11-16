@@ -12,7 +12,7 @@
 #include "Misc/PackageName.h"
 #include "UObject/LinkerLoad.h"
 #include "AssetDataTagMap.h"
-#include "PrimaryAssetId.h"
+#include "UObject/PrimaryAssetId.h"
 
 #include "AssetData.generated.h"
 
@@ -29,6 +29,7 @@ struct ASSETREGISTRY_API FAssetRegistryVersion
 		ChangedAssetData,		// AssetData serialization format changed, versions before this are not readable
 		RemovedMD5Hash,			// Removed MD5 hash from package data
 		AddedHardManage,		// Added hard/soft manage references
+		AddedCookedMD5Hash,		// Added MD5 hash of cooked package to package data
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -166,7 +167,7 @@ public:
 		return ObjectPath != NAME_None;
 	}
 
-	/** Returns true if this asset was found in a UAsset file */
+	/** Returns true if this is the primary asset in a package, true for maps and assets but false for secondary objects like class redirectors */
 	bool IsUAsset() const
 	{
 		return FPackageName::GetLongPackageAssetName(PackageName.ToString()) == AssetName.ToString();
@@ -318,7 +319,7 @@ public:
 	/** Returns true if the asset is loaded */
 	bool IsAssetLoaded() const
 	{
-		return IsValid() && FindObject<UObject>(NULL, *ObjectPath.ToString()) != NULL;
+		return IsValid() && FindObjectSafe<UObject>(NULL, *ObjectPath.ToString()) != NULL;
 	}
 
 	/** Prints the details of the asset to the log */
@@ -465,7 +466,7 @@ inline bool FAssetData::GetTagValue(const FName InTagName, ValueType& OutTagValu
 	if (const FString* FoundValue = TagsAndValues.Find(InTagName))
 	{
 		FMemory::Memzero(&OutTagValue, sizeof(ValueType));
-		Lex::FromString(OutTagValue, **FoundValue);
+		LexFromString(OutTagValue, **FoundValue);
 		return true;
 	}
 	return false;
@@ -496,7 +497,7 @@ inline ValueType FAssetData::GetTagValueRef(const FName InTagName) const
 	FMemory::Memzero(&TmpValue, sizeof(ValueType));
 	if (const FString* FoundValue = TagsAndValues.Find(InTagName))
 	{
-		Lex::FromString(TmpValue, **FoundValue);
+		LexFromString(TmpValue, **FoundValue);
 	}
 	return TmpValue;
 }
@@ -535,6 +536,9 @@ public:
 	/** Guid of the source package, uniquely identifies an asset package */
 	FGuid PackageGuid;
 
+	/** MD5 of the cooked package on disk, for tracking nondeterministic changes */
+	FMD5Hash CookedHash;
+
 	FAssetPackageData()
 		: DiskSize(0)
 	{
@@ -548,6 +552,7 @@ public:
 	{
 		Ar << DiskSize;
 		Ar << PackageGuid;
+		Ar << CookedHash;
 	}
 };
 

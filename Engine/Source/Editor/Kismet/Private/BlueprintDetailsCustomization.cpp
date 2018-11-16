@@ -40,8 +40,8 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_MathExpression.h"
-#include "Notifications/NotificationManager.h"
-#include "Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "ScopedTransaction.h"
 #include "PropertyRestriction.h"
 #include "BlueprintEditorModes.h"
@@ -58,7 +58,7 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 #include "ISequencerModule.h"
 #include "AnimatedPropertyKey.h"
 
@@ -228,6 +228,8 @@ FBlueprintVarActionDetails::~FBlueprintVarActionDetails()
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 {
+	DetailLayout.GetObjectsBeingCustomized(ObjectsBeingEdited);
+
 	CachedVariableProperty = SelectionAsProperty();
 
 	if(!CachedVariableProperty.IsValid())
@@ -959,7 +961,7 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 				.ToolTip(AdvancedDisplayTooltip)
 			];
 
-		TSharedPtr<SToolTip> MultilineTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VariableMultilineTooltip_Tooltip", "Allow the value of this variable to have newlines (use Ctrl+Enter to add one while editing)"), NULL, DocLink, TEXT("Multiline"));
+		TSharedPtr<SToolTip> MultilineTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VariableMultilineTooltip_Tooltip", "Allow the value of this variable to have newlines (use Shift+Enter to add one while editing)"), NULL, DocLink, TEXT("Multiline"));
 
 		Category.AddCustomRow(LOCTEXT("VariableMultilineTooltip", "Multi line"), true)
 			.Visibility(TAttribute<EVisibility>(this, &FBlueprintVarActionDetails::GetMultilineVisibility))
@@ -1054,13 +1056,23 @@ TSharedRef<ITableRow> FBlueprintVarActionDetails::OnGenerateWidgetForPropertyLis
 		];
 }
 
-bool FBlueprintVarActionDetails::IsASCSVariable(UProperty* VariableProperty) const
+bool FBlueprintVarActionDetails::IsAUserVariable(UProperty* VariableProperty) const
 {
 	UObjectProperty* VariableObjProp = VariableProperty ? Cast<UObjectProperty>(VariableProperty) : NULL;
 
-	if (VariableObjProp != NULL && VariableObjProp->PropertyClass != NULL && VariableObjProp->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+	if (VariableObjProp != NULL && VariableObjProp->PropertyClass != NULL)
 	{
-		return !FBlueprintEditorUtils::IsVariableCreatedByBlueprint(GetBlueprintObj(), VariableObjProp);
+		return FBlueprintEditorUtils::IsVariableCreatedByBlueprint(GetBlueprintObj(), VariableObjProp);
+	}
+	return true;
+}
+
+bool FBlueprintVarActionDetails::IsASCSVariable(UProperty* VariableProperty) const
+{
+	UObjectProperty* VariableObjProp = VariableProperty ? Cast<UObjectProperty>(VariableProperty) : NULL;
+	if (VariableObjProp != NULL && VariableObjProp->PropertyClass != NULL)
+	{
+		return (!IsAUserVariable(VariableProperty) && VariableObjProp->PropertyClass->IsChildOf(UActorComponent::StaticClass()));
 	}
 	return false;
 }
@@ -1166,7 +1178,7 @@ void FBlueprintVarActionDetails::OnVarNameChanged(const FText& InNewText)
 	}
 	else if(ValidatorResult == EValidatorResult::LocallyInUse)
 	{
-		VarNameEditableTextBox->SetError(LOCTEXT("ConflictsWithProperty", "Conflicts with another another local variable or function parameter!"));
+		VarNameEditableTextBox->SetError(LOCTEXT("ConflictsWithProperty", "Conflicts with another local variable or function parameter!"));
 	}
 	else
 	{
@@ -1417,14 +1429,17 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 		UK2Node_EditablePinBase* EntryNode = FBlueprintEditorUtils::GetEntryNode(MacroGraph);
 		if (UK2Node_Tunnel* TypedEntryNode = ExactCast<UK2Node_Tunnel>(EntryNode))
 		{
-			bool bNewCategory = true;
-			for (int32 j = 0; j < CategorySource.Num() && bNewCategory; ++j)
+			if (!TypedEntryNode->MetaData.Category.IsEmpty())
 			{
-				bNewCategory &= !CategorySource[j].Get()->EqualTo(TypedEntryNode->MetaData.Category);
-			}
-			if (bNewCategory)
-			{
-				CategorySource.Add(MakeShareable(new FText(TypedEntryNode->MetaData.Category)));
+				bool bNewCategory = true;
+				for (int32 j = 0; j < CategorySource.Num() && bNewCategory; ++j)
+				{
+					bNewCategory &= !CategorySource[j].Get()->EqualTo(TypedEntryNode->MetaData.Category);
+				}
+				if (bNewCategory)
+				{
+					CategorySource.Add(MakeShareable(new FText(TypedEntryNode->MetaData.Category)));
+				}
 			}
 		}
 	}
@@ -1454,6 +1469,16 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 			}
 		}
 	}
+}
+
+UProperty* FBlueprintVarActionDetails::CustomizedObjectAsProperty() const
+{
+	if(ObjectsBeingEdited.Num() == 1)
+	{
+		return Cast<UProperty>(ObjectsBeingEdited[0].Get());
+	}
+
+	return nullptr;
 }
 
 UK2Node_Variable* FBlueprintVarActionDetails::EdGraphSelectionAsVar() const
@@ -1496,6 +1521,11 @@ UProperty* FBlueprintVarActionDetails::SelectionAsProperty() const
 	{
 		return GraphVar->GetPropertyForVariable();
 	}
+	UProperty* Property = CustomizedObjectAsProperty();
+	if(Property)
+	{
+		return Property;
+	}
 	return NULL;
 }
 
@@ -1515,6 +1545,11 @@ FName FBlueprintVarActionDetails::GetVariableName() const
 	if(GraphVar)
 	{
 		return GraphVar->GetVarName();
+	}
+	UProperty* Property = CustomizedObjectAsProperty();
+	if(Property)
+	{
+		return Property->GetFName();
 	}
 	return NAME_None;
 }
@@ -1585,7 +1620,7 @@ EVisibility FBlueprintVarActionDetails::ShowEditableCheckboxVisibilty() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
-		if (IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty))
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -1619,7 +1654,7 @@ EVisibility FBlueprintVarActionDetails::ShowReadOnlyCheckboxVisibilty() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
-		if (IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty))
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -1735,7 +1770,7 @@ EVisibility FBlueprintVarActionDetails::ExposeOnSpawnVisibility() const
 		FEdGraphPinType VariablePinType;
 		K2Schema->ConvertPropertyToPinType(VariableProperty, VariablePinType);
 
-		const bool bShowPrivacySetting = IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty);
+		const bool bShowPrivacySetting = IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty);
 		if (bShowPrivacySetting && (K2Schema->FindSetVariableByNameFunction(VariablePinType) != NULL))
 		{
 			return EVisibility::Visible;
@@ -1776,7 +1811,7 @@ EVisibility FBlueprintVarActionDetails::ExposePrivateVisibility() const
 	UProperty* Property = CachedVariableProperty.Get();
 	if (Property && GetPropertyOwnerBlueprint())
 	{
-		if (IsABlueprintVariable(Property) && !IsASCSVariable(Property))
+		if (IsABlueprintVariable(Property) && IsAUserVariable(Property))
 		{
 			return EVisibility::Visible;
 		}
@@ -1982,7 +2017,7 @@ EVisibility FBlueprintVarActionDetails::ExposeConfigVisibility() const
 	UProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
-		if (IsABlueprintVariable(Property) && !IsASCSVariable(Property))
+		if (IsABlueprintVariable(Property) && IsAUserVariable(Property))
 		{
 			return EVisibility::Visible;
 		}
@@ -2314,7 +2349,7 @@ EVisibility FBlueprintVarActionDetails::ReplicationVisibility() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty)
 	{
-		if (!IsASCSVariable(VariableProperty) && IsABlueprintVariable(VariableProperty))
+		if (IsAUserVariable(VariableProperty) && IsABlueprintVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -2354,7 +2389,7 @@ EVisibility FBlueprintVarActionDetails::GetTransientVisibility() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
-		if (IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty))
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -2387,7 +2422,7 @@ EVisibility FBlueprintVarActionDetails::GetSaveGameVisibility() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
-		if (IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty))
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -2420,7 +2455,7 @@ EVisibility FBlueprintVarActionDetails::GetAdvancedDisplayVisibility() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
-		if (IsABlueprintVariable(VariableProperty))
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -2487,7 +2522,7 @@ EVisibility FBlueprintVarActionDetails::IsTooltipEditVisible() const
 	UProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
-		if ((IsABlueprintVariable(VariableProperty) && !IsASCSVariable(VariableProperty)) || IsALocalVariable(VariableProperty))
+		if ((IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty)) || IsALocalVariable(VariableProperty))
 		{
 			return EVisibility::Visible;
 		}
@@ -2497,9 +2532,12 @@ EVisibility FBlueprintVarActionDetails::IsTooltipEditVisible() const
 
 void FBlueprintVarActionDetails::OnFinishedChangingProperties(const FPropertyChangedEvent& InPropertyChangedEvent, TSharedPtr<FStructOnScope> InStructData, TWeakObjectPtr<UK2Node_EditablePinBase> InEntryNode)
 {
-	check(InPropertyChangedEvent.MemberProperty
-		&& InPropertyChangedEvent.MemberProperty->GetOwnerStruct()
-		&& InPropertyChangedEvent.MemberProperty->GetOwnerStruct()->IsA<UFunction>());
+	if( !InPropertyChangedEvent.MemberProperty ||
+		!InPropertyChangedEvent.MemberProperty->GetOwnerStruct() ||
+		!InPropertyChangedEvent.MemberProperty->GetOwnerStruct()->IsA<UFunction>())
+	{
+		return;
+	}
 
 	// Find the top level property that was modified within the UFunction
 	const UProperty* DirectProperty = InPropertyChangedEvent.MemberProperty;
@@ -2580,7 +2618,7 @@ void FBlueprintGraphArgumentGroupLayout::GenerateChildContent( IDetailChildrenBu
 					TWeakPtr<FUserPinInfo>(Pins[i]),
 					TargetNode.Get(),
 					GraphActionDetailsPtr,
-					FName(*FString::Printf(bIsInputNode ? TEXT("InputArgument%i") : TEXT("OutputArgument%i"), i)),
+					FName(*(bIsInputNode ? FString::Printf(TEXT("InputArgument%i"), i) : FString(TEXT("OutputArgument%i"), i))),
 					bIsInputNode));
 				ChildrenBuilder.AddCustomBuilder(BlueprintArgumentLayout);
 				WasContentAdded = true;
@@ -2982,9 +3020,7 @@ void FBlueprintGraphArgumentLayout::OnRefCheckStateChanged(ECheckBoxState InStat
 {
 	FEdGraphPinType PinType = OnGetPinInfo();
 	PinType.bIsReference = (InState == ECheckBoxState::Checked)? true : false;
-	// Note: Container types are implicitly passed by reference. For custom event nodes, the reference flag is essentially
-	//  treated as being redundant on container inputs, but we also need to implicitly set the 'const' flag to avoid a compiler note.
-	PinType.bIsConst = (PinType.IsContainer() || PinType.bIsReference) && TargetNode && TargetNode->IsA<UK2Node_CustomEvent>();
+	
 	PinInfoChanged(PinType);
 }
 
@@ -3008,7 +3044,7 @@ void FBlueprintGraphArgumentLayout::PinInfoChanged(const FEdGraphPinType& PinTyp
 				{
 					if (Node)
 					{
-						TSharedPtr<FUserPinInfo>* UDPinPtr = Node->UserDefinedPins.FindByPredicate([&](TSharedPtr<FUserPinInfo>& UDPin)
+						TSharedPtr<FUserPinInfo>* UDPinPtr = Node->UserDefinedPins.FindByPredicate([PinName](TSharedPtr<FUserPinInfo>& UDPin)
 						{
 							return UDPin.IsValid() && (UDPin->PinName == PinName);
 						});
@@ -3016,8 +3052,14 @@ void FBlueprintGraphArgumentLayout::PinInfoChanged(const FEdGraphPinType& PinTyp
 						{
 							(*UDPinPtr)->PinType = PinType;
 
-							// Container types are implicitly passed by reference. For custom event nodes, since they are inputs, also implicitly treat them as 'const' so that they don't result in a compiler note.
-							(*UDPinPtr)->PinType.bIsConst = PinType.IsContainer() && Node->IsA<UK2Node_CustomEvent>();
+							// Inputs flagged as pass-by-reference will also be flagged as 'const' here to conform to the expected native C++
+							// declaration of 'const Type&' for input reference parameters on functions with no outputs (i.e. events). Array
+							// types are also flagged as 'const' here since they will always be implicitly passed by reference, regardless of
+							// the checkbox setting. See UEditablePinBase::PostLoad() for more details.
+							if(!PinType.bIsConst && Node->ShouldUseConstRefParams())
+							{
+								(*UDPinPtr)->PinType.bIsConst = PinType.IsArray() || PinType.bIsReference;
+							}
 
 							// Reset default value, it probably doesn't match
 							(*UDPinPtr)->PinDefaultValue.Reset();
@@ -3913,16 +3955,47 @@ void FBlueprintDelegateActionDetails::CustomizeDetails( IDetailLayoutBuilder& De
 		TSharedRef<FBlueprintGraphArgumentGroupLayout> InputArgumentGroup = MakeShareable(new FBlueprintGraphArgumentGroupLayout(SharedThis(this), FunctionEntryNode));
 		InputsCategory.AddCustomBuilder(InputArgumentGroup);
 
-		InputsCategory.AddCustomRow( LOCTEXT("FunctionNewInputArg", "New") )
+		TSharedRef<SHorizontalBox> InputsHeaderContentWidget = SNew(SHorizontalBox);
+		TWeakPtr<SWidget> WeakInputsHeaderWidget = InputsHeaderContentWidget;
+		InputsHeaderContentWidget->AddSlot()
 		[
-			SNew(SBox)
+			SNew(SHorizontalBox)
+		];
+		InputsHeaderContentWidget->AddSlot()
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.ButtonStyle(FEditorStyle::Get(), "RoundButton")
+			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+			.ContentPadding(FMargin(2, 0))
+			.OnClicked(this, &FBlueprintDelegateActionDetails::OnAddNewInputClicked)
 			.HAlign(HAlign_Right)
+			.ToolTipText(LOCTEXT("DelegateNewOutputArgTooltip", "Create a new input argument"))
+			.VAlign(VAlign_Center)
+			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("DelegateNewInputArg")))
 			[
-				SNew(SButton)
-				.Text(LOCTEXT("FunctionNewInputArg", "New"))
-				.OnClicked(this, &FBlueprintDelegateActionDetails::OnAddNewInputClicked)
+				SNew(SHorizontalBox)
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(0, 1))
+				[
+					SNew(SImage)
+					.Image(FEditorStyle::GetBrush("Plus"))
+				]
+				+SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(2, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+					.Text(LOCTEXT("DelegateNewParameterInputArg", "New Parameter"))
+					.Visibility(this, &FBlueprintDelegateActionDetails::OnGetSectionTextVisibility, WeakInputsHeaderWidget)
+					.ShadowOffset(FVector2D(1, 1))
+				]
 			]
 		];
+		InputsCategory.HeaderContent(InputsHeaderContentWidget);
 
 		CollectAvailibleSignatures();
 
@@ -4014,13 +4087,32 @@ void FBaseBlueprintGraphActionDetails::OnParamsChanged(UK2Node_EditablePinBase* 
 
 		// Reconstruct the entry/exit definition and recompile the blueprint to make sure the signature has changed before any fixups
 		{
-			TGuardValue<ESaveOrphanPinMode> GuardSaveMode(TargetNode->OrphanedPinSaveMode, ESaveOrphanPinMode::SaveNone);
+			const bool bCurDisableOrphanSaving = TargetNode->bDisableOrphanPinSaving;
+			TargetNode->bDisableOrphanPinSaving = true;
+
 			TargetNode->ReconstructNode();
+
+			TargetNode->bDisableOrphanPinSaving = bCurDisableOrphanSaving;
 		}
 
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
 		K2Schema->HandleParameterDefaultValueChanged(TargetNode);
+	}
+}
+
+EVisibility FBlueprintDelegateActionDetails::OnGetSectionTextVisibility(TWeakPtr<SWidget> RowWidget) const
+{
+	bool ShowText = RowWidget.Pin()->IsHovered();
+
+	// If the row is currently hovered, or a menu is being displayed for a button, keep the button expanded.
+	if (ShowText)
+	{
+		return EVisibility::SelfHitTestInvisible;
+	}
+	else
+	{
+		return EVisibility::Collapsed;
 	}
 }
 
@@ -4062,6 +4154,12 @@ bool FBaseBlueprintGraphActionDetails::OnVerifyPinRename(UK2Node_EditablePinBase
 		return false;
 	}
 
+	if (InNewName == TEXT("None"))
+	{
+		OutErrorMessage = FText::Format( LOCTEXT("PinNameNone", "'None' is a reserved name"), FText::AsNumber( NAME_SIZE ) );
+		return false;
+	}
+
 	if (InTargetNode)
 	{
 		// Check if the name conflicts with any of the other internal UFunction's property names (local variables and parameters).
@@ -4069,7 +4167,7 @@ bool FBaseBlueprintGraphActionDetails::OnVerifyPinRename(UK2Node_EditablePinBase
 		const UProperty* ExistingProperty = FindField<const UProperty>(FoundFunction, *InNewName);
 		if (ExistingProperty)
 		{
-			OutErrorMessage = LOCTEXT("ConflictsWithProperty", "Conflicts with another another local variable or function parameter!");
+			OutErrorMessage = LOCTEXT("ConflictsWithProperty", "Conflicts with another local variable or function parameter!");
 			return false;
 		}
 	}
@@ -5024,12 +5122,15 @@ void FBlueprintInterfaceLayout::OnClassPicked(UClass* PickedClass)
 		AddInterfaceComboButton->SetIsOpen(false);
 	}
 
-	UBlueprint* Blueprint = GlobalOptionsDetailsPtr.Pin()->GetBlueprintObj();
-	check(Blueprint);
+	if (PickedClass)
+	{
+		UBlueprint* Blueprint = GlobalOptionsDetailsPtr.Pin()->GetBlueprintObj();
+		check(Blueprint);
 
-	FBlueprintEditorUtils::ImplementNewInterface( Blueprint, PickedClass->GetFName() );
+		FBlueprintEditorUtils::ImplementNewInterface(Blueprint, PickedClass->GetFName());
 
-	RegenerateChildrenDelegate.ExecuteIfBound();
+		RegenerateChildrenDelegate.ExecuteIfBound();
+	}
 
 	OnRefreshInDetailsView();
 }
@@ -5172,12 +5273,6 @@ FText FBlueprintGlobalOptionsDetails::GetDeprecatedTooltip() const
 	return LOCTEXT("DisabledDeprecateBlueprintTooltip", "This Blueprint is deprecated because of a parent, it is not possible to remove deprecation from it!");
 }
 
-/** Shared tooltip text for both the label and the value field */
-static FText GetNativizeLabelTooltip()
-{
-	return LOCTEXT("NativizeTooltip", "When exclusive nativization is enabled, then this asset will be nativized. NOTE: All super classes must be also nativized.");
-}
-
 void FBlueprintGlobalOptionsDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
 {
 	const UBlueprint* Blueprint = GetBlueprintObj();
@@ -5279,9 +5374,8 @@ void FBlueprintGlobalOptionsDetails::CustomizeDetails(IDetailLayoutBuilder& Deta
 			.NameContent()
 			[
 				SNew(STextBlock)
-					.Text(LOCTEXT("NativizeLabel", "Nativize"))
-					.ToolTipText_Static(&GetNativizeLabelTooltip)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text(LOCTEXT("NativizeLabel", "Nativize"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
 			]
 			.ValueContent()
 			[
@@ -5299,7 +5393,7 @@ bool FBlueprintGlobalOptionsDetails::IsNativizeEnabled() const
 	bool bIsEnabled = false;
 	if (UBlueprint* Blueprint = GetBlueprintObj())
 	{
-		bIsEnabled = (Blueprint->BlueprintType != BPTYPE_MacroLibrary) && (Blueprint->BlueprintType != BPTYPE_LevelScript) && (!FBlueprintEditorUtils::ShouldNativizeImplicitly(Blueprint));
+		bIsEnabled = Blueprint->SupportsNativization() && !FBlueprintEditorUtils::ShouldNativizeImplicitly(Blueprint);
 	}
 	return bIsEnabled;
 }
@@ -5337,22 +5431,28 @@ ECheckBoxState FBlueprintGlobalOptionsDetails::GetNativizeState() const
 
 FText FBlueprintGlobalOptionsDetails::GetNativizeTooltip() const
 {
-	if (!IsNativizeEnabled())
+	UBlueprint* Blueprint = GetBlueprintObj();
+
+	if (Blueprint)
 	{
-		if (FBlueprintEditorUtils::ShouldNativizeImplicitly(GetBlueprintObj()))
+		if (FBlueprintEditorUtils::ShouldNativizeImplicitly(Blueprint))
 		{
 			return LOCTEXT("NativizeImplicitlyTooltip", "This Blueprint must be nativized because it overrides one or more BlueprintCallable functions inherited from a parent Blueprint class that has also been flagged for nativization.");
 		}
-		else
+
+		FText Reason;
+		if (!Blueprint->SupportsNativization(&Reason))
 		{
-			return LOCTEXT("NativizeDisabledTooltip", "Macro libraries and level Blueprints cannot be nativized.");
+			return Reason.IsEmpty() ? LOCTEXT("NativizeDisabledTooltip", "This blueprint does not support nativization.") : Reason;
+		}
+
+		if (Blueprint->NativizationFlag == EBlueprintNativizationFlag::Dependency)
+		{
+			return LOCTEXT("NativizeAsDependencyTooltip", "This Blueprint has been flagged to nativize as a dependency needed by another Blueprint. This will be applied once that Blueprint is saved.");
 		}
 	}
-	else if (GetNativizeState() == ECheckBoxState::Undetermined)
-	{
-		return LOCTEXT("NativizeAsDependencyTooltip", "This Blueprint has been flagged to nativize as a dependency needed by another Blueprint. This will be applied once that Blueprint is saved.");
-	}
-	return GetNativizeLabelTooltip();
+
+	return LOCTEXT("NativizeTooltip", "When exclusive nativization is enabled, then this asset will be nativized. NOTE: All super classes must be also nativized.");
 }
 
 void FBlueprintGlobalOptionsDetails::OnNativizeToggled(ECheckBoxState NewState) const
@@ -5543,7 +5643,7 @@ void FBlueprintComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLa
 			[
 				PropertyCustomizationHelpers::MakeBrowseButton(
 					FSimpleDelegate::CreateSP(this, &FBlueprintComponentDetails::OnBrowseSocket), 
-					LOCTEXT( "SocketBrowseButtonToolTipText", "Select a different Parent Socket - cannot change socket on inherited componentes"), 
+					LOCTEXT( "SocketBrowseButtonToolTipText", "Select a different Parent Socket - cannot change socket on inherited components"), 
 					TAttribute<bool>(this, &FBlueprintComponentDetails::CanChangeSocket)
 				)
 			]
@@ -5555,7 +5655,7 @@ void FBlueprintComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLa
 			[
 				PropertyCustomizationHelpers::MakeClearButton(
 					FSimpleDelegate::CreateSP(this, &FBlueprintComponentDetails::OnClearSocket), 
-					LOCTEXT("SocketClearButtonToolTipText", "Clear the Parent Socket - cannot change socket on inherited componentes"), 
+					LOCTEXT("SocketClearButtonToolTipText", "Clear the Parent Socket - cannot change socket on inherited components"), 
 					TAttribute<bool>(this, &FBlueprintComponentDetails::CanChangeSocket)
 				)
 			]

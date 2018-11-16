@@ -60,9 +60,14 @@ struct AUDIOMIXER_API FSubmixEffectReverbSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Reverb)
 	float WetLevel;
 
+	// Overall drylevel of the reverb effect
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Reverb)
+	float DryLevel;
+
 	FSubmixEffectReverbSettings()
 	: Density(0.85f)
 	, Diffusion(0.85f)
+	, Gain(0.0f)
 	, GainHF(0.89f)
 	, DecayTime(1.49f)
 	, DecayHFRatio(0.83f)
@@ -72,6 +77,7 @@ struct AUDIOMIXER_API FSubmixEffectReverbSettings
 	, LateDelay(0.1f)
 	, AirAbsorptionGainHF(0.994f)
 	, WetLevel(0.3f)
+	, DryLevel(0.0f)
 	{
 	}
 };
@@ -108,6 +114,9 @@ private:
 	// Curve which maps old reverb times to new decay value
 	FRichCurve DecayCurve;
 
+	// Cache the dry level
+	float DryLevel;
+
 	bool bIsEnabled;
 };
 
@@ -123,7 +132,7 @@ public:
 	void SetSettings(const FSubmixEffectReverbSettings& InSettings);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects")
-	void SetSettingsWithReverbEffect(const UReverbEffect* InReverbEffect, const float WetLevel);
+	void SetSettingsWithReverbEffect(const UReverbEffect* InReverbEffect, const float WetLevel, const float DryLevel = 0.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixEffectPreset)
 	FSubmixEffectReverbSettings Settings;

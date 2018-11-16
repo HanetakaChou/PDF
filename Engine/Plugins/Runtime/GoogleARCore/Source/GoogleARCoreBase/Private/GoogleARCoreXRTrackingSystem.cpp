@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "RHIDefinitions.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/WorldSettings.h"
 #include "GoogleARCoreDevice.h"
 #include "GoogleARCoreXRCamera.h"
 #include "ARSessionConfig.h"
@@ -18,6 +19,7 @@ FGoogleARCoreXRTrackingSystem::FGoogleARCoreXRTrackingSystem()
 	, DeltaControlRotation(FRotator::ZeroRotator)
 	, DeltaControlOrientation(FQuat::Identity)
 	, LightEstimate(nullptr)
+	, EventManager(nullptr)
 {
 	UE_LOG(LogGoogleARCoreTrackingSystem, Log, TEXT("Creating GoogleARCore Tracking System."));
 	ARCoreDeviceInstance = FGoogleARCoreDevice::GetInstance();
@@ -82,6 +84,7 @@ bool FGoogleARCoreXRTrackingSystem::EnumerateTrackedDevices(TArray<int32>& OutDe
 bool FGoogleARCoreXRTrackingSystem::OnStartGameFrame(FWorldContext& WorldContext)
 {
 	FTransform CurrentPose;
+	bHasValidPose = false;
 	if (ARCoreDeviceInstance->GetIsARCoreSessionRunning())
 	{
 		if (ARCoreDeviceInstance->GetTrackingState() == EGoogleARCoreTrackingState::Tracking)
@@ -90,10 +93,6 @@ bool FGoogleARCoreXRTrackingSystem::OnStartGameFrame(FWorldContext& WorldContext
 			CurrentPose *= GetAlignmentTransform();
 			bHasValidPose = true;
 			CachedTrackingToWorld = ComputeTrackingToWorldTransform(WorldContext);
-		}
-		else
-		{
-			bHasValidPose = false;
 		}
 
 		if (bHasValidPose)
@@ -109,15 +108,12 @@ bool FGoogleARCoreXRTrackingSystem::OnStartGameFrame(FWorldContext& WorldContext
 		FGoogleARCoreLightEstimate ARCoreLightEstimate = FGoogleARCoreDevice::GetInstance()->GetLatestLightEstimate();
 		if (ARCoreLightEstimate.bIsValid)
 		{
-			// Try to convert ARCore average pixel intensity to lumen and set the color tempature to pure white.
-			float LightLumen = ARCoreLightEstimate.PixelIntensity / 0.18f * 1000;
-			LightEstimate->SetLightEstimate(LightLumen, 6500);
+			LightEstimate->SetLightEstimate(ARCoreLightEstimate.RGBScaleFactor, ARCoreLightEstimate.PixelIntensity);
 		}
 		else
 		{
 			LightEstimate = nullptr;
 		}
-
 	}
 
 	return true;
@@ -152,6 +148,33 @@ float FGoogleARCoreXRTrackingSystem::GetWorldToMetersScale() const
 
 	// Default value, assume Unreal units are in centimeters
 	return 100.0f;
+}
+
+void* FGoogleARCoreXRTrackingSystem::GetARSessionRawPointer()
+{
+#if PLATFORM_ANDROID
+	return static_cast<void*>(FGoogleARCoreDevice::GetInstance()->GetARSessionRawPointer());
+#endif
+	ensureAlwaysMsgf(false, TEXT("FGoogleARCoreXRTrackingSystem::GetARSessionRawPointer is unimplemented on current platform."));
+	return nullptr;
+}
+
+void* FGoogleARCoreXRTrackingSystem::GetGameThreadARFrameRawPointer()
+{
+#if PLATFORM_ANDROID
+	return static_cast<void*>(FGoogleARCoreDevice::GetInstance()->GetGameThreadARFrameRawPointer());
+#endif
+	ensureAlwaysMsgf(false, TEXT("FGoogleARCoreXRTrackingSystem::GetARSessionRawPointer is unimplemented on current platform."));
+	return nullptr;
+}
+
+UGoogleARCoreEventManager* FGoogleARCoreXRTrackingSystem::GetEventManager()
+{
+	if (EventManager == nullptr)
+	{
+		EventManager = NewObject<UGoogleARCoreEventManager>();
+	}
+	return EventManager;
 }
 
 void FGoogleARCoreXRTrackingSystem::OnARSystemInitialized()
@@ -279,6 +302,11 @@ void FGoogleARCoreXRTrackingSystem::AddReferencedObjects(FReferenceCollector& Co
 	if (LightEstimate != nullptr)
 	{
 		Collector.AddReferencedObject(LightEstimate);
+	}
+
+	if (EventManager != nullptr)
+	{
+		Collector.AddReferencedObject(EventManager);
 	}
 }
 

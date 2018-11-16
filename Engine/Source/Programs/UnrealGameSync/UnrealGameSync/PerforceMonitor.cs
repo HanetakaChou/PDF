@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Concurrent;
@@ -12,10 +12,11 @@ using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
-	enum PerforceChangeType
+	class PerforceChangeDetails
 	{
-		Code,
-		Content,
+		public string Description;
+		public bool bContainsCode;
+		public bool bContainsContent;
 	}
 
 	class PerforceMonitor : IDisposable
@@ -31,35 +32,37 @@ namespace UnrealGameSync
 		PerforceConnection Perforce;
 		readonly string BranchClientPath;
 		readonly string SelectedClientFileName;
-		readonly string SelectedLocalFileName;
 		readonly string SelectedProjectIdentifier;
 		Thread WorkerThread;
 		int PendingMaxChangesValue;
 		SortedSet<PerforceChangeSummary> Changes = new SortedSet<PerforceChangeSummary>(new PerforceChangeSorter());
-		SortedDictionary<int, PerforceChangeType> ChangeTypes = new SortedDictionary<int,PerforceChangeType>();
+		SortedDictionary<int, PerforceChangeDetails> ChangeDetails = new SortedDictionary<int,PerforceChangeDetails>();
 		SortedSet<int> PromotedChangeNumbers = new SortedSet<int>();
-		int ZippedBinariesConfigChangeNumber;
-		string ZippedBinariesPath;
 		SortedList<int, string> ChangeNumberToZippedBinaries = new SortedList<int,string>();
 		AutoResetEvent RefreshEvent = new AutoResetEvent(false);
 		BoundedLogWriter LogWriter;
+		bool bIsEnterpriseProject;
 		bool bDisposing;
+		List<KeyValuePair<string, DateTime>> LocalConfigFiles;
 
 		public event Action OnUpdate;
 		public event Action OnUpdateMetadata;
 		public event Action OnStreamChange;
+		public event Action OnLoginExpired;
 
-		public PerforceMonitor(PerforceConnection InPerforce, string InBranchClientPath, string InSelectedClientFileName, string InSelectedLocalFilename, string InSelectedProjectIdentifier, string InLogPath)
+		public PerforceMonitor(PerforceConnection InPerforce, string InBranchClientPath, string InSelectedClientFileName, string InSelectedProjectIdentifier, string InLogPath, bool bInIsEnterpriseProject, ConfigFile InProjectConfigFile, List<KeyValuePair<string, DateTime>> InLocalConfigFiles)
 		{
 			Perforce = InPerforce;
 			BranchClientPath = InBranchClientPath;
 			SelectedClientFileName = InSelectedClientFileName;
-			SelectedLocalFileName = InSelectedLocalFilename;
 			SelectedProjectIdentifier = InSelectedProjectIdentifier;
 			PendingMaxChangesValue = 100;
 			LastChangeByCurrentUser = -1;
 			LastCodeChangeByCurrentUser = -1;
 			OtherStreamNames = new List<string>();
+			bIsEnterpriseProject = bInIsEnterpriseProject;
+			LatestProjectConfigFile = InProjectConfigFile;
+			LocalConfigFiles = InLocalConfigFiles;
 
 			LogWriter = new BoundedLogWriter(InLogPath);
 		}
@@ -87,6 +90,12 @@ namespace UnrealGameSync
 				LogWriter.Dispose();
 				LogWriter = null;
 			}
+		}
+
+		public bool IsActive
+		{
+			get;
+			set;
 		}
 
 		public string LastStatusMessage
@@ -128,44 +137,57 @@ namespace UnrealGameSync
 			{
 				Stopwatch Timer = Stopwatch.StartNew();
 
-				// Check we haven't switched streams
-				string NewStreamName;
-				if(Perforce.GetActiveStream(out NewStreamName, LogWriter) && NewStreamName != StreamName)
+				// Check we still have a valid login ticket
+				bool bLoggedIn;
+				if(Perforce.GetLoggedInState(out bLoggedIn, LogWriter))
 				{
-					OnStreamChange();
-				}
-
-				// Update the stream list
-				if(StreamName != null)
-				{
-					List<string> NewOtherStreamNames;
-					if(!Perforce.FindStreams(PerforceUtils.GetClientOrDepotDirectoryName(StreamName) + "/*", out NewOtherStreamNames, LogWriter))
+					if(!bLoggedIn)
 					{
-						NewOtherStreamNames = new List<string>();
+						LastStatusMessage = "User is not logged in";
+						OnLoginExpired();
 					}
-					OtherStreamNames = NewOtherStreamNames;
-				}
+					else
+					{
+						// Check we haven't switched streams
+						string NewStreamName;
+						if(Perforce.GetActiveStream(out NewStreamName, LogWriter) && NewStreamName != StreamName)
+						{
+							OnStreamChange();
+						}
 
-				// Check for any p4 changes
-				if(!UpdateChanges())
-				{
-					LastStatusMessage = "Failed to update changes";
-				}
-				else if(!UpdateChangeTypes())
-				{
-					LastStatusMessage = "Failed to update change types";
-				}
-				else if(!UpdateZippedBinaries())
-				{
-					LastStatusMessage = "Failed to update zipped binaries list";
-				}
-				else
-				{
-					LastStatusMessage = String.Format("Last update took {0}ms", Timer.ElapsedMilliseconds);
+						// Update the stream list
+						if(StreamName != null)
+						{
+							List<string> NewOtherStreamNames;
+							if(!Perforce.FindStreams(PerforceUtils.GetClientOrDepotDirectoryName(StreamName) + "/*", out NewOtherStreamNames, LogWriter))
+							{
+								NewOtherStreamNames = new List<string>();
+							}
+							OtherStreamNames = NewOtherStreamNames;
+						}
+
+						// Check for any p4 changes
+						if(!UpdateChanges())
+						{
+							LastStatusMessage = "Failed to update changes";
+						}
+						else if(!UpdateChangeTypes())
+						{
+							LastStatusMessage = "Failed to update change types";
+						}
+						else if(!UpdateZippedBinaries())
+						{
+							LastStatusMessage = "Failed to update zipped binaries list";
+						}
+						else
+						{
+							LastStatusMessage = String.Format("Last update took {0}ms", Timer.ElapsedMilliseconds);
+						}
+					}
 				}
 
 				// Wait for another request, or scan for new builds after a timeout
-				RefreshEvent.WaitOne(60 * 1000);
+				RefreshEvent.WaitOne((IsActive? 2 : 10) * 60 * 1000);
 			}
 		}
 
@@ -200,7 +222,7 @@ namespace UnrealGameSync
 				DepotPaths.Add(String.Format("{0}/*", BranchClientPath));
 				DepotPaths.Add(String.Format("{0}/Engine/...", BranchClientPath));
 				DepotPaths.Add(String.Format("{0}/...", PerforceUtils.GetClientOrDepotDirectoryName(SelectedClientFileName)));
-				if (Utility.IsEnterpriseProject(SelectedLocalFileName))
+				if (bIsEnterpriseProject)
 				{
 					DepotPaths.Add(String.Format("{0}/Enterprise/...", BranchClientPath));
 				}
@@ -231,6 +253,25 @@ namespace UnrealGameSync
 			{
 				OldestChangeNumber = Math.Max(OldestChangeNumber, NewChanges.Last().Number);
 				NewestChangeNumber = Math.Min(NewestChangeNumber, NewChanges.First().Number);
+			}
+
+			// If we are using zipped binaries, make sure we have every change since the last zip containing them. This is necessary for ensuring that content changes show as
+			// syncable in the workspace view if there have been a large number of content changes since the last code change.
+			int MinZippedChangeNumber = -1;
+			foreach(int ChangeNumber in ChangeNumberToZippedBinaries.Keys)
+			{
+				if(ChangeNumber > MinZippedChangeNumber && ChangeNumber <= OldestChangeNumber)
+				{
+					MinZippedChangeNumber = ChangeNumber;
+				}
+			}
+			if(MinZippedChangeNumber != -1 && MinZippedChangeNumber < OldestChangeNumber)
+			{
+				List<PerforceChangeSummary> ZipChanges;
+				if(Perforce.FindChanges(DepotPaths.Select(DepotPath => String.Format("{0}@{1},{2}", DepotPath, MinZippedChangeNumber, OldestChangeNumber - 1)), -1, out ZipChanges, LogWriter))
+				{
+					NewChanges.AddRange(ZipChanges);
+				}
 			}
 
 			// Fixup any ROBOMERGE authors
@@ -266,9 +307,20 @@ namespace UnrealGameSync
 				lock(this)
 				{
 					Changes.UnionWith(NewChanges);
-					while(Changes.Count > MaxChanges)
+					if(Changes.Count > MaxChanges)
 					{
-						Changes.Remove(Changes.Last());
+						// Remove changes to shrink it to the max requested size, being careful to avoid removing changes that would affect our ability to correctly
+						// show the availability for content changes using zipped binaries.
+						SortedSet<PerforceChangeSummary> TrimmedChanges = new SortedSet<PerforceChangeSummary>(new PerforceChangeSorter());
+						foreach(PerforceChangeSummary Change in Changes)
+						{
+							TrimmedChanges.Add(Change);
+							if(TrimmedChanges.Count >= MaxChanges && (ChangeNumberToZippedBinaries.Count == 0 || ChangeNumberToZippedBinaries.ContainsKey(Change.Number) || ChangeNumberToZippedBinaries.First().Key > Change.Number))
+							{
+								break;
+							}
+						}
+						Changes = TrimmedChanges;
 					}
 					CurrentMaxChanges = MaxChanges;
 				}
@@ -301,7 +353,7 @@ namespace UnrealGameSync
 			{
 				foreach(PerforceChangeSummary Change in Changes)
 				{
-					if(!ChangeTypes.ContainsKey(Change.Number))
+					if(!ChangeDetails.ContainsKey(Change.Number))
 					{
 						QueryChangeNumbers.Add(Change.Number);
 					}
@@ -311,30 +363,42 @@ namespace UnrealGameSync
 			// Update them in batches
 			foreach(int QueryChangeNumber in QueryChangeNumbers)
 			{
-				string[] CodeExtensions = { ".cs", ".h", ".cpp", ".usf", ".ush", ".uproject", ".uplugin" };
+				string[] CodeExtensions = { ".cs", ".h", ".cpp", ".inl", ".usf", ".ush", ".uproject", ".uplugin" };
 
 				// If there's something to check for, find all the content changes after this changelist
 				PerforceDescribeRecord DescribeRecord;
 				if(Perforce.Describe(QueryChangeNumber, out DescribeRecord, LogWriter))
 				{
+					// Create the details object
+					PerforceChangeDetails Details = new PerforceChangeDetails();
+					Details.Description = DescribeRecord.Description;
+
 					// Check whether the files are code or content
-					PerforceChangeType Type;
-					if(CodeExtensions.Any(Extension => DescribeRecord.Files.Any(File => File.DepotFile.EndsWith(Extension, StringComparison.InvariantCultureIgnoreCase))))
+					foreach(PerforceDescribeFileRecord File in DescribeRecord.Files)
 					{
-						Type = PerforceChangeType.Code;
-					}
-					else
-					{
-						Type = PerforceChangeType.Content;
+						if(CodeExtensions.Any(Extension => File.DepotFile.EndsWith(Extension, StringComparison.InvariantCultureIgnoreCase)))
+						{
+							Details.bContainsCode = true;
+						}
+						else
+						{
+							Details.bContainsContent = true;
+						}
 					}
 
 					// Update the type of this change
 					lock(this)
 					{
-						if(!ChangeTypes.ContainsKey(QueryChangeNumber))
+						if(!ChangeDetails.ContainsKey(QueryChangeNumber))
 						{
-							ChangeTypes.Add(QueryChangeNumber, Type);
+							ChangeDetails.Add(QueryChangeNumber, Details);
 						}
+					}
+
+					// Reload the config file if it changes
+					if(DescribeRecord.Files.Any(x => x.DepotFile.EndsWith("/UnrealGameSync.ini", StringComparison.InvariantCultureIgnoreCase)))
+					{
+						UpdateProjectConfigFile();
 					}
 				}
 
@@ -344,8 +408,8 @@ namespace UnrealGameSync
 				{
 					if(String.Compare(Change.User, Perforce.UserName, StringComparison.InvariantCultureIgnoreCase) == 0)
 					{
-						PerforceChangeType Type;
-						if(ChangeTypes.TryGetValue(Change.Number, out Type) && Type == PerforceChangeType.Code)
+						PerforceChangeDetails Details;
+						if(ChangeDetails.TryGetValue(Change.Number, out Details) && Details.bContainsCode)
 						{
 							NewLastCodeChangeByCurrentUser = Math.Max(NewLastCodeChangeByCurrentUser, Change.Number);
 						}
@@ -359,75 +423,87 @@ namespace UnrealGameSync
 					OnUpdateMetadata();
 				}
 			}
+
+			if(LocalConfigFiles.Any(x => File.GetLastWriteTimeUtc(x.Key) != x.Value))
+			{
+				UpdateProjectConfigFile();
+				if(OnUpdateMetadata != null)
+				{
+					OnUpdateMetadata();
+				}
+			}
+
 			return true;
 		}
 
 		bool UpdateZippedBinaries()
 		{
-			// Get the path to the config file
-			string ClientConfigFileName = PerforceUtils.GetClientOrDepotDirectoryName(SelectedClientFileName) + "/Build/UnrealGameSync.ini";
+			string ZippedBinariesPath = null;
 
-			// Find the most recent change to that file (if the file doesn't exist, we succeed and just get 0 changes).
-			List<PerforceChangeSummary> ConfigFileChanges;
-			if(!Perforce.FindChanges(ClientConfigFileName, 1, out ConfigFileChanges, LogWriter))
+			// Find all the zipped binaries under this stream
+			ConfigSection ProjectConfigSection = LatestProjectConfigFile.FindSection(SelectedProjectIdentifier);
+			if(ProjectConfigSection != null)
 			{
-				return false;
+				ZippedBinariesPath = ProjectConfigSection.GetValue("ZippedBinariesPath", null);
 			}
 
-			// Update the zipped binaries path if it's changed
-			int NewZippedBinariesConfigChangeNumber = (ConfigFileChanges.Count > 0)? ConfigFileChanges[0].Number : 0;
-			if(NewZippedBinariesConfigChangeNumber != ZippedBinariesConfigChangeNumber)
+			// Build a new list of zipped binaries
+			SortedList<int, string> NewChangeNumberToZippedBinaries = new SortedList<int,string>();
+			if(ZippedBinariesPath != null)
 			{
-				string NewZippedBinariesPath = null;
-				if(NewZippedBinariesConfigChangeNumber != 0)
+				// Make sure the zipped binaries path exists
+				bool bExists;
+				if(!Perforce.FileExists(ZippedBinariesPath, out bExists, LogWriter))
 				{
-					List<string> Lines;
-					if(!Perforce.Print(ClientConfigFileName, out Lines, LogWriter))
+					return false;
+				}
+				if(bExists)
+				{
+					// Query all the changes to this file
+					List<PerforceFileChangeSummary> Changes;
+					if(!Perforce.FindFileChanges(ZippedBinariesPath, 100, out Changes, LogWriter))
 					{
 						return false;
 					}
 
-					ConfigFile NewConfigFile = new ConfigFile();
-					NewConfigFile.Parse(Lines.ToArray());
-
-					ConfigSection ProjectSection = NewConfigFile.FindSection(SelectedProjectIdentifier);
-					if(ProjectSection != null)
+					// Build a new list of zipped binaries
+					foreach(PerforceFileChangeSummary Change in Changes)
 					{
-						NewZippedBinariesPath = ProjectSection.GetValue("ZippedBinariesPath", null);
-					}
-				}
-				ZippedBinariesPath = NewZippedBinariesPath;
-				ZippedBinariesConfigChangeNumber = NewZippedBinariesConfigChangeNumber;
-			}
-
-			SortedList<int, string> NewChangeNumberToZippedBinaries = new SortedList<int,string>();
-			if(ZippedBinariesPath != null)
-			{
-				List<PerforceFileChangeSummary> Changes;
-				if(!Perforce.FindFileChanges(ZippedBinariesPath, 100, out Changes, LogWriter))
-				{
-					return false;
-				}
-
-				foreach(PerforceFileChangeSummary Change in Changes)
-				{
-					if(Change.Action != "purge")
-					{
-						string[] Tokens = Change.Description.Split(' ');
-						if(Tokens[0].StartsWith("[CL") && Tokens[1].EndsWith("]"))
+						if(Change.Action != "purge")
 						{
-							int OriginalChangeNumber;
-							if(int.TryParse(Tokens[1].Substring(0, Tokens[1].Length - 1), out OriginalChangeNumber) && !NewChangeNumberToZippedBinaries.ContainsKey(OriginalChangeNumber))
+							string[] Tokens = Change.Description.Split(' ');
+							if(Tokens[0].StartsWith("[CL") && Tokens[1].EndsWith("]"))
 							{
-								NewChangeNumberToZippedBinaries[OriginalChangeNumber] = String.Format("{0}#{1}", ZippedBinariesPath, Change.Revision);
+								int OriginalChangeNumber;
+								if(int.TryParse(Tokens[1].Substring(0, Tokens[1].Length - 1), out OriginalChangeNumber) && !NewChangeNumberToZippedBinaries.ContainsKey(OriginalChangeNumber))
+								{
+									NewChangeNumberToZippedBinaries[OriginalChangeNumber] = String.Format("{0}#{1}", ZippedBinariesPath, Change.Revision);
+								}
 							}
 						}
 					}
 				}
 			}
 
-			if(!ChangeNumberToZippedBinaries.SequenceEqual(NewChangeNumberToZippedBinaries))
+			// Get the new status message
+			string NewZippedBinariesStatus;
+			if(ZippedBinariesPath == null)
 			{
+				NewZippedBinariesStatus = String.Format("Precompiled binaries are not available for {0}", SelectedProjectIdentifier);
+			}
+			else if(NewChangeNumberToZippedBinaries.Count == 0)
+			{
+				NewZippedBinariesStatus = String.Format("No valid archives found at {0}", ZippedBinariesPath);
+			}
+			else
+			{
+				NewZippedBinariesStatus = null;
+			}
+
+			// Update the new list of zipped binaries
+			if(!ChangeNumberToZippedBinaries.SequenceEqual(NewChangeNumberToZippedBinaries) || ZippedBinariesStatus != NewZippedBinariesStatus)
+			{
+				ZippedBinariesStatus = NewZippedBinariesStatus;
 				ChangeNumberToZippedBinaries = NewChangeNumberToZippedBinaries;
 				if(OnUpdateMetadata != null && Changes.Count > 0)
 				{
@@ -438,6 +514,66 @@ namespace UnrealGameSync
 			return true;
 		}
 
+		void UpdateProjectConfigFile()
+		{
+			LocalConfigFiles.Clear();
+			LatestProjectConfigFile = ReadProjectConfigFile(Perforce, BranchClientPath, SelectedClientFileName, LocalConfigFiles, LogWriter);
+		}
+
+		public static ConfigFile ReadProjectConfigFile(PerforceConnection Perforce, string BranchClientPath, string SelectedClientFileName, List<KeyValuePair<string, DateTime>> LocalConfigFiles, TextWriter Log)
+		{
+			List<string> ConfigFilePaths = Utility.GetConfigFileLocations(BranchClientPath, SelectedClientFileName, '/');
+
+			List<PerforceFileRecord> OpenFiles;
+			Perforce.GetOpenFiles(String.Format("{0}/....ini", BranchClientPath), out OpenFiles, Log);
+
+			ConfigFile ProjectConfig = new ConfigFile();
+			foreach(string ConfigFilePath in ConfigFilePaths)
+			{
+				List<string> Lines = null;
+
+				// If this file is open for edit, read the local version
+				if(OpenFiles != null && OpenFiles.Any(x => x.ClientPath.Equals(ConfigFilePath, StringComparison.InvariantCultureIgnoreCase)))
+				{
+					try
+					{
+						string LocalFileName;
+						if(Perforce.ConvertToLocalPath(ConfigFilePath, out LocalFileName, Log))
+						{
+							DateTime LastModifiedTime = File.GetLastWriteTimeUtc(LocalFileName);
+							LocalConfigFiles.Add(new KeyValuePair<string, DateTime>(LocalFileName, LastModifiedTime));
+							Lines = File.ReadAllLines(LocalFileName).ToList();
+						}
+					}
+					catch(Exception Ex)
+					{
+						Log.WriteLine("Failed to read local config file for {0}: {1}", ConfigFilePath, Ex.ToString());
+					}
+				}
+
+				// Otherwise try to get it from perforce
+				if(Lines == null)
+				{
+					Perforce.Print(ConfigFilePath, out Lines, Log);
+				}
+
+				// Merge the text with the config file
+				if(Lines != null)
+				{
+					try
+					{
+						ProjectConfig.Parse(Lines.ToArray());
+						Log.WriteLine("Read config file from {0}", ConfigFilePath);
+					}
+					catch(Exception Ex)
+					{
+						Log.WriteLine("Failed to read config file from {0}: {1}", ConfigFilePath, Ex.ToString());
+					}
+				}
+			}
+			return ProjectConfig;
+		}
+
 		public List<PerforceChangeSummary> GetChanges()
 		{
 			lock(this)
@@ -446,11 +582,11 @@ namespace UnrealGameSync
 			}
 		}
 
-		public bool TryGetChangeType(int Number, out PerforceChangeType Type)
+		public bool TryGetChangeDetails(int Number, out PerforceChangeDetails Details)
 		{
 			lock(this)
 			{
-				return ChangeTypes.TryGetValue(Number, out Type);
+				return ChangeDetails.TryGetValue(Number, out Details);
 			}
 		}
 
@@ -462,12 +598,6 @@ namespace UnrealGameSync
 			}
 		}
 
-		public string CurrentStream
-		{
-			get;
-			private set;
-		}
-
 		public int LastChangeByCurrentUser
 		{
 			get;
@@ -475,6 +605,18 @@ namespace UnrealGameSync
 		}
 
 		public int LastCodeChangeByCurrentUser
+		{
+			get;
+			private set;
+		}
+
+		public ConfigFile LatestProjectConfigFile
+		{
+			get;
+			private set;
+		}
+
+		public string ZippedBinariesStatus
 		{
 			get;
 			private set;

@@ -24,7 +24,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogPackageName, Log, All);
 
 FString FPackageName::AssetPackageExtension = TEXT(".uasset");
 FString FPackageName::MapPackageExtension = TEXT(".umap");
-FString FPackageName::TextAssetPackageExtension = TEXT(".uasset.json");
+FString FPackageName::TextAssetPackageExtension = TEXT(".utextasset");
+FString FPackageName::TextMapPackageExtension = TEXT(".utextmap");
 
 /** Event that is triggered when a new content path is mounted */
 FPackageName::FOnContentPathMountedEvent FPackageName::OnContentPathMountedEvent;
@@ -739,29 +740,56 @@ FName* FPackageName::FindScriptPackageName(FName InShortName)
 	return ScriptPackageNames.Find(InShortName);
 }
 
-bool FPackageName::FindPackageFileWithoutExtension(const FString& InPackageFilename, FString& OutFilename)
+bool FPackageName::FindPackageFileWithoutExtension(const FString& InPackageFilename, FString& OutFilename, bool InAllowTextFormats)
 {
 	auto& FileManager = IFileManager::Get();
 
-	static const FString* PackageExtensions[] =
 	{
-		&AssetPackageExtension,
-		&MapPackageExtension
-	};
-
-	// Loop through all known extensions and check if the file exist.
-	for (auto Extension : PackageExtensions)
-	{
-		FString   PackageFilename = InPackageFilename + *Extension;
-		FDateTime Timestamp       = FileManager.GetTimeStamp(*PackageFilename);
-		if (Timestamp != FDateTime::MinValue())
+		static const FString* PackageExtensions[] =
 		{
-			// The package exists so exit. From now on InPackageFilename can be equal to OutFilename so
-			// don't attempt to use it anymore (case where &InPackageFilename == &OutFilename).
-			OutFilename = MoveTemp(PackageFilename);
-			return true;
+			&AssetPackageExtension,
+			&MapPackageExtension
+		};
+
+		// Loop through all known extensions and check if the file exists
+
+		for (int32 ExtensionIndex = 0; ExtensionIndex < ARRAY_COUNT(PackageExtensions); ++ExtensionIndex)
+		{
+			FString   PackageFilename = InPackageFilename + *PackageExtensions[ExtensionIndex];
+			FDateTime Timestamp       = FileManager.GetTimeStamp(*PackageFilename);
+			if (Timestamp != FDateTime::MinValue())
+			{
+				// The package exists so exit. From now on InPackageFilename can be equal to OutFilename so
+				// don't attempt to use it anymore (case where &InPackageFilename == &OutFilename).
+				OutFilename = MoveTemp(PackageFilename);
+				return true;
+			}
 		}
 	}
+
+#if WITH_TEXT_ARCHIVE_SUPPORT
+	if (InAllowTextFormats)
+	{
+		static const FString* TextPackageExtensions[] =
+		{
+			&TextAssetPackageExtension,
+			&TextMapPackageExtension
+		};
+
+		for (int32 ExtensionIndex = 0; ExtensionIndex < ARRAY_COUNT(TextPackageExtensions); ++ExtensionIndex)
+		{
+			FString   PackageFilename = InPackageFilename + *TextPackageExtensions[ExtensionIndex];
+			FDateTime Timestamp		  = FileManager.GetTimeStamp(*PackageFilename);
+			if (Timestamp != FDateTime::MinValue())
+			{
+				// The package exists so exit. From now on InPackageFilename can be equal to OutFilename so
+				// don't attempt to use it anymore (case where &InPackageFilename == &OutFilename).
+				OutFilename = MoveTemp(PackageFilename);
+				return true;
+			}
+		}
+	}
+#endif
 
 	return false;
 }
@@ -803,7 +831,7 @@ bool FPackageName::FixPackageNameCase(FString& LongPackageName, const FString& E
 	return false;
 }
 
-bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid* Guid /*= NULL*/, FString* OutFilename /*= NULL*/)
+bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid* Guid, FString* OutFilename, bool InAllowTextFormats)
 {
 	bool bFoundFile = false;
 
@@ -838,7 +866,7 @@ bool FPackageName::DoesPackageExist(const FString& LongPackageName, const FGuid*
 	// Convert to filename (no extension yet).
 	FString Filename = LongPackageNameToFilename(PackageName, TEXT(""));
 	// Find the filename (with extension).
-	bFoundFile = FindPackageFileWithoutExtension(Filename, Filename);
+	bFoundFile = FindPackageFileWithoutExtension(Filename, Filename, InAllowTextFormats);
 
 	// On consoles, we don't support package downloading, so no need to waste any extra cycles/disk io dealing with it
 	if (!FPlatformProperties::RequiresCookedData() && bFoundFile && Guid != NULL)

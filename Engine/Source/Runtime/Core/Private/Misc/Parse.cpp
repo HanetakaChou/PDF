@@ -307,13 +307,35 @@ bool FParse::Param( const TCHAR* Stream, const TCHAR* Param )
 //
 bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, FString& Value, bool bShouldStopOnSeparator )
 {
-	TCHAR Temp[4096]=TEXT("");
-	if( FParse::Value( Stream, Match, Temp, ARRAY_COUNT(Temp), bShouldStopOnSeparator) )
+	if (!Stream)
 	{
-		Value = Temp;
-		return 1;
+		return false;
 	}
-	else return 0;
+
+	int32 StreamLen = FCString::Strlen(Stream);
+	if (StreamLen < 4096)
+	{
+		TCHAR Temp[4096]=TEXT("");
+		if (FParse::Value(Stream, Match, Temp, ARRAY_COUNT(Temp), bShouldStopOnSeparator))
+		{
+			Value = Temp;
+			return true;
+		}
+	}
+	else
+	{
+		FString TempValue;
+		TArray<TCHAR>& ValueCharArray = TempValue.GetCharArray();
+		ValueCharArray.AddUninitialized(StreamLen + 1);
+		if( FParse::Value( Stream, Match, ValueCharArray.GetData(), StreamLen + 1, bShouldStopOnSeparator) )
+		{
+			TempValue.Shrink();
+			Value = MoveTemp(TempValue);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 // 
@@ -477,7 +499,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, FText& Value, const
 		return FParse::Text( Stream, Value, Namespace );
 	}
 
-	return 0;
+	return false;
 }
 
 //
@@ -503,9 +525,12 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, int64& Value )
 			Value = Value*10 + *Ptr++ - '0';
 		if( Negative )
 			Value = -Value;
-		return 1;
+		return true;
 	}
-	else return 0;
+	else
+	{
+		return false;
+	}
 }
 
 //
@@ -517,12 +542,12 @@ bool FParse::Value(	const TCHAR* Stream, const TCHAR* Match, FName& Name )
 
 	if( !FParse::Value(Stream,Match,TempStr,NAME_SIZE) )
 	{
-		return 0;
+		return false;
 	}
 
 	Name = FName(TempStr);
 
-	return 1;
+	return true;
 }
 
 //
@@ -533,10 +558,10 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, uint32& Value )
 	const TCHAR* Temp = FCString::Strifind(Stream,Match);
 	TCHAR* End;
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Value = FCString::Strtoi( Temp + FCString::Strlen(Match), &End, 10 );
 
-	return 1;
+	return true;
 }
 
 //
@@ -546,7 +571,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, uint8& Value )
 {
 	const TCHAR* Temp = FCString::Strifind(Stream,Match);
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Temp += FCString::Strlen( Match );
 	Value = (uint8)FCString::Atoi( Temp );
 	return Value!=0 || FChar::IsDigit(Temp[0]);
@@ -559,7 +584,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, int8& Value )
 {
 	const TCHAR* Temp = FCString::Strifind(Stream,Match);
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Temp += FCString::Strlen( Match );
 	Value = FCString::Atoi( Temp );
 	return Value!=0 || FChar::IsDigit(Temp[0]);
@@ -572,7 +597,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, uint16& Value )
 {
 	const TCHAR* Temp = FCString::Strifind( Stream, Match );
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Temp += FCString::Strlen( Match );
 	Value = (uint16)FCString::Atoi( Temp );
 	return Value!=0 || FChar::IsDigit(Temp[0]);
@@ -585,7 +610,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, int16& Value )
 {
 	const TCHAR* Temp = FCString::Strifind( Stream, Match );
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Temp += FCString::Strlen( Match );
 	Value = (int16)FCString::Atoi( Temp );
 	return Value!=0 || FChar::IsDigit(Temp[0]);
@@ -598,9 +623,9 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, float& Value )
 {
 	const TCHAR* Temp = FCString::Strifind( Stream, Match );
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Value = FCString::Atof( Temp+FCString::Strlen(Match) );
-	return 1;
+	return true;
 }
 
 //
@@ -610,9 +635,9 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, int32& Value )
 {
 	const TCHAR* Temp = FCString::Strifind( Stream, Match );
 	if( Temp==NULL )
-		return 0;
+		return false;
 	Value = FCString::Atoi( Temp + FCString::Strlen(Match) );
-	return 1;
+	return true;
 }
 
 //
@@ -624,9 +649,12 @@ bool FParse::Bool( const TCHAR* Stream, const TCHAR* Match, bool& OnOff )
 	if( FParse::Value( Stream, Match, TempStr, 16 ) )
 	{
 		OnOff = FCString::ToBool(TempStr);
-		return 1;
+		return true;
 	}
-	else return 0;
+	else
+	{
+		return false;
+	}
 }
 
 //
@@ -636,7 +664,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, struct FGuid& Guid 
 {
 	TCHAR Temp[256];
 	if( !FParse::Value( Stream, Match, Temp, ARRAY_COUNT(Temp) ) )
-		return 0;
+		return false;
 
 	Guid.A = Guid.B = Guid.C = Guid.D = 0;
 	if( FCString::Strlen(Temp)==32 )
@@ -647,7 +675,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, struct FGuid& Guid 
 		Guid.B = FCString::Strtoi( Temp+8,  &End, 16 ); Temp[8 ]=0;
 		Guid.A = FCString::Strtoi( Temp+0,  &End, 16 ); Temp[0 ]=0;
 	}
-	return 1;
+	return true;
 }
 
 
@@ -688,15 +716,18 @@ bool FParse::Command( const TCHAR** Stream, const TCHAR* Match, bool bParseMight
 				(*Stream)++;
 			}
 
-			return 1; // Success.
+			return true; // Success.
 		}
 		else
 		{
 			*Stream -= MatchLen;
-			return 0; // Only found partial match.
+			return false; // Only found partial match.
 		}
 	}
-	else return 0; // No match.
+	else
+	{
+		return false; // No match.
+	}
 }
 
 //
@@ -910,177 +941,204 @@ bool FParse::AlnumToken(const TCHAR*& Str, FString& Arg)
 // Get a line of Stream (everything up to, but not including, CR/LF.
 // Returns 0 if ok, nonzero if at end of stream and returned 0-length string.
 //
-bool FParse::Line
-(
-	const TCHAR**	Stream,
-	TCHAR*			Result,
-	int32				MaxLen,
-	bool			Exact
-)
+bool FParse::Line(const TCHAR** Stream, TCHAR* Result, int32 MaxLen, bool bExact)
 {
-	bool GotStream=0;
-	bool IsQuoted=0;
-	bool Ignore=0;
+	bool bGotStream = false;
+	bool bIsQuoted = false;
+	bool bIgnore = false;
 
 	*Result=0;
-	while( **Stream!=0 && **Stream!=10 && **Stream!=13 && --MaxLen>0 )
+	while (**Stream != TEXT('\0') && **Stream != TEXT('\n') && **Stream != TEXT('\r') && --MaxLen > 0)
 	{
 		// Start of comments.
-		if( !IsQuoted && !Exact && (*Stream)[0]=='/' && (*Stream)[1]=='/' )
-			Ignore = 1;
+		if (!bIsQuoted && !bExact && (*Stream)[0]=='/' && (*Stream)[1] == TEXT('/'))
+		{
+			bIgnore = true;
+		}
 		
 		// Command chaining.
-		if( !IsQuoted && !Exact && **Stream=='|' )
+		if (!bIsQuoted && !bExact && **Stream == TEXT('|'))
+		{
 			break;
+		}
 
 		// Check quoting.
-		IsQuoted = IsQuoted ^ (**Stream==34);
-		GotStream=1;
+		bIsQuoted = bIsQuoted ^ (**Stream == TEXT('\"'));
+		bGotStream = true;
 
 		// Got stuff.
-		if( !Ignore )
+		if (!bIgnore)
+		{
 			*(Result++) = *((*Stream)++);
+		}
 		else
+		{
 			(*Stream)++;
+		}
 	}
-	if( Exact )
+
+	if (bExact)
 	{
 		// Eat up exactly one CR/LF.
-		if( **Stream == 13 )
+		if (**Stream == TEXT('\r'))
+		{
 			(*Stream)++;
-		if( **Stream == 10 )
+		}
+
+		if (**Stream == TEXT('\n'))
+		{
 			(*Stream)++;
+		}
 	}
 	else
 	{
 		// Eat up all CR/LF's.
-		while( **Stream==10 || **Stream==13 || **Stream=='|' )
+		while (**Stream == TEXT('\n') || **Stream == TEXT('\r') || **Stream == TEXT('|'))
+		{
 			(*Stream)++;
+		}
 	}
-	*Result=0;
-	return **Stream!=0 || GotStream;
+
+	*Result = TEXT('\0');
+	return **Stream != TEXT('\0') || bGotStream;
 }
-bool FParse::Line
-(
-	const TCHAR**	Stream,
-	FString&		Result,
-	bool			Exact
-)
+
+bool FParse::Line(const TCHAR** Stream, FString& Result, bool bExact)
 {
-	bool GotStream=0;
-	bool IsQuoted=0;
-	bool Ignore=0;
+	bool bGotStream = false;
+	bool bIsQuoted = false;
+	bool bIgnore = false;
 
 	Result = TEXT("");
 
-	while( **Stream!=0 && **Stream!=10 && **Stream!=13 )
+	while (**Stream != TEXT('\0') && **Stream != TEXT('\n') && **Stream != TEXT('\r'))
 	{
 		// Start of comments.
-		if( !IsQuoted && !Exact && (*Stream)[0]=='/' && (*Stream)[1]=='/' )
-			Ignore = 1;
+		if (!bIsQuoted && !bExact && (*Stream)[0] == TEXT('/') && (*Stream)[1] == TEXT('/'))
+		{
+			bIgnore = true;
+		}
 
 		// Command chaining.
-		if( !IsQuoted && !Exact && **Stream=='|' )
+		if (!bIsQuoted && !bExact && **Stream == TEXT('|'))
+		{
 			break;
+		}
 
 		// Check quoting.
-		IsQuoted = IsQuoted ^ (**Stream==34);
-		GotStream=1;
+		bIsQuoted = bIsQuoted ^ (**Stream == TEXT('\"'));
+		bGotStream = true;
 
 		// Got stuff.
-		if( !Ignore )
+		if (!bIgnore)
 		{
-			Result.AppendChar( *((*Stream)++) );
+			Result.AppendChar(*((*Stream)++));
 		}
 		else
 		{
 			(*Stream)++;
 		}
 	}
-	if( Exact )
+
+	if (bExact)
 	{
 		// Eat up exactly one CR/LF.
-		if( **Stream == 13 )
+		if (**Stream == TEXT('\r'))
+		{
 			(*Stream)++;
-		if( **Stream == 10 )
+		}
+		if (**Stream == TEXT('\n'))
+		{
 			(*Stream)++;
+		}
 	}
 	else
 	{
 		// Eat up all CR/LF's.
-		while( **Stream==10 || **Stream==13 || **Stream=='|' )
+		while (**Stream == TEXT('\n') || **Stream == TEXT('\r') || **Stream == TEXT('|'))
+		{
 			(*Stream)++;
+		}
 	}
 
-	return **Stream!=0 || GotStream;
+	return **Stream != TEXT('\0') || bGotStream;
 }
 
-bool FParse::LineExtended(const TCHAR** Stream, FString& Result, int32& LinesConsumed, bool Exact)
+bool FParse::LineExtended(const TCHAR** Stream, FString& Result, int32& LinesConsumed, bool bExact)
 {
-	bool GotStream=0;
-	bool IsQuoted=0;
-	bool Ignore=0;
+	bool bGotStream = false;
+	bool bIsQuoted = false;
+	bool bIgnore = false;
 	int32 BracketDepth = 0;
 
 	Result = TEXT("");
 	LinesConsumed = 0;
 
-	while (**Stream != 0 && ((**Stream != 10 && **Stream != 13) || BracketDepth > 0))
+	while (**Stream != TEXT('\0') && ((**Stream != TEXT('\n') && **Stream != TEXT('\r')) || BracketDepth > 0))
 	{
 		// Start of comments.
-		if( !IsQuoted && !Exact && (*Stream)[0]=='/' && (*Stream)[1]=='/' )
-			Ignore = 1;
+		if (!bIsQuoted && !bExact && (*Stream)[0] == TEXT('/') && (*Stream)[1] == TEXT('/'))
+		{
+			bIgnore = true;
+		}
 
 		// Command chaining.
-		if( !IsQuoted && !Exact && **Stream=='|' )
+		if (!bIsQuoted && !bExact && **Stream == TEXT('|'))
+		{
 			break;
+		}
 
-		GotStream = 1;
+		bGotStream = true;
 
 		// bracketed line break
-		if (**Stream == 10 || **Stream == 13)
+		if (**Stream == TEXT('\n') || **Stream == TEXT('\r'))
 		{
 			checkSlow(BracketDepth > 0);
 
 			Result.AppendChar(TEXT(' '));
 			LinesConsumed++;
 			(*Stream)++;
-			if (**Stream == 10 || **Stream == 13)
+			if (**Stream == TEXT('\n') || **Stream == TEXT('\r'))
 			{
 				(*Stream)++;
 			}
 		}
 		// allow line break if the end of the line is a backslash
-		else if (!IsQuoted && (*Stream)[0] == '\\' && ((*Stream)[1] == 10 || (*Stream)[1] == 13))
+		else if (!bIsQuoted && (*Stream)[0] == TEXT('\\') && ((*Stream)[1] == TEXT('\n') || (*Stream)[1] == TEXT('\r')))
 		{
 			Result.AppendChar(TEXT(' '));
 			LinesConsumed++;
 			(*Stream) += 2;
-			if (**Stream == 10 || **Stream == 13)
+			if (**Stream == TEXT('\n') || **Stream == TEXT('\r'))
 			{
 				(*Stream)++;
 			}
 		}
 		// check for starting or ending brace
-		else if (!IsQuoted && **Stream == '{')
+		else if (!bIsQuoted && **Stream == TEXT('{'))
 		{
 			BracketDepth++;
 			(*Stream)++;
 		}
-		else if (!IsQuoted && **Stream == '}' && BracketDepth > 0)
+		else if (!bIsQuoted && **Stream == TEXT('}') && BracketDepth > 0)
 		{
 			BracketDepth--;
 			(*Stream)++;
 		}
+		// specifically consume escaped backslashes and quotes within quoted strings
+		else if (bIsQuoted && !bIgnore && (*Stream)[0] == TEXT('\\') && ( (*Stream)[1] == TEXT('\"') || (*Stream)[1] == TEXT('\\') ))
+		{
+			Result.AppendChars(*Stream, 2);
+			(*Stream) += 2;
+		}
 		else
 		{
-			// Check quoting.
-			IsQuoted = IsQuoted ^ (**Stream==34);
+			bIsQuoted = bIsQuoted ^ (**Stream == TEXT('\"'));
 
 			// Got stuff.
-			if( !Ignore )
+			if (!bIgnore)
 			{
-				Result.AppendChar( *((*Stream)++) );
+				Result.AppendChar(*((*Stream)++));
 			}
 			else
 			{
@@ -1090,22 +1148,22 @@ bool FParse::LineExtended(const TCHAR** Stream, FString& Result, int32& LinesCon
 	}
 	if (**Stream == 0)
 	{
-		if (GotStream)
+		if (bGotStream)
 		{
 			LinesConsumed++;
 		}
 	}
-	else if (Exact)
+	else if (bExact)
 	{
 		// Eat up exactly one CR/LF.
-		if (**Stream == 13 || **Stream == 10)
+		if (**Stream == TEXT('\r') || **Stream == TEXT('\n'))
 		{
 			LinesConsumed++;
-			if (**Stream == 13)
+			if (**Stream == TEXT('\r'))
 			{
 				(*Stream)++;
 			}
-			if( **Stream == 10 )
+			if (**Stream == TEXT('\n'))
 			{
 				(*Stream)++;
 			}
@@ -1114,13 +1172,13 @@ bool FParse::LineExtended(const TCHAR** Stream, FString& Result, int32& LinesCon
 	else
 	{
 		// Eat up all CR/LF's.
-		while (**Stream == 10 || **Stream == 13 || **Stream == '|')
+		while (**Stream == TEXT('\n') || **Stream == TEXT('\r') || **Stream == TEXT('|'))
 		{
-			if (**Stream != '|')
+			if (**Stream != TEXT('|'))
 			{
 				LinesConsumed++;
 			}
-			if (((*Stream)[0] == 10 && (*Stream)[1] == 13) || ((*Stream)[0] == 13 && (*Stream)[1] == 10))
+			if (((*Stream)[0] == TEXT('\n') && (*Stream)[1] == TEXT('\r')) || ((*Stream)[0] == TEXT('\r') && (*Stream)[1] == TEXT('\n')))
 			{
 				(*Stream)++;
 			}
@@ -1128,7 +1186,7 @@ bool FParse::LineExtended(const TCHAR** Stream, FString& Result, int32& LinesCon
 		}
 	}
 
-	return **Stream!=0 || GotStream;
+	return **Stream != TEXT('\0') || bGotStream;
 }
 
 uint32 FParse::HexNumber(const TCHAR* HexString)
@@ -1172,3 +1230,50 @@ bool FParse::SchemeNameFromURI(const TCHAR* URI, FString& OutSchemeName)
 		}
 	}
 }
+
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+#include "Misc/AutomationTest.h"
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FParseLineExtendedTest, "System.Core.Misc.ParseLineExtended", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::SmokeFilter)
+bool FParseLineExtendedTest::RunTest(const FString& Parameters)
+{
+	const TCHAR* Tests[] = {
+		TEXT("Test string"),                            // Normal string
+		TEXT("{Test string}"),                          // Braced string
+		TEXT("\"Test string\""),                        // Quoted string
+		TEXT("\"Test \\\"string\\\"\""),                // Quoted string w/ escaped quotes
+		TEXT("a=\"Test\", b=\"Test\""),                 // Quoted value list
+		TEXT("a=\"Test\\\\\", b=\"{Test}\""),           // Quoted value list w/ escaped backslash preceeding closing quote
+		TEXT("a=\"Test\\\\\\\" String\", b=\"{Test}\""),// Quoted value list w/ escaped backslash preceeding escaped quote
+		TEXT("Test=(Inner=\"{content}\")"),             // Nested value list
+	};
+
+	const TCHAR* Expected[] = {
+		TEXT("Test string"),
+		TEXT("Test string"),
+		TEXT("\"Test string\""),
+		TEXT("\"Test \\\"string\\\"\""),
+		TEXT("a=\"Test\", b=\"Test\""),
+		TEXT("a=\"Test\\\\\", b=\"{Test}\""),
+		TEXT("a=\"Test\\\\\\\" String\", b=\"{Test}\""),
+		TEXT("Test=(Inner=\"{content}\")"),
+	};
+
+	int32 LinesConsumed = 0;
+	FString Result;
+
+	for (int32 Index = 0; Index < ARRAY_COUNT(Tests); ++Index)
+	{
+		LinesConsumed = 0;
+		Result.Reset();
+
+		const TCHAR* Stream = Tests[Index];
+		bool bSuccess = FParse::LineExtended(&Stream, Result, LinesConsumed, false);
+		TestTrue(*FString::Printf(TEXT("Expecting parsed line [%s] to be [%s]. Result was [%s]."), Tests[Index], Expected[Index], *Result), bSuccess && Result == Expected[Index]);
+	}
+
+	return true;
+}
+
+#endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)

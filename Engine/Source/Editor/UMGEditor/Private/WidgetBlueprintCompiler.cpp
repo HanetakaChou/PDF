@@ -18,14 +18,12 @@
 #include "WidgetBlueprintEditorUtils.h"
 #include "WidgetGraphSchema.h"
 #include "IUMGModule.h"
-#include "IWidgetEditorExtension.h"
 #include "UMGEditorProjectSettings.h"
+#include "WidgetCompilerRule.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
 #define CPF_Instanced (CPF_PersistentInstance | CPF_ExportObject | CPF_InstancedReference)
-
-const FName IWidgetEditorExtension::ServiceFeatureName(TEXT("WidgetEditorExtension"));
 
 extern COREUOBJECT_API bool GMinimalCompileOnLoad;
 
@@ -276,8 +274,10 @@ void FWidgetBlueprintCompiler::CreateClassVariablesFromBlueprint()
 			{
 				WidgetProperty->SetPropertyFlags(CPF_BlueprintVisible);
 
+				const FString& CategoryName = Widget->GetCategoryName();
+				
 				// Only include Category metadata for variables (i.e. a visible/editable property); otherwise, UHT will raise a warning if this Blueprint is nativized.
-				WidgetProperty->SetMetaData(TEXT("Category"), *WidgetBP->GetName());
+				WidgetProperty->SetMetaData(TEXT("Category"), *(CategoryName.IsEmpty() ? WidgetBP->GetName() : CategoryName));
 			}
 
 			WidgetProperty->SetPropertyFlags(CPF_Instanced);
@@ -288,19 +288,33 @@ void FWidgetBlueprintCompiler::CreateClassVariablesFromBlueprint()
 	}
 
 	// Add movie scenes variables here
-	for(UWidgetAnimation* Animation : WidgetBP->Animations)
+	for (UWidgetAnimation* Animation : WidgetBP->Animations)
 	{
+		UObjectPropertyBase* ExistingProperty = Cast<UObjectPropertyBase>(ParentClass->FindPropertyByName(Animation->GetFName()));
+		if (ExistingProperty &&
+			FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(ExistingProperty) &&
+			ExistingProperty->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass()))
+		{
+			WidgetAnimToMemberVariableMap.Add(Animation, ExistingProperty);
+			continue;
+		}
+
 		FEdGraphPinType WidgetPinType(UEdGraphSchema_K2::PC_Object, NAME_None, Animation->GetClass(), EPinContainerType::None, true, FEdGraphTerminalType());
 		UProperty* AnimationProperty = CreateVariable(Animation->GetFName(), WidgetPinType);
 
 		if ( AnimationProperty != nullptr )
 		{
+			const FString DisplayName = Animation->GetDisplayName().ToString();
+			AnimationProperty->SetMetaData(TEXT("DisplayName"), *DisplayName);
+
 			AnimationProperty->SetMetaData(TEXT("Category"), TEXT("Animations"));
 
 			AnimationProperty->SetPropertyFlags(CPF_Instanced);
 			AnimationProperty->SetPropertyFlags(CPF_BlueprintVisible);
 			AnimationProperty->SetPropertyFlags(CPF_BlueprintReadOnly);
 			AnimationProperty->SetPropertyFlags(CPF_RepSkip);
+
+			WidgetAnimToMemberVariableMap.Add(Animation, AnimationProperty);
 		}
 	}
 }
@@ -317,23 +331,57 @@ void FWidgetBlueprintCompiler::CopyTermDefaultsToDefaultObject(UObject* DefaultO
 	if ( DefaultWidget )
 	{
 		//TODO Once we handle multiple derived blueprint classes, we need to check parent versions of the class.
-		if ( const UFunction* ReceiveTickEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, Tick), NewWidgetBlueprintClass) )
+		const UFunction* ReceiveTickEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, Tick), NewWidgetBlueprintClass);
+		if (ReceiveTickEvent)
 		{
-			DefaultWidget->bCanEverTick = true;
+			DefaultWidget->bHasScriptImplementedTick = true;
 		}
 		else
 		{
-			DefaultWidget->bCanEverTick = false;
+			DefaultWidget->bHasScriptImplementedTick = false;
 		}
 
 		//TODO Once we handle multiple derived blueprint classes, we need to check parent versions of the class.
 		if ( const UFunction* ReceivePaintEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, OnPaint), NewWidgetBlueprintClass) )
 		{
-			DefaultWidget->bCanEverPaint = true;
+			DefaultWidget->bHasScriptImplementedPaint = true;
 		}
 		else
 		{
-			DefaultWidget->bCanEverPaint = false;
+			DefaultWidget->bHasScriptImplementedPaint = false;
+		}
+	}
+
+
+	bool bClassOrParentsHaveLatentActions = false;
+	bool bClassOrParentsHaveAnimations = false;
+	bool bClassRequiresNativeTick = false;
+
+
+	WidgetBP->UpdateTickabilityStats(bClassOrParentsHaveLatentActions, bClassOrParentsHaveAnimations, bClassRequiresNativeTick);
+	WidgetClass->SetClassRequiresNativeTick(bClassRequiresNativeTick);
+
+	// If the widget is not tickable, warn the user that widgets with animations or implemented ticks will most likely not work
+	if (DefaultWidget->GetDesiredTickFrequency() == EWidgetTickFrequency::Never)
+	{
+		if (bClassOrParentsHaveAnimations)
+		{
+			MessageLog.Warning(*LOCTEXT("NonTickableButAnimationsFound", "This widget has animations but the widget is set to never tick.  These animations will not function correctly.").ToString());
+		}
+
+		if (bClassOrParentsHaveLatentActions)
+		{
+			MessageLog.Warning(*LOCTEXT("NonTickableButLatentActionsFound", "This widget has latent actions but the widget is set to never tick.  These latent actions will not function correctly.").ToString());
+		}
+
+		if (bClassRequiresNativeTick)
+		{
+			MessageLog.Warning(*LOCTEXT("NonTickableButNativeTickFound", "This widget may require a native tick but the widget is set to never tick.  Native tick will not be called.").ToString());
+		}
+
+		if (DefaultWidget->bHasScriptImplementedTick)
+		{
+			MessageLog.Warning(*LOCTEXT("NonTickableButTickFound", "This widget has a blueprint implemented Tick event but the widget is set to never tick.  This tick event will never be called.").ToString());
 		}
 	}
 }
@@ -359,7 +407,7 @@ bool FWidgetBlueprintCompiler::CanAllowTemplate(FCompilerResultsLog& MessageLog,
 	// If this widget forces the slow construction path, we can't template it.
 	if ( WidgetBP->bForceSlowConstructionPath )
 	{
-		if (GetDefault<UUMGEditorProjectSettings>()->bCookSlowConstructionWidgetTree)
+		if (GetDefault<UUMGEditorProjectSettings>()->CompilerOption_CookSlowConstructionWidgetTree(WidgetBP))
 		{
 			MessageLog.Note(*LOCTEXT("ForceSlowConstruction", "Fast Templating Disabled By User.").ToString());
 			return false;
@@ -371,7 +419,7 @@ bool FWidgetBlueprintCompiler::CanAllowTemplate(FCompilerResultsLog& MessageLog,
 	}
 
 	// For now we don't support nativization, it's going to require some extra work moving the template support
-	// during the nativization process.
+	// during the nativization process. Also see UUserWidget::CreateInstanceInternal (we skip the runtime warning for the nativized case).
 	if ( WidgetBP->NativizationFlag != EBlueprintNativizationFlag::Disabled )
 	{
 		MessageLog.Warning(*LOCTEXT("TemplatingAndNativization", "Nativization and Fast Widget Creation is not supported at this time.").ToString());
@@ -406,20 +454,54 @@ bool FWidgetBlueprintCompiler::CanTemplateWidget(FCompilerResultsLog& MessageLog
 	return ThisWidget->VerifyTemplateIntegrity(OutErrors);
 }
 
+void FWidgetBlueprintCompiler::SanitizeBindings(UBlueprintGeneratedClass* Class)
+{
+	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
+
+	// 
+	TArray<FDelegateEditorBinding> StaleBindings;
+	for (const FDelegateEditorBinding& Binding : WidgetBP->Bindings)
+	{
+		if (!Binding.DoesBindingTargetExist(WidgetBP))
+		{
+			StaleBindings.Add(Binding);
+		}
+	}
+
+	// 
+	for (const FDelegateEditorBinding& Binding : StaleBindings)
+	{
+		WidgetBP->Bindings.Remove(Binding);
+	}
+
+	// 
+	int32 AttributeBindings = 0;
+	for (const FDelegateEditorBinding& Binding : WidgetBP->Bindings)
+	{
+		if (Binding.IsAttributePropertyBinding(WidgetBP))
+		{
+			AttributeBindings++;
+		}
+	}
+
+	WidgetBP->PropertyBindings = AttributeBindings;
+}
+
 void FWidgetBlueprintCompiler::FinishCompilingClass(UClass* Class)
 {
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
 	UWidgetBlueprintGeneratedClass* BPGClass = CastChecked<UWidgetBlueprintGeneratedClass>(Class);
+	UClass* ParentClass = WidgetBP->ParentClass;
 
-	// Don't do a bunch of extra work on the skeleton generated class
-	if ( WidgetBP->SkeletonGeneratedClass != Class )
+	// Don't do a bunch of extra work on the skeleton generated class.
+	if ( CompileOptions.CompileType != EKismetCompileType::SkeletonOnly )
 	{
 		if( !WidgetBP->bHasBeenRegenerated )
 		{
 			UBlueprint::ForceLoadMembers(WidgetBP->WidgetTree);
 		}
 
-		BPGClass->bCookSlowConstructionWidgetTree = GetDefault<UUMGEditorProjectSettings>()->bCookSlowConstructionWidgetTree;
+		BPGClass->bCookSlowConstructionWidgetTree = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_CookSlowConstructionWidgetTree(WidgetBP);
 
 		BPGClass->WidgetTree = Cast<UWidgetTree>(StaticDuplicateObject(WidgetBP->WidgetTree, BPGClass, NAME_None, RF_AllFlags & ~RF_DefaultSubObject));
 
@@ -441,6 +523,8 @@ void FWidgetBlueprintCompiler::FinishCompilingClass(UClass* Class)
 		const bool bIsLoading = WidgetBP->bIsRegeneratingOnLoad;
 		if ( bIsFullCompile )
 		{
+			SanitizeBindings(BPGClass);
+
 			// Convert all editor time property bindings into a list of bindings
 			// that will be applied at runtime.  Ensure all bindings are still valid.
 			for ( const FDelegateEditorBinding& EditorBinding : WidgetBP->Bindings )
@@ -449,6 +533,59 @@ void FWidgetBlueprintCompiler::FinishCompilingClass(UClass* Class)
 				{
 					BPGClass->Bindings.Add(EditorBinding.ToRuntimeBinding(WidgetBP));
 				}
+			}
+
+			const EPropertyBindingPermissionLevel PropertyBindingRule = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_PropertyBindingRule(WidgetBP);
+			if (PropertyBindingRule != EPropertyBindingPermissionLevel::Allow)
+			{
+				if (WidgetBP->Bindings.Num() > 0)
+				{
+					for (const FDelegateEditorBinding& EditorBinding : WidgetBP->Bindings)
+					{
+						if (EditorBinding.IsAttributePropertyBinding(WidgetBP))
+						{
+							FText NoPropertyBindingsAllowedError =
+								FText::Format(LOCTEXT("NoPropertyBindingsAllowed", "Property Bindings have been disabled for this widget.  You should remove the binding from {0}.{1}"),
+								FText::FromString(EditorBinding.ObjectName),
+								FText::FromName(EditorBinding.PropertyName));
+
+							switch (PropertyBindingRule)
+							{
+							case EPropertyBindingPermissionLevel::PreventAndWarn:
+								MessageLog.Warning(*NoPropertyBindingsAllowedError.ToString());
+								break;
+							case EPropertyBindingPermissionLevel::PreventAndError:
+								MessageLog.Error(*NoPropertyBindingsAllowedError.ToString());
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if (!GetDefault<UUMGEditorProjectSettings>()->CompilerOption_AllowBlueprintTick(WidgetBP))
+			{
+				const UFunction* ReceiveTickEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, Tick), NewWidgetBlueprintClass);
+				if (ReceiveTickEvent)
+				{
+					MessageLog.Error(*LOCTEXT("TickNotAllowedForWidget", "Blueprint implementable ticking has been disabled for this widget in the Widget Designer (Team) - Project Settings").ToString());
+				}
+			}
+
+			if (!GetDefault<UUMGEditorProjectSettings>()->CompilerOption_AllowBlueprintPaint(WidgetBP))
+			{
+				if (const UFunction* ReceivePaintEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, OnPaint), NewWidgetBlueprintClass))
+				{
+					MessageLog.Error(*LOCTEXT("PaintNotAllowedForWidget", "Blueprint implementable painting has been disabled for this widget in the Widget Designer (Team) - Project Settings.").ToString());
+				}
+			}
+
+			// It's possible we may encounter some rules that haven't had a chance to load yet during early loading phases
+			// They're automatically removed from the returned set.
+			TArray<UWidgetCompilerRule*> CustomRules = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_Rules(WidgetBP);
+			for (UWidgetCompilerRule* CustomRule : CustomRules)
+			{
+				CustomRule->ExecuteRule(WidgetBP, MessageLog);
 			}
 		}
 
@@ -460,57 +597,89 @@ void FWidgetBlueprintCompiler::FinishCompilingClass(UClass* Class)
 				BPGClass->NamedSlots.Add(Widget->GetFName());
 			}
 		});
-	}
 
-	// Make sure that we don't have dueling widget hierarchies
-	if (UWidgetBlueprintGeneratedClass* SuperBPGClass = Cast<UWidgetBlueprintGeneratedClass>(BPGClass->GetSuperClass()))
-	{
-		UWidgetBlueprint* SuperBlueprint = Cast<UWidgetBlueprint>(SuperBPGClass->ClassGeneratedBy);
-		if (SuperBlueprint->WidgetTree != nullptr)
+		// Make sure that we don't have dueling widget hierarchies
+		if (UWidgetBlueprintGeneratedClass* SuperBPGClass = Cast<UWidgetBlueprintGeneratedClass>(BPGClass->GetSuperClass()))
 		{
-			if ((SuperBlueprint->WidgetTree->RootWidget != nullptr) && (WidgetBlueprint()->WidgetTree->RootWidget != nullptr))
+			UWidgetBlueprint* SuperBlueprint = Cast<UWidgetBlueprint>(SuperBPGClass->ClassGeneratedBy);
+			if (SuperBlueprint->WidgetTree != nullptr)
 			{
-				// We both have a widget tree, terrible things will ensue
-				// @todo: nickd - we need to switch this back to a warning in engine, but note for games
-				MessageLog.Note(*LOCTEXT("ParentAndChildBothHaveWidgetTrees", "This widget @@ and parent class widget @@ both have a widget hierarchy, which is not supported.  Only one of them should have a widget tree.").ToString(),
-					WidgetBP, SuperBPGClass->ClassGeneratedBy);
+				if ((SuperBlueprint->WidgetTree->RootWidget != nullptr) && (WidgetBlueprint()->WidgetTree->RootWidget != nullptr))
+				{
+					// We both have a widget tree, terrible things will ensue
+					// @todo: nickd - we need to switch this back to a warning in engine, but note for games
+					MessageLog.Note(*LOCTEXT("ParentAndChildBothHaveWidgetTrees", "This widget @@ and parent class widget @@ both have a widget hierarchy, which is not supported.  Only one of them should have a widget tree.").ToString(),
+						WidgetBP, SuperBPGClass->ClassGeneratedBy);
+				}
 			}
 		}
-	}
-	
-	//
-	UClass* ParentClass = WidgetBP->ParentClass;
-	for ( TUObjectPropertyBase<UWidget*>* WidgetProperty : TFieldRange<TUObjectPropertyBase<UWidget*>>( ParentClass ) )
-	{
-		bool bIsOptional;
-		bool bIsBindWidget = FWidgetBlueprintEditorUtils::IsBindWidgetProperty(WidgetProperty, bIsOptional);
 
-		if ( bIsBindWidget && !bIsOptional )
+		// Check that all BindWidget properties are present and of the appropriate type
+		for (TUObjectPropertyBase<UWidget*>* WidgetProperty : TFieldRange<TUObjectPropertyBase<UWidget*>>(ParentClass))
 		{
-			const FText RequiredWidgetNotBoundError = LOCTEXT("RequiredWidgetNotBound", "A required widget binding @@ of type @@ was not found.");
-			const FText IncorrectWidgetTypeError = LOCTEXT("IncorrectWidgetTypes", "The widget @@ is of type @@, but the bind widget property is of type @@.");
+			bool bIsOptional = false;
 
-			UWidget* const* Widget = WidgetToMemberVariableMap.FindKey( WidgetProperty );
-			if (!Widget)
+			if (FWidgetBlueprintEditorUtils::IsBindWidgetProperty(WidgetProperty, bIsOptional))
 			{
-				if (Blueprint->bIsNewlyCreated)
+				const FText OptionalBindingAvailableNote = LOCTEXT("OptionalWidgetNotBound", "An optional widget binding @@ of type @@ is available.");
+				const FText RequiredWidgetNotBoundError = LOCTEXT("RequiredWidgetNotBound", "A required widget binding @@ of type @@ was not found.");
+				const FText IncorrectWidgetTypeError = LOCTEXT("IncorrectWidgetTypes", "The widget @@ is of type @@, but the bind widget property is of type @@.");
+
+				UWidget* const* Widget = WidgetToMemberVariableMap.FindKey(WidgetProperty);
+				if (!Widget)
 				{
-					MessageLog.Warning(*RequiredWidgetNotBoundError.ToString(), WidgetProperty, WidgetProperty->PropertyClass);
+					if (bIsOptional)
+					{
+						MessageLog.Note(*OptionalBindingAvailableNote.ToString(), WidgetProperty, WidgetProperty->PropertyClass);
+					}
+					else if (Blueprint->bIsNewlyCreated)
+					{
+						MessageLog.Warning(*RequiredWidgetNotBoundError.ToString(), WidgetProperty, WidgetProperty->PropertyClass);
+					}
+					else
+					{
+						MessageLog.Error(*RequiredWidgetNotBoundError.ToString(), WidgetProperty, WidgetProperty->PropertyClass);
+					}
 				}
-				else
+				else if (!(*Widget)->IsA(WidgetProperty->PropertyClass))
 				{
-					MessageLog.Error(*RequiredWidgetNotBoundError.ToString(), WidgetProperty, WidgetProperty->PropertyClass);
+					if (Blueprint->bIsNewlyCreated)
+					{
+						MessageLog.Warning(*IncorrectWidgetTypeError.ToString(), *Widget, (*Widget)->GetClass(), WidgetProperty->PropertyClass);
+					}
+					else
+					{
+						MessageLog.Error(*IncorrectWidgetTypeError.ToString(), *Widget, (*Widget)->GetClass(), WidgetProperty->PropertyClass);
+					}
 				}
 			}
-			else if (!(*Widget)->IsA(WidgetProperty->PropertyClass))
+		}
+
+		// Check that all BindWidgetAnim properties are present
+		for (TUObjectPropertyBase<UWidgetAnimation*>* WidgetAnimProperty : TFieldRange<TUObjectPropertyBase<UWidgetAnimation*>>(ParentClass))
+		{
+			bool bIsOptional = false;
+
+			if (FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(WidgetAnimProperty, bIsOptional))
 			{
-				if (Blueprint->bIsNewlyCreated)
+				const FText OptionalBindingAvailableNote = LOCTEXT("OptionalWidgetAnimNotBound", "An optional widget animation binding @@ is available.");
+				const FText RequiredWidgetAnimNotBoundError = LOCTEXT("RequiredWidgetAnimNotBound", "A required widget animation binding @@ was not found.");
+
+				UWidgetAnimation* const* WidgetAnim = WidgetAnimToMemberVariableMap.FindKey(WidgetAnimProperty);
+				if (!WidgetAnim)
 				{
-					MessageLog.Warning(*IncorrectWidgetTypeError.ToString(), *Widget, (*Widget)->GetClass(), WidgetProperty->PropertyClass);
-				}
-				else
-				{
-					MessageLog.Error(*IncorrectWidgetTypeError.ToString(), *Widget, (*Widget)->GetClass(), WidgetProperty->PropertyClass);
+					if (bIsOptional)
+					{
+						MessageLog.Note(*OptionalBindingAvailableNote.ToString(), WidgetAnimProperty);
+					}
+					else if (Blueprint->bIsNewlyCreated)
+					{
+						MessageLog.Warning(*RequiredWidgetAnimNotBoundError.ToString(), WidgetAnimProperty);
+					}
+					else
+					{
+						MessageLog.Error(*RequiredWidgetAnimNotBoundError.ToString(), WidgetAnimProperty);
+					}
 				}
 			}
 		}
@@ -524,43 +693,52 @@ void FWidgetBlueprintCompiler::PostCompile()
 	Super::PostCompile();
 
 	WidgetToMemberVariableMap.Empty();
+	WidgetAnimToMemberVariableMap.Empty();
 
 	UWidgetBlueprintGeneratedClass* WidgetClass = NewWidgetBlueprintClass;
 
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
 
-	WidgetClass->bAllowTemplate = CanAllowTemplate(MessageLog, NewWidgetBlueprintClass);
-
-	if ( WidgetClass->bAllowTemplate )
+	// PostCompile almost always only runs for full compiles now, but
+	// some old codepaths (e.g. blueprint duplicate) have only been updated in 4.21. 
+	// For now we can use this flag to avoid running this logic when PostCompile is 
+	// run for skeleton passes:
+	if(bIsFullCompile)
 	{
-		if ( !Blueprint->bIsRegeneratingOnLoad && bIsFullCompile )
+		WidgetClass->bAllowDynamicCreation = WidgetBP->WidgetSupportsDynamicCreation();
+		WidgetClass->bAllowTemplate = CanAllowTemplate(MessageLog, NewWidgetBlueprintClass);
+	}
+
+	if (!Blueprint->bIsRegeneratingOnLoad && bIsFullCompile)
+	{
+		WidgetClass->GetDefaultObject<UUserWidget>()->ValidateBlueprint(*WidgetBP->WidgetTree, MessageLog);
+
+		if (MessageLog.NumErrors == 0 && WidgetClass->bAllowTemplate)
 		{
 			UUserWidget* WidgetTemplate = NewObject<UUserWidget>(GetTransientPackage(), WidgetClass);
 			WidgetTemplate->TemplateInit();
 
-			// Determine if we can generate a template for this widget to speed up CreateWidget time.
-			TArray<FText> OutErrors;
-			const bool bCanTemplate = CanTemplateWidget(MessageLog, WidgetTemplate, OutErrors);
+			int32 TotalWidgets = 0;
+			WidgetTemplate->WidgetTree->ForEachWidgetAndDescendants([&TotalWidgets](UWidget* Widget) {
+				TotalWidgets++;
+			});
+			WidgetBP->InclusiveWidgets = TotalWidgets;
 
-			if ( bCanTemplate )
+			// Determine if we can generate a template for this widget to speed up CreateWidget time.
+			TArray<FText> PostCompileErrors;
+			if (CanTemplateWidget(MessageLog, WidgetTemplate, PostCompileErrors))
 			{
 				MessageLog.Note(*LOCTEXT("TemplateSuccess", "Fast Template Successfully Created.").ToString());
 			}
 			else
 			{
 				MessageLog.Error(*LOCTEXT("NoTemplate", "Unable To Create Template For Widget.").ToString());
-
-				for ( FText& Error : OutErrors )
+				for (FText& Error : PostCompileErrors)
 				{
 					MessageLog.Error(*Error.ToString());
 				}
 			}
 		}
-	}
-
-	TArray<IWidgetEditorExtension*> Extensions = IModularFeatures::Get().GetModularFeatureImplementations<IWidgetEditorExtension>(IWidgetEditorExtension::ServiceFeatureName);
-	for (IWidgetEditorExtension* Extension : Extensions)
-	{
 	}
 }
 

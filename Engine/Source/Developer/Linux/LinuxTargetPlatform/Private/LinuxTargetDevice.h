@@ -6,7 +6,7 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
-#include "ITargetPlatform.h"
+#include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetDevice.h"
 #include "Interfaces/TargetDeviceId.h"
 
@@ -15,7 +15,6 @@
 	#include <pwd.h>
 #endif // PLATFORM_LINUX
 
-class FLinuxTargetDevice;
 class IFileManager;
 struct FProcHandle;
 
@@ -265,7 +264,7 @@ public:
 		const int32 ReadLinkSize = 1024;
 		char ReadLinkCmd[ReadLinkSize] = { 0 };
 		FCStringAnsi::Sprintf(ReadLinkCmd, "/proc/%lld/exe", ProcessId);
-		char ProcessPath[MAX_PATH + 1] = { 0 };
+		char ProcessPath[UNIX_MAX_PATH + 1] = { 0 };
 		int32 Ret = readlink(ReadLinkCmd, ProcessPath, ARRAY_COUNT(ProcessPath) - 1);
 		if (Ret != -1)
 		{

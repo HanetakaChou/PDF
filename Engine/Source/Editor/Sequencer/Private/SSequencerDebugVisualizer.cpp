@@ -7,6 +7,11 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Layout/ArrangedChildren.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Application/SlateApplication.h"
+#include "MovieSceneSequence.h"
+#include "MovieScene.h"
+#include "MovieSceneTimeHelpers.h"
 
 #define LOCTEXT_NAMESPACE "SSequencerDebugVisualizer"
 
@@ -37,13 +42,15 @@ void SSequencerDebugVisualizer::Refresh()
 		return;
 	}
 
+	const UMovieSceneSequence*           ActiveSequence = Sequencer->GetFocusedMovieSceneSequence();
 	const FMovieSceneEvaluationTemplate* ActiveTemplate = GetTemplate();
-	if (!ActiveTemplate)
+	if (!ActiveTemplate || !ActiveSequence)
 	{
 		return;
 	}
 
-	const FMovieSceneEvaluationField& EvaluationField = ActiveTemplate->EvaluationField;
+	const FFrameRate                  SequenceResolution = ActiveSequence->GetMovieScene()->GetTickResolution();
+	const FMovieSceneEvaluationField& EvaluationField    = ActiveTemplate->EvaluationField;
 
 	CachedSignature = EvaluationField.GetSignature();
 
@@ -79,7 +86,7 @@ void SSequencerDebugVisualizer::Refresh()
 
 	for (int32 Index = 0; Index < EvaluationField.Size(); ++Index)
 	{
-		TRange<float> Range = EvaluationField.GetRange(Index);
+		TRange<FFrameNumber> Range = EvaluationField.GetRange(Index);
 
 		const float Complexity = SegmentComplexity[Index];
 		
@@ -91,7 +98,7 @@ void SSequencerDebugVisualizer::Refresh()
 
 		Children.Add(
 			SNew(SSequencerDebugSlot, Index)
-			.Visibility(this, &SSequencerDebugVisualizer::GetSegmentVisibility, Range)
+			.Visibility(this, &SSequencerDebugVisualizer::GetSegmentVisibility, Range / SequenceResolution)
 			.ToolTip(
 				SNew(SToolTip)
 				[
@@ -102,6 +109,7 @@ void SSequencerDebugVisualizer::Refresh()
 				SNew(SBorder)
 				.BorderImage(SectionBackgroundBrush)
 				.Padding(FMargin(1.f))
+				.OnMouseButtonUp(this, &SSequencerDebugVisualizer::OnSlotMouseButtonUp, Index)
 				[
 					SNew(SBorder)
 					.BorderImage(SectionBackgroundTintBrush)
@@ -131,10 +139,10 @@ FGeometry SSequencerDebugVisualizer::GetSegmentGeometry(const FGeometry& Allotte
 		return AllottedGeometry.MakeChild(FVector2D(0,0), FVector2D(0,0));
 	}
 
-	TRange<float> SegmentRange = ActiveTemplate->EvaluationField.GetRange(Slot.GetSegmentIndex());
+	TRange<FFrameNumber> SegmentRange = ActiveTemplate->EvaluationField.GetRange(Slot.GetSegmentIndex());
 
-	float PixelStartX = SegmentRange.GetLowerBound().IsOpen() ? 0.f : TimeToPixelConverter.TimeToPixel(SegmentRange.GetLowerBoundValue());
-	float PixelEndX = SegmentRange.GetUpperBound().IsOpen() ? AllottedGeometry.GetDrawSize().X : TimeToPixelConverter.TimeToPixel(SegmentRange.GetUpperBoundValue());
+	float PixelStartX = SegmentRange.GetLowerBound().IsOpen() ? 0.f : TimeToPixelConverter.FrameToPixel(MovieScene::DiscreteInclusiveLower(SegmentRange));
+	float PixelEndX   = SegmentRange.GetUpperBound().IsOpen() ? AllottedGeometry.GetLocalSize().X : TimeToPixelConverter.FrameToPixel(MovieScene::DiscreteExclusiveUpper(SegmentRange));
 
 	const float MinSectionWidth = 0.f;
 	float SectionLength = FMath::Max(MinSectionWidth, PixelEndX - PixelStartX);
@@ -145,7 +153,7 @@ FGeometry SSequencerDebugVisualizer::GetSegmentGeometry(const FGeometry& Allotte
 		);
 }
 
-EVisibility SSequencerDebugVisualizer::GetSegmentVisibility(TRange<float> Range) const
+EVisibility SSequencerDebugVisualizer::GetSegmentVisibility(TRange<double> Range) const
 {
 	return ViewRange.Get().Overlaps(Range) ? EVisibility::Visible : EVisibility::Collapsed;
 }
@@ -209,7 +217,15 @@ void SSequencerDebugVisualizer::Tick( const FGeometry& AllottedGeometry, const d
 
 void SSequencerDebugVisualizer::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const
 {
-	FTimeToPixel TimeToPixelConverter = FTimeToPixel(AllottedGeometry, ViewRange.Get());
+	TSharedPtr<FSequencer>     Sequencer      = WeakSequencer.Pin();
+	const UMovieSceneSequence* ActiveSequence = Sequencer.IsValid() ? Sequencer->GetFocusedMovieSceneSequence() : nullptr;
+
+	if (!ActiveSequence)
+	{
+		return;
+	}
+
+	FTimeToPixel TimeToPixelConverter = FTimeToPixel(AllottedGeometry, ViewRange.Get(), ActiveSequence->GetMovieScene()->GetTickResolution());
 
 	for (int32 WidgetIndex = 0; WidgetIndex < Children.Num(); ++WidgetIndex)
 	{
@@ -223,9 +239,53 @@ void SSequencerDebugVisualizer::OnArrangeChildren( const FGeometry& AllottedGeom
 			{
 				ArrangedChildren.AddWidget( 
 					WidgetVisibility, 
-					AllottedGeometry.MakeChild(Child, SegmentGeometry.Position, SegmentGeometry.GetDrawSize())
+					AllottedGeometry.MakeChild(Child, SegmentGeometry.Position, SegmentGeometry.GetLocalSize())
 					);
 			}
+		}
+	}
+}
+
+FReply SSequencerDebugVisualizer::OnSlotMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, int32 SlotIndex)
+{
+	FMenuBuilder MenuBuilder(true, nullptr);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("InvalidateSegment", "Invalidate Segment"),
+		FText(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &SSequencerDebugVisualizer::InvalidateSegment, SlotIndex))
+	);
+
+	int32 IndexNone = INDEX_NONE;
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("InvalidateAll", "Invalidate All"),
+		FText(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &SSequencerDebugVisualizer::InvalidateSegment, IndexNone))
+	);
+
+	FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
+	FSlateApplication::Get().PushMenu(AsShared(), WidgetPath, MenuBuilder.MakeWidget(), MouseEvent.GetScreenSpacePosition(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+
+	return FReply::Handled();
+}
+
+void SSequencerDebugVisualizer::InvalidateSegment(int32 SlotIndex)
+{
+	TSharedPtr<FSequencer> Sequencer = this->WeakSequencer.Pin();
+	FMovieSceneEvaluationTemplate* Template = Sequencer.IsValid() ? Sequencer->GetEvaluationTemplate().FindTemplate(Sequencer->GetFocusedTemplateID()) : nullptr;
+
+	if (Template)
+	{
+		if (SlotIndex == INDEX_NONE)
+		{
+			Template->EvaluationField.Invalidate(TRange<FFrameNumber>::All());
+		}
+		else if (SlotIndex < Template->EvaluationField.Size())
+		{
+			Template->EvaluationField.Invalidate(Template->EvaluationField.GetRange(SlotIndex));
 		}
 	}
 }

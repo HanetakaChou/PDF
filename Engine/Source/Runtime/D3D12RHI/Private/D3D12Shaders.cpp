@@ -7,10 +7,13 @@
 #include "D3D12RHIPrivate.h"
 
 template <typename TShaderType>
-static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShaderType& OutShader)
+static inline bool ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShaderType& OutShader)
 {
 	auto PackedResourceCounts = InShaderCode.FindOptionalData<FShaderCodePackedResourceCounts>();
-	check(PackedResourceCounts);
+	if (!PackedResourceCounts)
+	{
+		return false;
+	}
 	OutShader.ResourceCounts = *PackedResourceCounts;
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	OutShader.ShaderName = InShaderCode.FindOptionalData('n');
@@ -32,6 +35,7 @@ static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShad
 	}
 #endif
 #endif
+	return true;
 }
 
 FVertexShaderRHIRef FD3D12DynamicRHI::RHICreateVertexShader(const TArray<uint8>& Code)
@@ -45,7 +49,10 @@ FVertexShaderRHIRef FD3D12DynamicRHI::RHICreateVertexShader(const TArray<uint8>&
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 	Shader->Offset = Offset;
@@ -75,7 +82,10 @@ FPixelShaderRHIRef FD3D12DynamicRHI::RHICreatePixelShader(const TArray<uint8>& C
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 
@@ -104,7 +114,10 @@ FHullShaderRHIRef FD3D12DynamicRHI::RHICreateHullShader(const TArray<uint8>& Cod
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 
@@ -133,7 +146,10 @@ FDomainShaderRHIRef FD3D12DynamicRHI::RHICreateDomainShader(const TArray<uint8>&
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 
@@ -162,7 +178,10 @@ FGeometryShaderRHIRef FD3D12DynamicRHI::RHICreateGeometryShader(const TArray<uin
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 
@@ -215,7 +234,10 @@ FGeometryShaderRHIRef FD3D12DynamicRHI::RHICreateGeometryShaderWithStreamOutput(
 		Shader->pStreamOutEntries[EntryIndex].OutputSlot = ElementList[EntryIndex].OutputSlot;
 	}
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	// Indicate this shader uses stream output
 	Shader->bShaderNeedsStreamOutput = true;
@@ -257,7 +279,10 @@ FComputeShaderRHIRef FD3D12DynamicRHI::RHICreateComputeShader(const TArray<uint8
 	const uint8* CodePtr = Code.GetData() + Offset;
 	const SIZE_T CodeSize = ShaderCode.GetActualShaderCodeSize() - Offset;
 
-	ReadShaderOptionalData(ShaderCode, *Shader);
+	if (!ReadShaderOptionalData(ShaderCode, *Shader))
+	{
+		return nullptr;
+	}
 
 	Shader->Code = Code;
 
@@ -301,9 +326,9 @@ FD3D12BoundShaderState::FD3D12BoundShaderState(
 	FGeometryShaderRHIParamRef InGeometryShaderRHI,
 	FD3D12Device* InDevice
 	) :
+	FD3D12DeviceChild(InDevice),
 	CacheLink(InVertexDeclarationRHI, InVertexShaderRHI, InPixelShaderRHI, InHullShaderRHI, InDomainShaderRHI, InGeometryShaderRHI, this),
-	UniqueID(FPlatformAtomics::InterlockedIncrement(reinterpret_cast<volatile int64*>(&BoundShaderStateID))),
-	FD3D12DeviceChild(InDevice)
+	UniqueID(FPlatformAtomics::InterlockedIncrement(reinterpret_cast<volatile int64*>(&BoundShaderStateID)))
 {
 	INC_DWORD_STAT(STAT_D3D12NumBoundShaderState);
 
@@ -422,46 +447,5 @@ FBoundShaderStateRHIRef FD3D12DynamicRHI::RHICreateBoundShaderState(
 		SCOPE_CYCLE_COUNTER(STAT_D3D12NewBoundShaderStateTime);
 
 		return new FD3D12BoundShaderState(VertexDeclarationRHI, VertexShaderRHI, PixelShaderRHI, HullShaderRHI, DomainShaderRHI, GeometryShaderRHI, GetRHIDevice());
-	}
-}
-
-struct FD3D12PipelineStateWrapper : public FRHIComputePipelineState
-{
-	FD3D12PipelineStateWrapper(FD3D12PipelineState* InPipelineState, FD3D12ComputeShader* InComputeShader)
-		: PipelineState(InPipelineState)
-		, ComputeShader(InComputeShader)
-	{
-	}
-
-	FD3D12PipelineState* PipelineState;
-	FD3D12ComputeShader* ComputeShader;
-};
-
-TRefCountPtr<FRHIComputePipelineState> FD3D12DynamicRHI::RHICreateComputePipelineState(FRHIComputeShader* ComputeShaderRHI)
-{
-	check(ComputeShaderRHI);
-	FD3D12ComputeShader* ComputeShader = FD3D12DynamicRHI::ResourceCast(ComputeShaderRHI);
-	FD3D12ComputePipelineStateDesc PSODesc;
-	FMemory::Memzero(&PSODesc, sizeof(PSODesc));
-	PSODesc.pRootSignature = ComputeShader->pRootSignature;
-	PSODesc.Desc.pRootSignature = PSODesc.pRootSignature->GetRootSignature();
-	PSODesc.Desc.CS = ComputeShader->ShaderBytecode.GetShaderBytecode();
-	PSODesc.CSHash = ComputeShader->ShaderBytecode.GetHash();
-
-	FD3D12PipelineStateCache& PSOCache = GetRHIDevice()->GetParentAdapter()->GetPSOCache();
-
-	// Actual creation happens here
-	FD3D12PipelineState* const PSO = PSOCache.FindCompute(&PSODesc);
-	check(PSO != nullptr);
-
-	return new FD3D12PipelineStateWrapper(PSO, ComputeShader);
-}
-
-void FD3D12CommandContext::RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState)
-{
-	if (ComputePipelineState)
-	{
-		FD3D12PipelineStateWrapper* Wrapper = static_cast<FD3D12PipelineStateWrapper*>(ComputePipelineState);
-		StateCache.SetComputeShader(Wrapper->ComputeShader);
 	}
 }

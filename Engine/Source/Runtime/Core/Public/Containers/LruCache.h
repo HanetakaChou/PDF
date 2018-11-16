@@ -213,7 +213,7 @@ public:
 	template<typename Predicate>
 	FORCEINLINE bool ContainsByPredicate(Predicate Pred) const
 	{
-		for (const auto& Entry : LookupSet)
+		for (const FCacheEntry* Entry : LookupSet)
 		{
 			if (Pred(Entry->Key, Entry->Value))
 			{
@@ -234,7 +234,7 @@ public:
 	{
 		check(InMaxNumElements >= 0);
 
-		for (auto& Entry : LookupSet)
+		for (FCacheEntry* Entry : LookupSet)
 		{
 			delete Entry;
 		}
@@ -258,7 +258,7 @@ public:
 	{
 		TArray<ValueType> Result;
 
-		for (const auto& Entry : LookupSet)
+		for (const FCacheEntry* Entry : LookupSet)
 		{
 			if (Pred(Entry->Key, Entry->Value))
 			{
@@ -278,7 +278,7 @@ public:
 	 */
 	FORCEINLINE const ValueType* Find(const KeyType& Key) const
 	{
-		FCacheEntry** EntryPtr = LookupSet.Find(Key);
+		FCacheEntry*const * EntryPtr = LookupSet.Find(Key);
 
 		if (EntryPtr != nullptr)
 		{
@@ -286,6 +286,39 @@ public:
 		}
 
 		return nullptr;
+	}
+
+	/**
+	 * Find the value of the entry with the specified key.
+	 *
+	 * @param Key The key of the entry to get.
+	 * @return Reference to the value, or triggers an assertion if the key does not exist.
+	 */
+	FORCEINLINE const ValueType& FindChecked(const KeyType& Key) const
+	{
+		FCacheEntry*const * EntryPtr = LookupSet.Find(Key);
+		
+		check(EntryPtr);
+
+		return (*EntryPtr)->Value;
+	}
+
+	/**
+	 * Find the value of the entry with the specified key.
+	 *
+	 * @param Key The key of the entry to get.
+	 * @return Copy of the value, or the default value for the ValueType if the key does not exist.
+	 */
+	FORCEINLINE ValueType FindRef(const KeyType& Key) const
+	{
+		FCacheEntry*const * EntryPtr = LookupSet.Find(Key);
+
+		if (EntryPtr != nullptr)
+		{
+			return (*EntryPtr)->Value;
+		}
+
+		return ValueType();
 	}
 
 	/**
@@ -310,6 +343,43 @@ public:
 	}
 
 	/**
+	 * Find the value of the entry with the specified key and mark it as the most recently used.
+	 *
+	 * @param Key The key of the entry to get.
+	 * @return Pointer to the value, or triggers an assertion if the key does not exist.
+	 */
+	const ValueType& FindAndTouchChecked(const KeyType& Key)
+	{
+		FCacheEntry** EntryPtr = LookupSet.Find(Key);
+		
+		check(EntryPtr);
+
+		MarkAsRecent(**EntryPtr);
+
+		return (*EntryPtr)->Value;
+	}
+
+	/**
+	 * Find the value of the entry with the specified key and mark it as the most recently used.
+	 *
+	 * @param Key The key of the entry to get.
+	 * @return Copy of the value, or the default value for the ValueType if the key does not exist.
+	 */
+	ValueType FindAndTouchRef(const KeyType& Key)
+	{
+		FCacheEntry** EntryPtr = LookupSet.Find(Key);
+
+		if (EntryPtr == nullptr)
+		{
+			return ValueType();
+		}
+
+		MarkAsRecent(**EntryPtr);
+
+		return (*EntryPtr)->Value;
+	}
+
+	/**
 	 * Find the value of an entry using a predicate.
 	 *
 	 * @param Pred The predicate functor to apply to each entry.
@@ -319,7 +389,7 @@ public:
 	template<typename Predicate>
 	const ValueType* FindByPredicate(Predicate Pred) const
 	{
-		for (const auto& Entry : LookupSet)
+		for (const FCacheEntry* Entry : LookupSet)
 		{
 			if (Pred(Entry->Key, Entry->Value))
 			{
@@ -338,7 +408,7 @@ public:
 	 */
 	void GetKeys(TArray<KeyType>& OutKeys) const
 	{
-		for (const auto& Entry : LookupSet)
+		for (const FCacheEntry* Entry : LookupSet)
 		{
 			OutKeys.Add(Entry->Key);
 		}
@@ -394,7 +464,7 @@ public:
 	{
 		int32 NumRemoved = 0;
 
-		for (const auto& Entry : LookupSet)
+		for (const FCacheEntry* Entry : LookupSet)
 		{
 			if (Pred(Entry->Key, Entry->Value))
 			{
@@ -404,6 +474,19 @@ public:
 		}
 
 		return NumRemoved;
+	}
+
+	/**
+	 * Remove and return the least recent element from the cache.
+	 *
+	 * @return Copy of removed value.
+	 */
+	FORCEINLINE ValueType RemoveLeastRecent()
+	{
+		check(LeastRecent);
+		ValueType LeastRecentElement = MoveTemp(LeastRecent->Value);
+		Remove(LeastRecent);
+		return LeastRecentElement;
 	}
 
 public:
@@ -539,7 +622,8 @@ public:
 		FORCEINLINE void RemoveCurrentAndIncrement()
 		{
 			check(Cache != nullptr);
-			auto MoreRecentEntry = this->GetCurrentEntry();
+
+			FCacheEntry* MoreRecentEntry = this->GetCurrentEntry();
 			this->Increment();
 			Cache->Remove(MoreRecentEntry);
 		}

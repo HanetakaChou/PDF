@@ -3,11 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AppleARKitAvailability.h"
 
 // ARKit
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-#import <ARKit/ARKit.h>
-#endif // ARKIT_SUPPORT
+#if SUPPORTS_ARKIT_1_0
+	#import <ARKit/ARKit.h>
+#endif
 
 // AppleARKit
 #include "AppleARKitAnchor.h"
@@ -23,23 +24,23 @@ public:
 	/**
 	 * The center of the plane in the anchor’s coordinate space.
 	 */
-	UFUNCTION( BlueprintPure, Category = "AppleARKitPlaneAnchor" )
+	UFUNCTION( BlueprintPure, Category = "AppleARKit|PlaneAnchor" )
 	FVector GetCenter() const;
 
 	/**
 	 * The extent of the plane in the anchor’s coordinate space.
 	 */
-	UFUNCTION( BlueprintPure, Category = "AppleARKitPlaneAnchor")
+	UFUNCTION( BlueprintPure, Category = "AppleARKit|PlaneAnchor")
 	FVector GetExtent() const;
 
-	UFUNCTION( BlueprintPure, Category = "AppleARKitPlaneAnchor")
+	UFUNCTION( BlueprintPure, Category = "AppleARKit|PlaneAnchor")
 	FTransform GetTransformToCenter() const;
 
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
+#if SUPPORTS_ARKIT_1_0
 
 	virtual void Update_DelegateThread( ARAnchor* Anchor ) override;
 
-#endif // ARKIT_SUPPORT
+#endif
 
 private:
 

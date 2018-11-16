@@ -135,7 +135,11 @@ private:
 
 	/** FTickableEditorObject interface*/
 	virtual void Tick(float DeltaTime) override;
-	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
+	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Conditional; }
+
+	/** Automation testing will tick its own file cache which can result in race conditions with the reimport manager.  */
+	virtual bool IsTickable() const override { return !GIsAutomationTesting; }
+
 	virtual TStatId GetStatId() const override;
 
 	/** FGCObject interface*/
@@ -420,7 +424,7 @@ void FAutoReimportManager::OnAssetRenamed(const FAssetData& AssetData, const FSt
 		FString NewFileName = FPaths::GetBaseFilename(RelativeFilename);
 
 		bool bRequireReimportPathUpdate = false;
-		if (PackageTools::SanitizePackageName(NewFileName) == OldAssetName)
+		if (UPackageTools::SanitizePackageName(NewFileName) == OldAssetName)
 		{
 			NewFileName = AssetData.AssetName.ToString();
 			bRequireReimportPathUpdate = true;

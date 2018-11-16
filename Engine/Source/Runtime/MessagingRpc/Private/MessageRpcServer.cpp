@@ -132,6 +132,7 @@ void FMessageRpcServer::SendResult(const FGuid& CallId, const FReturnInfo& Retur
 	MessageEndpoint->Send(
 		Message,
 		ReturnInfo.Return->GetResponseTypeInfo(),
+		EMessageFlags::None,
 		nullptr,
 		TArrayBuilder<FMessageAddress>().Add(ReturnInfo.ClientAddress),
 		FTimespan::Zero(),
@@ -165,6 +166,8 @@ void FMessageRpcServer::HandleMessage(const TSharedRef<IMessageContext, ESPMode:
 
 bool FMessageRpcServer::HandleTicker(float DeltaTime)
 {
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FMessageRpcServer_HandleTicker);
+
 	const FDateTime UtcNow = FDateTime::UtcNow();
 
 	for (TMap<FGuid, FReturnInfo>::TIterator It(Returns); It; ++It)

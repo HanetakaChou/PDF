@@ -134,6 +134,47 @@ UEdGraphNode::UEdGraphNode(const FObjectInitializer& ObjectInitializer)
 {
 }
 
+void UEdGraphNode::Serialize(FArchive& Ar)
+{
+#if WITH_EDITOR
+	Ar.UsingCustomVersion(FBlueprintsObjectVersion::GUID);
+#endif
+
+	Super::Serialize(Ar);
+
+#if WITH_EDITOR
+	if (Ar.IsLoading())
+	{
+		// If this was an older version, ensure that we update the enabled state for already-disabled nodes.
+		// Note: We need to do this here and not in PostLoad() as it must be assigned prior to compile-on-load.
+		if (!bIsNodeEnabled_DEPRECATED && !bUserSetEnabledState && EnabledState == ENodeEnabledState::Enabled)
+		{
+			EnabledState = ENodeEnabledState::Disabled;
+		}
+
+		if (Ar.IsPersistent() && !Ar.HasAnyPortFlags(PPF_Duplicate | PPF_DuplicateForPIE))
+		{
+			if (Ar.CustomVer(FBlueprintsObjectVersion::GUID) < FBlueprintsObjectVersion::EdGraphPinOptimized)
+			{
+				for (UEdGraphPin_Deprecated* LegacyPin : DeprecatedPins)
+				{
+					Ar.Preload(LegacyPin);
+					if (UEdGraphPin::FindPinCreatedFromDeprecatedPin(LegacyPin) == nullptr)
+					{
+						UEdGraphPin::CreatePinFromDeprecatedPin(LegacyPin);
+					}
+				}
+			}
+		}
+	}
+
+	if (Ar.CustomVer(FBlueprintsObjectVersion::GUID) >= FBlueprintsObjectVersion::EdGraphPinOptimized)
+	{
+		UEdGraphPin::SerializeAsOwningNode(Ar, Pins);
+	}
+#endif
+}
+
 #if WITH_EDITOR
 
 FString UEdGraphNode::GetPropertyNameAndValueForDiff(const UProperty* Prop, const uint8* PropertyAddr) const
@@ -460,43 +501,6 @@ void UEdGraphNode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Co
 	}
 }
 
-void UEdGraphNode::Serialize(FArchive& Ar)
-{
-	Ar.UsingCustomVersion(FBlueprintsObjectVersion::GUID);
-
-	Super::Serialize(Ar);
-
-	if (Ar.IsLoading())
-	{
-		// If this was an older version, ensure that we update the enabled state for already-disabled nodes.
-		// Note: We need to do this here and not in PostLoad() as it must be assigned prior to compile-on-load.
-		if(!bIsNodeEnabled_DEPRECATED && !bUserSetEnabledState && EnabledState == ENodeEnabledState::Enabled)
-		{
-			EnabledState = ENodeEnabledState::Disabled;
-		}
-
-		if (Ar.IsPersistent() && !Ar.HasAnyPortFlags(PPF_Duplicate | PPF_DuplicateForPIE))
-		{
-			if (Ar.CustomVer(FBlueprintsObjectVersion::GUID) < FBlueprintsObjectVersion::EdGraphPinOptimized)
-			{
-				for (UEdGraphPin_Deprecated* LegacyPin : DeprecatedPins)
-				{
-					Ar.Preload(LegacyPin);
-					if (UEdGraphPin::FindPinCreatedFromDeprecatedPin(LegacyPin) == nullptr)
-					{
-						UEdGraphPin::CreatePinFromDeprecatedPin(LegacyPin);
-					}
-				}
-			}
-		}
-	}
-
-	if (Ar.CustomVer(FBlueprintsObjectVersion::GUID) >= FBlueprintsObjectVersion::EdGraphPinOptimized)
-	{
-		UEdGraphPin::SerializeAsOwningNode(Ar, Pins);
-	}
-}
-
 void UEdGraphNode::PreSave(const class ITargetPlatform* TargetPlatform)
 {
 	Super::PreSave(TargetPlatform);
@@ -548,6 +552,7 @@ void UEdGraphNode::PostLoad()
 
 		DeprecatedPins.Empty();
 	}
+
 }
 
 void UEdGraphNode::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -759,6 +764,84 @@ bool UEdGraphNode::ShouldMakeCommentBubbleVisible() const
 void UEdGraphNode::SetMakeCommentBubbleVisible(bool MakeVisible)
 {
 	bCommentBubbleMakeVisible = MakeVisible;
+}
+
+void UEdGraphNode::ForEachNodeDirectlyConnected(TFunctionRef<void(UEdGraphNode*)> Func)
+{
+	TSet<UEdGraphNode*> DirectNeighbors;
+	for( UEdGraphPin* Pin : Pins )
+	{
+		if(Pin->LinkedTo.Num() > 0)
+		{
+			for(UEdGraphPin* Connection : Pin->LinkedTo)
+			{
+				// avoid including the current node in the case of a self connection:
+				if(Connection->GetOwningNode() != this)
+				{
+					DirectNeighbors.Add(Connection->GetOwningNode());
+				}
+			}
+		}
+	}
+
+	for(UEdGraphNode* Neighbor : DirectNeighbors)
+	{
+		Func(Neighbor);
+	}
+}
+
+void UEdGraphNode::ForEachNodeDirectlyConnectedIf(TFunctionRef<bool(const UEdGraphPin* Pin)> Filter, TFunctionRef<void(UEdGraphNode*)> Func)
+{
+	TSet<UEdGraphNode*> NeighborsAcceptedForConsideration;
+	for( UEdGraphPin* Pin : Pins )
+	{
+		if(Pin->LinkedTo.Num() > 0 && Filter(Pin))
+		{
+			for(UEdGraphPin* Connection : Pin->LinkedTo)
+			{
+				// avoid including the current node in the case of a self connection:
+				if(Connection->GetOwningNode() != this)
+				{
+					NeighborsAcceptedForConsideration.Add(Connection->GetOwningNode());
+				}
+			}
+		}
+	}
+
+	for(UEdGraphNode* Neighbor : NeighborsAcceptedForConsideration)
+	{
+		Func(Neighbor);
+	}
+}
+
+void UEdGraphNode::ForEachNodeDirectlyConnectedToInputs(TFunctionRef<void(UEdGraphNode*)> Func)
+{
+	ForEachNodeDirectlyConnectedIf(
+		[](const UEdGraphPin* Pin)
+		{ 
+			if(Pin->Direction == EGPD_Input)
+			{
+				return true;
+			}
+			return false;
+		},
+		Func
+	);
+}
+
+void UEdGraphNode::ForEachNodeDirectlyConnectedToOutputs(TFunctionRef<void(UEdGraphNode*)> Func)
+{
+	ForEachNodeDirectlyConnectedIf(
+		[](const UEdGraphPin* Pin)
+		{ 
+			if(Pin->Direction == EGPD_Output)
+			{
+				return true;
+			}
+			return false;
+		},
+		Func
+	);
 }
 
 #endif	//#if WITH_EDITOR

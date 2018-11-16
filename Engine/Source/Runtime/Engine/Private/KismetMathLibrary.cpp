@@ -570,6 +570,11 @@ bool UKismetMathLibrary::NearlyEqual_TransformTransform(const FTransform& A, con
 		FTransform::AreScale3DsEqual(A, B, Scale3DTolerance);
 }
 
+float UKismetMathLibrary::Transform_Determinant(const FTransform& Transform)
+{
+	return Transform.ToMatrixWithScale().Determinant();
+}
+
 bool UKismetMathLibrary::ClassIsChildOf(TSubclassOf<class UObject> TestClass, TSubclassOf<class UObject> ParentClass)
 {
 	return ((*ParentClass != NULL) && (*TestClass != NULL)) ? (*TestClass)->IsChildOf(*ParentClass) : false;
@@ -746,6 +751,42 @@ FTimespan UKismetMathLibrary::FromMilliseconds(float Milliseconds)
 
 	return FTimespan::FromMilliseconds(Milliseconds);
 }
+
+/* FrameTime functions
+*****************************************************************************/
+
+FQualifiedFrameTime UKismetMathLibrary::MakeQualifiedFrameTime(FFrameNumber Frame, FFrameRate FrameRate, float SubFrame)
+{
+	SubFrame = FMath::Clamp(SubFrame, 0.f, FFrameTime::MaxSubframe);
+	return FQualifiedFrameTime(FFrameTime(Frame, SubFrame), FrameRate);
+}
+
+void UKismetMathLibrary::BreakQualifiedFrameTime(const FQualifiedFrameTime& InFrameTime, FFrameNumber& Frame, FFrameRate& FrameRate, float& SubFrame)
+{
+	Frame = InFrameTime.Time.GetFrame();
+	SubFrame = InFrameTime.Time.GetSubFrame();
+	FrameRate = InFrameTime.Rate;
+}
+
+/* FrameRate functions
+*****************************************************************************/
+FFrameRate UKismetMathLibrary::MakeFrameRate(int32 Numerator, int32 Denominator)
+{
+	// Prevent a denominator of zero as that will cause divide by zero errors when the framerate is used.
+	if (Denominator <= 0)
+	{
+		Denominator = 1;
+	}
+
+	return FFrameRate(Numerator, Denominator);
+}
+
+void UKismetMathLibrary::BreakFrameRate(const FFrameRate& InFrameRate, int32& Numerator, int32& Denominator)
+{
+	Numerator = InFrameRate.Numerator;
+	Denominator = InFrameRate.Denominator;
+}
+
 
 
 /* Rotator functions
@@ -1001,6 +1042,16 @@ bool UKismetMathLibrary::IsPointInBoxWithTransform(FVector Point, const FTransfo
 	return Box.IsInsideOrOn(PointInComponentSpace);
 }
 
+void UKismetMathLibrary::GetSlopeDegreeAngles(const FVector& MyRightYAxis, const FVector& FloorNormal, const FVector& UpVector, float& OutSlopePitchDegreeAngle, float& OutSlopeRollDegreeAngle)
+{
+	const FVector FloorZAxis = FloorNormal;
+	const FVector FloorXAxis = MyRightYAxis ^ FloorZAxis;
+	const FVector FloorYAxis = FloorZAxis ^ FloorXAxis;
+
+	OutSlopePitchDegreeAngle = 90.f - FMath::RadiansToDegrees(FMath::Acos(FloorXAxis | UpVector));
+	OutSlopeRollDegreeAngle = 90.f - FMath::RadiansToDegrees(FMath::Acos(FloorYAxis | UpVector));
+}
+
 bool UKismetMathLibrary::LinePlaneIntersection(const FVector& LineStart, const FVector& LineEnd, const FPlane& APlane, float& T, FVector& Intersection)
 {
 	FVector RayDir = LineEnd - LineStart;
@@ -1073,6 +1124,11 @@ FVector UKismetMathLibrary::RandomUnitVectorInConeInRadiansFromStream(const FVec
 FVector UKismetMathLibrary::RandomUnitVectorInEllipticalConeInRadiansFromStream(const FVector& ConeDir, float MaxYawInRadians, float MaxPitchInRadians, const FRandomStream& Stream)
 {
 	return Stream.VRandCone(ConeDir, MaxYawInRadians, MaxPitchInRadians);
+}
+
+float UKismetMathLibrary::PerlinNoise1D(const float Value)
+{
+	return FMath::PerlinNoise1D(Value);
 }
 
 #undef LOCTEXT_NAMESPACE

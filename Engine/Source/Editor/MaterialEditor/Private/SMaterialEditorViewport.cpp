@@ -427,6 +427,7 @@ void SMaterialEditor3DPreviewViewport::SetPreviewMaterial(UMaterialInterface* In
 		if (PreviewMeshComponent != nullptr)
 		{
 			PreviewMeshComponent->OverrideMaterials.Empty();
+			PreviewMeshComponent->MarkRenderStateDirty();
 		}
 	}
 	else
@@ -436,6 +437,7 @@ void SMaterialEditor3DPreviewViewport::SetPreviewMaterial(UMaterialInterface* In
 		{
 			PreviewMeshComponent->OverrideMaterials.Empty();
 			PreviewMeshComponent->OverrideMaterials.Add(PreviewMaterial);
+			PreviewMeshComponent->MarkRenderStateDirty();
 		}
 		
 		PostProcessVolumeActor = nullptr;
@@ -737,8 +739,8 @@ public:
 	class FMaterialPreviewPanelSlot : public TSupportsOneChildMixin<FMaterialPreviewPanelSlot>
 	{
 	public:
-		FMaterialPreviewPanelSlot()
-			: TSupportsOneChildMixin<FMaterialPreviewPanelSlot>()
+		FMaterialPreviewPanelSlot(SWidget* InOwner)
+			: TSupportsOneChildMixin<FMaterialPreviewPanelSlot>(InOwner)
 		{
 		}
 	};
@@ -747,6 +749,7 @@ public:
 	SLATE_END_ARGS()
 
 	SMaterialEditorUIPreviewZoomer()
+		: ChildSlot(this)
 	{
 	}
 

@@ -50,6 +50,7 @@ extern TAutoConsoleVariable<int32> CVarSetTextureStreaming;
 #endif
 
 extern TAutoConsoleVariable<float> CVarStreamingBoost;
+extern TAutoConsoleVariable<float> CVarStreamingMinBoost;
 extern TAutoConsoleVariable<int32> CVarStreamingUseFixedPoolSize;
 extern TAutoConsoleVariable<int32> CVarStreamingPoolSize;
 extern TAutoConsoleVariable<int32> CVarStreamingCheckBuildStatus;
@@ -66,12 +67,14 @@ struct FTextureStreamingSettings
 	FORCEINLINE bool operator ==(const FTextureStreamingSettings& Rhs) const { return FMemory::Memcmp(this, &Rhs, sizeof(FTextureStreamingSettings)) == 0; }
 	FORCEINLINE bool operator !=(const FTextureStreamingSettings& Rhs) const { return FMemory::Memcmp(this, &Rhs, sizeof(FTextureStreamingSettings)) != 0; }
 
+
 	float MaxEffectiveScreenSize;
 	int32 MaxTempMemoryAllowed;
 	int32 DropMips;
 	int32 HLODStrategy;
 	float HiddenPrimitiveScale;
 	float PerTextureBiasViewBoostThreshold;
+	float MaxHiddenPrimitiveViewBoost;
 	int32 GlobalMipBias;
 	int32 PoolSize;
 	bool bLimitPoolSizeToVRAM;
@@ -83,6 +86,11 @@ struct FTextureStreamingSettings
 	int32 MinMipForSplitRequest;
 	float MinLevelTextureScreenSize;
 	float MaxTextureUVDensity;
+	int32 MaterialQualityLevel;
+	int32 FramesForFullUpdate;
+
+	bool bStressTest;
+	static int32 ExtraIOLatency;
 
 protected:
 

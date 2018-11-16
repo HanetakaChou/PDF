@@ -235,7 +235,11 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes, dtQueryS
 				m_nodePool = 0;
 			}
 			m_nodePool = new (dtAlloc(sizeof(dtNodePool), DT_ALLOC_PERM)) dtNodePool(maxNodes, dtNextPow2(maxNodes / 4));
-			if (!m_nodePool)
+			if (!m_nodePool
+//@UE4 BEGIN
+				&& maxNodes > 0
+//@UE4 END
+				)
 				return DT_FAILURE | DT_OUT_OF_MEMORY;
 		}
 		else
@@ -1628,6 +1632,7 @@ dtStatus dtNavMeshQuery::findPath(dtPolyRef startRef, dtPolyRef endRef,
 	// Store path
 	float prevCost = 0.0f;
 	node = prev;
+	check(node);
 	do
 	{
 		result.addItem(node->id, node->cost - prevCost, 0, 0);
@@ -2088,6 +2093,7 @@ dtStatus dtNavMeshQuery::finalizeSlicedFindPath(dtPolyRef* path, int* pathCount,
 		
 		// Store path
 		node = prev;
+		check(node);
 		do
 		{
 			path[n++] = node->id;
@@ -2166,6 +2172,7 @@ dtStatus dtNavMeshQuery::finalizeSlicedFindPathPartial(const dtPolyRef* existing
 		
 		// Store path
 		node = prev;
+		check(node);
 		do
 		{
 			path[n++] = node->id;
@@ -2746,6 +2753,7 @@ dtStatus dtNavMeshQuery::moveAlongSurface(dtPolyRef startRef, const float* start
 		
 		// Store result
 		node = prev;
+		check(node);
 		do
 		{
 			visited[n++] = node->id;

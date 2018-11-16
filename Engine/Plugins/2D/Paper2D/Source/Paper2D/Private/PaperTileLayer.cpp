@@ -239,7 +239,37 @@ void UPaperTileLayer::AugmentBodySetup(UBodySetup* ShapeBodySetup, float RenderS
 					const int32 Flags = CellInfo.GetFlagsAsIndex();
 
 					const FTransform& LocalTransform = TilePermutationTransforms[Flags];
-					const FVector2D CellOffset(TileWidth * CellX, TileHeight * -CellY);
+					
+					// When building the collison we must consider setting the correct offsets for the projection mode.
+					// This must be inline with the way you are making any changes too the 2D grid.
+					FVector ProjectionOffset;
+					switch (TileMap->ProjectionMode)
+					{
+					case ETileMapProjectionMode::Orthogonal: // General offset used by default.
+					default:
+						ProjectionOffset.X = TileWidth * CellX;
+						ProjectionOffset.Y = TileHeight * -CellY;
+					break;
+
+					case ETileMapProjectionMode::IsometricDiamond: // Offset to compensate for the Isometric Scatter of the grid.
+						ProjectionOffset.X = (CellX * TileWidth * 0.5f) + -(CellY * TileWidth * 0.5f);
+						ProjectionOffset.Y = -(CellX * TileHeight * 0.5f) - (CellY * TileHeight * 0.5f);
+					break;
+
+					case ETileMapProjectionMode::IsometricStaggered: // Isometric & Hexagonal share the same offsets.
+					case ETileMapProjectionMode::HexagonalStaggered:
+						ProjectionOffset.X = (CellX * TileWidth) + CellY % 2 * (TileWidth * 0.5f);
+						ProjectionOffset.Y = -CellY * (TileHeight * 0.5f);
+					break;
+					}
+
+					// Calculate offset for tile sets that don't match the tile map's size
+					const FIntPoint TileSetSize = CellInfo.TileSet->GetTileSize();
+					ProjectionOffset.X += (TileSetSize.X - TileWidth) * 0.5f;
+					ProjectionOffset.Y += (TileSetSize.Y - TileHeight) * 0.5f;
+
+					const FVector2D CellOffset(ProjectionOffset.X, ProjectionOffset.Y);
+					
 					CollisionBuilder.SetCellOffset(CellOffset, LocalTransform);
 
 					CollisionBuilder.ProcessGeometry(CellMetadata->CollisionData);

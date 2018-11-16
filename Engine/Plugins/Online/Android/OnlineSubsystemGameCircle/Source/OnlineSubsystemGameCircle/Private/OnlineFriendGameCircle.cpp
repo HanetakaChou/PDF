@@ -1,7 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineFriendGameCircle.h"
-#include "OnlinePresenceInterface.h"
+#include "Interfaces/OnlinePresenceInterface.h"
 #include "OnlineSubsystem.h"
 
 FOnlineFriendGameCircle::FOnlineFriendGameCircle(TSharedPtr<const FUniqueNetId> InUniqueId, const FString& InPlayerAlias, const FString& InAvatarURL)
@@ -18,7 +18,7 @@ TSharedRef<const FUniqueNetId> FOnlineFriendGameCircle::GetUserId() const
 
 FString FOnlineFriendGameCircle::GetRealName() const
 {
-	UE_LOG_ONLINE(Warning, TEXT("FOnlineFriendGameCircle::GetRealName - No real name for player. Returning PlayerAlias"));
+	UE_LOG_ONLINE_FRIEND(Warning, TEXT("FOnlineFriendGameCircle::GetRealName - No real name for player. Returning PlayerAlias"));
 	return PlayerAlias;
 }
 
@@ -40,12 +40,12 @@ bool FOnlineFriendGameCircle::GetUserAttribute(const FString& AttrName, FString&
 
 EInviteStatus::Type FOnlineFriendGameCircle::GetInviteStatus() const
 {
-	UE_LOG_ONLINE(Warning, TEXT("FOnlineFriendGameCircle::GetInviteStatus - No Invite Implementation"));
+	UE_LOG_ONLINE_FRIEND(Warning, TEXT("FOnlineFriendGameCircle::GetInviteStatus - No Invite Implementation"));
 	return EInviteStatus::Unknown;
 }
 
 const FOnlineUserPresence& FOnlineFriendGameCircle::GetPresence() const
 {
-	UE_LOG_ONLINE(Warning, TEXT("FOnlineFriendGameCircle::GetPresence - No UserPresence Implementation"));
+	UE_LOG_ONLINE_FRIEND(Warning, TEXT("FOnlineFriendGameCircle::GetPresence - No UserPresence Implementation"));
 	return Presence;
 }

@@ -114,13 +114,13 @@ SLevelViewport::~SLevelViewport()
 	{
 		ActorPreview.bIsPinned = false;
 	}
-	PreviewActors( TArray< AActor* >() );
+	const bool bPreviewInDesktopViewport = !IVREditorModule::Get().IsVREditorModeActive();
+	PreviewActors( TArray< AActor* >(), bPreviewInDesktopViewport);
 
 	FLevelViewportCommands::NewStatCommandDelegate.RemoveAll(this);
 
 	FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>( LevelEditorName );
 	LevelEditor.OnRedrawLevelEditingViewports().RemoveAll( this );
-	LevelEditor.OnTakeHighResScreenShots().RemoveAll( this );
 	LevelEditor.OnActorSelectionChanged().RemoveAll( this );
 	LevelEditor.OnMapChanged().RemoveAll( this );
 
@@ -155,9 +155,9 @@ bool SLevelViewport::IsVisible() const
 
 bool SLevelViewport::IsInForegroundTab() const
 {
-	if (ViewportWidget.IsValid() && ParentLayout.IsValid() && !ConfigKey.IsEmpty())
+	if (ViewportWidget.IsValid() && ParentLayout.IsValid() && !ConfigKey.IsNone())
 	{
-		return ParentLayout.Pin()->IsLevelViewportVisible(*ConfigKey);
+		return ParentLayout.Pin()->IsLevelViewportVisible(ConfigKey);
 	}
 	return false;
 }
@@ -197,7 +197,6 @@ void SLevelViewport::Construct(const FArguments& InArgs)
 
 	FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>( LevelEditorName );
 	LevelEditor.OnRedrawLevelEditingViewports().AddRaw( this, &SLevelViewport::RedrawViewport );
-	LevelEditor.OnTakeHighResScreenShots().AddRaw( this, &SLevelViewport::TakeHighResScreenShot );
 
 	// Tell the level editor we want to be notified when selection changes
 	LevelEditor.OnActorSelectionChanged().AddRaw( this, &SLevelViewport::OnActorSelectionChanged );
@@ -368,10 +367,11 @@ void SLevelViewport::ConstructLevelEditorViewportClient( const FArguments& InArg
 	FEngineShowFlags GameShowFlags(ESFIM_Game);
 		
 	// Use config key if it exists to set up the level viewport client
-	if(!ConfigKey.IsEmpty())
+	if(!ConfigKey.IsNone())
 	{
-		const FLevelEditorViewportInstanceSettings* const ViewportInstanceSettingsPtr = GetDefault<ULevelEditorViewportSettings>()->GetViewportInstanceSettings(ConfigKey);
-		ViewportInstanceSettings = (ViewportInstanceSettingsPtr) ? *ViewportInstanceSettingsPtr : LoadLegacyConfigFromIni(ConfigKey, ViewportInstanceSettings);
+		FString ConfigKeyAsString = ConfigKey.ToString();
+		const FLevelEditorViewportInstanceSettings* const ViewportInstanceSettingsPtr = GetDefault<ULevelEditorViewportSettings>()->GetViewportInstanceSettings(ConfigKeyAsString);
+		ViewportInstanceSettings = (ViewportInstanceSettingsPtr) ? *ViewportInstanceSettingsPtr : LoadLegacyConfigFromIni(ConfigKeyAsString, ViewportInstanceSettings);
 
 		if(!ViewportInstanceSettings.EditorShowFlagsString.IsEmpty())
 		{
@@ -432,7 +432,7 @@ void SLevelViewport::ConstructLevelEditorViewportClient( const FArguments& InArg
 	{
 		LevelViewportClient->SetViewLocation( EditorViewportDefs::DefaultPerspectiveViewLocation );
 		LevelViewportClient->SetViewRotation( EditorViewportDefs::DefaultPerspectiveViewRotation );
-		LevelViewportClient->SetAllowCinematicPreview(true);
+		LevelViewportClient->SetAllowCinematicControl(true);
 	}
 	LevelViewportClient->SetRealtime(ViewportInstanceSettings.bIsRealtime);
 	LevelViewportClient->SetShowStats(ViewportInstanceSettings.bShowOnScreenStats);
@@ -463,7 +463,7 @@ void SLevelViewport::ConstructLevelEditorViewportClient( const FArguments& InArg
 	bShowFullToolbar = ViewportInstanceSettings.bShowFullToolbar;
 }
 
-const FSceneViewport* SLevelViewport::GetGameSceneViewport() const
+FSceneViewport* SLevelViewport::GetGameSceneViewport() const
 {
 	return ActiveViewport.Get();
 }
@@ -566,10 +566,6 @@ bool SLevelViewport::HandleDragObjects(const FGeometry& MyGeometry, const FDragD
 		{
 			new(SelectedAssetDatas)FAssetData(ClassOperation->ClassesToDrop[DroppedAssetIdx].Get());
 		}
-	}
-	else if (Operation->IsOfType<FUnloadedClassDragDropOp>())
-	{
-		bValidDrag = true;
 	}
 	else if (Operation->IsOfType<FExportTextDragDropOp>())
 	{
@@ -707,56 +703,6 @@ bool SLevelViewport::HandlePlaceDraggedObjects(const FGeometry& MyGeometry, cons
 		}
 
 		bValidDrop = true;
-	}
-	else if (Operation->IsOfType<FUnloadedClassDragDropOp>())
-	{
-		TSharedPtr<FUnloadedClassDragDropOp> DragDropOp = StaticCastSharedPtr<FUnloadedClassDragDropOp>( Operation );
-
-		DroppedObjects.Empty();
-
-		// Check if the asset is loaded, used to see if the context menu should be available
-		bAllAssetWereLoaded = true;
-
-		TArray< FClassPackageData >& AssetArray = *(DragDropOp->AssetsToDrop.Get());
-		for (int32 DroppedAssetIdx = 0; DroppedAssetIdx < AssetArray.Num(); ++DroppedAssetIdx)
-		{
-			bValidDrop = true;
-
-			FString& AssetName = AssetArray[DroppedAssetIdx].AssetName;
-
-			// Check to see if the asset can be found, otherwise load it.
-			UObject* Object = FindObject<UObject>(NULL, *AssetName);
-			if(Object == NULL)
-			{
-				// Check to see if the dropped asset was a blueprint
-				const FString& PackageName = AssetArray[DroppedAssetIdx].GeneratedPackageName;
-				Object = FindObject<UObject>(NULL, *FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName));
-
-				if ( Object == NULL )
-				{
-					// Load the package.
-					GWarn->BeginSlowTask( LOCTEXT("OnDrop_FullyLoadPackage", "Fully Loading Package For Drop"), true, false );
-					UPackage* Package = LoadPackage(NULL, *PackageName, LOAD_NoRedirects );
-					if (Package)
-					{
-						Package->FullyLoad();
-					}
-					GWarn->EndSlowTask();
-
-					Object = FindObject<UObject>(Package, *AssetName);
-				}
-			}
-
-			// Check again if it has been loaded, if not, mark that all were not loaded and move on.
-			if(Object)
-			{
-				DroppedObjects.Add(Object);
-			}
-			else
-			{	
-				bAllAssetWereLoaded = false;
-			}
-		}
 	}
 	else if (Operation->IsOfType<FAssetDragDropOp>())
 	{
@@ -1244,7 +1190,7 @@ void SLevelViewport::BindOptionCommands( FUICommandList& OutCommandList )
 		);
 
 	// Map each bookmark action
-	for( int32 BookmarkIndex = 0; BookmarkIndex < AWorldSettings::MAX_BOOKMARK_NUMBER; ++BookmarkIndex )
+	for( int32 BookmarkIndex = 0; BookmarkIndex < AWorldSettings::NumMappedBookmarks; ++BookmarkIndex )
 	{
 		OutCommandList.MapAction( 
 			ViewportActions.JumpToBookmarkCommands[BookmarkIndex],
@@ -1258,13 +1204,18 @@ void SLevelViewport::BindOptionCommands( FUICommandList& OutCommandList )
 
 		OutCommandList.MapAction( 
 			ViewportActions.ClearBookmarkCommands[BookmarkIndex],
-			FExecuteAction::CreateSP( this, &SLevelViewport::OnClearBookMark, BookmarkIndex )
+			FExecuteAction::CreateSP( this, &SLevelViewport::OnClearBookmark, BookmarkIndex )
 			);
 	}
 
 	OutCommandList.MapAction(
-		ViewportActions.ClearAllBookMarks,
-		FExecuteAction::CreateSP( this, &SLevelViewport::OnClearAllBookMarks )
+		ViewportActions.CompactBookmarks,
+		FExecuteAction::CreateSP( this, &SLevelViewport::OnCompactBookmarks )
+	);
+
+	OutCommandList.MapAction(
+		ViewportActions.ClearAllBookmarks,
+		FExecuteAction::CreateSP( this, &SLevelViewport::OnClearAllBookmarks )
 		);
 
 	OutCommandList.MapAction(
@@ -1611,9 +1562,9 @@ EVisibility SLevelViewport::GetTransformToolbarVisibility() const
 
 bool SLevelViewport::IsMaximized() const
 {
-	if( ParentLayout.IsValid() && !ConfigKey.IsEmpty() )
+	if( ParentLayout.IsValid() && !ConfigKey.IsNone())
 	{
-		return ParentLayout.Pin()->IsViewportMaximized( *ConfigKey );
+		return ParentLayout.Pin()->IsViewportMaximized( ConfigKey );
 	}
 
 	// Assume the viewport is always maximized if we have no layout for some reason
@@ -1690,7 +1641,7 @@ void SLevelViewport::OnToggleImmersive()
 		// We always want to animate in response to user-interactive toggling of maximized state
 		const bool bAllowAnimation = true;
 
-		FName ViewportName = *ConfigKey;
+		FName ViewportName = ConfigKey;
 		if (!ViewportName.IsNone())
 		{
 			ParentLayout.Pin()->RequestMaximizeViewport( ViewportName, bWantMaximize, bWantImmersive, bAllowAnimation );
@@ -1700,9 +1651,9 @@ void SLevelViewport::OnToggleImmersive()
 
 bool SLevelViewport::IsImmersive() const
 {
-	if( ParentLayout.IsValid() && !ConfigKey.IsEmpty() )
+	if( ParentLayout.IsValid() && !ConfigKey.IsNone())
 	{
-		return ParentLayout.Pin()->IsViewportImmersive( *ConfigKey );
+		return ParentLayout.Pin()->IsViewportImmersive( ConfigKey );
 	}
 
 	// Assume the viewport is not immersive if we have no layout for some reason
@@ -1978,14 +1929,15 @@ void SLevelViewport::OnUseDefaultShowFlags(bool bUseSavedDefaults)
 	FEngineShowFlags EditorShowFlags(ESFIM_Editor);
 	FEngineShowFlags GameShowFlags(ESFIM_Game);
 
-	if (bUseSavedDefaults && !ConfigKey.IsEmpty())
+	if (bUseSavedDefaults && !ConfigKey.IsNone())
 	{
 		FLevelEditorViewportInstanceSettings ViewportInstanceSettings;
 		ViewportInstanceSettings.ViewportType = LevelViewportClient->ViewportType;
 
 		// Get saved defaults if specified
-		const FLevelEditorViewportInstanceSettings* const ViewportInstanceSettingsPtr = GetDefault<ULevelEditorViewportSettings>()->GetViewportInstanceSettings(ConfigKey);
-		ViewportInstanceSettings = ViewportInstanceSettingsPtr ? *ViewportInstanceSettingsPtr : LoadLegacyConfigFromIni(ConfigKey, ViewportInstanceSettings);
+		FString ConfigKeyAsString = ConfigKey.ToString();
+		const FLevelEditorViewportInstanceSettings* const ViewportInstanceSettingsPtr = GetDefault<ULevelEditorViewportSettings>()->GetViewportInstanceSettings(ConfigKeyAsString);
+		ViewportInstanceSettings = ViewportInstanceSettingsPtr ? *ViewportInstanceSettingsPtr : LoadLegacyConfigFromIni(ConfigKeyAsString, ViewportInstanceSettings);
 
 		if (!ViewportInstanceSettings.EditorShowFlagsString.IsEmpty())
 		{
@@ -2170,32 +2122,48 @@ void SLevelViewport::OnSetBookmark( int32 BookmarkIndex )
 
 void SLevelViewport::OnJumpToBookmark( int32 BookmarkIndex )
 {
-	const bool bShouldRestoreLevelVisibility = true;
-	GLevelEditorModeTools().JumpToBookmark( BookmarkIndex, bShouldRestoreLevelVisibility, LevelViewportClient.Get() );
+	GLevelEditorModeTools().JumpToBookmark( BookmarkIndex, TSharedPtr<struct FBookmarkBaseJumpToSettings>(), LevelViewportClient.Get() );
 }
 
+void SLevelViewport::OnClearBookmark(int32 BookmarkIndex)
+{
+	GLevelEditorModeTools().ClearBookmark(BookmarkIndex, LevelViewportClient.Get());
+}
+
+void SLevelViewport::OnClearAllBookmarks()
+{
+	GLevelEditorModeTools().ClearAllBookmarks(LevelViewportClient.Get());
+}
+
+void SLevelViewport::OnCompactBookmarks()
+{
+	GLevelEditorModeTools().CompactBookmarks(LevelViewportClient.Get());
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void SLevelViewport::OnClearBookMark( int32 BookmarkIndex )
 {
-	GLevelEditorModeTools().ClearBookmark( BookmarkIndex, LevelViewportClient.Get() );
+	OnClearBookmark(BookmarkIndex);
 }
 
 void SLevelViewport::OnClearAllBookMarks()
 {
-	GLevelEditorModeTools().ClearAllBookmarks( LevelViewportClient.Get() );
+	OnClearAllBookmarks();
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void SLevelViewport::OnToggleAllowCinematicPreview()
 {
 	// Reset the FOV of Viewport for cases where we have been previewing the matinee with a changing FOV
-	LevelViewportClient->ViewFOV = LevelViewportClient->AllowsCinematicPreview() ? LevelViewportClient->ViewFOV : LevelViewportClient->FOVAngle;
+	LevelViewportClient->ViewFOV = LevelViewportClient->AllowsCinematicControl() ? LevelViewportClient->ViewFOV : LevelViewportClient->FOVAngle;
 
-	LevelViewportClient->SetAllowCinematicPreview( !LevelViewportClient->AllowsCinematicPreview() );
+	LevelViewportClient->SetAllowCinematicControl( !LevelViewportClient->AllowsCinematicControl() );
 	LevelViewportClient->Invalidate( false );
 }
 
 bool SLevelViewport::AllowsCinematicPreview() const
 {
-	return LevelViewportClient->AllowsCinematicPreview();
+	return LevelViewportClient->AllowsCinematicControl();
 }
 
 void SLevelViewport::OnIncrementPositionGridSize()
@@ -2488,7 +2456,7 @@ FReply SLevelViewport::OnToggleMaximize()
 		const bool bAllowAnimation = true;
 
 
-		FName ViewportName = *ConfigKey;
+		FName ViewportName = ConfigKey;
 		if (!ViewportName.IsNone())
 		{
 			ParentLayout.Pin()->RequestMaximizeViewport( ViewportName, bWantMaximize, bWantImmersive, bAllowAnimation );
@@ -2504,7 +2472,7 @@ void SLevelViewport::MakeImmersive( const bool bWantImmersive, const bool bAllow
 	{
 		const bool bWantMaximize = IsMaximized();
 
-		FName ViewportName = *ConfigKey;
+		FName ViewportName = ConfigKey;
 		if (!ViewportName.IsNone())
 		{
 			ParentLayout.Pin()->RequestMaximizeViewport( ViewportName, bWantMaximize, bWantImmersive, bAllowAnimation );
@@ -2551,20 +2519,21 @@ void SLevelViewport::OnActorSelectionChanged(const TArray<UObject*>& NewSelectio
 	// NOTE: We don't actively monitor which viewport is "current" and remove views, etc.  This ends up OK though because
 	//       the camera PIP views will feel "sticky" in the viewport that was active when you last selected objects
 	//       to preview!
+	const bool bPreviewInDesktopViewport = !IVREditorModule::Get().IsVREditorModeActive();
 	if (GetDefault<ULevelEditorViewportSettings>()->bPreviewSelectedCameras && GCurrentLevelEditingViewportClient == LevelViewportClient.Get())
 	{
-		PreviewSelectedCameraActors();
+		PreviewSelectedCameraActors(bPreviewInDesktopViewport);
 	}
 	else
 	{
 		// We're no longer the active viewport client, so remove any existing previewed actors
-		PreviewActors(TArray<AActor*>());
+		PreviewActors(TArray<AActor*>(), bPreviewInDesktopViewport);
 	}
 }
 
 
 
-void SLevelViewport::PreviewSelectedCameraActors()
+void SLevelViewport::PreviewSelectedCameraActors(const bool bPreviewInDesktopViewport)
 {
 	TArray<AActor*> ActorsToPreview;
 
@@ -2576,13 +2545,13 @@ void SLevelViewport::PreviewSelectedCameraActors()
 		{
 			// If this viewport is already locked to the specified camera, then we don't need to do anything
 		}
-		else if (CanGetCameraInformationFromActor(SelectedActor))
+		else if (CanGetCameraInformationFromActor(SelectedActor) && !FLevelEditorViewportClient::IsDroppingPreviewActor())
 		{
 			ActorsToPreview.Add(SelectedActor);
 		}
 	}
 
-	PreviewActors( ActorsToPreview );
+	PreviewActors( ActorsToPreview, bPreviewInDesktopViewport);
 }
 
 
@@ -2642,6 +2611,9 @@ private:
 
 	/** @return Gets the name of the preview actor.*/
 	FText OnReadText() const;
+
+	/** @return Gets the camera settings of the preview actor.*/
+	FText OnFilmbackText() const;
 
 	/** @return Gets the Width of the preview viewport.*/
 	FOptionalSize OnReadWidth() const;
@@ -2748,6 +2720,16 @@ void SActorPreview::Construct( const FArguments& InArgs )
 											.ShadowOffset( FVector2D::UnitVector )
 											.WrapTextAt( this, &SActorPreview::OnReadTextWidth )
 									]
+									+ SOverlay::Slot()
+									.Padding(PreviewTextPadding)
+									.HAlign(HAlign_Center)
+									.VAlign(VAlign_Bottom)
+									[
+										SNew(STextBlock)
+										.Text(this, &SActorPreview::OnFilmbackText)
+										.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+										.ShadowOffset(FVector2D::UnitVector)
+									]
 							]
 					]
 				
@@ -2807,7 +2789,7 @@ FReply SActorPreview::OnTogglePinnedButtonClicked()
 
 	if (ParentViewportPtr.IsValid())
 	{
-			ParentViewportPtr->ToggleActorPreviewIsPinned(PreviewActorPtr);
+		ParentViewportPtr->ToggleActorPreviewIsPinned(PreviewActorPtr);
 	}
 
 	return FReply::Handled();
@@ -2968,6 +2950,20 @@ FText SActorPreview::OnReadText() const
 	}
 }
 
+FText SActorPreview::OnFilmbackText() const
+{
+	if (PreviewActorPtr.IsValid())
+	{
+		USceneComponent* ViewComponent = FLevelEditorViewportClient::FindViewComponentForActor(PreviewActorPtr.Get());
+		UCameraComponent* CameraComponent = Cast<UCameraComponent>(ViewComponent);
+		if (CameraComponent)
+		{
+			return CameraComponent->GetFilmbackText();
+		}
+	}
+	return FText::GetEmpty();
+}
+
 FOptionalSize SActorPreview::OnReadWidth() const
 {
 	const float PreviewHeight = OnReadHeight().Get();
@@ -3015,7 +3011,7 @@ float SActorPreview::OnReadTextWidth() const
 	return OnReadWidth().Get() - (PreviewTextPadding*2.0f);
 }
 
-void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview )
+void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview, const bool bPreviewInDesktopViewport /*= true*/)
 {
 	TArray< AActor* > NewActorsToPreview;
 	TArray< AActor* > ActorsToStopPreviewing;
@@ -3079,7 +3075,7 @@ void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview )
 		if ( ExistingActor == NULL )
 		{
 			// decrement index so we don't miss next preview after deleting
-			RemoveActorPreview( PreviewIndex-- );
+			RemoveActorPreview( PreviewIndex-- , bPreviewInDesktopViewport);
 		}
 		else
 		{
@@ -3092,7 +3088,7 @@ void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview )
 					{
 						// Remove this preview!
 						// decrement index so we don't miss next preview after deleting
-						RemoveActorPreview( PreviewIndex-- );
+						RemoveActorPreview( PreviewIndex-- , bPreviewInDesktopViewport);
 						break;
 					}
 				}
@@ -3135,7 +3131,7 @@ void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview )
 				ActorPreviewLevelViewportClient->bDisableInput = true;
 
 				// Never allow Matinee to possess these views
-				ActorPreviewLevelViewportClient->SetAllowCinematicPreview( false );
+				ActorPreviewLevelViewportClient->SetAllowCinematicControl( false );
 
 				// Our preview viewport is always visible if our owning SLevelViewport is visible, so we hook up
 				// to the same IsVisible method
@@ -3169,10 +3165,9 @@ void SLevelViewport::PreviewActors( const TArray< AActor* >& ActorsToPreview )
 			// Add our new widget to our viewport's overlay
 			// @todo camerapip: Consider using a canvas instead of an overlay widget -- our viewports get SQUASHED when the view shrinks!
 			IVREditorModule& VREditorModule = IVREditorModule::Get();
-			if (VREditorModule.IsVREditorEnabled())
+			if (!bPreviewInDesktopViewport)
 			{
-				NewActorPreview.SceneViewport->SetGammaOverride(1.0f);
-				VREditorModule.UpdateActorPreview( NewActorPreview.PreviewWidget.ToSharedRef());
+				VREditorModule.UpdateActorPreview( NewActorPreview.PreviewWidget.ToSharedRef(), ActorPreviews.Num()-1);
 			}
 			else
 			{
@@ -3260,15 +3255,16 @@ void SLevelViewport::UpdateActorPreviewViewports()
 
 void SLevelViewport::OnPreviewSelectedCamerasChange()
 {
+	const bool bPreviewInDesktopViewport = !IVREditorModule::Get().IsVREditorModeActive();
 	// Check to see if previewing selected cameras is enabled and if we're the active level viewport client.
 	if (GetDefault<ULevelEditorViewportSettings>()->bPreviewSelectedCameras && GCurrentLevelEditingViewportClient == LevelViewportClient.Get())
 	{
-		PreviewSelectedCameraActors();
+		PreviewSelectedCameraActors(bPreviewInDesktopViewport);
 	}
 	else
 	{
 		// We're either not the active viewport client or preview selected cameras option is disabled, so remove any existing previewed actors
-		PreviewActors(TArray<AActor*>());
+		PreviewActors(TArray<AActor*>(), bPreviewInDesktopViewport);
 	}
 }
 
@@ -3442,9 +3438,9 @@ bool SLevelViewport::IsViewportConfigurationSet(FName ConfigurationName) const
 FName SLevelViewport::GetViewportTypeWithinLayout() const
 {
 	TSharedPtr<FLevelViewportLayout> LayoutPinned = ParentLayout.Pin();
-	if (LayoutPinned.IsValid() && !ConfigKey.IsEmpty())
+	if (LayoutPinned.IsValid() && !ConfigKey.IsNone())
 	{
-		TSharedPtr<IViewportLayoutEntity> Entity = LayoutPinned->GetViewports().FindRef(*ConfigKey);
+		TSharedPtr<IViewportLayoutEntity> Entity = LayoutPinned->GetViewports().FindRef(ConfigKey);
 		if (Entity.IsValid())
 		{
 			return Entity->GetType();
@@ -3456,7 +3452,7 @@ FName SLevelViewport::GetViewportTypeWithinLayout() const
 void SLevelViewport::SetViewportTypeWithinLayout(FName InLayoutType)
 {
 	TSharedPtr<FLevelViewportLayout> LayoutPinned = ParentLayout.Pin();
-	if (LayoutPinned.IsValid() && !ConfigKey.IsEmpty())
+	if (LayoutPinned.IsValid() && !ConfigKey.IsNone())
 	{
 		// Important - RefreshViewportConfiguration does not save config values. We save its state first, to ensure that .TypeWithinLayout (below) doesn't get overwritten
 		TSharedPtr<FLevelViewportTabContent> ViewportTabPinned = LayoutPinned->GetParentTabContent().Pin();
@@ -3466,7 +3462,7 @@ void SLevelViewport::SetViewportTypeWithinLayout(FName InLayoutType)
 		}
 
 		const FString& IniSection = FLayoutSaveRestore::GetAdditionalLayoutConfigIni();
-		GConfig->SetString( *IniSection, *( ConfigKey + TEXT(".TypeWithinLayout") ), *InLayoutType.ToString(), GEditorPerProjectIni );
+		GConfig->SetString( *IniSection, *( ConfigKey.ToString() + TEXT(".TypeWithinLayout") ), *InLayoutType.ToString(), GEditorPerProjectIni );
 
 		// Force a refresh of the tab content
 		// Viewport clients are going away.  Any current one is invalid.
@@ -3509,6 +3505,8 @@ void SLevelViewport::StartPlayInEditorSession(UGameViewportClient* PlayClient, c
 	// Focus will be set when the game viewport is registered
 	FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::SetDirectly);
 
+	PlayClient->SetPlayInEditorUseMouseForTouch(GetDefault<ULevelEditorPlaySettings>()->UseMouseForTouch);
+
 	// Attach global play world actions widget to view port
 	ActiveViewport = MakeShareable( new FSceneViewport( PlayClient, ViewportWidget) );
 	ActiveViewport->SetPlayInEditorViewport( true );
@@ -3522,6 +3520,12 @@ void SLevelViewport::StartPlayInEditorSession(UGameViewportClient* PlayClient, c
 	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 	PlayClient->SetViewportOverlayWidget(ParentWindow, PIEViewportOverlayWidget.ToSharedRef());
 	PlayClient->SetGameLayerManager(GameLayerManager);
+
+	// Set the scene viewport on PIE
+	if (GameLayerManager.IsValid() && !bInSimulateInEditor)
+	{
+		GameLayerManager->SetSceneViewport(ActiveViewport.Get());
+	}
 
 	// Our viewport widget should start rendering the new viewport for the play in editor scene
 	ViewportWidget->SetViewportInterface( ActiveViewport.ToSharedRef() );
@@ -3738,6 +3742,9 @@ void SLevelViewport::EndPlayInEditorSession()
 		InactiveViewport->SetViewportClient( nullptr );
 	}
 
+	// Reset our game layer manager's active to that of the active editor viewport
+	GameLayerManager->SetSceneViewport(ActiveViewport.Get());
+
 	// Reset the inactive viewport
 	InactiveViewport.Reset();
 
@@ -3790,7 +3797,12 @@ void SLevelViewport::SwapViewportsForSimulateInEditor()
 	// Resize the viewport to be the same size the previously active viewport
 	// When starting in immersive mode its possible that the viewport has not been resized yet
 	ActiveViewport->OnPlayWorldViewportSwapped( *InactiveViewport );
-	
+
+	if (GameLayerManager.IsValid())
+	{
+		GameLayerManager->SetSceneViewport(ActiveViewport.Get());
+	}
+
 	ViewportWidget->SetViewportInterface( ActiveViewport.ToSharedRef() );
 
 	// Kick off a quick transition effect (border graphics)
@@ -3825,6 +3837,11 @@ void SLevelViewport::SwapViewportsForPlayInEditor()
 	// Resize the viewport to be the same size the previously active viewport
 	// When starting in immersive mode its possible that the viewport has not been resized yet
 	ActiveViewport->OnPlayWorldViewportSwapped( *InactiveViewport );
+
+	if (GameLayerManager.IsValid())
+	{
+		GameLayerManager->SetSceneViewport(ActiveViewport.Get());
+	}
 
 	InactiveViewportWidgetEditorContent = ViewportWidget->GetContent();
 	ViewportWidget->SetViewportInterface( ActiveViewport.ToSharedRef() );
@@ -3896,26 +3913,29 @@ UWorld* SLevelViewport::GetWorld() const
 	return ParentLevelEditor.IsValid() ? ParentLevelEditor.Pin()->GetWorld() : NULL;
 }
 
-void SLevelViewport::RemoveActorPreview( int32 PreviewIndex )
+void SLevelViewport::RemoveActorPreview( int32 PreviewIndex, const bool bRemoveFromDesktopViewport /*=true */ )
 {
 	IVREditorModule& VREditorModule = IVREditorModule::Get();
-	if (VREditorModule.IsVREditorEnabled())
+	if (!bRemoveFromDesktopViewport)
 	{
-		VREditorModule.UpdateActorPreview(SNullWidget::NullWidget);
+		VREditorModule.UpdateActorPreview(SNullWidget::NullWidget, PreviewIndex);
 	}
 	else
 	{
 		// Remove widget from viewport overlay
 		ActorPreviewHorizontalBox->RemoveSlot(ActorPreviews[PreviewIndex].PreviewWidget.ToSharedRef());
 	}
-	// Clean up our level viewport client
-	if( ActorPreviews[PreviewIndex].LevelViewportClient.IsValid() )
+	if (ActorPreviews.IsValidIndex(PreviewIndex))
 	{
-		ActorPreviews[PreviewIndex].LevelViewportClient->Viewport = NULL;
-	}
+		// Clean up our level viewport client
+		if (ActorPreviews[PreviewIndex].LevelViewportClient.IsValid())
+		{
+			ActorPreviews[PreviewIndex].LevelViewportClient->Viewport = NULL;
+		}
 
-	// Remove from our list of actor previews.  This will destroy our level viewport client and viewport widget.
-	ActorPreviews.RemoveAt( PreviewIndex );
+		// Remove from our list of actor previews.  This will destroy our level viewport client and viewport widget.
+		ActorPreviews.RemoveAt(PreviewIndex);
+	}
 }
 
 void SLevelViewport::AddOverlayWidget(TSharedRef<SWidget> OverlaidWidget)
@@ -3980,28 +4000,20 @@ bool SLevelViewport::CanGetCameraInformationFromActor(AActor* Actor)
 	return GetCameraInformationFromActor(Actor, /*out*/ CameraInfo);
 }
 
-void SLevelViewport::TakeHighResScreenShot()
-{
-	if( LevelViewportClient.IsValid() )
-	{
-		LevelViewportClient->TakeHighResScreenShot();
-	}
-}
-
 void SLevelViewport::OnFloatingButtonClicked()
 {
 	// if one of the viewports floating buttons has been clicked, update the global viewport ptr
 	LevelViewportClient->SetLastKeyViewport();
 }
 
-void SLevelViewport::RemoveAllPreviews()
+void SLevelViewport::RemoveAllPreviews(const bool bRemoveFromDesktopViewport /**= true*/)
 {
 	// Clean up any actor preview viewports
 	for (FViewportActorPreview& ActorPreview : ActorPreviews)
 	{
 		ActorPreview.bIsPinned = false;
 	}
-	PreviewActors(TArray< AActor* >());
+	PreviewActors(TArray< AActor* >(), bRemoveFromDesktopViewport);
 }
 
 #undef LOCTEXT_NAMESPACE

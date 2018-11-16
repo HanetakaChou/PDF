@@ -10,6 +10,7 @@ D3D12Stats.h: D3D12 Statistics and Timing Interfaces
 */
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Present time"), STAT_D3D12PresentTime, STATGROUP_D3D12RHI, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("CustomPresent time"), STAT_D3D12CustomPresentTime, STATGROUP_D3D12RHI, );
 
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num command allocators (3D, Compute, Copy)"), STAT_D3D12NumCommandAllocators, STATGROUP_D3D12RHI, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num command lists (3D, Compute, Copy)"), STAT_D3D12NumCommandLists, STATGROUP_D3D12RHI, );
@@ -59,6 +60,23 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("WaitForFence time"), STAT_D3D12WaitForFenceTime,
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Used Video Memory"), STAT_D3D12UsedVideoMemory, STATGROUP_D3D12RHI, );
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Available Video Memory"), STAT_D3D12AvailableVideoMemory, STATGROUP_D3D12RHI, );
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Total Video Memory"), STAT_D3D12TotalVideoMemory, STATGROUP_D3D12RHI, );
+
+/**
+* Detailed Descriptor heap stats
+*/
+
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("View: Heap changed"), STAT_ViewHeapChanged, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Sampler: Heap changed"), STAT_SamplerHeapChanged, STATGROUP_D3D12DescriptorHeap, );
+
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("View: Num descriptor heaps"), STAT_NumViewOnlineDescriptorHeaps, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Sampler: Num descriptor heaps"), STAT_NumSamplerOnlineDescriptorHeaps, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Sampler: Num reusable unique descriptor table entries"), STAT_NumReuseableSamplerOnlineDescriptorTables, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("View: Num reserved descriptors"), STAT_NumReservedViewOnlineDescriptors, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Sampler: Num reserved descriptors"), STAT_NumReservedSamplerOnlineDescriptors, STATGROUP_D3D12DescriptorHeap, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Sampler: Num reused descriptors"), STAT_NumReusedSamplerOnlineDescriptors, STATGROUP_D3D12DescriptorHeap, );
+
+DECLARE_MEMORY_STAT_POOL_EXTERN(TEXT("View: Total descriptor heap memory (SRV, CBV, UAV)"), STAT_ViewOnlineDescriptorHeapMemory, STATGROUP_D3D12DescriptorHeap, FPlatformMemory::MCR_GPUSystem, );
+DECLARE_MEMORY_STAT_POOL_EXTERN(TEXT("Sampler: Total descriptor heap memory"), STAT_SamplerOnlineDescriptorHeapMemory, STATGROUP_D3D12DescriptorHeap, FPlatformMemory::MCR_GPUSystem, );
 
 struct FD3D12GlobalStats
 {
@@ -143,6 +161,8 @@ public:
 		TRefCountPtr<ID3D12QueryHeap> Heap;
 	};
 
+	static void CalibrateTimers(FD3D12Adapter* ParentAdapter);
+
 private:
 	/**
 	* Initializes the static variables, if necessary.
@@ -196,8 +216,8 @@ class FD3D12EventNode : public FGPUProfilerEventNode, public FD3D12AdapterChild
 public:
 	FD3D12EventNode(const TCHAR* InName, FGPUProfilerEventNode* InParent, class FD3D12Adapter* InParentAdapter) :
 		FGPUProfilerEventNode(InName, InParent),
-		Timing(InParentAdapter, 1),
-		FD3D12AdapterChild(InParentAdapter)
+		FD3D12AdapterChild(InParentAdapter),
+		Timing(InParentAdapter, 1)
 	{
 		// Initialize Buffered timestamp queries 
 		Timing.InitDynamicRHI();
@@ -234,8 +254,8 @@ public:
 
 	FD3D12EventNodeFrame(class FD3D12Adapter* InParent) :
 		FGPUProfilerEventNodeFrame(),
-		RootEventTiming(InParent, 1),
-		FD3D12AdapterChild(InParent)
+		FD3D12AdapterChild(InParent),
+		RootEventTiming(InParent, 1)
 	{
 		RootEventTiming.InitDynamicRHI();
 	}
@@ -275,8 +295,8 @@ namespace D3D12RHI
 		TIndirectArray<FD3D12EventNodeFrame> GPUHitchEventNodeFrames;
 
 		FD3DGPUProfiler(FD3D12Adapter* Parent)
-			: FrameTiming(Parent, 8)
-			, FD3D12AdapterChild(Parent)
+			: FD3D12AdapterChild(Parent)
+			, FrameTiming(Parent, 8)
 		{}
 
 		//FD3DGPUProfiler(class FD3D12Device* InParent) :

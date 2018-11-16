@@ -30,6 +30,7 @@
 	<Property Name="IOSStripFilter" Value="*.a;"/>
 	<Property Name="TVOSStripFilter" Value="*.a;"/>
 	<Property Name="LinuxStripFilter" Value="Engine\Binaries\Linux\*."/>
+	<Property Name="LuminStripFilter" Value="*.a;*.so"/>
 
 	<Property Name="WindowsSignFilter" Value="*.exe;*.dll"/>
 	<Property Name="MacSignFilter" Value="*.dylib;*.app"/>
@@ -59,6 +60,10 @@
 	
 	<!-- Define Editor Filters -->
 	<Property Name="CopyEditorFilter">
+		<!-- This assembly is normally embedded into the UBT executable, but it can technically be rebuilt from an installed build -->
+		Engine/Binaries/ThirdParty/Newtonsoft/...
+		Engine/Binaries/ThirdParty/VisualStudio/...
+
 		<!-- In-editor documentation -->
 		Engine/Documentation/Source/Shared/...
 		Engine/Documentation/Extras/...
@@ -87,7 +92,6 @@
 		Engine/Source/Runtime/...
 		Engine/Source/Developer/...
 		Engine/Source/Editor/...
-		Engine/Source/ThirdParty/.../*.Build.cs
 		Engine/Source/ThirdParty/Licenses/...
 		Engine/Source/Programs/AutomationTool/...
 		Engine/Source/Programs/AutomationToolLauncher/...
@@ -131,7 +135,8 @@
 		Templates/TP_2DSideScrollerBP/...
 		Templates/TP_VehicleAdv/...
 		Templates/TP_VehicleAdvBP/...
-		<!-- shared template resources -->
+		
+		<!-- Shared template resources -->
 		Templates/TemplateResources/...
 
 		<!-- Build files -->
@@ -145,6 +150,7 @@
 	<Property Name="CopyEditorFilter" Value="$(CopyEditorFilter);Templates/TP_VirtualRealityBP/..." If="'$(HostPlatform)' != 'Linux'"/>
 		<!-- Define Editor Exceptions -->
 	<Property Name="CopyEditorExceptions">
+	
 		<!-- Content -->
 		Engine/Content/....psd
 		Engine/Content/....pdn
@@ -200,10 +206,12 @@
 			<!-- Extra tools -->
 			Engine/Extras/3dsMaxScripts/...
 			Engine/Extras/VisualStudioDebugging/UE4.natvis
-			Engine/Extras/MayaLiveLink/...
 			Engine/Extras/MayaVelocityGridExporter/...
 			Engine/Extras/UnrealVS/...
 			Engine/Extras/Redist/en-us/*
+			
+			<!-- nDisplay Template -->
+			Templates/TP_nDisplayBP/...
 		</Property>
 
 		<Property Name="CopyEditorExceptions" Value="$(CopyEditorExceptions)">
@@ -212,24 +220,27 @@
 		</Property>
 	</Do>
 
+	<!-- Files needed to build on Mac, either natively or via the remote toolchain -->
+	<Property Name="MacBuildFiles">
+		<!-- Build batch files -->
+		Engine/Build/BatchFiles/Mac/Build.sh
+		Engine/Build/BatchFiles/Mac/GenerateLLDBInit.sh
+		Engine/Build/BatchFiles/Mac/FixDependencyFiles.sh
+		Engine/Build/BatchFiles/Mac/GenerateProjectFiles.sh
+		Engine/Build/BatchFiles/Mac/SetupMono.sh
+		Engine/Build/BatchFiles/Mac/FixMonoFiles.sh
+		Engine/Build/BatchFiles/Mac/RunMono.sh
+		Engine/Build/BatchFiles/Mac/RunXBuild.sh
+		Engine/Build/BatchFiles/RunUAT.command
+		Engine/Build/BatchFiles/RunUAT.sh
+
+		<!-- Mono -->
+		Engine/Binaries/ThirdParty/Mono/Mac/...
+	</Property>
+
 	<!-- Mac-specific dependencies -->
 	<Do If="'$(HostPlatform)' == 'Mac'">
-		<Property Name="CopyEditorFilter" Value="$(CopyEditorFilter)">
-			<!-- Build batch files -->
-			Engine/Build/BatchFiles/Mac/Build.sh
-			Engine/Build/BatchFiles/Mac/GenerateLLDBInit.sh
-			Engine/Build/BatchFiles/Mac/FixDependencyFiles.sh
-			Engine/Build/BatchFiles/Mac/GenerateProjectFiles.sh
-			Engine/Build/BatchFiles/Mac/SetupMono.sh
-			Engine/Build/BatchFiles/Mac/FixMonoFiles.sh
-			Engine/Build/BatchFiles/Mac/RunMono.sh
-			Engine/Build/BatchFiles/Mac/RunXBuild.sh
-			Engine/Build/BatchFiles/RunUAT.command
-			Engine/Build/BatchFiles/RunUAT.sh
-
-			<!-- Mono -->
-			Engine/Binaries/ThirdParty/Mono/Mac/...
-
+		<Property Name="CopyEditorFilter" Value="$(CopyEditorFilter);$(MacBuildFiles)">
 			<!-- Extra tools -->
 			Engine/Extras/LLDBDataFormatters/UE4DataFormatters.py
 		</Property>
@@ -250,19 +261,29 @@
 		<Property Name="CopyEditorFilter" Value="$(CopyEditorFilter)">
 			<!-- Build batch files -->
 			Engine/Build/BatchFiles/Linux/Build.sh
-			Engine/Build/BatchFiles/Linux/BuildThirdParty.sh
+			Engine/Build/BatchFiles/Linux/GenerateGDBInit.sh
+			Engine/Build/BatchFiles/Linux/FixDependencyFiles.sh
 			Engine/Build/BatchFiles/Linux/GenerateProjectFiles.sh
-			Engine/Build/BatchFiles/Linux/GitDependencies.sh
 			Engine/Build/BatchFiles/Linux/QASmokeManual.sh
+			Engine/Build/BatchFiles/Linux/Setup.sh
+			Engine/Build/BatchFiles/Linux/SetupMono.sh
+			Engine/Build/BatchFiles/Linux/FixMonoFiles.sh
 			Engine/Build/BatchFiles/Linux/RunMono.sh
 			Engine/Build/BatchFiles/Linux/RunXBuild.sh
-			Engine/Build/BatchFiles/Linux/Setup.sh
-			Engine/Build/BatchFiles/Linux/UpdateDeps.sh
 			Engine/Build/BatchFiles/RunUAT.sh
+
+			<!-- Debug tools -->
+			Engine/Binaries/Linux/dump_syms
+			Engine/Binaries/Linux/BreakpadSymbolEncoder
+
+			<!-- Mono -->
+			Engine/Binaries/ThirdParty/Mono/...
+
+			<!-- Extra tools -->
+			Engine/Extras/GDBPrinters/UE4Printers.py
 
 			<!-- Bundled libcxx -->
 			Engine/Source/ThirdParty/Linux/LibCxx/...
-
 		</Property>
 	</Do>
 
@@ -330,11 +351,10 @@
 	</Property>
 
 	<!-- IOS -->
-	<Property Name="CopyIOSFilter">
+	<Property Name="CopyIOSFilter" Value="$(MacBuildFiles)">
 		<!-- Build Files -->
 		Engine/Build/IOS/...
 	</Property>
-		<!-- Win64 specific -->
 	<Do If="'$(HostPlatform)' == 'Win64'">
 		<Property Name="CopyIOSFilter" Value="$(CopyIOSFilter)">
 			Engine/Binaries/DotNET/IOS/openssl.exe
@@ -342,6 +362,7 @@
 			Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Mac/...
 			Engine/Binaries/ThirdParty/IOS/*
 			Engine/Build/BatchFiles/MakeAndInstallSSHKey.bat
+			Engine/Build/Rsync/...
 			Engine/Extras/ThirdPartyNotUE/DeltaCopy/...
 		</Property>
 	</Do>
@@ -354,7 +375,7 @@
 	</Property>
 
 	<!-- TVOS -->
-	<Property Name="CopyTVOSFilter">
+	<Property Name="CopyTVOSFilter" Value="$(MacBuildFiles)">
 		<!-- Build Files -->
 		Engine/Build/TVOS/...
 	</Property>
@@ -381,6 +402,12 @@
 		Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Linux/x86_64-unknown-linux-gnu/*.so
 		Engine/Source/ThirdParty/Linux/LibCxx/...
 		Engine/Source/ThirdParty/Linux/HaveLinuxDependencies
+	</Property>
+
+	<Property Name="CopyLinuxFilter" Value="$(CopyLinuxFilter)" If="'$(HostPlatform)' == 'Win64'">
+		<!-- Linux cross build Debug tools -->
+		Engine/Binaries/Linux/dump_syms.exe
+		Engine/Binaries/Linux/BreakpadSymbolEncoder.exe
 	</Property>
 
 	<Property Name="CopyLinuxExceptions">
@@ -441,5 +468,15 @@
 
 	<!-- Additional Binaries(.nspd directories) -->
 	<Property Name="CopySwitchFilter" Value="$(CopySwitchFilter);Engine/Binaries/Switch/*.nspd/..."/>
+	
+	<!-- Lumin -->
+	<Property Name="CopyLuminFilter">
+		<!-- Build Files -->
+		Engine/Build/Lumin/...
+		Engine/Source/ThirdParty/ResonanceAudioApi/...
+	</Property>
+	
+	<Property Name="CopyLuminExceptions">
+	</Property>
 
 </BuildGraph>

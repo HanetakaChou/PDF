@@ -15,7 +15,12 @@
 #include "RHI.h"
 #include "Engine/BlendableInterface.h"
 #include "Materials/MaterialLayersFunctions.h"
+#include "Interfaces/Interface_AssetUserData.h"
 #include "MaterialInterface.generated.h"
+
+#ifndef STORE_ONLY_ACTIVE_SHADERMAPS
+#define STORE_ONLY_ACTIVE_SHADERMAPS 0
+#endif
 
 class FMaterialCompiler;
 class FMaterialRenderProxy;
@@ -26,6 +31,7 @@ class USubsurfaceProfile;
 class UTexture;
 struct FPrimitiveViewRelevance;
 struct FMaterialParameterInfo;
+struct FMaterialResourceLocOnDisk;
 
 UENUM(BlueprintType)
 enum EMaterialUsage
@@ -42,6 +48,7 @@ enum EMaterialUsage
 	MATUSAGE_NiagaraSprites,
 	MATUSAGE_NiagaraRibbons,
 	MATUSAGE_NiagaraMeshParticles,
+	MATUSAGE_GeometryCache,
 
 	// NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
@@ -57,21 +64,21 @@ struct ENGINE_API FMaterialRelevance
 {
 	// bits that express which EMaterialShadingModel are used
 	uint16 ShadingModelMask;
-	uint32 bOpaque : 1;
-	uint32 bMasked : 1;
-	uint32 bDistortion : 1;
-	uint32 bSeparateTranslucency : 1; // Translucency After DOF
-	uint32 bNormalTranslucency : 1;
-	uint32 bUsesSceneColorCopy : 1;
-	uint32 bDisableOffscreenRendering : 1; // Blend Modulate
-	uint32 bDisableDepthTest : 1;
-	uint32 bOutputsVelocityInBasePass : 1;
-	uint32 bUsesGlobalDistanceField : 1;
-	uint32 bUsesWorldPositionOffset : 1;
-	uint32 bDecal : 1;
-	uint32 bTranslucentSurfaceLighting : 1;
-	uint32 bUsesSceneDepth : 1;
-	uint32 bHasVolumeMaterialDomain : 1;
+	uint8 bOpaque : 1;
+	uint8 bMasked : 1;
+	uint8 bDistortion : 1;
+	uint8 bSeparateTranslucency : 1; // Translucency After DOF
+	uint8 bNormalTranslucency : 1;
+	uint8 bUsesSceneColorCopy : 1;
+	uint8 bDisableOffscreenRendering : 1; // Blend Modulate
+	uint8 bDisableDepthTest : 1;
+	uint8 bOutputsVelocityInBasePass : 1;
+	uint8 bUsesGlobalDistanceField : 1;
+	uint8 bUsesWorldPositionOffset : 1;
+	uint8 bDecal : 1;
+	uint8 bTranslucentSurfaceLighting : 1;
+	uint8 bUsesSceneDepth : 1;
+	uint8 bHasVolumeMaterialDomain : 1;
 
 	/** Default constructor */
 	FMaterialRelevance()
@@ -223,7 +230,7 @@ struct FVxgiMaterialProperties
 };
 
 UCLASS(abstract, BlueprintType,MinimalAPI)
-class UMaterialInterface : public UObject, public IBlendableInterface
+class UMaterialInterface : public UObject, public IBlendableInterface, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
 
@@ -253,7 +260,17 @@ protected:
 	UPROPERTY()
 	TArray<FMaterialTextureInfo> TextureStreamingData;
 
+	/** Array of user data stored with the asset */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Material)
+	TArray<UAssetUserData*> AssetUserData;
+
 public:
+
+	//~ Begin IInterface_AssetUserData Interface
+	ENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
+	ENGINE_API virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	ENGINE_API virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	//~ End IInterface_AssetUserData Interface
 
 #if WITH_EDITORONLY_DATA
 	/** The mesh used by the material editor to preview the material.*/
@@ -268,7 +285,7 @@ public:
 	TMap<FString, bool> LayerParameterExpansion;
 
 	/** Importing data and options used for this material */
-	UPROPERTY(EditAnywhere, Instanced, Category = ImportSettings, AssetRegistrySearchable)
+	UPROPERTY(EditAnywhere, Instanced, Category = ImportSettings)
 	class UAssetImportData* AssetImportData;
 
 private:
@@ -300,6 +317,7 @@ public:
 
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
@@ -508,6 +526,9 @@ public:
 	virtual void AppendReferencedTextures(TArray<UTexture*>& InOutTextures) const
 		PURE_VIRTUAL(UMaterialInterface::AppendReferencedTextures,);
 
+	virtual void SaveShaderStableKeysInner(const class ITargetPlatform* TP, const struct FStableShaderKeyAndValue& SaveKeyVal)
+		PURE_VIRTUAL(UMaterialInterface::SaveShaderStableKeysInner, );
+
 	/** @return The material's relevance. */
 	ENGINE_API FMaterialRelevance GetRelevance(ERHIFeatureLevel::Type InFeatureLevel) const;
 	/** @return The material's relevance, from concurrent render thread updates. */
@@ -676,13 +697,16 @@ public:
 	 *
 	 *	@return	bool			true if successful, false if not.
 	 */
-	virtual bool GetTexturesInPropertyChain(EMaterialProperty InProperty, TArray<UTexture*>& OutTextures,  TArray<FName>* OutTextureParamNames, struct FStaticParameterSet* InStaticParameterSet)
+	virtual bool GetTexturesInPropertyChain(EMaterialProperty InProperty, TArray<UTexture*>& OutTextures,  TArray<FName>* OutTextureParamNames, struct FStaticParameterSet* InStaticParameterSet,
+		ERHIFeatureLevel::Type InFeatureLevel = ERHIFeatureLevel::Num, EMaterialQualityLevel::Type InQuality = EMaterialQualityLevel::Num)
 		PURE_VIRTUAL(UMaterialInterface::GetTexturesInPropertyChain,return false;);
-#endif
 
+	ENGINE_API virtual bool GetGroupName(const FMaterialParameterInfo& ParameterInfo, FName& GroupName) const;
 	ENGINE_API virtual bool GetParameterDesc(const FMaterialParameterInfo& ParameterInfo, FString& OutDesc, const TArray<struct FStaticMaterialLayersParameter>* MaterialLayersParameters = nullptr) const;	
 	ENGINE_API virtual bool GetScalarParameterSliderMinMax(const FMaterialParameterInfo& ParameterInfo, float& OutSliderMin, float& OutSliderMax) const;
+#endif // WITH_EDITOR
 	ENGINE_API virtual bool GetScalarParameterValue(const FMaterialParameterInfo& ParameterInfo, float& OutValue, bool bOveriddenOnly = false) const;
+	ENGINE_API virtual bool IsScalarParameterUsedAsAtlasPosition(const FMaterialParameterInfo& ParameterInfo, bool& OutValue, TSoftObjectPtr<class UCurveLinearColor>& Curve, TSoftObjectPtr<class UCurveLinearColorAtlas>&  Atlas) const;
 	ENGINE_API virtual bool GetScalarCurveParameterValue(const FMaterialParameterInfo& ParameterInfo, FInterpCurveFloat& OutValue) const;
 	ENGINE_API virtual bool GetVectorParameterValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue, bool bOveriddenOnly = false) const;
 	ENGINE_API virtual bool IsVectorParameterUsedAsChannelMask(const FMaterialParameterInfo& ParameterInfo, bool& OutValue) const;
@@ -692,7 +716,6 @@ public:
 	ENGINE_API virtual bool GetTextureParameterValue(const FMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly = false) const;
 	ENGINE_API virtual bool GetFontParameterValue(const FMaterialParameterInfo& ParameterInfo,class UFont*& OutFontValue, int32& OutFontPage, bool bOveriddenOnly = false) const;
 	ENGINE_API virtual bool GetRefractionSettings(float& OutBiasValue) const;
-	ENGINE_API virtual bool GetGroupName(const FMaterialParameterInfo& ParameterInfo, FName& GroupName) const;
 
 	/**
 		Access to overridable properties of the base material.
@@ -859,8 +882,15 @@ private:
 #endif
 };
 
+// Used to set up some compact FName paths for the FCompactFullName
+ENGINE_API void SetCompactFullNameFromObject(struct FCompactFullName &Dest, UObject* InDepObject);
+
 /** Helper function to serialize inline shader maps for the given material resources. */
-extern void SerializeInlineShaderMaps(const TMap<const class ITargetPlatform*, TArray<FMaterialResource*>>* PlatformMaterialResourcesToSave, FArchive& Ar, TArray<FMaterialResource>& OutLoadedResources);
+extern void SerializeInlineShaderMaps(
+	const TMap<const class ITargetPlatform*, TArray<FMaterialResource*>>* PlatformMaterialResourcesToSave,
+	FArchive& Ar,
+	TArray<FMaterialResource>& OutLoadedResources,
+	uint32* OutOffsetToFirstResource = nullptr);
 /** Helper function to process (register) serialized inline shader maps for the given material resources. */
 extern void ProcessSerializedInlineShaderMaps(UMaterialInterface* Owner, TArray<FMaterialResource>& LoadedResources, FMaterialResource* (&OutMaterialResourcesLoaded)[EMaterialQualityLevel::Num][ERHIFeatureLevel::Num]);
 

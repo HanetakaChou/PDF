@@ -1,5 +1,4 @@
-﻿INTSourceChangelist:3244370
-Availability:Public
+﻿Availability:Public
 Title:ブループリントの概要
 Crumbs: %ROOT%, Engine, Engine/Blueprints
 Description:ブループリントの概要のページは、ブループリントの仕組みと利用可能な様々なタイプのブループリントについて説明します。 
@@ -7,47 +6,8 @@ version:4.9
 parent:Engine/Blueprints
 order:2
 tags:Blueprints
+topic-image:blueprint_topic.png
 
-
-[VAR:Topic]
-[OBJECT:Topic]
-	[PARAM:image]
-		![%Engine/Blueprints/Overview:title%](blueprint_topic.png)
-	[/PARAM]
-	[PARAM:icon]
-		![](%ROOT%/anim_icon.png)(convert:false)
-	[/PARAM]
-	[PARAM:title]
-		%Engine/Blueprints/Overview:title%
-	[/PARAM]
-	[PARAM:description]
-		%Engine/Blueprints/Overview:description%
-	[/PARAM]
-	[PARAM:path]
-		[RELATIVE:Engine/Blueprints/Overview]
-	[/PARAM]
-[/OBJECT]
-[/VAR]
-
-[VAR:TopicCompact]
-[OBJECT:TopicCompact]
-	[PARAM:image]
-		![%Engine/Blueprints/Overview:title%](blueprint_topic.png)
-	[/PARAM]
-	[PARAM:icon]
-		![](%ROOT%/anim_icon.png)(convert:false)
-	[/PARAM]
-	[PARAM:title]
-		%Engine/Blueprints/Overview:title%
-	[/PARAM]
-	[PARAM:description]
-		%Engine/Blueprints/Overview:description%
-	[/PARAM]
-	[PARAM:path]
-		[RELATIVE:Engine/Blueprints/Overview]
-	[/PARAM]
-[/OBJECT]
-[/VAR]
 
 [TOC (start:2)]
 
@@ -152,7 +112,6 @@ _ブループリント_ にエクスポーズされた全ての機能を実行�
 
 ブループリントの _モード_ は、ウィンドウの表示状態を決定します。Level ブループリントにはグラフモードだけしかありませんが、Blueprint クラスには次の 3 つのモードがあります。
 
-* **[グラフ モード](Engine/Blueprints\Editor\Modes\GraphPanel)** - レベルのゲームプレイ機能を作成するために、スクリプティング ノードを追加したり接続するモードです。
 * **[デフォルト モード](Engine/Blueprints\Editor\Modes\Defaults)** - ブループリントのデフォルトを設定するモードです。
 * **[コンポーネントモード](Engine/Blueprints\Editor\Modes\Components)** - ブループリントを構成するコンポーネントを追加、除去、そして修正するモードです。
 

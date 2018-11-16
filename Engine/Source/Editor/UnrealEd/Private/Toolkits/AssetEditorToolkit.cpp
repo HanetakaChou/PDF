@@ -9,7 +9,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "EditorStyleSet.h"
-#include "EditorStyleSettings.h"
+#include "Classes/EditorStyleSettings.h"
 #include "EditorReimportHandler.h"
 #include "FileHelpers.h"
 #include "Toolkits/SStandaloneAssetEditorToolkitHost.h"
@@ -229,7 +229,8 @@ void FAssetEditorToolkit::InitAssetEditor( const EToolkitMode::Type Mode, const 
 
 	ToolkitCommands->MapAction(
 		FAssetEditorCommonCommands::Get().ReimportAsset,
-		FExecuteAction::CreateSP( this, &FAssetEditorToolkit::Reimport_Execute ) );
+		FExecuteAction::CreateSP( this, &FAssetEditorToolkit::Reimport_Execute ),
+		FCanExecuteAction::CreateSP(this, &FAssetEditorToolkit::CanReimport));
 
 	FGlobalEditorCommonCommands::MapActions(ToolkitCommands);
 
@@ -1104,10 +1105,19 @@ void FAssetEditorToolkit::RemoveAllToolbarWidgets()
 
 void FAssetEditorToolkit::FGCEditingObjects::AddReferencedObjects(FReferenceCollector& Collector)
 {
+	// Remove null objects as a safe guard against assets being forcibly GC'd
+	TArray<UObject*> EditingObjectsCopy = OwnerToolkit.EditingObjects;
 	Collector.AddReferencedObjects(OwnerToolkit.EditingObjects);
+
+	OwnerToolkit.EditingObjects.Reset();
+	for (UObject* Object : EditingObjectsCopy)
+	{
+		if (Object != nullptr)
+		{
+			OwnerToolkit.EditingObjects.Add(Object);
+		}
+	}
 }
-
-
 
 
 TSharedPtr<FExtender> FExtensibilityManager::GetAllExtenders()

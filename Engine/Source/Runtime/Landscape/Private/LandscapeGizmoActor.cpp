@@ -59,10 +59,11 @@ public:
 	{}
 
 	// FMaterialRenderProxy interface.
-	virtual const class FMaterial* GetMaterial(ERHIFeatureLevel::Type InFeatureLevel) const
+	virtual void GetMaterialWithFallback(ERHIFeatureLevel::Type InFeatureLevel, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial) const override
 	{
-		return Parent->GetMaterial(InFeatureLevel);
+		Parent->GetMaterialWithFallback(InFeatureLevel, OutMaterialRenderProxy, OutMaterial);
 	}
+
 	virtual bool GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
 	{
 		if (ParameterInfo.Name == FName(TEXT("AlphaScaleBias")))
@@ -134,23 +135,23 @@ public:
 		return reinterpret_cast<size_t>(&UniquePointer);
 	}
 
-	FMatrix MeshRT;
 	FVector XAxis, YAxis, Origin;
-	FVector FrustumVerts[8];
 	float SampleSizeX, SampleSizeY;
+	bool bHeightmapRendering;
+	HHitProxy* HitProxy;
+	FMatrix MeshRT;
+	FVector FrustumVerts[8];
 	TArray<FVector> SampledPositions;
 	TArray<FVector> SampledNormals;
-	bool bHeightmapRendering;
 	FLandscapeGizmoMeshRenderProxy* HeightmapRenderProxy;
 	FMaterialRenderProxy* GizmoRenderProxy;
-	HHitProxy* HitProxy;
 
 	FLandscapeGizmoRenderSceneProxy(const ULandscapeGizmoRenderComponent* InComponent):
 		FPrimitiveSceneProxy(InComponent),
 		bHeightmapRendering(false),
+		HitProxy(nullptr),
 		HeightmapRenderProxy(nullptr),
-		GizmoRenderProxy(nullptr),
-		HitProxy(nullptr)
+		GizmoRenderProxy(nullptr)
 	{
 #if WITH_EDITOR	
 		ALandscapeGizmoActiveActor* Gizmo = Cast<ALandscapeGizmoActiveActor>(InComponent->GetOwner());
@@ -530,8 +531,8 @@ ALandscapeGizmoActiveActor::ALandscapeGizmoActiveActor(const FObjectInitializer&
 	DataType = LGT_None;
 	SampleSizeX = 0;
 	SampleSizeY = 0;
-	CachedWidth = 0.0f;
-	CachedHeight = 0.0f;
+	CachedWidth = 1.0f;
+	CachedHeight = 1.0f;
 	CachedScaleXY = 1.0f;
 #endif // WITH_EDITORONLY_DATA
 }

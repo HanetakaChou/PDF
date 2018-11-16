@@ -25,7 +25,7 @@
 #include "DerivedDataCacheInterface.h"
 #include "EngineModule.h"
 #include "ShaderCompiler.h"
-#include "RenderingObjectVersion.h"
+#include "UObject/RenderingObjectVersion.h"
 #include "Engine/SphereReflectionCapture.h"
 #include "Components/SphereReflectionCaptureComponent.h"
 #include "Components/DrawSphereComponent.h"
@@ -44,6 +44,8 @@
 
 // ES3.0+ devices support seamless cubemap filtering, averaging edges will produce artifacts on those devices
 #define MOBILE_AVERAGE_CUBEMAP_EDGES 0 
+
+DEFINE_LOG_CATEGORY_STATIC(LogReflectionCaptureComponent, Log, All);
 
 /** 
  * Size of all reflection captures.
@@ -89,10 +91,15 @@ FReflectionCaptureMapBuildData* UReflectionCaptureComponent::GetMapBuildData() c
 			{
 				MapBuildData = OwnerLevel->MapBuildData;
 			}
-
+			 
 			if (MapBuildData)
 			{
-				return MapBuildData->GetReflectionCaptureBuildData(MapBuildDataId);
+				FReflectionCaptureMapBuildData* ReflectionBuildData = MapBuildData->GetReflectionCaptureBuildData(MapBuildDataId);
+
+				if (ReflectionBuildData && ReflectionBuildData->CubemapSize == UReflectionCaptureComponent::GetReflectionCaptureSize())
+				{
+					return ReflectionBuildData;
+				}
 			}
 		}
 	}
@@ -800,6 +807,9 @@ void UReflectionCaptureComponent::PostInitProperties()
 
 	// Gets overwritten with saved value (if being loaded from disk)
 	FPlatformMisc::CreateGuid(MapBuildDataId);
+#if WITH_EDITOR
+	bMapBuildDataIdLoaded = false;
+#endif
 
 	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
 	{
@@ -900,9 +910,26 @@ void UReflectionCaptureComponent::Serialize(FArchive& Ar)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UReflectionCaptureComponent::Serialize"), STAT_ReflectionCaptureComponent_Serialize, STATGROUP_LoadTime);
 
+#if WITH_EDITOR
+	FGuid OldMapBuildDataId = MapBuildDataId;
+#endif
+
 	Super::Serialize(Ar);
 
 	SerializeLegacyData(Ar);
+
+#if WITH_EDITOR
+	// Check to see if we overwrote the MapBuildDataId with a loaded one
+	if (Ar.IsLoading())
+	{
+		bMapBuildDataIdLoaded = OldMapBuildDataId != MapBuildDataId;
+	}
+	else
+	{
+		// If we're cooking, display a deterministic cook warning if we didn't overwrite the generated GUID at load time
+		UE_CLOG(Ar.IsCooking() && !GetOutermost()->HasAnyPackageFlags(PKG_CompiledIn) && !bMapBuildDataIdLoaded, LogReflectionCaptureComponent, Warning, TEXT("%s contains a legacy UReflectionCaptureComponent and is being non-deterministically cooked - please resave the asset and recook."), *GetOutermost()->GetName());
+	}
+#endif
 }
 
 FReflectionCaptureProxy* UReflectionCaptureComponent::CreateSceneProxy()
@@ -1012,13 +1039,16 @@ void UReflectionCaptureComponent::UpdateReflectionCaptureContents(UWorld* WorldT
 		// Note: this will also prevent uploads of cubemaps from DDC, which is unintentional
 		&& (GShaderCompilingManager == NULL || !GShaderCompilingManager->IsCompiling()))
 	{
+		//guarantee that all render proxies are up to date before kicking off this render
+		WorldToUpdate->SendAllEndOfFrameUpdates();
+
 		TArray<UReflectionCaptureComponent*> WorldCombinedCaptures;
 
 		for (int32 CaptureIndex = ReflectionCapturesToUpdate.Num() - 1; CaptureIndex >= 0; CaptureIndex--)
 		{
 			UReflectionCaptureComponent* CaptureComponent = ReflectionCapturesToUpdate[CaptureIndex];
 
-			if (!CaptureComponent->GetOwner() || WorldToUpdate->ContainsActor(CaptureComponent->GetOwner()))
+			if (CaptureComponent->GetWorld() == WorldToUpdate)
 			{
 				WorldCombinedCaptures.Add(CaptureComponent);
 				ReflectionCapturesToUpdate.RemoveAt(CaptureIndex);
@@ -1032,7 +1062,7 @@ void UReflectionCaptureComponent::UpdateReflectionCaptureContents(UWorld* WorldT
 			{
 				UReflectionCaptureComponent* CaptureComponent = ReflectionCapturesToUpdateForLoad[CaptureIndex];
 
-				if (!CaptureComponent->GetOwner() || WorldToUpdate->ContainsActor(CaptureComponent->GetOwner()))
+				if (CaptureComponent->GetWorld() == WorldToUpdate)
 				{
 					WorldCombinedCaptures.Add(CaptureComponent);
 					ReflectionCapturesToUpdateForLoad.RemoveAt(CaptureIndex);

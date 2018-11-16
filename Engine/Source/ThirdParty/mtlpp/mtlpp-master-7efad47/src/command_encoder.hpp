@@ -11,6 +11,7 @@
 #include "declare.hpp"
 #include "imp_CommandEncoder.hpp"
 #include "ns.hpp"
+#include "command_buffer_fence.hpp"
 
 MTLPP_BEGIN
 
@@ -18,7 +19,7 @@ namespace mtlpp
 {
     class Device;
 	
-	enum class ResourceUsage
+	enum ResourceUsage : NSUInteger
 	{
 		Read   = 1 << 0,
 		Write  = 1 << 1,
@@ -27,14 +28,29 @@ namespace mtlpp
 	MTLPP_AVAILABLE(10_13, 11_0);
 
 	template<typename T>
-	class CommandEncoder : public ns::Object<T>
+	class MTLPP_EXPORT CommandEncoder : public ns::Object<T>
     {
+#if MTLPP_CONFIG_VALIDATE
+		CommandBufferFence CmdBufferFence;
+#endif
     public:
-        CommandEncoder() { }
-        CommandEncoder(T handle) : ns::Object<T>(handle) { }
+		CommandEncoder(ns::Ownership const retain = ns::Ownership::Retain);
+		CommandEncoder(T handle, ns::Ownership const retain = ns::Ownership::Retain, typename ns::Object<T>::ITable* cache = nullptr);
+		
+#if MTLPP_CONFIG_VALIDATE
+		CommandEncoder(const CommandEncoder& rhs);
+		CommandEncoder& operator=(const CommandEncoder& rhs);
+#if MTLPP_CONFIG_RVALUE_REFERENCES
+		CommandEncoder(CommandEncoder&& rhs);
+		CommandEncoder& operator=(CommandEncoder&& rhs);
+#endif
+		void SetCommandBufferFence(CommandBufferFence& Fence);
+		CommandBufferFence& GetCommandBufferFence(void);
+		CommandBufferFence const& GetCommandBufferFence(void) const;
+#endif
 
-        Device     GetDevice() const;
-        ns::String GetLabel() const;
+        ns::AutoReleased<Device>     GetDevice() const;
+        ns::AutoReleased<ns::String> GetLabel() const;
 
         void SetLabel(const ns::String& label);
 

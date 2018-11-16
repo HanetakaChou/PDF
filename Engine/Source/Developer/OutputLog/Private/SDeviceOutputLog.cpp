@@ -17,11 +17,8 @@
 
 static bool IsSupportedPlatform(ITargetPlatform* Platform)
 {
-	static const FName AndroidPlaftomName("Android"); // TODO: currently implemented only for Android 
-	
 	check(Platform);
-	const auto& PlatfromInfo = Platform->GetPlatformInfo();
-	return PlatfromInfo.IsVanilla() && PlatfromInfo.VanillaPlatformName == AndroidPlaftomName;
+	return Platform->SupportsFeature( ETargetPlatformFeatures::DeviceOutputLog );
 }
 
 
@@ -196,7 +193,7 @@ void SDeviceOutputLog::HandleTargetPlatformDeviceLost(ITargetDeviceRef LostDevic
 {
 	FTargetDeviceId LostDeviceId = LostDevice->GetId();
 	
-	if (CurrentDevicePtr.IsValid() && CurrentDevicePtr->DeviceId == LostDeviceId)
+	if (CurrentDevicePtr.IsValid() && CurrentDevicePtr->DeviceId.GetDeviceName() == LostDeviceId.GetDeviceName())
 	{
 		// Kill device output object, but do not clean up output in the window
 		CurrentDeviceOutputPtr.Reset();
@@ -205,7 +202,7 @@ void SDeviceOutputLog::HandleTargetPlatformDeviceLost(ITargetDeviceRef LostDevic
 	// Should not do it, but what if someone somewhere holds strong reference to a lost device?
 	for (const TSharedPtr<FTargetDeviceEntry>& EntryPtr : DeviceList)
 	{
-		if (EntryPtr->DeviceId == LostDeviceId)
+		if (EntryPtr->DeviceId.GetDeviceName() == LostDeviceId.GetDeviceName())
 		{
 			EntryPtr->DeviceWeakPtr = nullptr;
 		}
@@ -217,14 +214,14 @@ void SDeviceOutputLog::HandleTargetPlatformDeviceDiscovered(ITargetDeviceRef Dis
 	FTargetDeviceId DiscoveredDeviceId = DiscoveredDevice->GetId();
 
 	int32 ExistingEntryIdx = DeviceList.IndexOfByPredicate([&](const TSharedPtr<FTargetDeviceEntry>& Other) {
-		return (Other->DeviceId == DiscoveredDeviceId);
+		return (Other->DeviceId.GetDeviceName() == DiscoveredDeviceId.GetDeviceName());
 	});
 
 	if (DeviceList.IsValidIndex(ExistingEntryIdx))
 	{
 		DeviceList[ExistingEntryIdx]->DeviceWeakPtr = DiscoveredDevice;
 		
-		if (CurrentDevicePtr.IsValid() && CurrentDevicePtr->DeviceId == DeviceList[ExistingEntryIdx]->DeviceId)
+		if (CurrentDevicePtr.IsValid() && CurrentDevicePtr->DeviceId.GetDeviceName() == DeviceList[ExistingEntryIdx]->DeviceId.GetDeviceName())
 		{
 			CurrentDeviceOutputPtr = DiscoveredDevice->CreateDeviceOutputRouter(this);
 		}
@@ -237,17 +234,40 @@ void SDeviceOutputLog::HandleTargetPlatformDeviceDiscovered(ITargetDeviceRef Dis
 
 void SDeviceOutputLog::AddDeviceEntry(ITargetDeviceRef TargetDevice)
 {
+	if (FindDeviceEntry(TargetDevice->GetId()))
+	{
+		return;
+	}
+	const FString DummyIOSDeviceName(FString::Printf(TEXT("All_iOS_On_%s"), FPlatformProcess::ComputerName()));
+	const FString DummyTVOSDeviceName(FString::Printf(TEXT("All_tvOS_On_%s"), FPlatformProcess::ComputerName()));
+	if (TargetDevice->GetId().GetDeviceName().Equals(DummyIOSDeviceName, ESearchCase::IgnoreCase) ||
+		TargetDevice->GetId().GetDeviceName().Equals(DummyTVOSDeviceName, ESearchCase::IgnoreCase))
+	{
+		return;
+	}
 	using namespace PlatformInfo;
 	FName DeviceIconStyleName = TargetDevice->GetTargetPlatform().GetPlatformInfo().GetIconStyleName(EPlatformIconSize::Normal);
 	
 	TSharedPtr<FTargetDeviceEntry> DeviceEntry = MakeShareable(new FTargetDeviceEntry());
 	
 	DeviceEntry->DeviceId = TargetDevice->GetId();
-	DeviceEntry->DeviceName = TargetDevice->GetName();
 	DeviceEntry->DeviceIconBrush = FEditorStyle::GetBrush(DeviceIconStyleName);
 	DeviceEntry->DeviceWeakPtr = TargetDevice;
 	
 	DeviceList.Add(DeviceEntry);
+}
+
+bool SDeviceOutputLog::FindDeviceEntry(FTargetDeviceId InDeviceId)
+{
+	// Should not do it, but what if someone somewhere holds strong reference to a lost device?
+	for (const TSharedPtr<FTargetDeviceEntry>& EntryPtr : DeviceList)
+	{
+		if (EntryPtr->DeviceId.GetDeviceName() == InDeviceId.GetDeviceName())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 void SDeviceOutputLog::OnDeviceSelectionChanged(FTargetDeviceEntryPtr DeviceEntry)
@@ -332,11 +352,13 @@ FText SDeviceOutputLog::GetTargetDeviceText(FTargetDeviceEntryPtr DeviceEntry) c
 		ITargetDevicePtr PinnedPtr = DeviceEntry->DeviceWeakPtr.Pin();
 		if (PinnedPtr.IsValid() && PinnedPtr->IsConnected())
 		{
-			return FText::FromString(DeviceEntry->DeviceName);
+			FString DeviceName = PinnedPtr->GetName();
+			return FText::FromString(DeviceName);
 		}
 		else
 		{
-			return FText::Format(NSLOCTEXT("OutputLog", "TargetDeviceOffline", "{0} (Offline)"), FText::FromString(DeviceEntry->DeviceName));
+			FString DeviceName = DeviceEntry->DeviceId.GetDeviceName();
+			return FText::Format(NSLOCTEXT("OutputLog", "TargetDeviceOffline", "{0} (Offline)"), FText::FromString(DeviceName));
 		}
 	}
 	else

@@ -59,8 +59,10 @@ public class UnrealEd : ModuleRules
 				"ViewportInteraction",
 				"VREditor",
 				"Persona",
-                "PhysicsAssetEditor",
-                "ClothingSystemEditorInterface",
+				"PhysicsAssetEditor",
+				"ClothingSystemEditorInterface",
+				"NavigationSystem",
+				"Media",
 			}
 		);
 
@@ -82,7 +84,6 @@ public class UnrealEd : ModuleRules
 				"EditorStyle",
 				"SourceControl",
 				"UnrealEdMessages",
-				"AIModule",
 				"GameplayDebugger",
 				"BlueprintGraph",
 				"Http",
@@ -93,7 +94,11 @@ public class UnrealEd : ModuleRules
 				"AudioEditor",
 				"NetworkFileSystem",
 				"UMG",
-			}
+				"NavigationSystem",
+                "MeshDescription",
+                "MeshBuilder",
+                "MaterialShaderQualitySettings"
+            }
 		);
 
 		PrivateDependencyModuleNames.AddRange(
@@ -105,10 +110,12 @@ public class UnrealEd : ModuleRules
 				"AppFramework",
 				"BlueprintGraph",
 				"CinematicCamera",
+				"CurveEditor",
 				"DesktopPlatform",
 				"LauncherPlatform",
 				"EditorStyle",
 				"EngineSettings",
+				"ImageWriteQueue",
 				"InputCore",
 				"InputBindingEditor",
 				"LauncherServices",
@@ -118,6 +125,7 @@ public class UnrealEd : ModuleRules
 				"PropertyEditor",
 				"Projects",
 				"RawMesh",
+				"MeshUtilitiesCommon",
 				"RenderCore",
 				"RHI",
 				"ShaderCore",
@@ -156,13 +164,15 @@ public class UnrealEd : ModuleRules
 				"ClothingSystemRuntime",
 				"ClothingSystemRuntimeInterface",
 				"PIEPreviewDeviceProfileSelector",
-			}
+				"PakFileUtilities",
+				"TimeManagement",
+            }
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]
 			{
-				"FontEditor",
+                "FontEditor",
 				"StaticMeshEditor",
 				"TextureEditor",
 				"Cascade",
@@ -183,7 +193,7 @@ public class UnrealEd : ModuleRules
 				"LevelEditor",
 				"PackagesDialog",
 				"Persona",
-                "PhysicsAssetEditor",
+				"PhysicsAssetEditor",
 				"ProjectLauncher",
 				"DeviceManager",
 				"SettingsEditor",
@@ -213,11 +223,12 @@ public class UnrealEd : ModuleRules
 				"HTML5PlatformEditor",
 				"PortalProxies",
 				"PortalServices",
-				"GeometryCacheEd",
 				"BlueprintNativeCodeGen",
 				"OverlayEditor",
 				"AnimationModifiers",
 				"ClothPainter",
+				"Media",
+				"TimeManagementEditor",
 			}
 		);
 
@@ -231,6 +242,11 @@ public class UnrealEd : ModuleRules
 			DynamicallyLoadedModuleNames.Add("AndroidPlatformEditor");
 		}
 
+		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			DynamicallyLoadedModuleNames.Add("LuminPlatformEditor");
+		}
+
 		CircularlyReferencedDependentModules.AddRange(
 			new string[]
 			{
@@ -238,7 +254,7 @@ public class UnrealEd : ModuleRules
 				"Kismet",
 				"AudioEditor",
 				"ViewportInteraction",
-				"VREditor"
+				"VREditor",
 			}
 		);
 
@@ -246,7 +262,9 @@ public class UnrealEd : ModuleRules
 		// Add include directory for Lightmass
 		PublicIncludePaths.Add("Programs/UnrealLightmass/Public");
 
-		PublicIncludePathModuleNames.AddRange(
+        PublicIncludePaths.Add("Developer/Android/AndroidDeviceDetection/Public/Interfaces");
+
+        PublicIncludePathModuleNames.AddRange(
 			new string[] {
 				"CollectionManager",
 				"BlueprintGraph",
@@ -254,10 +272,14 @@ public class UnrealEd : ModuleRules
 				"MeshUtilities",
 				"AssetTools",
 				"KismetCompiler",
-			}
+				"NavigationSystem",
+				"GameplayTasks",
+				"AIModule",
+            }
 			);
 
-		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
+
+        if ((Target.Platform == UnrealTargetPlatform.Win64) ||
 			(Target.Platform == UnrealTargetPlatform.Win32))
 		{
 			PublicDependencyModuleNames.Add("XAudio2");
@@ -283,7 +305,7 @@ public class UnrealEd : ModuleRules
 			"FreeType2"
 		);
 
-		SetupModulePhysXAPEXSupport(Target);
+		SetupModulePhysicsSupport(Target);
 
 		if (Target.bCompileRecast)
 		{

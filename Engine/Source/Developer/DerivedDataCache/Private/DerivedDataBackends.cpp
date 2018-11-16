@@ -481,9 +481,8 @@ public:
 		FString EnvPathOverride;
 		if( FParse::Value( Entry, TEXT("EnvPathOverride="), EnvPathOverride ) )
 		{
-			TCHAR FilesystemCachePathEnv[256];
-			FPlatformMisc::GetEnvironmentVariable( *EnvPathOverride, FilesystemCachePathEnv, ARRAY_COUNT(FilesystemCachePathEnv) );
-			if( FilesystemCachePathEnv[0] )
+			FString FilesystemCachePathEnv = FPlatformMisc::GetEnvironmentVariable( *EnvPathOverride );
+			if( FilesystemCachePathEnv.Len() > 0 )
 			{
 				Path = FilesystemCachePathEnv;
 				UE_LOG( LogDerivedDataCache, Log, TEXT("Found environment variable %s=%s"), *EnvPathOverride, *Path );
@@ -579,7 +578,7 @@ public:
 			}
 			else
 			{
-				UE_LOG( LogDerivedDataCache, Warning, TEXT("%s data cache path was not usable, will not use it."), NodeName );
+				UE_LOG( LogDerivedDataCache, Warning, TEXT("%s data cache path (%s) was not usable, will not use it."), NodeName, *Path );
 			}
 		}
 

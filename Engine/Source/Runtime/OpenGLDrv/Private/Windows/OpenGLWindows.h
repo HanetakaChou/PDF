@@ -10,12 +10,12 @@
 	#error "OpenGLWindows.h included for a platform other than Windows."
 #endif
 
-#include "WindowsHWrapper.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <GL/glcorearb.h>
 	#include <GL/glext.h>
 	#include <GL/wglext.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
 /** List all OpenGL entry points used by Unreal that must be loaded from opengl32.dll */
 #define ENUM_GL_ENTRYPOINTS_DLL(EnumMacro) \
@@ -327,7 +327,7 @@
 	EnumMacro(PFNGLPUSHDEBUGGROUPPROC, glPushDebugGroup)\
 	EnumMacro(PFNGLPOPDEBUGGROUPPROC, glPopDebugGroup)\
 	EnumMacro(PFNGLOBJECTLABELPROC, glObjectLabel)\
-	EnumMacro(PFNGLOBJECTLABELPROC, glObjectPtrLabel)\
+	EnumMacro(PFNGLOBJECTPTRLABELPROC, glObjectPtrLabel)\
 	EnumMacro(PFNGLPATCHPARAMETERIPROC, glPatchParameteri)\
 	EnumMacro(PFNGLBINDVERTEXBUFFERPROC, glBindVertexBuffer)\
 	EnumMacro(PFNGLVERTEXATTRIBFORMATPROC, glVertexAttribFormat)\
@@ -352,7 +352,7 @@
 	EnumMacro(PFNGLPUSHDEBUGGROUPPROC, glPushDebugGroupKHR)\
 	EnumMacro(PFNGLPOPDEBUGGROUPPROC, glPopDebugGroupKHR)\
 	EnumMacro(PFNGLOBJECTLABELPROC, glObjectLabelKHR)\
-	EnumMacro(PFNGLOBJECTLABELPROC, glObjectPtrLabelKHR)\
+	EnumMacro(PFNGLOBJECTPTRLABELPROC, glObjectPtrLabelKHR)\
 	EnumMacro(PFNGLDEBUGMESSAGECALLBACKARBPROC,glDebugMessageCallbackKHR) \
 	EnumMacro(PFNGLDEBUGMESSAGECONTROLARBPROC,glDebugMessageControlKHR) \
 	EnumMacro(PFNGLPATCHPARAMETERIPROC, glPatchParameteriEXT)\
@@ -559,7 +559,7 @@ struct FWindowsOpenGL : public FOpenGL4
 		glGetProgramBinary(Program, BufSize, Length, BinaryFormat, Binary);
 	}
 
-	static FORCEINLINE void ProgramBinary(GLuint Program, GLenum BinaryFormat, void *Binary, GLsizei Length)
+	static FORCEINLINE void ProgramBinary(GLuint Program, GLenum BinaryFormat, const void *Binary, GLsizei Length)
 	{
 		glProgramBinary(Program, BinaryFormat, Binary, Length);
 	}

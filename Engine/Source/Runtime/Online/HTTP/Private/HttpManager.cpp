@@ -1,21 +1,28 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "HttpManager.h"
+#include "HttpModule.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeLock.h"
 #include "Http.h"
+#include "Misc/Guid.h"
 
 #include "HttpThread.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CommandLine.h"
+
+#include "Stats/Stats.h"
 
 // FHttpManager
 
 FCriticalSection FHttpManager::RequestLock;
 
 FHttpManager::FHttpManager()
-	:	FTickerObjectBase(0.0f)
-	,	DeferredDestroyDelay(10.0f)
+	: FTickerObjectBase(0.0f)
+	, Thread(nullptr)
+	, CorrelationIdMethod(FHttpManager::GetDefaultCorrelationIdMethod())
+	, DeferredDestroyDelay(10.0f)
 {
 }
 
@@ -30,8 +37,65 @@ FHttpManager::~FHttpManager()
 
 void FHttpManager::Initialize()
 {
-	Thread = CreateHttpThread();
-	Thread->StartThread();
+	if (FPlatformHttp::UsesThreadedHttp())
+	{
+		Thread = CreateHttpThread();
+		Thread->StartThread();
+	}
+}
+
+void FHttpManager::SetCorrelationIdMethod(TFunction<FString()> InCorrelationIdMethod)
+{
+	check(InCorrelationIdMethod);
+	CorrelationIdMethod = MoveTemp(InCorrelationIdMethod);
+}
+
+FString FHttpManager::CreateCorrelationId() const
+{
+	return CorrelationIdMethod();
+}
+
+bool FHttpManager::IsDomainAllowed(const FString& Url) const
+{
+#if !UE_BUILD_SHIPPING
+#if !(UE_GAME || UE_SERVER)
+	// Whitelist is opt-in in non-shipping non-game/server builds
+	static const bool bEnableWhitelist = FParse::Param(FCommandLine::Get(), TEXT("EnableHttpWhitelist"));
+	if (!bEnableWhitelist)
+	{
+		return true;
+	}
+#else
+	// Allow non-shipping game/server builds to disable the whitelist check
+	static const bool bDisableWhitelist = FParse::Param(FCommandLine::Get(), TEXT("DisableHttpWhitelist"));
+	if (bDisableWhitelist)
+	{
+		return true;
+	}
+#endif
+#endif // !UE_BUILD_SHIPPING
+
+	// check to see if the Domain is white-listed (or no white-list specified)
+	const TArray<FString>& AllowedDomains = FHttpModule::Get().GetAllowedDomains();
+	if (AllowedDomains.Num() > 0)
+	{
+		const FString Domain = FPlatformHttp::GetUrlDomain(Url);
+		for (const FString& AllowedDomain : AllowedDomains)
+		{
+			if (Domain.EndsWith(AllowedDomain))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+	return true;
+}
+
+/*static*/
+TFunction<FString()> FHttpManager::GetDefaultCorrelationIdMethod()
+{
+	return []{ return FGuid::NewGuid().ToString(); };
 }
 
 FHttpThread* FHttpManager::CreateHttpThread()
@@ -86,10 +150,13 @@ void FHttpManager::Flush(bool bShutdown)
 				UE_LOG(LogHttp, Display, TEXT("Sleeping 0.5s to wait for %d outstanding Http requests."), Requests.Num());
 				FPlatformProcess::Sleep(0.5f);
 			}
+			else if (Thread)
+			{
+				Thread->Tick();
+			}
 			else
 			{
-				check(Thread);
-				Thread->Tick();
+				check(!FPlatformHttp::UsesThreadedHttp());
 			}
 		}
 	}
@@ -97,6 +164,8 @@ void FHttpManager::Flush(bool bShutdown)
 
 bool FHttpManager::Tick(float DeltaSeconds)
 {
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FHttpManager_Tick);
+
 	FScopeLock ScopeLock(&RequestLock);
 
 	// Tick each active request
@@ -116,17 +185,20 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		}		
 	}
 
-	TArray<IHttpThreadedRequest*> CompletedThreadedRequests;
-	Thread->GetCompletedRequests(CompletedThreadedRequests);
-
-	// Finish and remove any completed requests
-	for (IHttpThreadedRequest* CompletedRequest : CompletedThreadedRequests)
+	if (Thread)
 	{
-		// Keep track of requests that have been removed to be destroyed later
-		PendingDestroyRequests.AddUnique(FRequestPendingDestroy(DeferredDestroyDelay,CompletedRequest->AsShared()));
+		TArray<IHttpThreadedRequest*> CompletedThreadedRequests;
+		Thread->GetCompletedRequests(CompletedThreadedRequests);
 
-		CompletedRequest->FinishRequest();
-		Requests.Remove(CompletedRequest->AsShared());
+		// Finish and remove any completed requests
+		for (IHttpThreadedRequest* CompletedRequest : CompletedThreadedRequests)
+		{
+			// Keep track of requests that have been removed to be destroyed later
+			PendingDestroyRequests.AddUnique(FRequestPendingDestroy(DeferredDestroyDelay, CompletedRequest->AsShared()));
+
+			CompletedRequest->FinishRequest();
+			Requests.Remove(CompletedRequest->AsShared());
+		}
 	}
 	// keep ticking
 	return true;
@@ -151,6 +223,7 @@ void FHttpManager::RemoveRequest(const TSharedRef<IHttpRequest>& Request)
 
 void FHttpManager::AddThreadedRequest(const TSharedRef<IHttpThreadedRequest>& Request)
 {
+	check(Thread);
 	{
 		FScopeLock ScopeLock(&RequestLock);
 		Requests.Add(Request);
@@ -160,6 +233,7 @@ void FHttpManager::AddThreadedRequest(const TSharedRef<IHttpThreadedRequest>& Re
 
 void FHttpManager::CancelThreadedRequest(const TSharedRef<IHttpThreadedRequest>& Request)
 {
+	check(Thread);
 	Thread->CancelRequest(&Request.Get());
 }
 
@@ -190,4 +264,9 @@ void FHttpManager::DumpRequests(FOutputDevice& Ar) const
 		Ar.Logf(TEXT("	verb=[%s] url=[%s] status=%s"),
 			*Request->GetVerb(), *Request->GetURL(), EHttpRequestStatus::ToString(Request->GetStatus()));
 	}
+}
+
+bool FHttpManager::SupportsDynamicProxy() const
+{
+	return false;
 }

@@ -13,7 +13,10 @@
 #include "UObject/SoftObjectPath.h"
 #include "Engine/World.h"
 #include "Misc/BufferedOutputDevice.h"
+#include "Misc/FrameRate.h"
 #include "Engine.generated.h"
+
+#define WITH_DYNAMIC_RESOLUTION (!UE_SERVER)
 
 class AMatineeActor;
 class APlayerController;
@@ -35,10 +38,12 @@ class FSceneViewExtensions;
 class IStereoRendering;
 class SViewport;
 class UEditorEngine;
+class UEngineCustomTimeStep;
 class UGameUserSettings;
 class UGameViewportClient;
 class ULocalPlayer;
 class UNetDriver;
+class UTimecodeProvider;
 
 #if ALLOW_DEBUG_FILES
 class FFineGrainedPerformanceTracker;
@@ -105,6 +110,9 @@ enum EConsoleType
 /** Status of dynamic resolution that depends on project setting cvar, game user settings, and pause */
 enum class EDynamicResolutionStatus
 {
+	// Dynamic resolution is not supported by this platform.
+	Unsupported,
+
 	// Dynamic resolution is disabled by project setting cvar r.DynamicRes.OperationMode=0 or disabled by game user
 	// settings with r.DynamicRes.OperationMode=1.
 	Disabled,
@@ -113,7 +121,24 @@ enum class EDynamicResolutionStatus
 	Paused,
 
 	// Dynamic resolution is currently enabled.
-	Enabled
+	Enabled,
+
+	// Forced enabled at static resolution fraction for profiling purpose with r.DynamicRes.TestScreenPercentage.
+	DebugForceEnabled,
+};
+
+/** Information about the state of dynamic resolution. */
+struct FDynamicResolutionStateInfos
+{
+	// Status of dynamic resolution.
+	EDynamicResolutionStatus Status;
+
+	// Approximation of the resolution fraction being applied. This is only an approximation because
+	// of non (and unecessary) thread safety of this value between game thread, and render thread.
+	float ResolutionFractionApproximation;
+
+	// Maximum resolution fraction set, always MaxResolutionFraction >= ResolutionFractionApproximation.
+	float ResolutionFractionUpperBound;
 };
 
 
@@ -255,7 +280,7 @@ struct FNamedNetDriver
  *  new worlds.
  *
  *	FWorldContext should remain internal to the UEngine classes. Outside code should not keep pointers or try to manage FWorldContexts directly.
- *	Outside code can steal deal with UWorld*, and pass UWorld*s into Engine level functions. The Engine code can look up the relevant context 
+ *	Outside code can still deal with UWorld*, and pass UWorld*s into Engine level functions. The Engine code can look up the relevant context 
  *	for a given UWorld*.
  *
  *  For convenience, FWorldContext can maintain outside pointers to UWorld*s. For example, PIE can tie UWorld* UEditorEngine::PlayWorld to the PIE
@@ -336,6 +361,9 @@ struct FWorldContext
 	/** The Prefix in front of PIE level names, empty is default */
 	FString	PIEPrefix;
 
+	/** The feature level that PIE world should use */
+	ERHIFeatureLevel::Type PIEWorldFeatureLevel;
+
 	/** Is this running as a dedicated server */
 	bool	RunAsDedicated;
 
@@ -385,6 +413,7 @@ struct FWorldContext
 		, GameViewport(nullptr)
 		, OwningGameInstance(nullptr)
 		, PIEInstance(INDEX_NONE)
+		, PIEWorldFeatureLevel(ERHIFeatureLevel::Num)
 		, RunAsDedicated(false)
 		, bWaitingOnOnlineSubsystem(false)
 		, AudioDeviceHandle(INDEX_NONE)
@@ -595,6 +624,8 @@ enum class EFrameHitchType: uint8;
 DECLARE_MULTICAST_DELEGATE_TwoParams(FEngineHitchDetectedDelegate, EFrameHitchType /*HitchType*/, float /*HitchDurationInSeconds*/);
 
 
+DECLARE_MULTICAST_DELEGATE(FPreRenderDelegate);
+
 /**
  * Abstract base class of all Engine classes, responsible for management of systems critical to editor or game systems.
  * Also defines default classes for certain engine systems.
@@ -710,7 +741,14 @@ public:
 
 	/** The class for NavigationSystem **/
 	UPROPERTY()
-	TSubclassOf<class UNavigationSystem>  NavigationSystemClass;
+	TSubclassOf<class UNavigationSystemBase>  NavigationSystemClass;
+
+	UPROPERTY(globalconfig, noclear, meta = (MetaClass = "NavigationSystem", DisplayName = "Navigation System Config Class"))
+	FSoftClassPath NavigationSystemConfigClassName;
+
+	/** The class for NavigationSystem **/
+	UPROPERTY()
+	TSubclassOf<class UNavigationSystemConfig>  NavigationSystemConfigClass;
 	
 	/** Name of behavior tree manager class */
 	UPROPERTY(globalconfig, noclear, meta=(MetaClass="AvoidanceManager", DisplayName="Avoidance Manager Class"))
@@ -1065,6 +1103,9 @@ public:
 	UPROPERTY(globalconfig)
 	float MaxES2PixelShaderAdditiveComplexityCount;
 
+	UPROPERTY(globalconfig)
+	float MaxES3PixelShaderAdditiveComplexityCount;
+
 	/** Range for the lightmap density view mode. */
 	/** Minimum lightmap density value for coloring. */
 	UPROPERTY(globalconfig)
@@ -1237,17 +1278,72 @@ public:
 	uint32 bSmoothFrameRate:1;
 
 	/** Whether to use a fixed framerate. */
-	UPROPERTY(config, EditAnywhere, Category = Framerate)
+	UPROPERTY(config, EditAnywhere, Category=Framerate)
 	uint32 bUseFixedFrameRate : 1;
 	
 	/** The fixed framerate to use. */
-	UPROPERTY(config, EditAnywhere, Category = Framerate, meta=(EditCondition="bUseFixedFrameRate", ClampMin = "15.0"))
+	UPROPERTY(config, EditAnywhere, Category=Framerate, meta=(EditCondition="bUseFixedFrameRate", ClampMin = "15.0"))
 	float FixedFrameRate;
 
 	/** Range of framerates in which smoothing will kick in */
 	UPROPERTY(config, EditAnywhere, Category=Framerate, meta=(UIMin=0, UIMax=200, EditCondition="!bUseFixedFrameRate"))
 	FFloatRange SmoothedFrameRateRange;
 
+private:
+	/** Control how the Engine process the Framerate/Timestep */
+	UPROPERTY(transient)
+	UEngineCustomTimeStep* DefaultCustomTimeStep;
+
+	/** Control how the Engine process the Framerate/Timestep */
+	UPROPERTY(transient)
+	UEngineCustomTimeStep* CurrentCustomTimeStep;
+
+public:
+	/**
+	 * Override how the Engine process the Framerate/Timestep.
+	 * This class will be responsible of updating the application Time and DeltaTime.
+	 * Can be used to synchronize the engine with another process (gen-lock).
+	 */
+	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Framerate, meta=(MetaClass="EngineCustomTimeStep", DisplayName="Custom TimeStep", ConfigRestartRequired=true))
+	FSoftClassPath CustomTimeStepClassName;
+
+private:
+	/**
+	 * Default timecode provider that will be used when no custom provider is set.
+	 * This is expected to be valid throughout the entire life of the application.
+	 */
+	UPROPERTY(transient)
+	UTimecodeProvider* DefaultTimecodeProvider;
+
+	UPROPERTY(transient)
+	UTimecodeProvider* CustomTimecodeProvider;
+
+public:
+
+	/**
+	 * Allows UEngine subclasses a chance to override the DefaultTimecodeProvider class.
+	 * This must be set before InitializeObjectReferences is called.
+	 * This is intentionally protected and not exposed to config.
+	 */
+	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="DefaultTimecodeProvider", ConfigRestartRequired=true))
+	FSoftClassPath DefaultTimecodeProviderClassName;
+
+	/**
+	 * Override the CustomTimecodeProvider when the engine is started.
+	 * When set, this does not change the DefaultTImecodeProvider class.
+	 * Instead, it will create an instance and set it as the CustomTimecodeProvider.
+	 */
+	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="TimecodeProvider", ConfigRestartRequired=true))
+	FSoftClassPath TimecodeProviderClassName;
+	
+	/**
+	 * Frame rate used to generated the engine Timecode's frame number when no TimecodeProvider are specified.
+	 * It doesn't control the Engine frame rate. The Engine can run faster or slower that the specified TimecodeFrameRate.
+	 */
+	UPROPERTY(config, EditAnywhere, Category=Timecode, Meta=(ConfigRestartRequired=true))
+	FFrameRate DefaultTimecodeFrameRate;
+
+public:
 	/** 
 	 * Whether we should check for more than N pawns spawning in a single frame.  
 	 * Basically, spawning pawns and all of their attachments can be slow.  And on consoles it
@@ -1389,10 +1485,6 @@ public:
 	UPROPERTY(transient)
 	TArray<struct FDropNoteInfo> PendingDroppedNotes;
 
-	/** Error correction data for replicating simulated physics (rigid bodies) */
-	UPROPERTY(config)
-	FRigidBodyErrorCorrection PhysicErrorCorrection;
-
 	/** Number of times to tick each client per second */
 	UPROPERTY(globalconfig)
 	float NetClientTicksPerSecond;
@@ -1502,6 +1594,11 @@ public:
 	void RegisterEndStreamingPauseRenderingDelegate( FEndStreamingPauseDelegate* InDelegate );
 	FEndStreamingPauseDelegate* EndStreamingPauseDelegate;
 
+
+	/** Delegate called just prior to rendering. */
+	FPreRenderDelegate PreRenderDelegate;
+	FPreRenderDelegate& GetPreRenderDelegate() { return PreRenderDelegate; }
+
 	/** 
 	 * Error message event relating to server travel failures 
 	 * 
@@ -1526,6 +1623,14 @@ public:
 	 */
 	DECLARE_EVENT_ThreeParams(UEngine, FOnNetworkLagStateChanged, UWorld*, UNetDriver*, ENetworkLagState::Type);
 	FOnNetworkLagStateChanged NetworkLagStateChangedEvent;
+
+	/**
+	 * Network burst or DDoS detected. Used for triggering analytics, mostly
+	 *
+	 * @param SeverityCategory	The name of the severity category the DDoS detection escalated to
+	 */
+	DECLARE_EVENT_ThreeParams(UEngine, FOnNetworkDDoSEscalation, UWorld*, UNetDriver*, FString /*SeverityCategory*/);
+	FOnNetworkDDoSEscalation NetworkDDoSEscalationEvent;
 
 	// for IsInitialized()
 	bool bIsInitialized;
@@ -1581,8 +1686,8 @@ public:
 	 */
 	void RestoreSelectedMaterialColor();
 
-	/** Returns the current status of dynamic resolution. */
-	EDynamicResolutionStatus GetDynamicResolutionStatus() const;
+	/** Queries informations about the current state dynamic resolution. */
+	void GetDynamicResolutionCurrentStateInfos(FDynamicResolutionStateInfos& OutInfos) const;
 
 	/** Pause dynamic resolution for this frame. */
 	void PauseDynamicResolution();
@@ -1590,7 +1695,7 @@ public:
 	/** Resume dynamic resolution for this frame. */
 	FORCEINLINE void ResumeDynamicResolution()
 	{
-		#if !UE_SERVER
+		#if WITH_DYNAMIC_RESOLUTION
 			bIsDynamicResolutionPaused = false;
 			UpdateDynamicResolutionStatus();
 		#endif // !UE_SERVER
@@ -1602,7 +1707,7 @@ public:
 	/** Get's global dynamic resolution state */
 	FORCEINLINE class IDynamicResolutionState* GetDynamicResolutionState()
 	{
-		#if UE_SERVER
+		#if !WITH_DYNAMIC_RESOLUTION
 			return nullptr;
 		#else
 			// Returns next's frame dynamic resolution state to keep game thread consistency after a ChangeDynamicResolutionStateAtNextFrame().
@@ -1619,7 +1724,7 @@ public:
 	/** Get the user setting for dynamic resolution. */
 	FORCEINLINE bool GetDynamicResolutionUserSetting() const
 	{
-		#if UE_SERVER
+		#if !WITH_DYNAMIC_RESOLUTION
 			return false;
 		#else
 			return bDynamicResolutionEnableUserSetting;
@@ -1629,15 +1734,15 @@ public:
 	/** Set the user setting for dynamic resolution. */
 	FORCEINLINE void SetDynamicResolutionUserSetting(bool Enable)
 	{
-		#if !UE_SERVER
+		#if WITH_DYNAMIC_RESOLUTION
 			bDynamicResolutionEnableUserSetting = Enable;
 			UpdateDynamicResolutionStatus();
 		#endif
 	}
 
 
-	#if !UE_SERVER
 private:
+	#if WITH_DYNAMIC_RESOLUTION
 		/** Last dynamic resolution event. */
 		EDynamicResolutionStateEvent LastDynamicResolutionEvent;
 
@@ -1682,6 +1787,9 @@ public:
 	/** Extensions that can modify view parameters on the render thread. */
 	TSharedPtr<FSceneViewExtensions> ViewExtensions;
 
+	/** Reference to the HMD device that is attached, if any */
+	TSharedPtr< class IEyeTracker, ESPMode::ThreadSafe > EyeTrackingDevice;
+	
 	/** Triggered when a world is added. */	
 	DECLARE_EVENT_OneParam( UEngine, FWorldAddedEvent , UWorld* );
 	
@@ -1774,8 +1882,6 @@ public:
 	/** Called by internal engine systems after a level actor has been requested to be renamed */
 	void BroadcastLevelComponentRequestRename(const UActorComponent* InComponent) { LevelComponentRequestRenameEvent.Broadcast(InComponent); }
 
-	
-
 	/** Delegate broadcast after UEditorEngine::Tick has been called (or UGameEngine::Tick in standalone) */
 	DECLARE_EVENT_OneParam(UEditorEngine, FPostEditorTick, float /* DeltaTime */);
 	FPostEditorTick& OnPostEditorTick() { return PostEditorTickEvent; }
@@ -1814,6 +1920,14 @@ public:
 	void BroadcastNetworkLagStateChanged(UWorld * World, UNetDriver *NetDriver, ENetworkLagState::Type LagType)
 	{
 		NetworkLagStateChangedEvent.Broadcast(World, NetDriver, LagType);
+	}
+
+	/** Event triggered when network burst or DDoS is detected */
+	FOnNetworkDDoSEscalation& OnNetworkDDoSEscalation() { return NetworkDDoSEscalationEvent; }
+	/** Called by internal engine systems after network burst or DDoS is detected */
+	void BroadcastNetworkDDosSEscalation(UWorld* World, UNetDriver* NetDriver, FString SeverityCategory)
+	{
+		NetworkDDoSEscalationEvent.Broadcast(World, NetDriver, SeverityCategory);
 	}
 
 	//~ Begin UObject Interface.
@@ -1897,6 +2011,9 @@ public:
 	bool HandleDumpLevelScriptActorsCommand( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleKismetEventCommand( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleListTexturesCommand( const TCHAR* Cmd, FOutputDevice& Ar );
+	bool HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleListSkeletalMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleListAnimsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleRemoteTextureStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleListParticleSystemsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleListSpawnedActorsCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
@@ -1935,7 +2052,26 @@ public:
 	 */
 	void UpdateTimeAndHandleMaxTickRate();
 
-	/** Executes the deferred commands **/
+	/** Causes the current CustomTimeStep to be shut down and then reinitialized. */
+	void ReinitializeCustomTimeStep();
+
+	/**
+	 * Set the CustomTimeStep that will control the Engine Framerate/Timestep
+	 *
+	 * @return	true if the CustomTimeStep was properly initialized
+	 */
+	bool SetCustomTimeStep(UEngineCustomTimeStep* InCustomTimeStep);
+
+	/** Get the CustomTimeStep that control the Engine Framerate/Timestep */
+	UEngineCustomTimeStep* GetCustomTimeStep() const { return CurrentCustomTimeStep; };
+
+	/**
+	 * Get the DefaultCustomTimeStep created at the engine initialization.
+	 * This may be null if no CustomTimeStep was defined in the project settings and may not be currently active.
+	 */
+	UEngineCustomTimeStep* GetDefaultCustomTimeStep() const { return DefaultCustomTimeStep; }
+
+	/** Executes the deferred commands */
 	void TickDeferredCommands();
 
 	/** Get tick rate limiter. */
@@ -1953,29 +2089,46 @@ public:
 	/** Whether we're allowed to do frame rate smoothing */
 	virtual bool IsAllowedFramerateSmoothing() const;
 
+	/** Update FApp::Timecode. */
+	void UpdateTimecode();
+
+	/** Causes the current TimecodeProvider to be shut down and then reinitialized. */
+	void ReinitializeTimecodeProvider();
+
+	/**
+	 * Sets the CustomTimecodeProvider for the engine, shutting down the the default provider if necessary.
+	 * Passing nullptr will clear the current CustomTimecodeProvider, and re-initialize the default.
+	 *
+	 * @return True if the provider was set (and initialized successfully when non-null).
+	 */
+	bool SetTimecodeProvider(UTimecodeProvider* InTimecodeProvider);
+
+	/**
+	 * Get the TimecodeProvider that control the Engine's Timecode
+	 * The return value should always be non-null.
+	 */
+	const UTimecodeProvider* GetTimecodeProvider() const { return CustomTimecodeProvider ? CustomTimecodeProvider : GetDefaultTimecodeProvider(); }
+
+	/**
+	 * Get the DefaultTimecodeProvider.
+	 * This should be valid throughout the lifetime of the Engine (although, it may not always be active).
+	 */
+	const UTimecodeProvider* GetDefaultTimecodeProvider() const { check(DefaultTimecodeProvider != nullptr); return DefaultTimecodeProvider; }
+
+protected:
+
+	/** Provide mutable access to the current TimecodeProvider to Engine. This is needed to Initialize / Shutdown providers. */
+	UTimecodeProvider* GetTimecodeProviderProtected() { return const_cast<UTimecodeProvider*>(const_cast<const UEngine*>(this)->GetTimecodeProvider()); }
+	UTimecodeProvider* GetDefaultTimecodeProviderProtected() { return const_cast<UTimecodeProvider*>(const_cast<const UEngine*>(this)->GetDefaultTimecodeProvider()); }
+
+public:
+
 	/**
 	 * Pauses / un-pauses the game-play when focus of the game's window gets lost / gained.
 	 * @param EnablePause true to pause; false to unpause the game
 	 */
 	virtual void OnLostFocusPause( bool EnablePause );
 
-	/** Function to start the hardware survey. */
-	void StartHardwareSurvey();
-		
-	/** [Deprecated] Functions to start and finish the hardware survey. */
-	DEPRECATED(4.11, "InitHardwareSurvey() is deprecated and is not used by engine code. Use StartHardwareSurvey() instead.")
-	void InitHardwareSurvey();
-	DEPRECATED(4.11, "TickHardwareSurvey() is deprecated and is not used by engine code. Use StartHardwareSurvey() which will tick automatically.")
-	void TickHardwareSurvey();
-
-	DEPRECATED(4.11, "HardwareSurveyBucketResolution() is deprecated and is not used by engine code.")
-	static FString HardwareSurveyBucketResolution(uint32 DisplayWidth, uint32 DisplayHeight);
-	DEPRECATED(4.11, "HardwareSurveyBucketVRAM() is deprecated and is not used by engine code.")
-	static FString HardwareSurveyBucketVRAM(uint32 VidMemoryMB);
-	DEPRECATED(4.11, "HardwareSurveyBucketRAM() is deprecated and is not used by engine code.")
-	static FString HardwareSurveyBucketRAM(uint32 MemoryMB);
-	DEPRECATED(4.11, "HardwareSurveyGetResolutionClass() is deprecated and is not used by engine code.")
-	static FString HardwareSurveyGetResolutionClass(uint32 LargestDisplayHeight);
 	/** 
 	 * Returns the average game/render/gpu/total time since this function was last called
 	 */
@@ -1984,7 +2137,7 @@ public:
 	/**
 	 * Updates the values used to calculate the average game/render/gpu/total time
 	 */
-	void SetAverageUnitTimes(float FrameTime, float RenderThreadTime, float GameThreadTime, float GPUFrameTime);
+	void SetAverageUnitTimes(float FrameTime, float RenderThreadTime, float GameThreadTime, float GPUFrameTime, float RHITFrameTime);
 
 	/**
 	 * Returns the display color for a given frame time (based on t.TargetFrameTimeThreshold and t.UnacceptableFrameTimeThreshold)
@@ -1995,27 +2148,7 @@ public:
 	 * @return true to throttle CPU usage based on current state (usually editor minimized or not in foreground)
 	 */
 	virtual bool ShouldThrottleCPUUsage() const;
-protected:
-	/** 
-	 * Determines whether a hardware survey should be run now.
-	 * Default implementation checks in config for when the survey was last performed
-	 * The default interval is determined by EngineDefs::HardwareSurveyInterval
-	 *
-	 * @return	true if the engine should run the hardware survey now
-	 */
-	DEPRECATED(4.11, "IsHardwareSurveyRequired() is deprecated and is not used by engine code.")
-	virtual bool IsHardwareSurveyRequired();
 
-	/** 
-	 * Runs when a hardware survey has been completed successfully.
-	 * Default implementation sets some config values to remember when the survey happened then
-	 * takes raw hardware survey results and records events using the engine's analytics provider.
-	 *
-	 * @param SurveyResults		The raw survey results generated by the platform hardware survey code
-	 */
-	DEPRECATED(4.11, "OnHardwareSurveyComplete() is deprecated and is not used by engine code.")
-	virtual void OnHardwareSurveyComplete(const struct FHardwareSurveyResults& SurveyResults);
-	
 public:
 	/** 
 	 * Return a reference to the GamePlayers array. 
@@ -2519,10 +2652,8 @@ protected:
 
 	/**
 	 *	Initialize the audio device manager
-	 *
-	 *	@return	true on success, false otherwise.
 	 */
-	virtual bool InitializeAudioDeviceManager();
+	virtual void InitializeAudioDeviceManager();
 
 	/**
 	 *	Detects and initializes any attached HMD devices
@@ -2530,6 +2661,13 @@ protected:
 	 *	@return true if there is an initialized device, false otherwise
 	 */
 	virtual bool InitializeHMDDevice();
+
+	/**
+	 *	Detects and initializes any attached eye-tracking devices
+	 *
+	 *	@return true if there is an initialized device, false otherwise
+	 */
+	virtual bool InitializeEyeTrackingDevice();
 
 	/**	Record EngineAnalytics information for attached HMD devices. */
 	virtual void RecordHMDAnalytics();
@@ -2658,7 +2796,7 @@ public:
 	 *
 	 * @return A pointer to the UNetDriver that was found, or nullptr if it wasn't found.
 	 */
-	UNetDriver* FindNamedNetDriver(UWorld* InWorld, FName NetDriverName);
+	UNetDriver* FindNamedNetDriver(const UWorld* InWorld, FName NetDriverName);
 	UNetDriver* FindNamedNetDriver(const UPendingNetGame* InPendingNetGame, FName NetDriverName);
 
 	/**
@@ -2795,7 +2933,7 @@ public:
 	 */
 	virtual void LoadMapRedrawViewports(void)
 	{
-		RedrawViewports();
+		RedrawViewports(false);
 	}
 
 	void ClearDebugDisplayProperties();
@@ -2881,12 +3019,6 @@ public:
 
 	/** @return true if editor analytics are enabled */
 	virtual bool AreEditorAnalyticsEnabled() const { return false; }
-	/** @return true if in-game analytics are enabled */
-	bool AreGameAnalyticsEnabled() const;
-	/** @return true if in-game analytics are sent with an anonymous GUID rather than real account and machine ids */
-	bool AreGameAnalyticsAnonymous() const;
-	/** @return true if in-game MTBF analytics are enabled */
-	bool AreGameMTBFEventsEnabled() const;
 	virtual void CreateStartupAnalyticsAttributes( TArray<struct FAnalyticsEventAttribute>& StartSessionAttributes ) const {}
 	
 	/** @return true if the engine is autosaving a package */
@@ -3029,6 +3161,14 @@ private:
 
 	/** Allows subclasses to pass the failure to a UGameInstance if possible (mainly for blueprints) */
 	virtual void HandleTravelFailure_NotifyGameInstance(UWorld* World, ETravelFailure::Type FailureType);
+
+public:
+#if WITH_EDITOR
+	//~ Begin Transaction Interfaces.
+	virtual int32 BeginTransaction(const TCHAR* TransactionContext, const FText& Description, UObject* PrimaryObject) { return INDEX_NONE; }
+	virtual int32 EndTransaction() { return INDEX_NONE; }
+	virtual void CancelTransaction(int32 Index) { }
+#endif
 
 public:
 	/**
@@ -3231,6 +3371,7 @@ private:
 	int32 RenderStatSounds(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 #endif // !UE_BUILD_SHIPPING
 	int32 RenderStatAI(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+	int32 RenderStatTimecode(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 #if STATS
 	int32 RenderStatSlateBatches(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 #endif

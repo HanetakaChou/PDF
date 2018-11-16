@@ -17,6 +17,8 @@ void UPlatformGameInstance::PostInitProperties()
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationWillEnterBackgroundDelegate_Handler);
     FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationHasEnteredForegroundDelegate_Handler);
     FCoreDelegates::ApplicationWillTerminateDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationWillTerminateDelegate_Handler);
+	FCoreDelegates::ApplicationShouldUnloadResourcesDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationShouldUnloadResourcesDelegate_Handler);
+	FCoreDelegates::ApplicationReceivedStartupArgumentsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationReceivedStartupArgumentsDelegate_Handler);
     FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationRegisteredForRemoteNotificationsDelegate_Handler);
     FCoreDelegates::ApplicationRegisteredForUserNotificationsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationRegisteredForUserNotificationsDelegate_Handler);
     FCoreDelegates::ApplicationFailedToRegisterForRemoteNotificationsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationFailedToRegisterForRemoteNotificationsDelegate_Handler);
@@ -33,6 +35,8 @@ void UPlatformGameInstance::BeginDestroy()
 	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationHasEnteredForegroundDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationWillTerminateDelegate.RemoveAll(this);
+ 	FCoreDelegates::ApplicationShouldUnloadResourcesDelegate.RemoveAll(this);
+ 	FCoreDelegates::ApplicationReceivedStartupArgumentsDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationRegisteredForUserNotificationsDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationFailedToRegisterForRemoteNotificationsDelegate.RemoveAll(this);
@@ -158,5 +162,31 @@ void UBlueprintPlatformLibrary::GetLaunchNotification(bool& NotificationLaunched
 	
 	platformService->GetLaunchNotification(NotificationLaunchedApp, ActivationEvent, FireDate);
 }
+
+EScreenOrientation::Type UBlueprintPlatformLibrary::GetDeviceOrientation()
+{
+	switch (FPlatformMisc::GetDeviceOrientation())
+	{
+		case EDeviceScreenOrientation::Portrait:
+			return EScreenOrientation::Portrait;
+			
+		case EDeviceScreenOrientation::PortraitUpsideDown:
+			return EScreenOrientation::PortraitUpsideDown;
+			
+		case EDeviceScreenOrientation::LandscapeLeft:
+			return EScreenOrientation::LandscapeLeft;
+
+		case EDeviceScreenOrientation::LandscapeRight:
+			return EScreenOrientation::LandscapeRight;
+
+		case EDeviceScreenOrientation::FaceUp:
+			return EScreenOrientation::FaceUp;
+			
+		case EDeviceScreenOrientation::FaceDown:
+			return EScreenOrientation::FaceDown;
+	}
+	return EScreenOrientation::Unknown;
+}
+
 
 ILocalNotificationService* UBlueprintPlatformLibrary::platformService = nullptr;

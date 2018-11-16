@@ -9,18 +9,6 @@
 #include "D3D12Allocation.h"
 #include "Misc/BufferedOutputDevice.h"
 
-#if PLATFORM_XBOXONE
-#define PIX_MEMORY_PROFILING XBOXONE_PROFILING_ENABLED
-#else
-#define PIX_MEMORY_PROFILING 0
-#endif
-
-#if PIX_MEMORY_PROFILING
-#include "AllowWindowsPlatformTypes.h"
-#include <windows.h>
-#include <pixmemory.h>
-#endif
-
 namespace ED3D12AllocatorID
 {
 	enum Type
@@ -36,25 +24,25 @@ namespace ED3D12AllocatorID
 //	Allocator Base
 //-----------------------------------------------------------------------------
 FD3D12ResourceAllocator::FD3D12ResourceAllocator(FD3D12Device* ParentDevice,
-	const GPUNodeMask& VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	const FString& Name,
 	D3D12_HEAP_TYPE InHeapType,
 	D3D12_RESOURCE_FLAGS Flags,
 	uint32 MaxSizeForPooling)
-	: DebugName(Name)
-	, HeapType(InHeapType)
-	, ResourceFlags(Flags)
-	, Initialized(false)
+	: FD3D12DeviceChild(ParentDevice)
+	, FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes)
 	, MaximumAllocationSizeForPooling(MaxSizeForPooling)
+	, ResourceFlags(Flags)
+	, DebugName(Name)
+	, Initialized(false)
+	, HeapType(InHeapType)
 #if defined(UE_BUILD_DEBUG)
-	, PeakUsage(0)
 	, SpaceUsed(0)
 	, InternalFragmentation(0)
 	, NumBlocksInDeferredDeletionQueue(0)
+	, PeakUsage(0)
 	, FailedAllocationSpace(0)
 #endif
-	, FD3D12DeviceChild(ParentDevice)
-	, FD3D12MultiNodeGPUObject(ParentDevice->GetNodeMask(), VisibleNodes)
 {
 }
 
@@ -67,7 +55,7 @@ FD3D12ResourceAllocator::~FD3D12ResourceAllocator()
 //-----------------------------------------------------------------------------
 
 FD3D12BuddyAllocator::FD3D12BuddyAllocator(FD3D12Device* ParentDevice, 
-	const GPUNodeMask& VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	const FString& Name,
 	eBuddyAllocationStrategy InAllocationStrategy,
 	D3D12_HEAP_TYPE HeapType,
@@ -77,15 +65,15 @@ FD3D12BuddyAllocator::FD3D12BuddyAllocator(FD3D12Device* ParentDevice,
 	uint32 InAllocatorID,
 	uint32 InMaxBlockSize,
 	uint32 InMinBlockSize)
-	: AllocationStrategy(InAllocationStrategy)
+	: FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, MaxSizeForPooling)
 	, MaxBlockSize(InMaxBlockSize)
 	, MinBlockSize(InMinBlockSize)
 	, HeapFlags(HeapFlags)
-	, BackingHeap(nullptr)
-	, HeapFullMessageDisplayed(false)
-	, TotalSizeUsed(0)
+	, AllocationStrategy(InAllocationStrategy)
 	, AllocatorID(InAllocatorID)
-	, FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, MaxSizeForPooling)
+	, BackingHeap(nullptr)
+	, TotalSizeUsed(0)
+	, HeapFullMessageDisplayed(false)
 {
 	// maxBlockSize should be evenly dividable by MinBlockSize and  
 	// maxBlockSize / MinBlockSize should be a power of two  
@@ -105,8 +93,8 @@ void FD3D12BuddyAllocator::Initialize()
 	if (AllocationStrategy == eBuddyAllocationStrategy::kPlacedResourceStrategy)
 	{
 		D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(HeapType);
-		HeapProps.CreationNodeMask = GetNodeMask();
-		HeapProps.VisibleNodeMask = GetVisibilityMask();
+		HeapProps.CreationNodeMask = (uint32)GetGPUMask();
+		HeapProps.VisibleNodeMask = (uint32)GetVisibilityMask();
 
 		D3D12_HEAP_DESC Desc = {};
 		Desc.SizeInBytes = MaxBlockSize;
@@ -137,7 +125,7 @@ void FD3D12BuddyAllocator::Initialize()
 	{
 		{
 			LLM_SCOPED_PAUSE_TRACKING_FOR_TRACKER(ELLMTracker::Default, ELLMAllocType::System);
-			VERIFYD3D12RESULT(Adapter->CreateBuffer(HeapType, GetNodeMask(), GetVisibilityMask(), MaxBlockSize, BackingResource.GetInitReference(), ResourceFlags));
+			VERIFYD3D12RESULT(Adapter->CreateBuffer(HeapType, GetGPUMask(), GetVisibilityMask(), MaxBlockSize, BackingResource.GetInitReference(), ResourceFlags));
 		}
 		SetName(BackingResource, L"Resource Allocator Underlying Buffer");
 
@@ -290,14 +278,10 @@ void FD3D12BuddyAllocator::Allocate(uint32 SizeInBytes, uint32 Alignment, FD3D12
 		check(uint64(ResourceLocation.GetGPUVirtualAddress()) % Alignment == 0);
 	}
 
-#if PIX_MEMORY_PROFILING
-	uint64 Addr = (ResourceLocation.GetGPUVirtualAddress() != 0ull) ? (uint64)ResourceLocation.GetGPUVirtualAddress() : AlignedOffsetFromResourceBase;
-	PIXRecordMemoryAllocationEvent(AllocatorID, (void*)(Addr), SizeInBytes, MaximumAllocationSizeForPooling);
-#endif
-
 	// track the allocation
 #if !PLATFORM_WINDOWS
-	LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, (void*)ResourceLocation.GetGPUVirtualAddress(), SizeInBytes));
+	LLM(uint64 Addr = (ResourceLocation.GetGPUVirtualAddress() != 0ull) ? (uint64)ResourceLocation.GetGPUVirtualAddress() : AlignedOffsetFromResourceBase);
+	LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, (void*)Addr, SizeInBytes));
 	// Note: Disabling this LLM hook for Windows is due to a work-around in the way that d3d12 buffers are tracked
 	// by LLM. LLM tracks buffer data in the UpdateBufferStats function because that is the easiest place to ensure that LLM
 	// can be updated whenever a buffer is created or released. Unfortunately, some buffers allocate from this allocator
@@ -350,11 +334,6 @@ void FD3D12BuddyAllocator::Deallocate(FD3D12ResourceLocation& ResourceLocation)
 
 	INCREASE_ALLOC_COUNTER(NumBlocksInDeferredDeletionQueue, 1);
 
-#if PIX_MEMORY_PROFILING
-	uint64 Addr = (ResourceLocation.GetGPUVirtualAddress() != 0ull) ? (uint64)ResourceLocation.GetGPUVirtualAddress() : ResourceLocation.GetOffsetFromBaseOfResource();
-	PIXRecordMemoryFreeEvent(AllocatorID, (void*)Addr, 0, MaximumAllocationSizeForPooling);
-#endif
-
 	// track the allocation
 #if !PLATFORM_WINDOWS
 	// Note: Disabling this LLM hook for Windows is due to a work-around in the way that d3d12 buffers are tracked
@@ -363,7 +342,8 @@ void FD3D12BuddyAllocator::Deallocate(FD3D12ResourceLocation& ResourceLocation)
 	// which means that the memory would be counted twice. Because of this the tracking had to be disabled here.
 	// This does mean that non-buffer memory that goes through this allocator won't be tracked, so this does need a better solution.
 	// see UpdateBufferStats for a more detailed explanation.
-	LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, (void*)ResourceLocation.GetGPUVirtualAddress()));
+	LLM(uint64 Addr = (ResourceLocation.GetGPUVirtualAddress() != 0ull) ? (uint64)ResourceLocation.GetGPUVirtualAddress() : ResourceLocation.GetOffsetFromBaseOfResource());
+	LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, (void*)Addr));
 #endif
 }
 
@@ -431,7 +411,7 @@ void FD3D12BuddyAllocator::ReleaseAllResources()
 
 	if (BackingResource)
 	{
-		check(BackingResource->GetRefCount() == 1);
+		ensure(BackingResource->GetRefCount() == 1 || GNumExplicitGPUsForRendering > 1);
 		BackingResource = nullptr;
 	}
 
@@ -514,7 +494,7 @@ void FD3D12BuddyAllocator::Reset()
 //-----------------------------------------------------------------------------
 
 FD3D12MultiBuddyAllocator::FD3D12MultiBuddyAllocator(FD3D12Device* ParentDevice,
-	const GPUNodeMask& VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	const FString& Name,
 	eBuddyAllocationStrategy InAllocationStrategy,
 	D3D12_HEAP_TYPE HeapType,
@@ -523,13 +503,13 @@ FD3D12MultiBuddyAllocator::FD3D12MultiBuddyAllocator(FD3D12Device* ParentDevice,
 	uint32 MaxSizeForPooling,
 	uint32 InAllocatorID,
 	uint32 InMaxBlockSize,
-	uint32 InMinBlockSize) :
-	AllocationStrategy(InAllocationStrategy)
+	uint32 InMinBlockSize)
+	: FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, MaxSizeForPooling)
+	, AllocationStrategy(InAllocationStrategy)
 	, HeapFlags(InHeapFlags)
 	, MaxBlockSize(InMaxBlockSize)
 	, MinBlockSize(InMinBlockSize)
 	, AllocatorID(InAllocatorID)
-	, FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, MaxSizeForPooling)
 {}
 
 
@@ -626,13 +606,13 @@ void FD3D12MultiBuddyAllocator::Reset()
 //	Bucket Allocator
 //-----------------------------------------------------------------------------
 FD3D12BucketAllocator::FD3D12BucketAllocator(FD3D12Device* ParentDevice,
-	const GPUNodeMask& VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	const FString& Name,
 	D3D12_HEAP_TYPE HeapType,
 	D3D12_RESOURCE_FLAGS Flags,
 	uint64 InBlockRetentionFrameCount) :
-	BlockRetentionFrameCount(InBlockRetentionFrameCount),
-	FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, 32 * 1024 * 1024)
+	FD3D12ResourceAllocator(ParentDevice, VisibleNodes, Name, HeapType, Flags, 32 * 1024 * 1024),
+	BlockRetentionFrameCount(InBlockRetentionFrameCount)
 {}
 
 bool FD3D12BucketAllocator::TryAllocate(uint32 SizeInBytes, uint32 Alignment, FD3D12ResourceLocation& ResourceLocation)
@@ -673,7 +653,7 @@ bool FD3D12BucketAllocator::TryAllocate(uint32 SizeInBytes, uint32 Alignment, FD
 		// Allocate a block
 		check(BlockSize >= SizeInBytes);
 
-		if (FAILED(Adapter->CreateBuffer(HeapType, GetNodeMask(), GetVisibilityMask(), SizeInBytes < MIN_HEAP_SIZE ? MIN_HEAP_SIZE : SizeInBytes, &Resource, ResourceFlags)))
+		if (FAILED(Adapter->CreateBuffer(HeapType, GetGPUMask(), GetVisibilityMask(), SizeInBytes < MIN_HEAP_SIZE ? MIN_HEAP_SIZE : SizeInBytes, &Resource, ResourceFlags)))
 		{
 			return false;
 		}
@@ -844,7 +824,8 @@ FD3D12DynamicHeapAllocator::FD3D12DynamicHeapAllocator(FD3D12Adapter* InParent, 
 	uint32 InMaxSizeForPooling,
 	uint32 InMaxBlockSize,
 	uint32 InMinBlockSize)
-	: 
+	: FD3D12AdapterChild(InParent)
+	, FD3D12MultiNodeGPUObject(InParentDevice->GetGPUMask(), FRHIGPUMask::All()), // Dynamic heaps are upload memory, thus they can be trivially visibile to all GPUs
 #ifdef USE_BUCKET_ALLOCATOR
 	Allocator(InParentDevice,
 		GetVisibilityMask(),
@@ -865,8 +846,6 @@ FD3D12DynamicHeapAllocator::FD3D12DynamicHeapAllocator(FD3D12Adapter* InParent, 
 		InMaxBlockSize,
 		InMinBlockSize)
 #endif
-	, FD3D12AdapterChild(InParent)
-	, FD3D12MultiNodeGPUObject(InParentDevice->GetNodeMask(), InParent->ActiveGPUMask()) // Dynamic heaps are upload memory, thus they can be trivially visibile to all GPUs
 {
 }
 
@@ -906,7 +885,7 @@ void* FD3D12DynamicHeapAllocator::AllocUploadResource(uint32 Size, uint32 Alignm
 	FD3D12Resource* NewResource = nullptr;
 
 	//Allocate Standalone
-	VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, GetNodeMask(), GetVisibilityMask(), Size, &NewResource));
+	VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, GetGPUMask(), GetVisibilityMask(), Size, &NewResource));
 	SetName(NewResource, L"Stand Alone Upload Buffer");
 
 	ResourceLocation.AsStandAlone(NewResource, Size);
@@ -928,10 +907,10 @@ void FD3D12DynamicHeapAllocator::Destroy()
 //	Default Buffer Allocator
 //-----------------------------------------------------------------------------
 
-FD3D12DefaultBufferPool::FD3D12DefaultBufferPool(FD3D12Device* InParent, FD3D12AllocatorType* InAllocator) :
-	Allocator(InAllocator),
-	FD3D12DeviceChild(InParent),
-	FD3D12MultiNodeGPUObject(InAllocator->GetNodeMask(), InAllocator->GetVisibilityMask())
+FD3D12DefaultBufferPool::FD3D12DefaultBufferPool(FD3D12Device* InParent, FD3D12AllocatorType* InAllocator)
+	: FD3D12DeviceChild(InParent)
+	, FD3D12MultiNodeGPUObject(InAllocator->GetGPUMask(), InAllocator->GetVisibilityMask())
+	, Allocator(InAllocator)
 {
 }
 
@@ -971,23 +950,15 @@ void FD3D12DefaultBufferPool::AllocDefaultResource(const D3D12_RESOURCE_DESC& De
 	FD3D12Resource* NewResource = nullptr;
 
 	//Allocate Standalone
-	VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, GetNodeMask(), GetVisibilityMask(), Desc.Width, &NewResource, Allocator->ResourceFlags));
+	VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, GetGPUMask(), GetVisibilityMask(), Desc.Width, &NewResource, Allocator->ResourceFlags));
 	SetName(NewResource, L"Stand Alone Default Buffer");
-
-#if PIX_MEMORY_PROFILING && 0
-	// Track absolute memory usage
-	{
-		D3D12_RESOURCE_ALLOCATION_INFO Info = Device->GetDevice()->GetResourceAllocationInfo(0, 1, &Desc);
-		PIXRecordMemoryAllocationEvent(ED3D12AllocatorID::DefaultBufferAllocatorFullResources, (void*)(NewResource->GetGPUVirtualAddress()), Info.SizeInBytes, 0);
-	}
-#endif
 
 	ResourceLocation.AsStandAlone(NewResource, Desc.Width);
 }
 
-FD3D12DefaultBufferAllocator::FD3D12DefaultBufferAllocator(FD3D12Device* InParent, const GPUNodeMask& VisibleNodes)
+FD3D12DefaultBufferAllocator::FD3D12DefaultBufferAllocator(FD3D12Device* InParent, FRHIGPUMask VisibleNodes)
 	: FD3D12DeviceChild(InParent)
-	, FD3D12MultiNodeGPUObject(InParent->GetNodeMask(), VisibleNodes)
+	, FD3D12MultiNodeGPUObject(InParent->GetGPUMask(), VisibleNodes)
 {
 	FMemory::Memset(DefaultBufferPools, 0);
 }
@@ -1003,7 +974,7 @@ HRESULT FD3D12DefaultBufferAllocator::AllocDefaultResource(const D3D12_RESOURCE_
 		FD3D12Resource* NewResource = nullptr;
 
 		//Allocate Standalone
-		VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, GetNodeMask(), GetVisibilityMask(), Desc.Width, &NewResource, Desc.Flags));
+		VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, GetGPUMask(), GetVisibilityMask(), Desc.Width, &NewResource, Desc.Flags));
 		SetName(NewResource, L"Stand Alone Default Buffer");
 
 		ResourceLocation.AsStandAlone(NewResource, Desc.Width);
@@ -1078,7 +1049,7 @@ void FD3D12DefaultBufferAllocator::CleanupFreeBlocks()
 //-----------------------------------------------------------------------------
 
 FD3D12TextureAllocator::FD3D12TextureAllocator(FD3D12Device* Device,
-	const GPUNodeMask& VisibleNodes,
+	FRHIGPUMask VisibleNodes,
 	const FString& Name,
 	uint32 HeapSize,
 	D3D12_HEAP_FLAGS Flags) :
@@ -1103,7 +1074,7 @@ FD3D12TextureAllocator::~FD3D12TextureAllocator()
 	FD3D12DynamicRHI::GetD3DRHI()->UpdataTextureMemorySize(-int32(MaxBlockSize / 1024));
 }
 
-HRESULT FD3D12TextureAllocator::AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState, bool bForcePlacementCreation)
+HRESULT FD3D12TextureAllocator::AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState)
 {
 	FD3D12Device* Device = GetParentDevice();
 	FD3D12Adapter* Adapter = Device->GetParentAdapter();
@@ -1132,16 +1103,9 @@ HRESULT FD3D12TextureAllocator::AllocateTexture(D3D12_RESOURCE_DESC Desc, const 
 
 	// Request default alignment for stand alone textures
 	Desc.Alignment = 0;
-	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT, GetNodeMask(), GetVisibilityMask());
+	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT, (uint32)GetGPUMask(), (uint32)GetVisibilityMask());
 
-	if (bForcePlacementCreation)
-	{
-		hr = Adapter->CreatePlacedResourceWithHeap(Desc, HeapProps, InitialState, ClearValue, &NewResource);
-	}
-	else
-	{
-		hr = Adapter->CreateCommittedResource(Desc, HeapProps, InitialState, ClearValue, &NewResource);
-	}
+	hr = Adapter->CreateCommittedResource(Desc, HeapProps, InitialState, ClearValue, &NewResource);
 
 	TextureLocation.SetType(FD3D12ResourceLocation::ResourceLocationType::eStandAlone);
 	TextureLocation.SetResource(NewResource);
@@ -1149,13 +1113,13 @@ HRESULT FD3D12TextureAllocator::AllocateTexture(D3D12_RESOURCE_DESC Desc, const 
 	return hr;
 }
 
-FD3D12TextureAllocatorPool::FD3D12TextureAllocatorPool(FD3D12Device* Device, const GPUNodeMask& VisibilityNode) :
-	ReadOnlyTexturePool(Device, VisibilityNode, FString(L"Small Read-Only Texture allocator"), TEXTURE_POOL_SIZE, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES),
+FD3D12TextureAllocatorPool::FD3D12TextureAllocatorPool(FD3D12Device* Device, FRHIGPUMask VisibilityNode) :
 	FD3D12DeviceChild(Device),
-	FD3D12MultiNodeGPUObject(Device->GetNodeMask(), VisibilityNode)
+	FD3D12MultiNodeGPUObject(Device->GetGPUMask(), VisibilityNode),
+	ReadOnlyTexturePool(Device, VisibilityNode, FString(L"Small Read-Only Texture allocator"), TEXTURE_POOL_SIZE, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES)
 {};
 
-HRESULT FD3D12TextureAllocatorPool::AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState, bool bForcePlacementCreation)
+HRESULT FD3D12TextureAllocatorPool::AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState)
 {
 	// 4KB alignment is only available for read only textures
 	if ((Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET ||
@@ -1174,16 +1138,8 @@ HRESULT FD3D12TextureAllocatorPool::AllocateTexture(D3D12_RESOURCE_DESC Desc, co
 	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
 	FD3D12Resource* Resource = nullptr;
 
-	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT, GetNodeMask(), GetVisibilityMask());
-	HRESULT hr;
-	if (bForcePlacementCreation)
-	{
-		hr = Adapter->CreatePlacedResourceWithHeap(Desc, HeapProps, InitialState, ClearValue, &Resource);
-	}
-	else
-	{
-		hr = Adapter->CreateCommittedResource(Desc, HeapProps, InitialState, ClearValue, &Resource);
-	}
+	const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT, (uint32)GetGPUMask(), (uint32)GetVisibilityMask());
+	HRESULT hr = Adapter->CreateCommittedResource(Desc, HeapProps, InitialState, ClearValue, &Resource);
 
 	TextureLocation.SetType(FD3D12ResourceLocation::ResourceLocationType::eStandAlone);
 	TextureLocation.SetResource(Resource);
@@ -1204,18 +1160,18 @@ template void FD3D12FastAllocator::CleanupPages<FD3D12ScopeNoLock>(uint64 FrameL
 template void FD3D12FastAllocator::Destroy<FD3D12ScopeLock>();
 template void FD3D12FastAllocator::Destroy<FD3D12ScopeNoLock>();
 
-FD3D12FastAllocator::FD3D12FastAllocator(FD3D12Device* Parent, const GPUNodeMask& VisibiltyMask, D3D12_HEAP_TYPE InHeapType, uint32 PageSize)
-	: PagePool(Parent, VisibiltyMask, InHeapType, PageSize)
+FD3D12FastAllocator::FD3D12FastAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, D3D12_HEAP_TYPE InHeapType, uint32 PageSize)
+	: FD3D12DeviceChild(Parent)
+	, FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibiltyMask)
+	, PagePool(Parent, VisibiltyMask, InHeapType, PageSize)
 	, CurrentAllocatorPage(nullptr)
-	, FD3D12DeviceChild(Parent)
-	, FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibiltyMask)
 {}
 
-FD3D12FastAllocator::FD3D12FastAllocator(FD3D12Device* Parent, const GPUNodeMask& VisibiltyMask, const D3D12_HEAP_PROPERTIES& InHeapProperties, uint32 PageSize)
-	: PagePool(Parent, VisibiltyMask, InHeapProperties, PageSize)
+FD3D12FastAllocator::FD3D12FastAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, const D3D12_HEAP_PROPERTIES& InHeapProperties, uint32 PageSize)
+	: FD3D12DeviceChild(Parent)
+	, FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibiltyMask)
+	, PagePool(Parent, VisibiltyMask, InHeapProperties, PageSize)
 	, CurrentAllocatorPage(nullptr)
-	, FD3D12DeviceChild(Parent)
-	, FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibiltyMask)
 {}
 
 template<typename LockType>
@@ -1237,7 +1193,7 @@ void* FD3D12FastAllocator::Allocate(uint32 Size, uint32 Alignment, class FD3D12R
 		}
 
 		FD3D12Resource* Resource = nullptr;
-		VERIFYD3D12RESULT(Adapter->CreateBuffer(PagePool.GetHeapType(), GetNodeMask(), GetVisibilityMask(), Size + Alignment, &Resource));
+		VERIFYD3D12RESULT(Adapter->CreateBuffer(PagePool.GetHeapType(), GetGPUMask(), GetVisibilityMask(), Size + Alignment, &Resource));
 		SetName(Resource, L"Stand Alone Fast Allocation");
 
 		void* Data = nullptr;
@@ -1303,18 +1259,18 @@ void FD3D12FastAllocator::Destroy()
 	PagePool.Destroy();
 }
 
-FD3D12FastAllocatorPagePool::FD3D12FastAllocatorPagePool(FD3D12Device* Parent, const GPUNodeMask& VisibiltyMask, D3D12_HEAP_TYPE InHeapType, uint32 Size)
-	: PageSize(Size)
-	, HeapProperties(CD3DX12_HEAP_PROPERTIES(InHeapType, Parent->GetNodeMask(), VisibiltyMask))
-	, FD3D12DeviceChild(Parent)
-	, FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibiltyMask)
+FD3D12FastAllocatorPagePool::FD3D12FastAllocatorPagePool(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, D3D12_HEAP_TYPE InHeapType, uint32 Size)
+	: FD3D12DeviceChild(Parent)
+	, FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibiltyMask)
+	, PageSize(Size)
+	, HeapProperties(CD3DX12_HEAP_PROPERTIES(InHeapType, (uint32)Parent->GetGPUMask(), (uint32)VisibiltyMask))
 {};
 
-FD3D12FastAllocatorPagePool::FD3D12FastAllocatorPagePool(FD3D12Device* Parent, const GPUNodeMask& VisibiltyMask, const D3D12_HEAP_PROPERTIES& InHeapProperties, uint32 Size)
-	: PageSize(Size)
+FD3D12FastAllocatorPagePool::FD3D12FastAllocatorPagePool(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, const D3D12_HEAP_PROPERTIES& InHeapProperties, uint32 Size)
+	: FD3D12DeviceChild(Parent)
+	, FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibiltyMask)
+	, PageSize(Size)
 	, HeapProperties(InHeapProperties)
-	, FD3D12DeviceChild(Parent)
-	, FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibiltyMask)
 {};
 
 FD3D12FastAllocatorPage* FD3D12FastAllocatorPagePool::RequestFastAllocatorPage()
@@ -1325,7 +1281,7 @@ FD3D12FastAllocatorPage* FD3D12FastAllocatorPagePool::RequestFastAllocatorPage()
 
 	FD3D12FastAllocatorPage* Page = nullptr;
 
-	const uint64 CompletedFence = Fence.GetLastCompletedFence();
+	const uint64 CompletedFence = Fence.UpdateLastCompletedFence();
 
 	for (int32 Index = 0; Index < Pool.Num(); Index++)
 	{
@@ -1365,7 +1321,7 @@ void FD3D12FastAllocatorPagePool::CleanupPages(uint64 FrameLag)
 	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
 	FD3D12Fence& FrameFence = Adapter->GetFrameFence();
 
-	const uint64 CompletedFence = FrameFence.GetLastCompletedFence();
+	const uint64 CompletedFence = FrameFence.UpdateLastCompletedFence();
 
 	FD3D12FastAllocatorPage* Page = nullptr;
 
@@ -1401,12 +1357,12 @@ void FD3D12FastAllocatorPagePool::Destroy()
 	Pool.Empty();
 }
 
-FD3D12FastConstantAllocator::FD3D12FastConstantAllocator(FD3D12Device* Parent, const GPUNodeMask& VisibiltyMask, uint32 InPageSize)
-	: RingBuffer(PageSize / D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
-	, PageSize(InPageSize)
+FD3D12FastConstantAllocator::FD3D12FastConstantAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, uint32 InPageSize)
+	: FD3D12DeviceChild(Parent)
+	, FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibiltyMask)
 	, UnderlyingResource(Parent)
-	, FD3D12DeviceChild(Parent)
-	, FD3D12MultiNodeGPUObject(Parent->GetNodeMask(), VisibiltyMask)
+	, PageSize(InPageSize)
+	, RingBuffer(PageSize / D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
 {
 	check(PageSize % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT == 0);
 }
@@ -1431,7 +1387,7 @@ void FD3D12FastConstantAllocator::ReallocBuffer()
 	
 	FD3D12Resource* NewBuffer = nullptr;
 	VERIFYD3D12RESULT(Adapter->CreateBuffer(D3D12_HEAP_TYPE_UPLOAD,
-		GetNodeMask(),
+		GetGPUMask(),
 		GetVisibilityMask(),
 		PageSize, &NewBuffer));
 
@@ -1472,6 +1428,31 @@ void* FD3D12FastConstantAllocator::Allocate(uint32 Bytes, FD3D12ResourceLocation
 
 	const uint64 Offset = Location * D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 
+#if 0  // used to detect problems with fencing 
+	static FThreadSafeCounter Cnt;
+	if (Cnt.Increment() % 1000 == 0)
+	{
+		uint64 Block1Start = 0;
+		uint64 Block1Size = 0;
+		uint64 Block2Start = 0;
+		uint64 Block2Size = 0;
+		RingBuffer.GetOverwritableBlocks(Block1Start, Block1Size, Block2Start, Block2Size);
+		Block1Start *= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+		Block1Size *= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+		Block2Start *= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+		Block2Size *= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+
+		if (Block1Size)
+		{
+			FMemory::Memset((uint8*)UnderlyingResource.GetMappedBaseAddress() + Block1Start, 0xff, Block1Size);
+		}
+		if (Block2Size)
+		{
+			FMemory::Memset((uint8*)UnderlyingResource.GetMappedBaseAddress() + Block2Start, 0xff, Block2Size);
+		}
+	}
+#endif
+
 	OutLocation.AsFastAllocation(UnderlyingResource.GetResource(),
 		AlignedSize,
 		UnderlyingResource.GetGPUVirtualAddress(),
@@ -1487,6 +1468,3 @@ void* FD3D12FastConstantAllocator::Allocate(uint32 Bytes, FD3D12ResourceLocation
 	return OutLocation.GetMappedBaseAddress();
 }
 
-#if PIX_MEMORY_PROFILING
-#include "HideWindowsPlatformTypes.h"
-#endif

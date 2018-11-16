@@ -114,6 +114,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = Mesh)
 	UStaticMesh* PointerCursorMesh;
 
+	UPROPERTY(EditAnywhere, Category = Mesh)
+	UStaticMesh* LineSegmentCylinderMesh;
+
+	UPROPERTY(EditAnywhere, Category = Mesh)
+	UStaticMesh* JointSphereMesh;
+
+	UPROPERTY(EditAnywhere, Category = Mesh)
+	UStaticMesh* DockingButtonMesh;
+
 	//
 	// Materials
 	//
@@ -147,6 +156,12 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = Material)
 	UMaterialInterface* WindowTranslucentMaterial;
+
+	UPROPERTY(EditAnywhere, Category = Material)
+	UMaterial* LineMaterial;
+
+	UPROPERTY(EditAnywhere, Category = Material)
+	UMaterialInterface* TranslucentTextMaterial;
 
 	//
 	// Fonts

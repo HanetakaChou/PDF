@@ -42,6 +42,11 @@
 /* TODO: Move this in to _mesa_glsl_parse_state. */
 static unsigned int g_anon_struct_count = 0;
 
+bool ir_variable_compare::operator() (const ir_variable* const& lhs, const ir_variable* const& rhs) const
+{
+	return lhs->id < rhs->id;
+}
+
 _mesa_glsl_parse_state::_mesa_glsl_parse_state(void *mem_ctx, _mesa_glsl_parser_targets InTarget, ILanguageSpec* InLanguageSpec, int glsl_version) :
 	scanner(nullptr),
 	base_source_file(nullptr),
@@ -70,7 +75,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(void *mem_ctx, _mesa_glsl_parser_
 	num_user_structures(0),
 	uniform_blocks(nullptr),
 	num_uniform_blocks(0),
-	has_packed_uniforms(false)
+	has_packed_uniforms(false),
+	conservative_propagation(true)
 {
 	check(InLanguageSpec);
 
@@ -1050,15 +1056,15 @@ bool do_optimization_pass(exec_list *ir, _mesa_glsl_parse_state * state, bool bP
 	progress = do_structure_splitting(ir, state) || progress;
 	progress = do_if_simplification(ir) || progress;
 	progress = do_discard_simplification(ir) || progress;
-	progress = do_copy_propagation(ir) || progress;
-	progress = do_copy_propagation_elements(ir) || progress;
+	progress = do_copy_propagation(ir, state->conservative_propagation) || progress;
+	progress = do_copy_propagation_elements(ir, state->conservative_propagation) || progress;
 	if (bPerformGlobalDeadCodeRemoval)
 	{
 		progress = do_dead_code(ir, false) || progress;
 	}
 	progress = do_dead_code_local(ir) || progress;
 	progress = do_tree_grafting(ir) || progress;
-	progress = do_constant_propagation(ir) || progress;
+	progress = do_constant_propagation(ir, state->conservative_propagation) || progress;
 
 	progress = do_constant_variable(ir) || progress;
 

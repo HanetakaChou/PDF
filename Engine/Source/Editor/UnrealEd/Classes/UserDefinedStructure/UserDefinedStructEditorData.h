@@ -10,7 +10,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "UObject/StructOnScope.h"
 #include "EditorUndoClient.h"
-#include "StructureEditorUtils.h"
+#include "Kismet2/StructureEditorUtils.h"
 #include "UserDefinedStructEditorData.generated.h"
 
 class ITransactionObjectAnnotation;
@@ -126,7 +126,7 @@ public:
 
 public:
 	// UObject interface.
-	virtual TSharedPtr<ITransactionObjectAnnotation> GetTransactionAnnotation() const override;
+	virtual TSharedPtr<ITransactionObjectAnnotation> FactoryTransactionAnnotation(const ETransactionAnnotationCreationMode InCreationMode) const override;
 	virtual void PostEditUndo() override;
 	virtual void PostEditUndo(TSharedPtr<ITransactionObjectAnnotation> TransactionAnnotation) override;
 	virtual void PostLoadSubobjects(struct FObjectInstancingGraph* OuterInstanceGraph) override;

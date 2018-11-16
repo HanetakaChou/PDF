@@ -29,50 +29,51 @@
 	#include "PhysicsEngine/PhysXSupport.h"
 #endif // WITH_PHYSX
 
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 #if WITH_PHYSX
-	#include "IPhysXCookingModule.h"
-	#include "IPhysXCooking.h"
+	#include "Physics/IPhysXCookingModule.h"
+	#include "Physics/IPhysXCooking.h"
 #endif
 
+#include "Physics/PhysicsInterfaceUtils.h"
 #include "PhysicsEngine/PhysDerivedData.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "ProfilingDebugging/CookStats.h"
-#include "AnimPhysObjectVersion.h"
+#include "UObject/AnimPhysObjectVersion.h"
 
 /** Helper for enum output... */
 #ifndef CASE_ENUM_TO_TEXT
 #define CASE_ENUM_TO_TEXT(txt) case txt: return TEXT(#txt);
 #endif
 
-namespace Lex
+/** Enable to verify that the cooked data matches the source data as we cook it */
+#define VERIFY_COOKED_PHYS_DATA 0
+
+const TCHAR* LexToString(ECollisionTraceFlag Enum)
 {
-	const TCHAR* ToString(ECollisionTraceFlag Enum)
+	switch (Enum)
 	{
-		switch (Enum)
-		{
-			FOREACH_ENUM_ECOLLISIONTRACEFLAG(CASE_ENUM_TO_TEXT)
-		}
-		return TEXT("<Unknown ECollisionTraceFlag>");
+		FOREACH_ENUM_ECOLLISIONTRACEFLAG(CASE_ENUM_TO_TEXT)
 	}
+	return TEXT("<Unknown ECollisionTraceFlag>");
+}
 
-	const TCHAR* ToString(EPhysicsType Enum)
+const TCHAR* LexToString(EPhysicsType Enum)
+{
+	switch (Enum)
 	{
-		switch (Enum)
-		{
-			FOREACH_ENUM_EPHYSICSTYPE(CASE_ENUM_TO_TEXT)
-		}
-		return TEXT("<Unknown EPhysicsType>");
+		FOREACH_ENUM_EPHYSICSTYPE(CASE_ENUM_TO_TEXT)
 	}
+	return TEXT("<Unknown EPhysicsType>");
+}
 
-	const TCHAR* ToString(EBodyCollisionResponse::Type Enum)
+const TCHAR* LexToString(EBodyCollisionResponse::Type Enum)
+{
+	switch (Enum)
 	{
-		switch (Enum)
-		{
-			FOREACH_ENUM_EBODYCOLLISIONRESPONSE(CASE_ENUM_TO_TEXT)
-		}
-		return TEXT("<Unknown EBodyCollisionResponse>");
+		FOREACH_ENUM_EBODYCOLLISIONRESPONSE(CASE_ENUM_TO_TEXT)
 	}
+	return TEXT("<Unknown EBodyCollisionResponse>");
 }
 
 
@@ -138,16 +139,17 @@ bool IsRuntimeCookingEnabled()
 	// Quaternion that converts Sphyls from UE space to PhysX space (negate Y, swap X & Z)
 	// This is equivalent to a 180 degree rotation around the normalized (1, 0, 1) axis
 	const physx::PxQuat U2PSphylBasis( PI, PxVec3( 1.0f / FMath::Sqrt( 2.0f ), 0.0f, 1.0f / FMath::Sqrt( 2.0f ) ) );
+	const FQuat U2PSphylBasis_UE(FVector(1.0f / FMath::Sqrt(2.0f), 0.0f, 1.0f / FMath::Sqrt(2.0f)), PI);
 #endif // WITH_PHYSX
 
 // CVars
-static TAutoConsoleVariable<float> CVarContactOffsetFactor(
+ENGINE_API TAutoConsoleVariable<float> CVarContactOffsetFactor(
 	TEXT("p.ContactOffsetFactor"),
 	-1.f,
 	TEXT("Multiplied by min dimension of object to calculate how close objects get before generating contacts. < 0 implies use project settings. Default: 0.01"),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarMaxContactOffset(
+ENGINE_API TAutoConsoleVariable<float> CVarMaxContactOffset(
 	TEXT("p.MaxContactOffset"),
 	-1.f,
 	TEXT("Max value of contact offset, which controls how close objects get before generating contacts. < 0 implies use project settings. Default: 1.0"),
@@ -174,6 +176,7 @@ UBodySetup::UBodySetup(const FObjectInitializer& ObjectInitializer)
 	bConsiderForBounds = true;
 	bMeshCollideAll = false;
 	CollisionTraceFlag = CTF_UseDefault;
+	bFailedToCreatePhysicsMeshes = false;
 	bHasCookedCollisionData = true;
 	bNeverNeedsCookedCollisionData = false;
 	bGenerateMirroredCollision = true;
@@ -186,6 +189,9 @@ UBodySetup::UBodySetup(const FObjectInitializer& ObjectInitializer)
 	SetFlags(RF_Transactional);
 	bSharedCookedData = false;
 	CookedFormatDataOverride = nullptr;
+#if WITH_PHYSX
+	CurrentCookHelper = nullptr;
+#endif
 }
 
 void UBodySetup::CopyBodyPropertiesFrom(const UBodySetup* FromSetup)
@@ -338,6 +344,11 @@ void UBodySetup::GetCookInfo(FCookBodySetupInfo& OutCookInfo, EPhysXMeshCookFlag
 				CookFlags |= EPhysXMeshCookFlags::FastCook;
 			}
 
+			if (TriangleMeshDesc.bDisableActiveEdgePrecompute)
+			{
+				CookFlags |= EPhysXMeshCookFlags::DisableActiveEdgePrecompute;
+			}
+
 			OutCookInfo.TriMeshCookFlags = CookFlags;
 		}
 		else
@@ -394,10 +405,9 @@ void UBodySetup::AddCollisionFrom(class UBodySetup* FromSetup)
 
 bool IsRuntime(const UBodySetup* BS)
 {
-			UActorComponent* OwningComp = Cast<UActorComponent>(BS->GetOuter());
-			UWorld* World = OwningComp ? OwningComp->GetWorld() : nullptr;
-			const bool bIsRuntime = World && World->IsGameWorld();
-			return bIsRuntime;
+    UObject* OwningObject = BS->GetOuter();
+	UWorld* World = OwningObject ? OwningObject->GetWorld() : nullptr;
+	return World && World->IsGameWorld();
 }
 
 DECLARE_CYCLE_STAT(TEXT("Create Physics Meshes"), STAT_CreatePhysicsMeshes, STATGROUP_Physics);
@@ -423,6 +433,7 @@ void UBodySetup::CreatePhysicsMeshes()
 
 	// Find or create cooked physics data
 	static FName PhysicsFormatName(FPlatformProperties::GetPhysicsFormat());
+
 	FByteBulkData* FormatData = GetCookedData(PhysicsFormatName);
 
 	// On dedicated servers we may be cooking generic data and sharing it
@@ -471,9 +482,16 @@ void UBodySetup::CreatePhysicsMeshes()
 				}
 				else
 				{
-					CookHelper.CreatePhysicsMeshes_Concurrent();
-					FinishCreatingPhysicsMeshes(CookHelper.OutNonMirroredConvexMeshes, CookHelper.OutMirroredConvexMeshes, CookHelper.OutTriangleMeshes);
-					bClearMeshes = false;
+                    if (CookHelper.CreatePhysicsMeshes_Concurrent())
+                    {
+					    FinishCreatingPhysicsMeshes(CookHelper.OutNonMirroredConvexMeshes, CookHelper.OutMirroredConvexMeshes, CookHelper.OutTriangleMeshes);
+					    bClearMeshes = false;
+                        bFailedToCreatePhysicsMeshes = false;
+                    }
+                    else
+                    {
+                        bFailedToCreatePhysicsMeshes = true;
+                    }
 				}
 			}
 		}
@@ -526,9 +544,11 @@ void UBodySetup::FinishCreatingPhysicsMeshes(const TArray<PxConvexMesh*>& Convex
 
 	for (PxTriangleMesh* TriMesh : CookedTriMeshes)
 	{
-		check(TriMesh);
-		TriMeshes.Add(TriMesh);
-		FPhysxSharedData::Get().Add(TriMesh, FullName);
+		if(TriMesh)
+		{
+			TriMeshes.Add(TriMesh);
+			FPhysxSharedData::Get().Add(TriMesh, FullName);
+		}
 	}
 
 	// Clear the cooked data
@@ -544,6 +564,12 @@ void UBodySetup::FinishCreatingPhysicsMeshes(const TArray<PxConvexMesh*>& Convex
 void UBodySetup::CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished OnAsyncPhysicsCookFinished)
 {
 	check(IsInGameThread());
+
+#if WITH_PHYSX
+	// Don't start another cook cycle if one's already in progress
+	check(CurrentCookHelper == nullptr);
+#endif
+
 #if WITH_PHYSX_COOKING
 	UActorComponent* OwningComp = Cast<UActorComponent>(GetOuter());
 	UWorld* World = OwningComp ? OwningComp->GetWorld() : nullptr;
@@ -568,6 +594,8 @@ void UBodySetup::CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished OnAsyncPhy
 			FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(FSimpleDelegateGraphTask::FDelegate::CreateRaw(AsyncPhysicsCookHelper, &FPhysXCookHelper::CreatePhysicsMeshesAsync_Concurrent,
 				/*FinishDelegate=*/FSimpleDelegateGraphTask::FDelegate::CreateUObject(this, &UBodySetup::FinishCreatePhysicsMeshesAsync, AsyncPhysicsCookHelper, OnAsyncPhysicsCookFinished)),
 				GET_STATID(STAT_PhysXCooking), nullptr, ENamedThreads::AnyThread);
+
+			CurrentCookHelper = AsyncPhysicsCookHelper;
 		}
 		else
 		{
@@ -582,9 +610,26 @@ void UBodySetup::CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished OnAsyncPhy
 #endif // WITH_PHYSX
 }
 
+void UBodySetup::AbortPhysicsMeshAsyncCreation()
+{
+#if WITH_PHYSX
+	if (CurrentCookHelper)
+	{
+		CurrentCookHelper->Abort();
+	}
+#endif
+}
+
 #if WITH_PHYSX
 void UBodySetup::FinishCreatePhysicsMeshesAsync(FPhysXCookHelper* AsyncPhysicsCookHelper, FOnAsyncPhysicsCookFinished OnAsyncPhysicsCookFinished)
 {
+	// Ensure we haven't gotten multiple cooks going
+	// Then clear it
+	check(CurrentCookHelper == AsyncPhysicsCookHelper);
+	CurrentCookHelper = nullptr;
+
+	bool bSuccess = AsyncPhysicsCookHelper != nullptr;
+
 	if(AsyncPhysicsCookHelper)
 	{
 		FinishCreatingPhysicsMeshes(AsyncPhysicsCookHelper->OutNonMirroredConvexMeshes, AsyncPhysicsCookHelper->OutMirroredConvexMeshes, AsyncPhysicsCookHelper->OutTriangleMeshes);
@@ -598,7 +643,7 @@ void UBodySetup::FinishCreatePhysicsMeshesAsync(FPhysXCookHelper* AsyncPhysicsCo
 		bCreatedPhysicsMeshes = true;
 	}
 
-	OnAsyncPhysicsCookFinished.ExecuteIfBound();
+	OnAsyncPhysicsCookFinished.ExecuteIfBound(bSuccess);
 }
 #endif // WITH_PHYSX
 
@@ -641,340 +686,23 @@ void UBodySetup::ClearPhysicsMeshes()
 	AggGeom.FreeRenderInfo();
 }
 
-#if WITH_PHYSX
-/** Util to determine whether to use NegX version of mesh, and what transform (rotation) to apply. */
-bool CalcMeshNegScaleCompensation(const FVector& InScale3D, PxTransform& POutTransform)
+void UBodySetup::AddShapesToRigidActor_AssumesLocked(
+	FBodyInstance* OwningInstance, 
+	EPhysicsSceneType SceneType, 
+	FVector& Scale3D, 
+	UPhysicalMaterial* SimpleMaterial,
+	TArray<UPhysicalMaterial*>& ComplexMaterials, 
+	const FBodyCollisionData& BodyCollisionData,
+	const FTransform& RelativeTM, 
+	TArray<FPhysicsShapeHandle>* NewShapes, 
+	bool bShapeSharing)
 {
-	POutTransform = PxTransform(physx::PxIdentity);
+	check(OwningInstance);
 
-	if(InScale3D.Y > 0.f)
-	{
-		if(InScale3D.Z > 0.f)
-		{
-			// no rotation needed
-		}
-		else
-		{
-			// y pos, z neg
-			POutTransform.q = PxQuat(PxPi, PxVec3(0,1,0));
-		}
-	}
-	else
-	{
-		if(InScale3D.Z > 0.f)
-		{
-			// y neg, z pos
-			POutTransform.q = PxQuat(PxPi, PxVec3(0,0,1));
-		}
-		else
-		{
-			// y neg, z neg
-			POutTransform.q = PxQuat(PxPi, PxVec3(1,0,0));
-		}
-	}
-
-	// Use inverted mesh if determinant is negative
-	return (InScale3D.X * InScale3D.Y * InScale3D.Z) < 0.f;
-}
-
-#endif // WITH_PHYSX
-
-void SetupNonUniformHelper(FVector Scale3D, float& MinScale, float& MinScaleAbs, FVector& Scale3DAbs)
-{
-	// if almost zero, set min scale
-	// @todo fixme
-	if (Scale3D.IsNearlyZero())
-	{
-		// set min scale
-		Scale3D = FVector(0.1f);
-	}
-
-	Scale3DAbs = Scale3D.GetAbs();
-	MinScaleAbs = Scale3DAbs.GetMin();
-
-	MinScale = FMath::Max3(Scale3D.X, Scale3D.Y, Scale3D.Z) < 0.f ? -MinScaleAbs : MinScaleAbs;	//if all three values are negative make minScale negative
-	
-	if (FMath::IsNearlyZero(MinScale))
-	{
-		// only one of them can be 0, we make sure they have mini set up correctly
-		MinScale = 0.1f;
-		MinScaleAbs = 0.1f;
-	}
-}
-
-#if WITH_PHYSX
-
-void FBodySetupShapeIterator::GetContactOffsetParams(float& InOutContactOffsetFactor, float& InOutMinContactOffset, float& InOutMaxContactOffset)
-{
-	// Get contact offset params
-	InOutContactOffsetFactor = CVarContactOffsetFactor.GetValueOnAnyThread();
-	InOutMaxContactOffset = CVarMaxContactOffset.GetValueOnAnyThread();
-
-	InOutContactOffsetFactor = InOutContactOffsetFactor < 0.f ? UPhysicsSettings::Get()->ContactOffsetMultiplier : InOutContactOffsetFactor;
-	InOutMaxContactOffset = InOutMaxContactOffset < 0.f ? UPhysicsSettings::Get()->MaxContactOffset : InOutMaxContactOffset;
-
-	InOutMinContactOffset = UPhysicsSettings::Get()->MinContactOffset;
-}
-
-PxMaterial* GetDefaultPhysMaterial()
-{
-	check(GEngine->DefaultPhysMaterial != NULL);
-	return GEngine->DefaultPhysMaterial->GetPhysXMaterial();
-}
-
-FBodySetupShapeIterator::FBodySetupShapeIterator(const UBodySetup& InBodySetup, FVector& InScale3D, const FTransform& InRelativeTM)
-: BodySetup(InBodySetup)
-, Scale3D(InScale3D)
-, RelativeTM(InRelativeTM)
-{
-		SetupNonUniformHelper(Scale3D, MinScale, MinScaleAbs, ShapeScale3DAbs);
-		{
-			float MinScaleRelative;
-			float MinScaleAbsRelative;
-			FVector Scale3DAbsRelative;
-			FVector Scale3DRelative = RelativeTM.GetScale3D();
-
-			SetupNonUniformHelper(Scale3DRelative, MinScaleRelative, MinScaleAbsRelative, Scale3DAbsRelative);
-
-			MinScaleAbs *= MinScaleAbsRelative;
-			ShapeScale3DAbs.X *= Scale3DAbsRelative.X;
-			ShapeScale3DAbs.Y *= Scale3DAbsRelative.Y;
-			ShapeScale3DAbs.Z *= Scale3DAbsRelative.Z;
-
-			ShapeScale3D = Scale3D;
-			ShapeScale3D.X *= Scale3DAbsRelative.X;
-			ShapeScale3D.Y *= Scale3DAbsRelative.Y;
-			ShapeScale3D.Z *= Scale3DAbsRelative.Z;
-		}
-
-		GetContactOffsetParams(ContactOffsetFactor, MinContactOffset, MaxContactOffset);
-}
-
-template <typename ElemType, typename GeomType>
-void FBodySetupShapeIterator::ForEachShape(const TArray<ElemType>& Elements, TFunctionRef<void(const ElemType& Elem, const GeomType& Geom, const PxTransform& LocalPose, float ContactOffset)> VisitorFunc) const
-{
-	for (int32 ElemIdx = 0; ElemIdx < Elements.Num(); ElemIdx++)
-	{
-		const ElemType& Elem = Elements[ElemIdx];
-		GeomType Geom;
-		PxTransform PLocalPose;
-
-		if(PopulatePhysXGeometryAndTransform(Elem, Geom, PLocalPose))
-		{
-			const float ContactOffset = ComputeContactOffset(Geom);
-			VisitorFunc(Elem, Geom, PLocalPose, ContactOffset);
-		}
-		else
-		{
-			UE_LOG(LogPhysics, Warning, TEXT("ForeachShape(%s): [%s] ScaledElem[%d] invalid"), *GetDebugName<ElemType>(), *GetPathNameSafe(BodySetup.GetOuter()), ElemIdx);
-		}
-	}
-}
-	
-
-//////////////////////// Sphere elements ////////////////////////
-template <> bool FBodySetupShapeIterator::PopulatePhysXGeometryAndTransform(const FKSphereElem& SphereElem, PxSphereGeometry& OutGeometry, PxTransform& OutTM) const
-{
-	const FKSphereElem ScaledSphereElem = SphereElem.GetFinalScaled(Scale3D, RelativeTM);
-	OutGeometry.radius = FMath::Max(ScaledSphereElem.Radius, KINDA_SMALL_NUMBER);
-
-	if (ensure(OutGeometry.isValid()))
-	{
-		OutTM = PxTransform(U2PVector(ScaledSphereElem.Center));
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
-template <> float FBodySetupShapeIterator::ComputeContactOffset(const PxSphereGeometry& PSphereGeom) const
-{
-	return FMath::Clamp(ContactOffsetFactor * PSphereGeom.radius, MinContactOffset, MaxContactOffset);
-}
-
-template <> FString FBodySetupShapeIterator::GetDebugName<FKSphereElem>()  const
-{
-	return TEXT("Sphere");
-}
-
-/////////////////// Box elements //////////////////////////////
-template <> bool FBodySetupShapeIterator::PopulatePhysXGeometryAndTransform(const FKBoxElem& BoxElem, PxBoxGeometry& OutGeometry, PxTransform& OutTM) const
-{
-	const FKBoxElem ScaledBoxElem = BoxElem.GetFinalScaled(Scale3D, RelativeTM);
-	const FTransform& BoxTransform = ScaledBoxElem.GetTransform();
-			
-	OutGeometry.halfExtents.x = FMath::Max(ScaledBoxElem.X * 0.5f, KINDA_SMALL_NUMBER);
-	OutGeometry.halfExtents.y = FMath::Max(ScaledBoxElem.Y * 0.5f, KINDA_SMALL_NUMBER);
-	OutGeometry.halfExtents.z = FMath::Max(ScaledBoxElem.Z * 0.5f, KINDA_SMALL_NUMBER);
-
-	if (OutGeometry.isValid() && BoxTransform.IsValid())
-	{
-		OutTM = U2PTransform(BoxTransform);
-		if (ensure(OutTM.isValid()))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-template <> float FBodySetupShapeIterator::ComputeContactOffset(const PxBoxGeometry& PBoxGeom) const
-{
-	return FMath::Clamp(ContactOffsetFactor * PBoxGeom.halfExtents.minElement(), MinContactOffset, MaxContactOffset);
-}
-
-template <> FString FBodySetupShapeIterator::GetDebugName<FKBoxElem>()  const
-{
-	return TEXT("Box");
-}
-
-/////////////////////// Capsule elements /////////////////////////////
-template <> bool FBodySetupShapeIterator::PopulatePhysXGeometryAndTransform(const FKSphylElem& SphylElem, PxCapsuleGeometry& OutGeometry, PxTransform& OutTM) const
-{
-	const FKSphylElem ScaledSphylElem = SphylElem.GetFinalScaled(Scale3D, RelativeTM);
-
-	OutGeometry.halfHeight = FMath::Max(ScaledSphylElem.Length * 0.5f, KINDA_SMALL_NUMBER);
-	OutGeometry.radius = FMath::Max(ScaledSphylElem.Radius, KINDA_SMALL_NUMBER);
-
-	if (OutGeometry.isValid())
-	{
-		// The stored capsule transform assumes the capsule axis is down Z. In PhysX, it points down X, so we twiddle the matrix a bit here (swap X and Z and negate Y).
-		OutTM = PxTransform(U2PVector(ScaledSphylElem.Center), U2PQuat(ScaledSphylElem.Rotation.Quaternion()) * U2PSphylBasis);
-
-		if (ensure(OutTM.isValid()))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-template <> float FBodySetupShapeIterator::ComputeContactOffset(const PxCapsuleGeometry& PCapsuleGeom) const
-{
-	return FMath::Clamp(ContactOffsetFactor * PCapsuleGeom.radius, MinContactOffset, MaxContactOffset);
-}
-
-template <> FString FBodySetupShapeIterator::GetDebugName<FKSphylElem>() const
-{
-	return TEXT("Capsule");
-}
-
-////////////////////////////// Convex elements ////////////////////////////
-template <> bool FBodySetupShapeIterator::PopulatePhysXGeometryAndTransform(const FKConvexElem& ConvexElem, PxConvexMeshGeometry& OutGeometry, PxTransform& OutTM) const
-{
-	const bool bUseNegX = CalcMeshNegScaleCompensation(Scale3D * RelativeTM.GetScale3D(), OutTM);
-
-	PxConvexMesh* UseConvexMesh = bUseNegX ? ConvexElem.GetMirroredConvexMesh() : ConvexElem.GetConvexMesh();
-	if (UseConvexMesh)
-	{
-		OutGeometry.convexMesh = UseConvexMesh;
-		OutGeometry.scale.scale = U2PVector(ShapeScale3DAbs);	//scale shape about the origin
-
-			//Scale the position independent of shape scale. This is because physx transforms have no concept of scale
-		PxTransform PElementTransform = U2PTransform(RelativeTM);
-		OutTM.q *= PElementTransform.q;
-		OutTM.p = PElementTransform.p;
-		OutTM.p.x *= Scale3D.X;
-		OutTM.p.y *= Scale3D.Y;
-		OutTM.p.z *= Scale3D.Z;
-
-		if (OutGeometry.isValid())
-		{
-			PxVec3 PBoundsExtents = OutGeometry.convexMesh->getLocalBounds().getExtents();
-
-			if (ensure(OutTM.isValid()))
-			{
-				return true;
-			}
-			else
-			{
-				UE_LOG(LogPhysics, Warning, TEXT("PopulatePhysXGeometryAndTransform(Convex): ConvexElem invalid"));
-			}
-		}
-		else
-		{
-			UE_LOG(LogPhysics, Warning, TEXT("PopulatePhysXGeometryAndTransform(Convex): ConvexElem has invalid transform"));
-		}
-	}
-	else
-	{
-		UE_LOG(LogPhysics, Warning, TEXT("PopulatePhysXGeometryAndTransform(Convex): ConvexElem is missing ConvexMesh"));
-	}
-
-	return false;
-}
-
-template <> float FBodySetupShapeIterator::ComputeContactOffset(const PxConvexMeshGeometry& PConvexGeom) const
-{
-	PxVec3 PBoundsExtents = PConvexGeom.convexMesh->getLocalBounds().getExtents();
-	return FMath::Clamp(ContactOffsetFactor * PBoundsExtents.minElement(), MinContactOffset, MaxContactOffset);
-}
-
-template <> FString FBodySetupShapeIterator::GetDebugName<FKConvexElem>() const
-{
-	return TEXT("Convex");
-}
-
-
-///////////////////////////////////Trimesh elements ////////////////////////////
-template <> bool FBodySetupShapeIterator::PopulatePhysXGeometryAndTransform(PxTriangleMesh* const & TriMesh, PxTriangleMeshGeometry& OutGeometry, PxTransform& OutTM) const
-{
-	OutGeometry.triangleMesh = TriMesh;
-	OutGeometry.scale.scale = U2PVector(ShapeScale3D); //scale shape about the origin
-
-	auto ClampScale = [](float& Val) -> void
-	{
-		Val = Val <= 0.f ? FMath::Min(Val, -KINDA_SMALL_NUMBER) : FMath::Max(KINDA_SMALL_NUMBER, Val);
-	};
-
-	ClampScale(OutGeometry.scale.scale.x);
-	ClampScale(OutGeometry.scale.scale.y);
-	ClampScale(OutGeometry.scale.scale.z);
-
-	if (BodySetup.bDoubleSidedGeometry)
-	{
-		OutGeometry.meshFlags |= PxMeshGeometryFlag::eDOUBLE_SIDED;
-	}
-
-	if (OutGeometry.isValid())
-	{
-		//Scale the position independent of shape scale. This is because physx transforms have no concept of scale
-		OutTM = U2PTransform(RelativeTM);
-		OutTM.p.x *= Scale3D.X;
-		OutTM.p.y *= Scale3D.Y;
-		OutTM.p.z *= Scale3D.Z;
-
-		return true;
-	}
-	else
-	{
-		UE_LOG(LogPhysics, Log, TEXT("PopulatePhysXGeometryAndTransform(TriMesh): TriMesh invalid"));
-	}
-
-	return false;
-}
-
-template <> float FBodySetupShapeIterator::ComputeContactOffset(const PxTriangleMeshGeometry& PTriMeshGeom) const
-{
-	return MaxContactOffset;
-}
-
-template <> FString FBodySetupShapeIterator::GetDebugName<PxTriangleMesh*>() const
-{
-	return TEXT("Trimesh");
-}
-
-
-
-void UBodySetup::AddShapesToRigidActor_AssumesLocked(FBodyInstance* OwningInstance, physx::PxRigidActor* PDestActor, EPhysicsSceneType SceneType, FVector& Scale3D, physx::PxMaterial* SimpleMaterial, TArray<UPhysicalMaterial*>& ComplexMaterials, FShapeData& ShapeData, const FTransform& RelativeTM, TArray<physx::PxShape*>* NewShapes, bool bShapeSharing)
-{
 	// in editor, there are a lot of things relying on body setup to create physics meshes
 	CreatePhysicsMeshes();
 
+	// To AddGeometry in interface
 	// if almost zero, set min scale
 	// @todo fixme
 	if (Scale3D.IsNearlyZero())
@@ -983,83 +711,23 @@ void UBodySetup::AddShapesToRigidActor_AssumesLocked(FBodyInstance* OwningInstan
 		Scale3D = FVector(0.1f);
 	}
 
-	auto AttachShape_AssumesLocked = [bShapeSharing, NewShapes, PDestActor, ComplexMaterials, SimpleMaterial, SceneType, &ShapeData] (const PxGeometry& PGeom, const PxTransform& PLocalPose, const float ContactOffset, const FPhysxUserData* ShapeElemUserData, PxShapeFlags PShapeFlags)
-	{
-		const PxMaterial* PMaterial = GetDefaultPhysMaterial();
-		PxShape* PNewShape = GPhysXSDK->createShape(PGeom, *PMaterial, !bShapeSharing, PShapeFlags);
+	FGeometryAddParams AddParams;
+	AddParams.SceneType = SceneType;
+	AddParams.bSharedShapes = bShapeSharing;
+	AddParams.bDoubleSided = bDoubleSidedGeometry;
+	AddParams.CollisionData = BodyCollisionData;
+	AddParams.CollisionTraceType = GetCollisionTraceFlag();
+	AddParams.Scale = Scale3D;
+	AddParams.SimpleMaterial = SimpleMaterial;
+	AddParams.ComplexMaterials = TArrayView<UPhysicalMaterial*>(ComplexMaterials);
+	AddParams.LocalTransform = RelativeTM;
+	AddParams.Geometry = &AggGeom;
+#if WITH_PHYSX
+	AddParams.TriMeshes = TArrayView<PxTriangleMesh*>(TriMeshes);
+#endif
 
-		if (PNewShape)
-		{
-			PNewShape->userData = (void*)ShapeElemUserData;
-			PNewShape->setLocalPose(PLocalPose);
-
-			if (NewShapes)
-			{
-				NewShapes->Add(PNewShape);
-			}
-
-			PNewShape->setContactOffset(ContactOffset);
-
-			const bool bSyncFlags = bShapeSharing || SceneType == PST_Sync;
-			const FShapeFilterData& Filters = ShapeData.FilterData;
-			const bool bComplexShape = PNewShape->getGeometryType() == PxGeometryType::eTRIANGLEMESH;
-
-			PNewShape->setQueryFilterData(bComplexShape ? Filters.QueryComplexFilter : Filters.QuerySimpleFilter);
-			PNewShape->setFlags((bSyncFlags ? ShapeData.SyncShapeFlags : ShapeData.AsyncShapeFlags) | (bComplexShape ? ShapeData.ComplexShapeFlags : ShapeData.SimpleShapeFlags));
-			PNewShape->setSimulationFilterData(Filters.SimFilter);
-			FBodyInstance::ApplyMaterialToShape_AssumesLocked(PNewShape, SimpleMaterial, ComplexMaterials, bShapeSharing);
-
-			PDestActor->attachShape(*PNewShape);
-			PNewShape->release();
-		}
-
-		return PNewShape;
-	};
-
-	auto IterateSimpleShapes = [AttachShape_AssumesLocked](const FKShapeElem& Elem, const PxGeometry& Geom, const PxTransform& PLocalPose, float ContactOffset)
-	{
-		AttachShape_AssumesLocked(Geom, PLocalPose, ContactOffset, Elem.GetUserData(), PxShapeFlag::eVISUALIZATION | PxShapeFlag::eSCENE_QUERY_SHAPE | PxShapeFlag::eSIMULATION_SHAPE);
-	};
-
-	auto IterateTrimeshes = [AttachShape_AssumesLocked](PxTriangleMesh*, const PxGeometry& Geom, const PxTransform& PLocalPose, float ContactOffset)
-	{
-		// Create without 'sim shape' flag, problematic if it's kinematic, and it gets set later anyway.
-		if (!AttachShape_AssumesLocked(Geom, PLocalPose, ContactOffset, nullptr, PxShapeFlag::eSCENE_QUERY_SHAPE | PxShapeFlag::eVISUALIZATION))
-		{
-			UE_LOG(LogPhysics, Log, TEXT("Can't create new mesh shape in AddShapesToRigidActor"));
-		}
-	};
-
-
-	FBodySetupShapeIterator AddShapesHelper(*this, Scale3D, RelativeTM);
-
-	// Create shapes for simple collision if we do not want to use the complex collision mesh 
-	// for simple queries as well
-	if (GetCollisionTraceFlag() != ECollisionTraceFlag::CTF_UseComplexAsSimple)
-	{
-		AddShapesHelper.ForEachShape<FKSphereElem, PxSphereGeometry>(AggGeom.SphereElems, IterateSimpleShapes);
-		AddShapesHelper.ForEachShape<FKSphylElem, PxCapsuleGeometry>(AggGeom.SphylElems, IterateSimpleShapes);
-		AddShapesHelper.ForEachShape<FKBoxElem, PxBoxGeometry>(AggGeom.BoxElems, IterateSimpleShapes);
-		AddShapesHelper.ForEachShape<FKConvexElem, PxConvexMeshGeometry>(AggGeom.ConvexElems, IterateSimpleShapes);
-	}
-
-	// Create tri-mesh shape, when we are not using simple collision shapes for 
-	// complex queries as well
-	if (GetCollisionTraceFlag() != ECollisionTraceFlag::CTF_UseSimpleAsComplex)
-	{
-		AddShapesHelper.ForEachShape<PxTriangleMesh*, PxTriangleMeshGeometry>(TriMeshes, IterateTrimeshes);
-	}
-
-	if (OwningInstance)
-	{
-		if (PxRigidBody* RigidBody = OwningInstance->GetPxRigidBody_AssumesLocked())
-		{
-			RigidBody->setRigidBodyFlags(ShapeData.SyncBodyFlags);
-		}
-	}
+	FPhysicsInterface::AddGeometry(OwningInstance->ActorHandle, AddParams, NewShapes);
 }
-
-#endif // WITH_PHYSX
 
 void UBodySetup::RemoveSimpleCollision()
 {
@@ -1135,6 +803,9 @@ void UBodySetup::InvalidatePhysicsData()
 	{
 		CookedFormatData.FlushData();
 	}
+#if WITH_EDITOR
+	CookedFormatDataRuntimeOnlyOptimization.FlushData();
+#endif
 }
 
 void UBodySetup::BeginDestroy()
@@ -1191,6 +862,29 @@ void UBodySetup::Serialize(FArchive& Ar)
 
 			FFormatContainer* UseCookedFormatData = bUseRuntimeOnlyCookedData ? &CookedFormatDataRuntimeOnlyOptimization : &CookedFormatData;
 			UseCookedFormatData->Serialize(Ar, this, &ActualFormatsToSave, !bSharedCookedData);
+
+#if VERIFY_COOKED_PHYS_DATA
+			// Verify that the cooked data matches the uncooked data
+			if(GetCollisionTraceFlag() != CTF_UseComplexAsSimple)
+			{
+				UObject* Outer = GetOuter();
+
+				for(TPair<FName, FByteBulkData*>& TestFormat : UseCookedFormatData->Formats)
+				{
+					FByteBulkData* BulkData = TestFormat.Value;
+					if(BulkData && BulkData->GetBulkDataSize() > 0)
+					{
+						FPhysXCookingDataReader PhysDataReader(*BulkData, &UVInfo);
+
+						if(PhysDataReader.ConvexMeshes.Num() != AggGeom.ConvexElems.Num() || PhysDataReader.TriMeshes.Num() != TriMeshes.Num())
+						{
+							// Cooked data doesn't match our current geo
+							UE_LOG(LogPhysics, Warning, TEXT("Body setup cooked data for component %s does not match uncooked geo. Convex: %d, %d, Trimesh: %d, %d"), Outer ? *Outer->GetName() : TEXT("None"), AggGeom.ConvexElems.Num(), PhysDataReader.ConvexMeshes.Num(), TriMeshes.Num(), PhysDataReader.TriMeshes.Num());
+						}
+					}
+				}
+			}
+#endif
 		}
 		else
 #endif
@@ -1618,6 +1312,7 @@ void UBodySetup::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 	UVInfo.GetResourceSizeEx(CumulativeResourceSize);
 }
 
+#if WITH_EDITORONLY_DATA
 void FKAggregateGeom::FixupDeprecated(FArchive& Ar)
 {
 	for (auto SphereElemIt = SphereElems.CreateIterator(); SphereElemIt; ++SphereElemIt)
@@ -1635,6 +1330,7 @@ void FKAggregateGeom::FixupDeprecated(FArchive& Ar)
 		SphylElemIt->FixupDeprecated(Ar);
 	}
 }
+#endif
 
 float FKAggregateGeom::GetVolume(const FVector& Scale) const
 {
@@ -1675,6 +1371,8 @@ int32 FKAggregateGeom::GetElementCount(EAggCollisionShape::Type Type) const
 		return SphylElems.Num();
 	case EAggCollisionShape::Sphere:
 		return SphereElems.Num();
+	case EAggCollisionShape::TaperedCapsule:
+		return TaperedCapsuleElems.Num();
 	default:
 		return 0;
 	}
@@ -1755,6 +1453,7 @@ float FKConvexElem::GetVolume(const FVector& Scale) const
 	return Volume;
 }
 
+#if WITH_EDITORONLY_DATA
 void FKSphereElem::FixupDeprecated( FArchive& Ar )
 {
 	if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REFACTOR_PHYSICS_TRANSFORMS )
@@ -1762,6 +1461,7 @@ void FKSphereElem::FixupDeprecated( FArchive& Ar )
 		Center = TM_DEPRECATED.GetOrigin();
 	}
 }
+#endif
 
 float FKSphereElem::GetShortestDistanceToPoint(const FVector& WorldPosition, const FTransform& LocalToWorldTM) const
 {
@@ -1824,6 +1524,7 @@ FKSphereElem FKSphereElem::GetFinalScaled(const FVector& Scale3D, const FTransfo
 	return ScaledSphere;
 }
 
+#if WITH_EDITORONLY_DATA
 void FKBoxElem::FixupDeprecated( FArchive& Ar )
 {
 	if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REFACTOR_PHYSICS_TRANSFORMS )
@@ -1838,6 +1539,7 @@ void FKBoxElem::FixupDeprecated( FArchive& Ar )
 		Rotation = Orientation_DEPRECATED.Rotator();
 	}
 }
+#endif
 
 void FKBoxElem::ScaleElem(FVector DeltaSize, float MinSize)
 {
@@ -1908,6 +1610,7 @@ float FKBoxElem::GetClosestPointAndNormal(const FVector& WorldPosition, const FT
 	return bIsOutside ? Error : 0.f;
 }
 
+#if WITH_EDITORONLY_DATA
 void FKSphylElem::FixupDeprecated( FArchive& Ar )
 {
 	if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REFACTOR_PHYSICS_TRANSFORMS )
@@ -1922,6 +1625,7 @@ void FKSphylElem::FixupDeprecated( FArchive& Ar )
 		Rotation = Orientation_DEPRECATED.Rotator();
 	}
 }
+#endif
 
 void FKSphylElem::ScaleElem(FVector DeltaSize, float MinSize)
 {
@@ -2025,6 +1729,62 @@ float FKSphylElem::GetClosestPointAndNormal(const FVector& WorldPosition, const 
 	return bIsOutside ? DistToEdge : 0.f;
 }
 
+void FKTaperedCapsuleElem::ScaleElem(FVector DeltaSize, float MinSize)
+{
+	float DeltaRadius0 = DeltaSize.X;
+	float DeltaRadius1 = DeltaSize.Y;
+
+	float DeltaHeight = DeltaSize.Z;
+	float radius0 = FMath::Max(Radius0 + DeltaRadius0, MinSize);
+	float radius1 = FMath::Max(Radius1 + DeltaRadius1, MinSize);
+	float length = Length + DeltaHeight;
+
+	length += ((Radius1 - radius1) + (Radius0 - radius0)) * 0.5f;
+	length = FMath::Max(0.f, length);
+
+	Radius0 = radius0;
+	Radius1 = radius1;
+	Length = length;
+}
+
+FKTaperedCapsuleElem FKTaperedCapsuleElem::GetFinalScaled(const FVector& Scale3D, const FTransform& RelativeTM) const
+{
+	FKTaperedCapsuleElem ScaledTaperedCapsuleElem = *this;
+
+	float MinScale, MinScaleAbs;
+	FVector Scale3DAbs;
+
+	SetupNonUniformHelper(Scale3D * RelativeTM.GetScale3D(), MinScale, MinScaleAbs, Scale3DAbs);
+
+	GetScaledRadii(Scale3DAbs, ScaledTaperedCapsuleElem.Radius0, ScaledTaperedCapsuleElem.Radius1);
+	ScaledTaperedCapsuleElem.Length = GetScaledCylinderLength(Scale3DAbs);
+
+	FVector LocalOrigin = RelativeTM.TransformPosition(Center) * Scale3D;
+	ScaledTaperedCapsuleElem.Center = LocalOrigin;
+	ScaledTaperedCapsuleElem.Rotation = FRotator(RelativeTM.GetRotation() * FQuat(ScaledTaperedCapsuleElem.Rotation));
+
+	return ScaledTaperedCapsuleElem;
+}
+
+void FKTaperedCapsuleElem::GetScaledRadii(const FVector& Scale3D, float& OutRadius0, float& OutRadius1) const
+{
+	const FVector Scale3DAbs = Scale3D.GetAbs();
+	const float RadiusScale = FMath::Max(Scale3DAbs.X, Scale3DAbs.Y);
+	OutRadius0 = FMath::Clamp(Radius0 * RadiusScale, 0.1f, GetScaledHalfLength(Scale3DAbs));
+	OutRadius1 = FMath::Clamp(Radius1 * RadiusScale, 0.1f, GetScaledHalfLength(Scale3DAbs));
+}
+
+float FKTaperedCapsuleElem::GetScaledCylinderLength(const FVector& Scale3D) const
+{
+	float ScaledRadius0, ScaledRadius1;
+	GetScaledRadii(Scale3D, ScaledRadius0, ScaledRadius1);
+	return FMath::Max(0.1f, ((GetScaledHalfLength(Scale3D) * 2.0f) - (ScaledRadius0 + ScaledRadius1)));
+}
+
+float FKTaperedCapsuleElem::GetScaledHalfLength(const FVector& Scale3D) const
+{
+	return FMath::Max((Length + Radius0 + Radius1) * FMath::Abs(Scale3D.Z) * 0.5f, 0.1f);
+}
 
 class UPhysicalMaterial* UBodySetup::GetPhysMaterial() const
 {
@@ -2101,17 +1861,3 @@ TEnumAsByte<enum ECollisionTraceFlag> UBodySetup::GetCollisionTraceFlag() const
 	TEnumAsByte<enum ECollisionTraceFlag> DefaultFlag = UPhysicsSettings::Get()->DefaultShapeComplexity;
 	return CollisionTraceFlag == ECollisionTraceFlag::CTF_UseDefault ? DefaultFlag : CollisionTraceFlag;
 }
-
-#if WITH_PHYSX
-
-/// @cond DOXYGEN_WARNINGS
-
-template void FBodySetupShapeIterator::ForEachShape(const TArray<FKSphereElem>&, TFunctionRef<void(const FKSphereElem&, const physx::PxSphereGeometry&, const physx::PxTransform&, float)>) const;
-template void FBodySetupShapeIterator::ForEachShape(const TArray<FKBoxElem>&, TFunctionRef<void(const FKBoxElem&, const physx::PxBoxGeometry&, const physx::PxTransform&, float)>) const;
-template void FBodySetupShapeIterator::ForEachShape(const TArray<FKSphylElem>&, TFunctionRef<void(const FKSphylElem&, const physx::PxCapsuleGeometry&, const physx::PxTransform&, float)>) const;
-template void FBodySetupShapeIterator::ForEachShape(const TArray<FKConvexElem>&, TFunctionRef<void(const FKConvexElem&, const physx::PxConvexMeshGeometry&, const physx::PxTransform&, float)>) const;
-template void FBodySetupShapeIterator::ForEachShape(const TArray<physx::PxTriangleMesh*>&, TFunctionRef<void(physx::PxTriangleMesh* const &, const physx::PxTriangleMeshGeometry&, const physx::PxTransform&, float)>) const;
-
-/// @endcond
-
-#endif //WITH_PHYSX

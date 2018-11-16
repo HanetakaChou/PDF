@@ -9,7 +9,7 @@
 #include "ProfilerRawStatsForThreadView.h"
 #include "Widgets/SProfilerMiniView.h"
 #include "Widgets/SProfilerWindow.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 
 #define LOCTEXT_NAMESPACE "FProfilerCommands"
 
@@ -538,7 +538,7 @@ bool FProfilerManager::TrackStat( const uint32 StatID )
 		if (!TrackedStat.IsValid())
 		{
 			// R = H, G = S, B = V
-			const FLinearColor& GraphColor = GetColorForStatID( StatID );
+			const FLinearColor GraphColor = GetColorForStatID( StatID );
 // 			const FLinearColor ColorAverageHSV = ColorAverage.LinearRGBToHSV();
 // 
 // 			FLinearColor ColorBackgroundHSV = ColorAverageHSV;

@@ -34,6 +34,11 @@ FString FQosInterface::GetDatacenterId()
 	return UQosRegionManager::GetDatacenterId();
 }
 
+FString FQosInterface::GetAdvertisedSubregionId()
+{
+	return UQosRegionManager::GetAdvertisedSubregionId();
+}
+
 void FQosInterface::BeginQosEvaluation(UWorld* World, const TSharedPtr<IAnalyticsProvider>& AnalyticsProvider, const FSimpleDelegate& OnComplete)
 {
 	check(RegionManager);
@@ -46,16 +51,28 @@ FString FQosInterface::GetRegionId() const
 	return RegionManager->GetRegionId();
 }
 
+FString FQosInterface::GetBestRegion() const
+{
+	check(RegionManager);
+	return RegionManager->GetBestRegion();
+}
+
 bool FQosInterface::AllRegionsFound() const
 {
 	check(RegionManager);
 	return RegionManager->AllRegionsFound();
 }
 
-const TArray<FQosRegionInfo>& FQosInterface::GetRegionOptions() const
+const TArray<FRegionQosInstance>& FQosInterface::GetRegionOptions() const
 {
 	check(RegionManager);
 	return RegionManager->GetRegionOptions();
+}
+
+void FQosInterface::GetSubregionPreferences(const FString& RegionId, TArray<FString>& OutSubregions) const
+{
+	check(RegionManager);
+	return RegionManager->GetSubregionPreferences(RegionId, OutSubregions);
 }
 
 void FQosInterface::ForceSelectRegion(const FString& InRegionId)
@@ -76,8 +93,20 @@ bool FQosInterface::SetSelectedRegion(const FString& InRegionId)
 	return RegionManager->SetSelectedRegion(InRegionId);
 }
 
+void FQosInterface::ClearSelectedRegion()
+{
+	check(RegionManager);
+	RegionManager->ClearSelectedRegion();
+}
+
 void FQosInterface::DumpRegionStats()
 {
 	check(RegionManager);
 	return RegionManager->DumpRegionStats();
+}
+
+void FQosInterface::RegisterQoSSettingsChangedDelegate(const FSimpleDelegate& OnQoSSettingsChanged)
+{
+	check(RegionManager);
+	RegionManager->RegisterQoSSettingsChangedDelegate(OnQoSSettingsChanged);
 }

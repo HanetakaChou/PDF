@@ -64,8 +64,24 @@ namespace MediaTextureResource
 		case EMediaTextureSampleFormat::FloatRGBA:
 			return PF_FloatRGBA;
 
+		case EMediaTextureSampleFormat::CharBGR10A2:
+			return PF_A2B10G10R10;
+
 		default:
 			return PF_Unknown;
+		}
+	}
+
+
+	EPixelFormat GetConvertedPixelFormat(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& Sample)
+	{
+		switch (Sample->GetFormat())
+		{
+		case EMediaTextureSampleFormat::CharBGR10A2:
+			return PF_A2B10G10R10;
+
+		default:
+			return PF_B8G8R8A8;
 		}
 	}
 
@@ -150,7 +166,7 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 {
 	check(IsInRenderingThread());
 
-//	SCOPE_CYCLE_COUNTER(STAT_MediaAssets_MediaTextureResourceRender);
+	SCOPE_CYCLE_COUNTER(STAT_MediaAssets_MediaTextureResourceRender);
 
 	FLinearColor Rotation(1, 0, 0, 1);
 	FLinearColor Offset(0, 0, 0, 0);
@@ -161,46 +177,73 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 	{
 		// get the most current sample to be rendered
 		TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
-		bool SampleValid = false;
+		bool UseSample = false;
 		
 		while (SampleSource->Peek(Sample) && Sample.IsValid())
 		{
 			const FTimespan StartTime = Sample->GetTime();
 			const FTimespan EndTime = StartTime + Sample->GetDuration();
 
-			if (((Params.Rate > 0.0f) && (StartTime >= Params.Time)) ||
-				((Params.Rate < 0.0f) && (EndTime <= Params.Time)))
+			if ((Params.Rate >= 0.0f) && (Params.Time < StartTime))
 			{
-				break; // future sample
+				break; // future sample (forward play)
 			}
 
-			SampleValid = SampleSource->Dequeue(Sample);
+			if ((Params.Rate <= 0.0f) && (Params.Time >= EndTime))
+			{
+				break; // future sample (reverse play)
+			}
+
+			UseSample = SampleSource->Dequeue(Sample);
+
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+			if (!UseSample && Sample.IsValid())
+			{
+				UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Sample with time %s got flushed at time %s"),
+					this,
+					*Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")),
+					*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+				);
+			}
+#endif
 		}
 
-		if (SampleValid)
+		if (UseSample)
 		{
 			// render the sample
 			if (Sample->GetOutputDim().GetMin() <= 0)
 			{
-				#if MEDIATEXTURERESOURCE_TRACE_RENDER
-					UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Corrupt sample with time %s at time %s"), this, *Sample->GetTime().ToString(), *Params.Time.ToString());
-				#endif
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+				UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Corrupt sample with time %s at time %s"),
+					this,
+					*Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")),
+					*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+				);
+#endif
 
 				ClearTexture(FLinearColor::Red, Params.SrgbOutput); // mark corrupt sample
 			}
 			else if (MediaTextureResource::RequiresConversion(Sample, Params.SrgbOutput))
 			{
-				#if MEDIATEXTURERESOURCE_TRACE_RENDER
-					UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Converting sample with time %s at time %s"), this, *Sample->GetTime().ToString(), *Params.Time.ToString());
-				#endif
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+				UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Converting sample with time %s at time %s"),
+					this,
+					*Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")),
+					*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+				);
+#endif
 
 				ConvertSample(Sample, Params.ClearColor, Params.SrgbOutput);
 			}
 			else
 			{
-				#if MEDIATEXTURERESOURCE_TRACE_RENDER
-					UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Copying sample with time %s at time %s"), this, *Sample->GetTime().ToString(), *Params.Time.ToString());
-				#endif
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+				UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Copying sample with time %s at time %s"),
+					this,
+					*Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")),
+					*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+				);
+#endif
 
 				CopySample(Sample, Params.ClearColor, Params.SrgbOutput);
 			}
@@ -208,14 +251,34 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 			Rotation = Sample->GetScaleRotation();
 			Offset = Sample->GetOffset();
 		}
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+		else if (Sample.IsValid())
+		{
+			UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Sample with time %s cannot be used at time %s"),
+				this,
+				*Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")),
+				*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+			);
+		}
+		else
+		{
+			UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: No valid sample available at time %s"),
+				this,
+				*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+			);
+		}
+#endif
 	}
 	else if (Params.CanClear)
 	{
 		if (!Cleared || (Params.ClearColor != CurrentClearColor))
 		{
-			#if MEDIATEXTURERESOURCE_TRACE_RENDER
-				UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Clearing texture at time %s"), this, *Params.Time.ToString());
-			#endif
+#if MEDIATEXTURERESOURCE_TRACE_RENDER
+			UE_LOG(LogMediaAssets, VeryVerbose, TEXT("TextureResource %p: Clearing texture at time %s"),
+				this,
+				*Params.Time.ToString(TEXT("%h:%m:%s.%t"))
+			);
+#endif
 
 			ClearTexture(Params.ClearColor, Params.SrgbOutput);
 		}
@@ -318,8 +381,9 @@ void FMediaTextureResource::ClearTexture(const FLinearColor& ClearColor, bool Sr
 {
 	// create output render target if we don't have one yet
 	const uint32 OutputCreateFlags = TexCreate_Dynamic | (SrgbOutput ? TexCreate_SRGB : 0);
+	const EPixelFormat OutputPixelFormat = PF_B8G8R8A8;
 
-	if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))
+	if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || (OutputTarget->GetFormat() != OutputPixelFormat) || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))
 	{
 		FRHIResourceCreateInfo CreateInfo = {
 			FClearValueBinding(ClearColor)
@@ -330,7 +394,7 @@ void FMediaTextureResource::ClearTexture(const FLinearColor& ClearColor, bool Sr
 		RHICreateTargetableShaderResource2D(
 			2,
 			2,
-			PF_B8G8R8A8,
+			OutputPixelFormat,
 			1,
 			OutputCreateFlags,
 			TexCreate_RenderTargetable,
@@ -365,7 +429,7 @@ void FMediaTextureResource::ClearTexture(const FLinearColor& ClearColor, bool Sr
 
 void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& Sample, const FLinearColor& ClearColor, bool SrgbOutput)
 {
-	const EPixelFormat PixelFormat = MediaTextureResource::GetPixelFormat(Sample);
+	const EPixelFormat InputPixelFormat = MediaTextureResource::GetPixelFormat(Sample);
 
 	// get input texture
 	FRHITexture2D* InputTexture = nullptr;
@@ -391,7 +455,7 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 			const FIntPoint SampleDim = Sample->GetDim();
 
 			// create a new input render target if necessary
-			if (!InputTarget.IsValid() || (InputTarget->GetSizeXY() != SampleDim) || (InputTarget->GetFormat() != PixelFormat) || ((InputTarget->GetFlags() & InputCreateFlags) != InputCreateFlags))
+			if (!InputTarget.IsValid() || (InputTarget->GetSizeXY() != SampleDim) || (InputTarget->GetFormat() != InputPixelFormat) || ((InputTarget->GetFlags() & InputCreateFlags) != InputCreateFlags))
 			{
 				TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
 				FRHIResourceCreateInfo CreateInfo;
@@ -399,7 +463,7 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 				RHICreateTargetableShaderResource2D(
 					SampleDim.X,
 					SampleDim.Y,
-					PixelFormat,
+					InputPixelFormat,
 					1,
 					InputCreateFlags,
 					TexCreate_RenderTargetable,
@@ -423,8 +487,9 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 	// create output render target if necessary
 	const uint32 OutputCreateFlags = TexCreate_Dynamic | (SrgbOutput ? TexCreate_SRGB : 0);
 	const FIntPoint OutputDim = Sample->GetOutputDim();
+	const EPixelFormat OutputPixelFormat = MediaTextureResource::GetConvertedPixelFormat(Sample);
 
-	if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || (OutputTarget->GetSizeXY() != OutputDim) || (OutputTarget->GetFormat() != PF_B8G8R8A8) || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))
+	if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || (OutputTarget->GetSizeXY() != OutputDim) || (OutputTarget->GetFormat() != OutputPixelFormat) || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))
 	{
 		TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
 		
@@ -435,7 +500,7 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 		RHICreateTargetableShaderResource2D(
 			OutputDim.X,
 			OutputDim.Y,
-			PF_B8G8R8A8,
+			OutputPixelFormat,
 			1,
 			OutputCreateFlags,
 			TexCreate_RenderTargetable,
@@ -543,6 +608,15 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 		}
 		break;
 
+		case EMediaTextureSampleFormat::CharBGR10A2:
+		{
+			TShaderMapRef<FRGBConvertPS> ConvertShader(ShaderMap);
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*ConvertShader);
+			SetGraphicsPipelineState(CommandList, GraphicsPSOInit);
+			ConvertShader->SetParameters(CommandList, InputTexture, OutputDim, Sample->IsOutputSrgb());
+		}
+		break;
+
 		case EMediaTextureSampleFormat::CharBGRA:
 		case EMediaTextureSampleFormat::FloatRGB:
 		case EMediaTextureSampleFormat::FloatRGBA:
@@ -550,7 +624,7 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 			TShaderMapRef<FRGBConvertPS> ConvertShader(ShaderMap);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*ConvertShader);
 			SetGraphicsPipelineState(CommandList, GraphicsPSOInit);
-			ConvertShader->SetParameters(CommandList, InputTexture, OutputDim);
+			ConvertShader->SetParameters(CommandList, InputTexture, OutputDim, false);
 		}
 		break;
 
@@ -559,20 +633,12 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 		}
 
 		// draw full size quad into render target
-		FMediaElementVertex Vertices[4];
-		{
-			Vertices[0].Position.Set(-1.0f, 1.0f, 1.0f, 1.0f);
-			Vertices[0].TextureCoordinate.Set(0.0f, 0.0f);
-			Vertices[1].Position.Set(1.0f, 1.0f, 1.0f, 1.0f);
-			Vertices[1].TextureCoordinate.Set(1.0f, 0.0f);
-			Vertices[2].Position.Set(-1.0f, -1.0f, 1.0f, 1.0f);
-			Vertices[2].TextureCoordinate.Set(0.0f, 1.0f);
-			Vertices[3].Position.Set(1.0f, -1.0f, 1.0f, 1.0f);
-			Vertices[3].TextureCoordinate.Set(1.0f, 1.0f);
-		}
-
+		FVertexBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
+		CommandList.SetStreamSource(0, VertexBuffer, 0);
+		// set viewport to RT size
 		CommandList.SetViewport(0, 0, 0.0f, OutputDim.X, OutputDim.Y, 1.0f);
-		DrawPrimitiveUP(CommandList, PT_TriangleStrip, 2, Vertices, sizeof(Vertices[0]));
+
+		CommandList.DrawPrimitive(PT_TriangleStrip, 0, 2, 1);
 		CommandList.TransitionResource(EResourceTransitionAccess::EReadable, RenderTargetTextureRHI);
 	}
 

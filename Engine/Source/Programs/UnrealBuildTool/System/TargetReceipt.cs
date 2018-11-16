@@ -28,16 +28,6 @@ namespace UnrealBuildTool
 		DynamicLibrary,
 
 		/// <summary>
-		/// A statically linked library. Not required for the executable to run.
-		/// </summary>
-		StaticLibrary,
-
-		/// <summary>
-		/// An import library. Not required for the executable to run.
-		/// </summary>
-		ImportLibrary,
-
-		/// <summary>
 		/// A symbol file. Not required for the executable to run.
 		/// </summary>
 		SymbolFile,
@@ -80,11 +70,6 @@ namespace UnrealBuildTool
 		public BuildProductType Type;
 
 		/// <summary>
-		/// Whether the file is precompiled for use by downstream builds, but not directly used by the current target.
-		/// </summary>
-		public bool IsPrecompiled;
-
-		/// <summary>
 		/// Private constructor, for serialization.
 		/// </summary>
 		private BuildProduct()
@@ -110,7 +95,6 @@ namespace UnrealBuildTool
 		{
 			Path = Other.Path;
 			Type = Other.Type;
-			IsPrecompiled = Other.IsPrecompiled;
 		}
 
 		/// <summary>
@@ -292,6 +276,11 @@ namespace UnrealBuildTool
 		public BuildVersion Version;
 
 		/// <summary>
+		/// The exectuable to launch for this target
+		/// </summary>
+		public FileReference Launch;
+
+		/// <summary>
 		/// The build products which are part of this target
 		/// </summary>
 		public List<BuildProduct> BuildProducts = new List<BuildProduct>();
@@ -300,16 +289,6 @@ namespace UnrealBuildTool
 		/// All the runtime dependencies that this target relies on
 		/// </summary>
 		public RuntimeDependencyList RuntimeDependencies = new RuntimeDependencyList();
-
-		/// <summary>
-		/// All the files which are required to use precompiled binaries with this target
-		/// </summary>
-		public HashSet<FileReference> PrecompiledBuildDependencies = new HashSet<FileReference>();
-
-		/// <summary>
-		/// All the files which are required runtime dependencies for precompiled binaries that are part of this target
-		/// </summary>
-		public HashSet<FileReference> PrecompiledRuntimeDependencies = new HashSet<FileReference>();
 
 		/// <summary>
 		/// Additional build properties passed through from the module rules
@@ -344,6 +323,7 @@ namespace UnrealBuildTool
 		/// <param name="Other">Receipt to copy from</param>
 		public TargetReceipt(TargetReceipt Other)
 		{
+			Launch = Other.Launch;
 			foreach (BuildProduct OtherBuildProduct in Other.BuildProducts)
 			{
 				BuildProducts.Add(new BuildProduct(OtherBuildProduct));
@@ -353,8 +333,6 @@ namespace UnrealBuildTool
 				RuntimeDependencies.Add(new RuntimeDependency(OtherRuntimeDependency));
 			}
 			AdditionalProperties.AddRange(Other.AdditionalProperties);
-			PrecompiledBuildDependencies.UnionWith(Other.PrecompiledBuildDependencies);
-			PrecompiledRuntimeDependencies.UnionWith(Other.PrecompiledRuntimeDependencies);
 		}
 
 		/// <summary>
@@ -387,8 +365,6 @@ namespace UnrealBuildTool
 					RuntimeDependencies.Add(OtherRuntimeDependency);
 				}
 			}
-			PrecompiledBuildDependencies.UnionWith(Other.PrecompiledBuildDependencies);
-			PrecompiledRuntimeDependencies.UnionWith(Other.PrecompiledRuntimeDependencies);
 		}
 
 		/// <summary>
@@ -451,7 +427,7 @@ namespace UnrealBuildTool
 		{
 			// Get the architecture suffix. Platforms have the option of overriding whether to include this string in filenames.
 			string ArchitectureSuffix = "";
-			if(UEBuildPlatform.GetBuildPlatform(Platform).RequiresArchitectureSuffix())
+			if(!String.IsNullOrEmpty(BuildArchitecture) && UEBuildPlatform.GetBuildPlatform(Platform).RequiresArchitectureSuffix())
 			{
 				ArchitectureSuffix = BuildArchitecture;
 			}
@@ -465,6 +441,19 @@ namespace UnrealBuildTool
 			{
 				return FileReference.Combine(BaseDir, "Binaries", Platform.ToString(), String.Format("{0}-{1}-{2}{3}.target", TargetName, Platform.ToString(), Configuration.ToString(), ArchitectureSuffix));
 			}
+		}
+
+		/// <summary>
+		/// Determine whether a BuildProduct Type is NonUFS or DebugNonUFS
+		/// </summary>
+		/// <param name="BuildProduct">The build product to check</param>
+		public static StagedFileType GetStageTypeFromBuildProductType(BuildProduct BuildProduct)
+		{
+			if (BuildProduct.Type == BuildProductType.SymbolFile || BuildProduct.Type == BuildProductType.MapFile)
+			{
+				return StagedFileType.DebugNonUFS;
+			}
+			return StagedFileType.NonUFS;
 		}
 
 		/// <summary>
@@ -492,6 +481,13 @@ namespace UnrealBuildTool
 			// Create the receipt
 			TargetReceipt Receipt = new TargetReceipt(TargetName, Platform, Configuration, Version);
 
+			// Read the launch executable
+			string Launch;
+			if(RawObject.TryGetStringField("Launch", out Launch))
+			{
+				Receipt.Launch = ExpandPathVariables(Launch, EngineDir, ProjectDir);
+			}
+
 			// Read the build products
 			JsonObject[] BuildProductObjects;
 			if (RawObject.TryGetObjectArrayField("BuildProducts", out BuildProductObjects))
@@ -507,13 +503,7 @@ namespace UnrealBuildTool
 						string Module;
 						BuildProductObject.TryGetStringField("Module", out Module);
 
-						BuildProduct NewBuildProduct = Receipt.AddBuildProduct(File, Type);
-
-						bool IsPrecompiled;
-						if (BuildProductObject.TryGetBoolField("IsPrecompiled", out IsPrecompiled))
-						{
-							NewBuildProduct.IsPrecompiled = IsPrecompiled;
-						}
+						Receipt.AddBuildProduct(File, Type);
 					}
 				}
 			}
@@ -561,28 +551,6 @@ namespace UnrealBuildTool
 							Receipt.AdditionalProperties.Add(new ReceiptProperty(Name, Value));
 						}
 					}
-				}
-			}
-
-			// Read the precompiled dependencies
-			string[] PrecompiledBuildDependencies;
-			if(RawObject.TryGetStringArrayField("PrecompiledBuildDependencies", out PrecompiledBuildDependencies))
-			{
-				foreach(string PrecompiledBuildDependency in PrecompiledBuildDependencies)
-				{
-					FileReference File = ExpandPathVariables(PrecompiledBuildDependency, EngineDir, ProjectDir);
-					Receipt.PrecompiledBuildDependencies.Add(File);
-				}
-			}
-
-			// Read the precompiled dependencies
-			string[] PrecompiledRuntimeDependencies;
-			if(RawObject.TryGetStringArrayField("PrecompiledRuntimeDependencies", out PrecompiledRuntimeDependencies))
-			{
-				foreach(string PrecompiledRuntimeDependency in PrecompiledRuntimeDependencies)
-				{
-					FileReference File = ExpandPathVariables(PrecompiledRuntimeDependency, EngineDir, ProjectDir);
-					Receipt.PrecompiledRuntimeDependencies.Add(File);
 				}
 			}
 
@@ -636,16 +604,17 @@ namespace UnrealBuildTool
 				Version.WriteProperties(Writer);
 				Writer.WriteObjectEnd();
 
+				if(Launch != null)
+				{
+					Writer.WriteValue("Launch", InsertPathVariables(Launch, EngineDir, ProjectDir));
+				}
+
 				Writer.WriteArrayStart("BuildProducts");
 				foreach (BuildProduct BuildProduct in BuildProducts)
 				{
 					Writer.WriteObjectStart();
 					Writer.WriteValue("Path", InsertPathVariables(BuildProduct.Path, EngineDir, ProjectDir));
 					Writer.WriteValue("Type", BuildProduct.Type.ToString());
-					if (BuildProduct.IsPrecompiled)
-					{
-						Writer.WriteValue("IsPrecompiled", BuildProduct.IsPrecompiled);
-					}
 					Writer.WriteObjectEnd();
 				}
 				Writer.WriteArrayEnd();
@@ -669,26 +638,6 @@ namespace UnrealBuildTool
 						Writer.WriteValue("Name", AdditionalProperty.Name);
 						Writer.WriteValue("Value", AdditionalProperty.Value);
 						Writer.WriteObjectEnd();
-					}
-					Writer.WriteArrayEnd();
-				}
-
-				if(PrecompiledBuildDependencies.Count > 0)
-				{
-					Writer.WriteArrayStart("PrecompiledBuildDependencies");
-					foreach(string PrecompiledBuildDependency in PrecompiledBuildDependencies.Select(x => InsertPathVariables(x, EngineDir, ProjectDir)).OrderBy(x => x))
-					{
-						Writer.WriteValue(PrecompiledBuildDependency);
-					}
-					Writer.WriteArrayEnd();
-				}
-
-				if(PrecompiledRuntimeDependencies.Count > 0)
-				{
-					Writer.WriteArrayStart("PrecompiledRuntimeDependencies");
-					foreach(string PrecompiledRuntimeDependency in PrecompiledRuntimeDependencies.Select(x => InsertPathVariables(x, EngineDir, ProjectDir)).OrderBy(x => x))
-					{
-						Writer.WriteValue(PrecompiledRuntimeDependency);
 					}
 					Writer.WriteArrayEnd();
 				}

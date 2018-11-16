@@ -15,15 +15,158 @@ class FVulkanPendingComputeState;
 class FVulkanQueue;
 class FVulkanOcclusionQueryPool;
 
+struct FInputAttachmentData;
+
+class FTransitionAndLayoutManagerData
+{
+public:
+	void TempCopy(const FTransitionAndLayoutManagerData& In)
+	{
+		Framebuffers = In.Framebuffers;
+		RenderPasses = In.RenderPasses;
+		Layouts = In.Layouts;
+	}
+
+protected:
+	TMap<uint32, FVulkanRenderPass*> RenderPasses;
+	struct FFramebufferList
+	{
+		TArray<FVulkanFramebuffer*> Framebuffer;
+	};
+	TMap<uint32, FFramebufferList*> Framebuffers;
+	TMap<VkImage, VkImageLayout> Layouts;
+};
+
+class FTransitionAndLayoutManager : public FTransitionAndLayoutManagerData
+{
+	using FFramebufferList = FTransitionAndLayoutManagerData::FFramebufferList;
+public:
+	FTransitionAndLayoutManager()
+		: CurrentRenderPass(nullptr)
+		, CurrentFramebuffer(nullptr)
+	{
+	}
+
+	void Destroy(FVulkanDevice& InDevice, FTransitionAndLayoutManager* Immediate);
+
+	FVulkanFramebuffer* GetOrCreateFramebuffer(FVulkanDevice& InDevice, const FRHISetRenderTargetsInfo& RenderTargetsInfo, const FVulkanRenderTargetLayout& RTLayout, FVulkanRenderPass* RenderPass);
+	FVulkanRenderPass* GetOrCreateRenderPass(FVulkanDevice& InDevice, const FVulkanRenderTargetLayout& RTLayout)
+	{
+		uint32 RenderPassHash = RTLayout.GetRenderPassFullHash();
+		FVulkanRenderPass** FoundRenderPass = nullptr;
+		{
+			FScopeLock Lock(&RenderPassesCS);
+			FoundRenderPass = RenderPasses.Find(RenderPassHash);
+		}
+		if (FoundRenderPass)
+		{
+			return *FoundRenderPass;
+		}
+
+		FVulkanRenderPass* RenderPass = new FVulkanRenderPass(InDevice, RTLayout);
+		{
+			FScopeLock Lock(&RenderPassesCS);
+			RenderPasses.Add(RenderPassHash, RenderPass);
+		}
+		return RenderPass;
+	}
+
+	void BeginEmulatedRenderPass(FVulkanCommandListContext& Context, FVulkanDevice& InDevice, FVulkanCmdBuffer* CmdBuffer, const FRHISetRenderTargetsInfo& RenderTargetsInfo, const FVulkanRenderTargetLayout& RTLayout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer);
+	void EndEmulatedRenderPass(FVulkanCmdBuffer* CmdBuffer);
+
+	void BeginRealRenderPass(FVulkanCommandListContext& Context, FVulkanDevice& InDevice, FVulkanCmdBuffer* CmdBuffer, const FRHIRenderPassInfo& RPInfo, const FVulkanRenderTargetLayout& RTLayout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer);
+	void EndRealRenderPass(FVulkanCmdBuffer* CmdBuffer);
+
+	struct FGenerateMipsInfo
+	{
+		int32 NumRenderTargets = 0;
+
+		bool bInsideGenerateMips;
+		bool bLastMip;
+		int32 CurrentSlice;
+		int32 CurrentMip;
+
+		struct
+		{
+			// Per face/slice array of mip layouts
+			TArray<TArray<VkImageLayout>> Layouts;
+			VkImage CurrentImage;
+		} Target[MaxSimultaneousRenderTargets];
+
+		FGenerateMipsInfo()
+		{
+			Reset();
+		}
+
+		void Reset()
+		{
+			NumRenderTargets = 0;
+			bInsideGenerateMips = false;
+			bLastMip = false;
+			CurrentSlice = -1;
+			CurrentMip = -1;
+			for (int32 Index = 0; Index < MaxSimultaneousRenderTargets; ++Index)
+			{
+				Target[Index].Layouts.Reset(0);
+				Target[Index].CurrentImage = VK_NULL_HANDLE;
+			}
+		}
+	} GenerateMipsInfo;
+
+	bool bInsideRealRenderPass = false;
+
+	FVulkanRenderPass* CurrentRenderPass;
+	FVulkanFramebuffer* CurrentFramebuffer;
+
+	FCriticalSection RenderPassesCS;
+
+	void NotifyDeletedRenderTarget(FVulkanDevice& InDevice, VkImage Image);
+
+	inline void NotifyDeletedImage(VkImage Image)
+	{
+		Layouts.Remove(Image);
+	}
+
+	VkImageLayout FindLayoutChecked(VkImage Image) const
+	{
+		return Layouts.FindChecked(Image);
+	}
+
+	VkImageLayout FindOrAddLayout(VkImage Image, VkImageLayout LayoutIfNotFound)
+	{
+		VkImageLayout* Found = Layouts.Find(Image);
+		if (Found)
+		{
+			return *Found;
+		}
+
+		Layouts.Add(Image, LayoutIfNotFound);
+		return LayoutIfNotFound;
+	}
+
+	VkImageLayout& FindOrAddLayoutRW(VkImage Image, VkImageLayout LayoutIfNotFound)
+	{
+		VkImageLayout* Found = Layouts.Find(Image);
+		if (Found)
+		{
+			return *Found;
+		}
+
+		return Layouts.Add(Image, LayoutIfNotFound);
+	}
+
+	void TransitionResource(FVulkanCmdBuffer* CmdBuffer, FVulkanSurface& Surface, VulkanRHI::EImageLayoutBarrier DestLayout);
+};
+
 class FVulkanCommandListContext : public IRHICommandContext
 {
 public:
-	FVulkanCommandListContext(FVulkanDynamicRHI* InRHI, FVulkanDevice* InDevice, FVulkanQueue* InQueue, bool bInIsImmediate);
+	FVulkanCommandListContext(FVulkanDynamicRHI* InRHI, FVulkanDevice* InDevice, FVulkanQueue* InQueue, FVulkanCommandListContext* InImmediate);
 	virtual ~FVulkanCommandListContext();
 
 	inline bool IsImmediate() const
 	{
-		return bIsImmediate;
+		return Immediate == nullptr;
 	}
 
 	virtual void RHISetStreamSource(uint32 StreamIndex, FVertexBufferRHIParamRef VertexBuffer, uint32 Offset) final override;
@@ -78,12 +221,10 @@ public:
 	virtual void RHIEndDrawPrimitiveUP() final override;
 	virtual void RHIBeginDrawIndexedPrimitiveUP(uint32 PrimitiveType, uint32 NumPrimitives, uint32 NumVertices, uint32 VertexDataStride, void*& OutVertexData, uint32 MinVertexIndex, uint32 NumIndices, uint32 IndexDataStride, void*& OutIndexData) final override;
 	virtual void RHIEndDrawIndexedPrimitiveUP() final override;
-	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) final override;
+	virtual void RHIEnableDepthBoundsTest(bool bEnable) final override;
+	virtual void RHISetDepthBounds(float MinDepth, float MaxDepth) final override;
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) final override;
 	virtual void RHIPopEvent() final override;
-
-	//#todo-rco: Switch virtual override final
-	void RHIGenerateMips(FTextureRHIParamRef Texture, int32 NumMips);
 
 	virtual void RHISetComputeShader(FComputeShaderRHIParamRef ComputeShader) final override;
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) final override;
@@ -95,17 +236,18 @@ public:
 	virtual void RHIFlushComputeShaderCache() final override;
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) final override;
 	virtual void RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef UnorderedAccessViewRHI, const uint32* Values) final override;
-	virtual void RHICopyToResolveTarget(FTextureRHIParamRef SourceTexture, FTextureRHIParamRef DestTexture, bool bKeepOriginalSurface, const FResolveParams& ResolveParams) final override;
+	virtual void RHICopyToResolveTarget(FTextureRHIParamRef SourceTexture, FTextureRHIParamRef DestTexture, const FResolveParams& ResolveParams) final override;
+	virtual void RHICopyTexture(FTextureRHIParamRef SourceTexture, FTextureRHIParamRef DestTexture, const FRHICopyTextureInfo& CopyInfo) final override;
 	virtual void RHITransitionResources(EResourceTransitionAccess TransitionType, FTextureRHIParamRef* InRenderTargets, int32 NumTextures) final override;
 	virtual void RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FUnorderedAccessViewRHIParamRef* InUAVs, int32 NumUAVs, FComputeFenceRHIParamRef WriteComputeFence) final override;
+	virtual void RHIEnqueueStagedRead(FStagingBufferRHIParamRef StagingBuffer, FGPUFenceRHIParamRef Fence, uint32 Offset, uint32 NumBytes) final override;
 
 	// Render time measurement
 	virtual void RHIBeginRenderQuery(FRenderQueryRHIParamRef RenderQuery) final override;
 	virtual void RHIEndRenderQuery(FRenderQueryRHIParamRef RenderQuery) final override;
 
 	virtual void RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRef, FTextureRHIParamRef NewTexture) final override;
-	virtual void RHIBeginOcclusionQueryBatch() final override;
-	virtual void RHIEndOcclusionQueryBatch() final override;
+
 	virtual void RHISubmitCommandsHint() final override;
 
 	virtual void RHIBeginDrawingViewport(FViewportRHIParamRef Viewport, FTextureRHIParamRef RenderTargetRHI) final override;
@@ -116,6 +258,9 @@ public:
 
 	virtual void RHIBeginScene() final override;
 	virtual void RHIEndScene() final override;
+
+	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) final override;
+	virtual void RHIEndRenderPass() final override;
 
 	inline FVulkanCommandBufferManager* GetCommandBufferManager()
 	{
@@ -137,29 +282,19 @@ public:
 		return PendingComputeState;
 	}
 
-#if !VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-	// OutSets must have been previously pre-allocated
-	FOLDVulkanDescriptorPool* AllocateDescriptorSets(const VkDescriptorSetAllocateInfo& DescriptorSetAllocateInfo, const FVulkanDescriptorSetsLayout& Layout, VkDescriptorSet* OutSets);
-#endif
-
 	inline void NotifyDeletedRenderTarget(VkImage Image)
 	{
-		TransitionState.NotifyDeletedRenderTarget(*Device, Image);
+		TransitionAndLayoutManager.NotifyDeletedRenderTarget(*Device, Image);
 	}
 
 	inline void NotifyDeletedImage(VkImage Image)
 	{
-		TransitionState.NotifyDeletedImage(Image);
+		TransitionAndLayoutManager.NotifyDeletedImage(Image);
 	}
 
 	inline FVulkanRenderPass* GetCurrentRenderPass()
 	{
-		return TransitionState.CurrentRenderPass;
-	}
-
-	inline FVulkanRenderPass* GetPreviousRenderPass()
-	{
-		return TransitionState.PreviousRenderPass;
+		return TransitionAndLayoutManager.CurrentRenderPass;
 	}
 
 	inline uint64 GetFrameCounter() const
@@ -182,50 +317,90 @@ public:
 
 	void ReadAndCalculateGPUFrameTime();
 	
-	inline FVulkanGPUProfiler& GetGPUProfiler() { return GpuProfiler; }
-	inline FVulkanDevice* GetDevice() const { return Device; }
-	void EndRenderQueryInternal(FVulkanCmdBuffer* CmdBuffer, FOLDVulkanRenderQuery* Query);
+	inline FVulkanGPUProfiler& GetGPUProfiler()
+	{
+		return GpuProfiler;
+	}
+
+	inline FVulkanDevice* GetDevice() const
+	{
+		return Device;
+	}
+	void EndRenderQueryInternal(FVulkanCmdBuffer* CmdBuffer, FVulkanRenderQuery* Query);
 
 	inline VkImageLayout FindLayout(VkImage Image)
 	{
-		VkImageLayout* Found = TransitionState.CurrentLayout.Find(Image);
-		check(Found);
-		return *Found;
+		return TransitionAndLayoutManager.FindLayoutChecked(Image);
+	}
+
+	inline VkImageLayout GetLayoutForDescriptor(const FVulkanSurface& Surface) const
+	{
+#if PLATFORM_ANDROID && !PLATFORM_LUMIN && !PLATFORM_LUMINGL4
+		// Workaround clang bug; don't use IsDepthOrStencilAspect() directly
+		VkImageAspectFlags AspectFlags = Surface.GetFullAspectMask();
+		if ((AspectFlags & VK_IMAGE_ASPECT_DEPTH_BIT) != 0 || (AspectFlags & VK_IMAGE_ASPECT_STENCIL_BIT) != 0)
+		{
+			return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		}
+#else
+		if (Surface.IsDepthOrStencilAspect())
+		{
+#if VULKAN_SUPPORTS_MAINTENANCE_LAYER2
+			// If the spec gets lenient, we could remove this search since then 
+			// Images in VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR could be used with 
+			// descriptor write of VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+			if (Device->GetOptionalExtensions().HasKHRMaintenance2)
+			{
+				return TransitionAndLayoutManager.FindLayoutChecked(Surface.Image);
+			}
+#else
+			return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+#endif
+		}
+#endif
+
+		return TransitionAndLayoutManager.FindLayoutChecked(Surface.Image);
 	}
 
 	inline VkImageLayout FindOrAddLayout(VkImage Image, VkImageLayout NewLayout)
 	{
-		VkImageLayout* Found = TransitionState.CurrentLayout.Find(Image);
-		if (Found)
-		{
-			return *Found;
-		}
-		TransitionState.CurrentLayout.Add(Image, NewLayout);
-		return NewLayout;
+		return TransitionAndLayoutManager.FindOrAddLayout(Image, NewLayout);
 	}
+
+	inline VkImageLayout& FindOrAddLayoutRW(VkImage Image, VkImageLayout NewLayout)
+	{
+		return TransitionAndLayoutManager.FindOrAddLayoutRW(Image, NewLayout);
+	}
+
+	void PrepareParallelFromBase(const FVulkanCommandListContext& BaseContext);
 
 protected:
 	FVulkanDynamicRHI* RHI;
+	FVulkanCommandListContext* Immediate;
 	FVulkanDevice* Device;
 	FVulkanQueue* Queue;
-	const bool bIsImmediate;
 	bool bSubmitAtNextSafePoint;
 	bool bAutomaticFlushAfterComputeShader;
 	FVulkanUniformBufferUploader* UniformBufferUploader;
 
-	void SetShaderUniformBuffer(EShaderFrequency Stage, const FVulkanUniformBuffer* UniformBuffer, int32 BindingIndex, FVulkanShader* ExpectedShader);
+	void BeginOcclusionQueryBatch(FVulkanCmdBuffer* CmdBuffer, uint32 NumQueriesInBatch);
+	void EndOcclusionQueryBatch(FVulkanCmdBuffer* CmdBuffer);
 
-	/** Some locally global variables to track the pending primitive information uised in RHIEnd*UP functions */
-	VulkanRHI::FTempFrameAllocationBuffer::FTempAllocInfo PendingDrawPrimUPVertexAllocInfo;
-	uint32 PendingNumVertices;
-	uint32 PendingVertexDataStride;
+	void SetShaderUniformBuffer(ShaderStage::EStage Stage, const FVulkanUniformBuffer* UniformBuffer, int32 ParameterIndex, const FVulkanShader* Shader);
 
-	VulkanRHI::FTempFrameAllocationBuffer::FTempAllocInfo PendingDrawPrimUPIndexAllocInfo;
-	VkIndexType PendingPrimitiveIndexType;
-	uint32 PendingPrimitiveType;
-	uint32 PendingNumPrimitives;
-	uint32 PendingMinVertexIndex;
-	uint32 PendingIndexDataStride;
+	struct
+	{
+		VulkanRHI::FTempFrameAllocationBuffer::FTempAllocInfo VertexAllocInfo;
+		uint32 NumVertices = 0;
+		uint32 VertexDataStride = 0;
+
+		VulkanRHI::FTempFrameAllocationBuffer::FTempAllocInfo IndexAllocInfo;
+		VkIndexType IndexType = VK_INDEX_TYPE_MAX_ENUM;
+		uint32 NumPrimitives = 0;
+		uint32 MinVertexIndex = 0;
+		uint32 IndexDataStride = 0;
+	} UserPrimitive;
+
 
 	VulkanRHI::FTempFrameAllocationBuffer TempFrameAllocationBuffer;
 
@@ -233,142 +408,29 @@ protected:
 
 	FVulkanCommandBufferManager* CommandBufferManager;
 
-#if !VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS
-#if VULKAN_USE_DESCRIPTOR_POOL_MANAGER
-	typedef TArray<FOLDVulkanDescriptorPool*> FDescriptorPoolArray;
-	TMap<uint32, FDescriptorPoolArray> DescriptorPools;
-#else
-	TArray<FOLDVulkanDescriptorPool*> DescriptorPools;
-#endif
-#endif
+	FTransitionAndLayoutManager TransitionAndLayoutManager;
 
-	struct FTransitionState
+
+	struct FPendingTransition
 	{
-		FTransitionState()
-			: CurrentRenderPass(nullptr)
-			, PreviousRenderPass(nullptr)
-			, CurrentFramebuffer(nullptr)
-		{
-		}
+		EResourceTransitionAccess TransitionType;
 
-		void Destroy(FVulkanDevice& InDevice);
+		// Only one of a) Textures or b) UAVs is active at a time
+		TArray<FRHITexture*, TInlineAllocator<MaxSimultaneousRenderTargets + 1>> Textures;	// a
 
-		FVulkanFramebuffer* GetOrCreateFramebuffer(FVulkanDevice& InDevice, const FRHISetRenderTargetsInfo& RenderTargetsInfo, const FVulkanRenderTargetLayout& RTLayout, FVulkanRenderPass* RenderPass);
-		FVulkanRenderPass* GetOrCreateRenderPass(FVulkanDevice& InDevice, const FVulkanRenderTargetLayout& RTLayout)
-		{
-			uint32 RenderPassHash = RTLayout.GetRenderPassHash();
-			FVulkanRenderPass** FoundRenderPass = nullptr;
-			{
-				FScopeLock Lock(&RenderPassesCS);
-				FoundRenderPass = RenderPasses.Find(RenderPassHash);
-			}
-			if (FoundRenderPass)
-			{
-				return *FoundRenderPass;
-			}
+		TArray<FRHIUnorderedAccessView*, TInlineAllocator<4>> UAVs;	// b
+		FRHIComputeFence* WriteComputeFenceRHI = nullptr;			// b
+		EResourceTransitionPipeline TransitionPipeline;				// b
 
-			FVulkanRenderPass* RenderPass = new FVulkanRenderPass(InDevice, RTLayout);
-			{
-				FScopeLock Lock(&RenderPassesCS); 
-				RenderPasses.Add(RenderPassHash, RenderPass);
-			}
-			return RenderPass;
-		}
-
-		void BeginRenderPass(FVulkanCommandListContext& Context, FVulkanDevice& InDevice, FVulkanCmdBuffer* CmdBuffer, const FRHISetRenderTargetsInfo& RenderTargetsInfo, const FVulkanRenderTargetLayout& RTLayout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer);
-		void EndRenderPass(FVulkanCmdBuffer* CmdBuffer);
-		void ProcessMipChainTransitions(FVulkanCmdBuffer* CmdBuffer, FVulkanFramebuffer* FrameBuffer, uint32 DestMip);
-
-		FVulkanRenderPass* CurrentRenderPass;
-		FVulkanRenderPass* PreviousRenderPass;
-		FVulkanFramebuffer* CurrentFramebuffer;
-
-		struct FRenderingMipChainInfo
-		{
-			bool bInsideRenderingMipChain = false;
-			FVulkanTextureBase* Texture = nullptr;
-			uint32 LastRenderedMip = 0;
-			uint32 CurrentMip = 0;
-		} RenderingMipChainInfo;
-
-		struct FFlushMipsInfo
-		{
-			VkImage Image = VK_NULL_HANDLE;
-			int8 MipIndex = -1;
-		} FlushMipsInfo;
-
-		TMap<VkImage, VkImageLayout> CurrentLayout;
-
-		TMap<uint32, FVulkanRenderPass*> RenderPasses;
-		FCriticalSection RenderPassesCS;
-
-		struct FFramebufferList
-		{
-			TArray<FVulkanFramebuffer*> Framebuffer;
-		};
-		TMap<uint32, FFramebufferList*> Framebuffers;
-
-		void NotifyDeletedRenderTarget(FVulkanDevice& InDevice, VkImage Image);
-
-		inline void NotifyDeletedImage(VkImage Image)
-		{
-			CurrentLayout.Remove(Image);
-		}
-
-		VkImageLayout FindOrAddLayout(VkImage Image, VkImageLayout LayoutIfNotFound)
-		{
-			VkImageLayout* Found = CurrentLayout.Find(Image);
-			if (Found)
-			{
-				return *Found;
-			}
-
-			CurrentLayout.Add(Image, LayoutIfNotFound);
-			return LayoutIfNotFound;
-		}
-
-		void TransitionResource(FVulkanCmdBuffer* CmdBuffer, FVulkanSurface& Surface, VulkanRHI::EImageLayoutBarrier DestLayout);
+		bool GatherBarriers(FTransitionAndLayoutManager& TransitionAndLayoutManager, TArray<VkBufferMemoryBarrier>& OutBufferBarriers, 
+			TArray<VkImageMemoryBarrier>& OutImageBarriers) const;
 	};
-	FTransitionState TransitionState;
 
-	struct FOcclusionQueryData
-	{
-		FVulkanCmdBuffer* CmdBuffer;
-		uint64 FenceCounter;
+	void TransitionResources(const FPendingTransition& PendingTransition);
+	static void TransitionUAVResourcesTransferringOwnership(FVulkanCommandListContext& GfxContext, FVulkanCommandListContext& ComputeContext, 
+		EResourceTransitionPipeline Pipeline, const TArray<VkBufferMemoryBarrier>& BufferBarriers, const TArray<VkImageMemoryBarrier>& ImageBarriers);
 
-		FOcclusionQueryData()
-			: CmdBuffer(nullptr)
-			, FenceCounter(0)
-		{
-		}
-
-		void AddToResetList(FOLDVulkanQueryPool* Pool, int32 QueryIndex)
-		{
-			TArray<uint64>& ListPerPool = ResetList.FindOrAdd(Pool);
-			int32 Word = QueryIndex / 64;
-			uint64 Bit = QueryIndex % 64;
-			uint64 BitMask = (uint64)1 << Bit;
-			if (Word >= ListPerPool.Num())
-			{
-				ListPerPool.AddZeroed(Word - ListPerPool.Num() + 1);
-			}
-			ListPerPool[Word] = ListPerPool[Word] | BitMask;
-		}
-
-		void ResetQueries(FVulkanCmdBuffer* CmdBuffer);
-
-		void ClearResetList()
-		{
-			for (auto& Pair : ResetList)
-			{
-				FMemory::Memzero(&Pair.Value[0], Pair.Value.Num() * sizeof(uint64));
-			}
-		}
-
-		TMap<FOLDVulkanQueryPool*, TArray<uint64>> ResetList;
-	};
-	FOcclusionQueryData CurrentOcclusionQueryData;
-	void AdvanceQuery(FOLDVulkanRenderQuery* Query);
+	FVulkanOcclusionQueryPool* CurrentOcclusionQueryPool = nullptr;
 
 	// List of UAVs which need setting for pixel shaders. D3D treats UAVs like rendertargets so the RHI doesn't make SetUAV calls at the right time
 	struct FPendingPixelUAV
@@ -387,12 +449,12 @@ protected:
 	void InternalClearMRT(FVulkanCmdBuffer* CmdBuffer, bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
 public:
-	inline FTransitionState& GetTransitionState()
+	inline FTransitionAndLayoutManager& GetTransitionAndLayoutManager()
 	{
-		return TransitionState;
+		return TransitionAndLayoutManager;
 	}
 
-	FVulkanRenderPass* PrepareRenderPassForPSOCreation(const FGraphicsPipelineStateInitializer& Initializer);
+	FVulkanRenderPass* PrepareRenderPassForPSOCreation(const FGraphicsPipelineStateInitializer& Initializer, const TArray<FInputAttachmentData>& InputAttachmentData);
 	FVulkanRenderPass* PrepareRenderPassForPSOCreation(const FVulkanRenderTargetLayout& Initializer);
 
 private:
@@ -425,16 +487,18 @@ private:
 	friend struct FVulkanCommandContextContainer;
 };
 
+class FVulkanCommandListContextImmediate : public FVulkanCommandListContext
+{
+public:
+	FVulkanCommandListContextImmediate(FVulkanDynamicRHI* InRHI, FVulkanDevice* InDevice, FVulkanQueue* InQueue);
+};
+
 
 struct FVulkanCommandContextContainer : public IRHICommandContextContainer, public VulkanRHI::FDeviceChild
 {
 	FVulkanCommandListContext* CmdContext;
 
-	FVulkanCommandContextContainer(FVulkanDevice* InDevice)
-		: VulkanRHI::FDeviceChild(InDevice)
-		, CmdContext(nullptr)
-	{
-	}
+	FVulkanCommandContextContainer(FVulkanDevice* InDevice);
 
 	virtual IRHICommandContext* GetContext() override final;
 	virtual void FinishContext() override final;
@@ -447,3 +511,8 @@ struct FVulkanCommandContextContainer : public IRHICommandContextContainer, publ
 private:
 	friend class FVulkanDevice;
 };
+
+inline FVulkanCommandListContextImmediate& FVulkanDevice::GetImmediateContext()
+{
+	return *ImmediateContext;
+}

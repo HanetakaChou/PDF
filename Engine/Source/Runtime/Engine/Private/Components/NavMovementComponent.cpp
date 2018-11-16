@@ -1,25 +1,10 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/NavMovementComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Components/CapsuleComponent.h"
-#include "Navigation/PathFollowingComponent.h"
+#include "AI/Navigation/PathFollowingAgentInterface.h"
 
-//----------------------------------------------------------------------//
-// FNavAgentProperties
-//----------------------------------------------------------------------//
-const FNavAgentProperties FNavAgentProperties::DefaultProperties;
-
-void FNavAgentProperties::UpdateWithCollisionComponent(UShapeComponent* CollisionComponent)
-{
-	check( CollisionComponent != NULL);
-	AgentRadius = CollisionComponent->Bounds.SphereRadius;
-}
-
-bool FNavAgentProperties::IsNavDataMatching(const FNavAgentProperties& Other) const
-{
-	return (PreferredNavData == Other.PreferredNavData || PreferredNavData == nullptr || Other.PreferredNavData == nullptr);
-}
 
 //----------------------------------------------------------------------//
 // UMovementComponent
@@ -31,6 +16,7 @@ UNavMovementComponent::UNavMovementComponent(const FObjectInitializer& ObjectIni
 	, bUseFixedBrakingDistanceForPaths(false)
 	, bStopMovementAbortPaths(true)
 {
+	bComponentShouldUpdatePhysicsVolume = true;
 }
 
 FBasedPosition UNavMovementComponent::GetActorFeetLocationBased() const
@@ -74,9 +60,15 @@ void UNavMovementComponent::ClearFixedBrakingDistance()
 
 void UNavMovementComponent::StopActiveMovement()
 {
-	if (PathFollowingComp.IsValid() && bStopMovementAbortPaths)
+	if (!bStopMovementAbortPaths)
 	{
-		PathFollowingComp->AbortMove(*this, FPathFollowingResultFlags::MovementStop);
+		return;
+	}
+
+	IPathFollowingAgentInterface* PFAgent = GetPathFollowingAgent();
+	if (PFAgent)
+	{
+		PFAgent->OnUnableToMove(*this);
 	}
 }
 
@@ -89,12 +81,8 @@ void UNavMovementComponent::UpdateNavAgent(const AActor& Owner)
 	}
 
 	// initialize properties from navigation system
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(GetWorld());
-	if (NavSys != nullptr)
-	{
-		NavAgentProps.NavWalkingSearchHeightScale = NavSys->GetDefaultSupportedAgentConfig().NavWalkingSearchHeightScale;
-	}
-
+	NavAgentProps.NavWalkingSearchHeightScale = FNavigationSystem::GetDefaultSupportedAgent().NavWalkingSearchHeightScale;
+	
 	// Can't call GetSimpleCollisionCylinder(), because no components will be registered.
 	float BoundRadius, BoundHalfHeight;	
 	Owner.GetSimpleCollisionCylinder(BoundRadius, BoundHalfHeight);
@@ -110,11 +98,7 @@ void UNavMovementComponent::UpdateNavAgent(const UCapsuleComponent& CapsuleCompo
 	}
 
 	// initialize properties from navigation system
-	UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(GetWorld());
-	if (NavSys != nullptr)
-	{
-		NavAgentProps.NavWalkingSearchHeightScale = NavSys->GetDefaultSupportedAgentConfig().NavWalkingSearchHeightScale;
-	}
+	NavAgentProps.NavWalkingSearchHeightScale = FNavigationSystem::GetDefaultSupportedAgent().NavWalkingSearchHeightScale;
 
 	NavAgentProps.AgentRadius = CapsuleComponent.GetScaledCapsuleRadius();
 	NavAgentProps.AgentHeight = CapsuleComponent.GetScaledCapsuleHalfHeight() * 2.f;
@@ -124,3 +108,4 @@ void UNavMovementComponent::SetUpdateNavAgentWithOwnersCollisions(bool bUpdateWi
 {
 	bUpdateNavAgentWithOwnersCollision = bUpdateWithOwner;
 }
+

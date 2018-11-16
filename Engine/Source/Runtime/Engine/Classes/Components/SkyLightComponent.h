@@ -69,13 +69,6 @@ public:
 	}
 
 	void Release();
-
-	// FDeferredCleanupInterface
-	virtual void FinishCleanup() override
-	{
-		delete this;
-	}
-
 private:
 
 	int32 Size;
@@ -257,6 +250,9 @@ public:
 	void SetBlendDestinationCaptureIsDirty();
 	void SanitizeCubemapSize();
 
+	/** Whether sky occlusion is supported by current feature level */
+	bool IsOcclusionSupported() const;
+
 	/** 
 	 * Recaptures the scene for the skylight. 
 	 * This is useful for making sure the sky light is up to date after changing something in the world that it would capture.
@@ -315,6 +311,7 @@ protected:
 	//~ Begin UActorComponent Interface
 
 	void UpdateLimitedRenderingStateFast();
+	void UpdateOcclusionRenderingStateFast();
 
 	friend class FSkyLightSceneProxy;
 };

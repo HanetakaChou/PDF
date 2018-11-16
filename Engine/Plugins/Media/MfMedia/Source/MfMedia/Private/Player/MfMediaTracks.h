@@ -17,10 +17,10 @@
 #include "Windows/COMPointer.h"
 
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
-	#include "AllowWindowsPlatformTypes.h"
+	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
 #else
-	#include "XboxOneAllowPlatformTypes.h"
+	#include "XboxOne/XboxOneAllowPlatformTypes.h"
 #endif
 
 class FMediaSamples;
@@ -30,6 +30,7 @@ class FMfMediaTextureSamplePool;
 enum class EMediaTextureSampleFormat;
 
 struct FMfMediaSourceReaderSample;
+struct FMediaPlayerOptions;
 
 
 /**
@@ -153,7 +154,7 @@ public:
 	 * @param InSamples The sample collection that receives output samples.
 	 * @see IsInitialized, Shutdown
 	 */
-	void Initialize(IMFMediaSource* InMediaSource, IMFSourceReaderCallback* InSourceReaderCallback, const TSharedRef<FMediaSamples, ESPMode::ThreadSafe>& InSamples);
+	void Initialize(IMFMediaSource* InMediaSource, IMFSourceReaderCallback* InSourceReaderCallback, const TSharedRef<FMediaSamples, ESPMode::ThreadSafe>& InSamples, const FMediaPlayerOptions* PlayerOptions);
 
 	/**
 	 * Whether this object has been initialized.
@@ -372,9 +373,9 @@ private:
 
 
 #if PLATFORM_WINDOWS
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 #else
-	#include "XboxOneHidePlatformTypes.h"
+	#include "XboxOne/XboxOneHidePlatformTypes.h"
 #endif
 
 #endif //MFMEDIA_SUPPORTED_PLATFORM

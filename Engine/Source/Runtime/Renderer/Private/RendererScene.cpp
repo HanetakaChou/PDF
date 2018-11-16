@@ -52,6 +52,7 @@
 #include "PlanarReflectionSceneProxy.h"
 #include "Engine/StaticMesh.h"
 #include "GPUSkinCache.h"
+#include "DynamicShadowMapChannelBindingHelper.h"
 
 // Enable this define to do slow checks for components being added to the wrong
 // world's scene, when using PIE. This can happen if a PIE component is reattached
@@ -137,6 +138,8 @@ FSceneViewState::FSceneViewState()
 	LightPropagationVolume = NULL; 
 
 	bIsStereoView = false;
+
+	bRoundRobinOcclusionEnabled = false;
 
 	HeightfieldLightingAtlas = NULL;
 
@@ -305,7 +308,7 @@ FDistanceFieldSceneData::FDistanceFieldSceneData(EShaderPlatform ShaderPlatform)
 
 	bTrackAllPrimitives = (DoesPlatformSupportDistanceFieldAO(ShaderPlatform) || DoesPlatformSupportDistanceFieldShadowing(ShaderPlatform)) && CVar->GetValueOnGameThread() != 0;
 
-	bCanUse16BitObjectIndices = !IsMetalPlatform(ShaderPlatform);
+	bCanUse16BitObjectIndices = RHISupportsBufferLoadTypeConversion(ShaderPlatform);
 }
 
 FDistanceFieldSceneData::~FDistanceFieldSceneData() 
@@ -461,14 +464,14 @@ void FScene::UpdateParameterCollections(const TArray<FMaterialParameterCollectio
 	ENQUEUE_RENDER_COMMAND(UpdateParameterCollectionsCommand)(
 		[this, InParameterCollections](FRHICommandList&)
 	{
-	// Empy the scene's map so any unused uniform buffers will be released
+		// Empty the scene's map so any unused uniform buffers will be released
 		ParameterCollections.Empty();
 
 	// Add each existing parameter collection id and its uniform buffer
 	for (int32 CollectionIndex = 0; CollectionIndex < InParameterCollections.Num(); CollectionIndex++)
 	{
-			FMaterialParameterCollectionInstanceResource* InstanceReousrce = InParameterCollections[CollectionIndex];
-			ParameterCollections.Add(InstanceReousrce->GetId(), InstanceReousrce->GetUniformBuffer());
+			FMaterialParameterCollectionInstanceResource* InstanceResource = InParameterCollections[CollectionIndex];
+			ParameterCollections.Add(InstanceResource->GetId(), InstanceResource->GetUniformBuffer());
 		}
 		});
 }
@@ -642,7 +645,10 @@ void FScene::AddPrimitiveSceneInfo_RenderThread(FRHICommandListImmediate& RHICmd
 	PrimitiveSceneInfo->LinkLODParentComponent();
 
 	// Add the primitive to the scene.
-	const bool bAddToDrawLists = !(CVarDoLazyStaticMeshUpdate.GetValueOnRenderThread() && !WITH_EDITOR);
+#if WITH_EDITOR
+	PrimitiveSceneInfo->AddToScene(RHICmdList, true);
+#else
+	const bool bAddToDrawLists = !(CVarDoLazyStaticMeshUpdate.GetValueOnRenderThread());
 	if (bAddToDrawLists)
 	{
 	PrimitiveSceneInfo->AddToScene(RHICmdList, true);
@@ -652,6 +658,7 @@ void FScene::AddPrimitiveSceneInfo_RenderThread(FRHICommandListImmediate& RHICmd
 		PrimitiveSceneInfo->AddToScene(RHICmdList, true, false);
 		PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshes();
 	}
+#endif
 
 	DistanceFieldSceneData.AddPrimitive(PrimitiveSceneInfo);
 
@@ -679,49 +686,6 @@ FORCEINLINE static void VerifyProperPIEScene(UPrimitiveComponent* Component, UWo
 		*Component->GetFullName()
 		);
 #endif
-}
-
-FReadOnlyCVARCache* FReadOnlyCVARCache::Singleton = nullptr;
-
-FReadOnlyCVARCache::FReadOnlyCVARCache()
-{
-	static const auto CVarSupportAtmosphericFog = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportAtmosphericFog"));
-	static const auto CVarSupportStationarySkylight = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportStationarySkylight"));
-	static const auto CVarSupportLowQualityLightmaps = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportLowQualityLightmaps"));
-	static const auto CVarSupportPointLightWholeSceneShadows = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportPointLightWholeSceneShadows"));
-	static const auto CVarSupportAllShaderPermutations = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportAllShaderPermutations"));	
-	static const auto CVarVertexFoggingForOpaque = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VertexFoggingForOpaque"));	
-	static const auto CVarForwardShading = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ForwardShading"));
-	static const auto CVarAllowStaticLighting = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-
-	static const auto CVarMobileAllowMovableDirectionalLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowMovableDirectionalLights"));
-	static const auto CVarMobileEnableStaticAndCSMShadowReceivers = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableStaticAndCSMShadowReceivers"));
-	static const auto CVarMobileAllowDistanceFieldShadows = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowDistanceFieldShadows"));
-	static const auto CVarMobileNumDynamicPointLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileNumDynamicPointLights"));
-
-	const bool bForceAllPermutations = CVarSupportAllShaderPermutations && CVarSupportAllShaderPermutations->GetValueOnAnyThread() != 0;
-
-	bEnableAtmosphericFog = !CVarSupportAtmosphericFog || CVarSupportAtmosphericFog->GetValueOnAnyThread() != 0 || bForceAllPermutations;
-	bEnableStationarySkylight = !CVarSupportStationarySkylight || CVarSupportStationarySkylight->GetValueOnAnyThread() != 0 || bForceAllPermutations;
-	bEnablePointLightShadows = !CVarSupportPointLightWholeSceneShadows || CVarSupportPointLightWholeSceneShadows->GetValueOnAnyThread() != 0 || bForceAllPermutations;
-	bEnableLowQualityLightmaps = !CVarSupportLowQualityLightmaps || CVarSupportLowQualityLightmaps->GetValueOnAnyThread() != 0 || bForceAllPermutations;
-	bAllowStaticLighting = CVarAllowStaticLighting->GetValueOnAnyThread() != 0;
-
-	// mobile
-	bMobileAllowMovableDirectionalLights = CVarMobileAllowMovableDirectionalLights->GetValueOnAnyThread() != 0;
-	bMobileAllowDistanceFieldShadows = CVarMobileAllowDistanceFieldShadows->GetValueOnAnyThread() != 0;
-	bMobileEnableStaticAndCSMShadowReceivers = CVarMobileEnableStaticAndCSMShadowReceivers->GetValueOnAnyThread() != 0;
-	NumMobileMovablePointLights = CVarMobileNumDynamicPointLights->GetValueOnAnyThread();
-
-	// Only enable VertexFoggingForOpaque if ForwardShading is enabled 
-	const bool bForwardShading = CVarForwardShading && CVarForwardShading->GetInt() != 0;
-	bEnableVertexFoggingForOpaque = bForwardShading && ( !CVarVertexFoggingForOpaque || CVarVertexFoggingForOpaque->GetValueOnAnyThread() != 0 );
-
-	const bool bShowMissmatchedLowQualityLightmapsWarning = (!bEnableLowQualityLightmaps) && (GEngine->bShouldGenerateLowQualityLightmaps_DEPRECATED);
-	if ( bShowMissmatchedLowQualityLightmapsWarning )
-	{
-		UE_LOG(LogRenderer, Warning, TEXT("Mismatch between bShouldGenerateLowQualityLightmaps(%d) and r.SupportLowQualityLightmaps(%d), UEngine::bShouldGenerateLowQualityLightmaps has been deprecated please use r.SupportLowQualityLightmaps instead"), GEngine->bShouldGenerateLowQualityLightmaps_DEPRECATED, bEnableLowQualityLightmaps);
-	}
 }
 
 FScene::FScene(UWorld* InWorld, bool bInRequiresHitProxies, bool bInIsEditorScene, bool bCreateFXSystem, ERHIFeatureLevel::Type InFeatureLevel)
@@ -1285,41 +1249,51 @@ void FScene::ReleasePrimitive( UPrimitiveComponent* PrimitiveComponent )
 
 void FScene::AssignAvailableShadowMapChannelForLight(FLightSceneInfo* LightSceneInfo)
 {
-	bool bChannelAvailable[4] = { true, true, true, true };
+	FDynamicShadowMapChannelBindingHelper Helper;
+	check(LightSceneInfo && LightSceneInfo->Proxy);
 
-	for (TSparseArray<FLightSceneInfoCompact>::TConstIterator It(Lights); It; ++It)
+	// For lights with static shadowing, only check for lights intersecting the preview channel if any.
+	if (LightSceneInfo->Proxy->HasStaticShadowing())
 	{
-		const FLightSceneInfoCompact& OtherLightInfo = *It;
+		Helper.DisableAllOtherChannels(LightSceneInfo->GetDynamicShadowMapChannel());
 
-		if (OtherLightInfo.LightSceneInfo != LightSceneInfo
-			&& OtherLightInfo.LightSceneInfo->Proxy->CastsDynamicShadow()
-			&& OtherLightInfo.LightSceneInfo->GetDynamicShadowMapChannel() >= 0
-			&& OtherLightInfo.LightSceneInfo->Proxy->AffectsBounds(LightSceneInfo->Proxy->GetBoundingSphere()))
+		// If this static shadowing light does not need a (preview) channel, skip it.
+		if (!Helper.HasAnyChannelEnabled())
 		{
-			const int32 OtherShadowMapChannel = OtherLightInfo.LightSceneInfo->GetDynamicShadowMapChannel();
-
-			if (OtherShadowMapChannel < ARRAY_COUNT(bChannelAvailable))
-			{
-				bChannelAvailable[OtherShadowMapChannel] = false;
+			return;
 			}
 		}
+	else if (LightSceneInfo->Proxy->GetLightType() == LightType_Directional)
+	{
+		// The implementation of forward lighting in ShadowProjectionPixelShader.usf does not support binding the directional light to channel 3.
+		// This is related to the USE_FADE_PLANE feature that encodes the CSM blend factor the alpha channel.
+		Helper.DisableChannel(3);
 	}
 
-	int32 AvailableShadowMapChannel = -1;
+	Helper.UpdateAvailableChannels(Lights, LightSceneInfo);
 
-	for (int32 TestChannelIndex = 0; TestChannelIndex < ARRAY_COUNT(bChannelAvailable); TestChannelIndex++)
+	const int32 NewChannelIndex = Helper.GetBestAvailableChannel();
+	if (NewChannelIndex != INDEX_NONE)
 	{
-		if (bChannelAvailable[TestChannelIndex])
+		// Unbind the channels previously allocated to lower priority lights.
+		for (FLightSceneInfo* OtherLight : Helper.GetLights(NewChannelIndex))
 		{
-			AvailableShadowMapChannel = TestChannelIndex;
-			break;
+			OtherLight->SetDynamicShadowMapChannel(INDEX_NONE);
+		}
+
+		LightSceneInfo->SetDynamicShadowMapChannel(NewChannelIndex);
+
+		// Try to assign new channels to lights that were just unbound.
+		// Sort the lights so that they only get inserted once (prevents recursion).
+		Helper.SortLightByPriority(NewChannelIndex);
+		for (FLightSceneInfo* OtherLight : Helper.GetLights(NewChannelIndex))
+	{
+			AssignAvailableShadowMapChannelForLight(OtherLight);
 		}
 	}
-
-	LightSceneInfo->SetDynamicShadowMapChannel(AvailableShadowMapChannel);
-
-	if (AvailableShadowMapChannel == -1)
+	else
 	{
+		LightSceneInfo->SetDynamicShadowMapChannel(INDEX_NONE);
 		OverflowingDynamicShadowedLights.AddUnique(LightSceneInfo->Proxy->GetComponentName());
 	}
 }
@@ -1373,43 +1347,10 @@ void FScene::AddLightSceneInfo_RenderThread(FLightSceneInfo* LightSceneInfo)
 		}
 	}
 
-	const bool bForwardShading = IsForwardShadingEnabled(FeatureLevel);
-
-	if (bForwardShading && LightSceneInfo->Proxy->CastsDynamicShadow())
+	if (IsForwardShadingEnabled(GetShaderPlatform()) && LightSceneInfo->Proxy->CastsDynamicShadow())
 	{
-		if (LightSceneInfo->Proxy->HasStaticShadowing())
-		{
-			// If we are a stationary light being added, reassign all movable light shadowmap channels
-			for (TSparseArray<FLightSceneInfoCompact>::TConstIterator It(Lights); It; ++It)
-			{
-				const FLightSceneInfoCompact& OtherLightInfo = *It;
-
-				if (OtherLightInfo.LightSceneInfo != LightSceneInfo
-					&& !OtherLightInfo.LightSceneInfo->Proxy->HasStaticShadowing()
-					&& OtherLightInfo.LightSceneInfo->Proxy->CastsDynamicShadow())
-				{
-					OtherLightInfo.LightSceneInfo->SetDynamicShadowMapChannel(-1);
-				}
-			}
-
-			for (TSparseArray<FLightSceneInfoCompact>::TConstIterator It(Lights); It; ++It)
-			{
-				const FLightSceneInfoCompact& OtherLightInfo = *It;
-
-				if (OtherLightInfo.LightSceneInfo != LightSceneInfo
-					&& !OtherLightInfo.LightSceneInfo->Proxy->HasStaticShadowing()
-					&& OtherLightInfo.LightSceneInfo->Proxy->CastsDynamicShadow())
-				{
-					AssignAvailableShadowMapChannelForLight(OtherLightInfo.LightSceneInfo);
-				}
-			}
-		}
-		else
-		{
-			// If we are a movable light being added, assign a shadowmap channel
 			AssignAvailableShadowMapChannelForLight(LightSceneInfo);
 		}
-	}
 
 	if (LightSceneInfo->Proxy->IsUsedAsAtmosphereSunLight() &&
 		(!SunLight || LightSceneInfo->Proxy->GetColor().ComputeLuminance() > SunLight->Proxy->GetColor().ComputeLuminance()) ) // choose brightest sun light...
@@ -1624,6 +1565,59 @@ void FScene::UpdateDecalTransform(UDecalComponent* Decal)
 		});
 	}
 }
+
+void FScene::UpdateDecalFadeOutTime(UDecalComponent* Decal)
+{
+	FDeferredDecalProxy* Proxy = Decal->SceneProxy;
+	if(Proxy)
+	{
+		float CurrentTime = GetWorld()->GetTimeSeconds();
+		float DecalFadeStartDelay = Decal->FadeStartDelay;
+		float DecalFadeDuration = Decal->FadeDuration;
+
+		ENQUEUE_RENDER_COMMAND(FUpdateDecalFadeInTimeCommand)(
+			[Proxy, CurrentTime, DecalFadeStartDelay, DecalFadeDuration](FRHICommandListImmediate& RHICmdList)
+		{
+			if (DecalFadeDuration > 0.0f)
+			{
+				Proxy->InvFadeDuration = 1.0f / DecalFadeDuration;
+				Proxy->FadeStartDelayNormalized = (CurrentTime + DecalFadeStartDelay + DecalFadeDuration) * Proxy->InvFadeDuration;
+			}
+			else
+			{
+				Proxy->InvFadeInDuration = -1.0f;
+				Proxy->FadeInStartDelayNormalized = 1.0f;
+			}
+		});
+	}
+}
+
+void FScene::UpdateDecalFadeInTime(UDecalComponent* Decal)
+{
+	FDeferredDecalProxy* Proxy = Decal->SceneProxy;
+	if (Proxy)
+	{
+		float CurrentTime = GetWorld()->GetTimeSeconds();
+		float DecalFadeStartDelay = Decal->FadeInStartDelay;
+		float DecalFadeDuration = Decal->FadeInDuration;
+
+		ENQUEUE_RENDER_COMMAND(FUpdateDecalFadeInTimeCommand)(
+			[Proxy, CurrentTime, DecalFadeStartDelay, DecalFadeDuration](FRHICommandListImmediate& RHICmdList)
+		{
+			if (DecalFadeDuration > 0.0f)
+			{
+				Proxy->InvFadeInDuration = 1.0f / DecalFadeDuration;
+				Proxy->FadeInStartDelayNormalized = (CurrentTime + DecalFadeDuration) * -Proxy->InvFadeInDuration;
+			}
+			else
+			{
+				Proxy->InvFadeInDuration = 1.0f;
+				Proxy->FadeInStartDelayNormalized = 0.0f;
+			}
+		});
+	}
+}
+
 
 void FScene::AddReflectionCapture(UReflectionCaptureComponent* Component)
 {
@@ -1868,7 +1862,7 @@ void FScene::FindClosestReflectionCaptures(FVector Position, const FReflectionCa
 	}
 }
 
-void FScene::GetCaptureParameters(const FReflectionCaptureProxy* ReflectionProxy, FTextureRHIParamRef& ReflectionCubemapArray, int32& ArrayIndex, float& AverageBrightness) const
+void FScene::GetCaptureParameters(const FReflectionCaptureProxy* ReflectionProxy, int32& ArrayIndex, float& AverageBrightness) const
 {
 	ERHIFeatureLevel::Type LocalFeatureLevel = GetFeatureLevel();
 
@@ -1878,7 +1872,6 @@ void FScene::GetCaptureParameters(const FReflectionCaptureProxy* ReflectionProxy
 
 		if (FoundState)
 		{
-			ReflectionCubemapArray = ReflectionSceneData.CubemapArray.GetRenderTarget().ShaderResourceTexture;
 			ArrayIndex = FoundState->CaptureIndex;
 			AverageBrightness = FoundState->AverageBrightness;
 		}
@@ -1945,20 +1938,19 @@ void FScene::AddPrecomputedVolumetricLightmap(const FPrecomputedVolumetricLightm
 {
 	FScene* Scene = this;
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (Volume && GetShadingPath() == EShadingPath::Mobile)
-	{
-		const FPrecomputedVolumetricLightmapData* VolumeData = Volume->Data;
-		if(VolumeData && VolumeData->BrickData.LQLightDirection.Data.Num() == 0)
-		{
-			FPlatformAtomics::InterlockedIncrement(&NumUncachedStaticLightingInteractions);
-		}
-	}
-#endif
-
 	ENQUEUE_RENDER_COMMAND(AddVolumeCommand)
 		([Scene, Volume](FRHICommandListImmediate& RHICmdList) 
 		{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			if (Volume && Scene->GetShadingPath() == EShadingPath::Mobile)
+	{
+		const FPrecomputedVolumetricLightmapData* VolumeData = Volume->Data;
+				if (VolumeData && VolumeData->BrickData.LQLightDirection.Data.Num() == 0)
+		{
+					FPlatformAtomics::InterlockedIncrement(&Scene->NumUncachedStaticLightingInteractions);
+		}
+	}
+#endif
 			Scene->VolumetricLightmapSceneData.AddLevelVolume(Volume, Scene->GetShadingPath());
 		});
 }
@@ -1967,20 +1959,19 @@ void FScene::RemovePrecomputedVolumetricLightmap(const FPrecomputedVolumetricLig
 {
 	FScene* Scene = this; 
 
+	ENQUEUE_RENDER_COMMAND(RemoveVolumeCommand)
+		([Scene, Volume](FRHICommandListImmediate& RHICmdList) 
+		{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (Volume && GetShadingPath() == EShadingPath::Mobile)
+			if (Volume && Scene->GetShadingPath() == EShadingPath::Mobile)
 	{
 		const FPrecomputedVolumetricLightmapData* VolumeData = Volume->Data;
 		if (VolumeData && VolumeData->BrickData.LQLightDirection.Data.Num() == 0)
 		{
-			FPlatformAtomics::InterlockedDecrement(&NumUncachedStaticLightingInteractions);
+					FPlatformAtomics::InterlockedDecrement(&Scene->NumUncachedStaticLightingInteractions);
 		}
 	}
 #endif
-
-	ENQUEUE_RENDER_COMMAND(RemoveVolumeCommand)
-		([Scene, Volume](FRHICommandListImmediate& RHICmdList) 
-		{
 			Scene->VolumetricLightmapSceneData.RemoveLevelVolume(Volume);
 		});
 }
@@ -2435,19 +2426,6 @@ void FScene::AddSpeedTreeWind(FVertexFactory* VertexFactory, const UStaticMesh* 
 	}
 }
 
-void FScene::RemoveSpeedTreeWind(class FVertexFactory* VertexFactory, const class UStaticMesh* StaticMesh)
-{
-	if (StaticMesh != NULL && StaticMesh->SpeedTreeWind.IsValid() && StaticMesh->RenderData.IsValid())
-	{
-		FScene* Scene = this;
-		ENQUEUE_RENDER_COMMAND(FRemoveSpeedTreeWindCommand)(
-			[Scene, VertexFactory, StaticMesh](FRHICommandListImmediate& RHICmdList)
-		{
-			Scene->RemoveSpeedTreeWind_RenderThread(VertexFactory, StaticMesh);
-		});
-	}
-}
-
 void FScene::RemoveSpeedTreeWind_RenderThread(class FVertexFactory* VertexFactory, const class UStaticMesh* StaticMesh)
 {
 	FSpeedTreeWindComputation** WindComputationRef = SpeedTreeWindComputationMap.Find(StaticMesh);
@@ -2764,11 +2742,11 @@ void FScene::Release()
 	{
 		for (auto* ActorComponent : TObjectRange<UActorComponent>())
 		{
-			if ( !ensureMsgf(!ActorComponent->IsRegistered() || ActorComponent->GetScene() != this, 
-					*FString::Printf(TEXT("Component Name: %s World Name: %s Component Asset: %s"), 
-										*ActorComponent->GetFullName(), 
-										*GetWorld()->GetFullName(), 
-										*ActorComponent->AdditionalStatObject()->GetPathName())) )
+			if ( !ensureMsgf(!ActorComponent->IsRegistered() || ActorComponent->GetScene() != this,
+					TEXT("Component Name: %s World Name: %s Component Asset: %s"),
+										*ActorComponent->GetFullName(),
+										*GetWorld()->GetFullName(),
+										*ActorComponent->AdditionalStatObject()->GetPathName()) )
 			{
 				bTriggeredOnce = true;
 				break;
@@ -3254,6 +3232,8 @@ public:
 	virtual void AddDecal(UDecalComponent*) override {}
 	virtual void RemoveDecal(UDecalComponent*) override {}
 	virtual void UpdateDecalTransform(UDecalComponent* Decal) override {}
+	virtual void UpdateDecalFadeOutTime(UDecalComponent* Decal) override {};
+	virtual void UpdateDecalFadeInTime(UDecalComponent* Decal) override {};
 
 	/** Updates the transform of a light which has already been added to the scene. */
 	virtual void UpdateLightTransform(ULightComponent* Light) override {}
@@ -3276,7 +3256,6 @@ public:
 	virtual void GetWindParameters_GameThread(const FVector& Position, FVector& OutDirection, float& OutSpeed, float& OutMinGustAmt, float& OutMaxGustAmt) const override { OutDirection = FVector(1.0f, 0.0f, 0.0f); OutSpeed = 0.0f; OutMinGustAmt = 0.0f; OutMaxGustAmt = 0.0f; }
 	virtual void GetDirectionalWindParameters(FVector& OutDirection, float& OutSpeed, float& OutMinGustAmt, float& OutMaxGustAmt) const override { OutDirection = FVector(1.0f, 0.0f, 0.0f); OutSpeed = 0.0f; OutMinGustAmt = 0.0f; OutMaxGustAmt = 0.0f; }
 	virtual void AddSpeedTreeWind(class FVertexFactory* VertexFactory, const class UStaticMesh* StaticMesh) override {}
-	virtual void RemoveSpeedTreeWind(class FVertexFactory* VertexFactory, const class UStaticMesh* StaticMesh) override {}
 	virtual void RemoveSpeedTreeWind_RenderThread(class FVertexFactory* VertexFactory, const class UStaticMesh* StaticMesh) override {}
 	virtual void UpdateSpeedTreeWind(double CurrentTime) override {}
 	virtual FUniformBufferRHIParamRef GetSpeedTreeUniformBuffer(const FVertexFactory* VertexFactory) override { return FUniformBufferRHIParamRef(); }
@@ -3400,13 +3379,13 @@ TStaticMeshDrawList<TBasePassDrawingPolicy<FUniformLightMapPolicy> >& FScene::Ge
 }
 
 template<>
-TStaticMeshDrawList<TMobileBasePassDrawingPolicy<FUniformLightMapPolicy, 0> >& FScene::GetMobileBasePassDrawList<FUniformLightMapPolicy>(EBasePassDrawListType DrawType)
+TStaticMeshDrawList<TMobileBasePassDrawingPolicy<FUniformLightMapPolicy>>& FScene::GetMobileBasePassDrawList<FUniformLightMapPolicy>(EBasePassDrawListType DrawType)
 {
 	return MobileBasePassUniformLightMapPolicyDrawList[DrawType];
 }
 
 template<>
-TStaticMeshDrawList<TMobileBasePassDrawingPolicy<FUniformLightMapPolicy, 0> >& FScene::GetMobileBasePassCSMDrawList<FUniformLightMapPolicy>(EBasePassDrawListType DrawType)
+TStaticMeshDrawList<TMobileBasePassDrawingPolicy<FUniformLightMapPolicy>>& FScene::GetMobileBasePassCSMDrawList<FUniformLightMapPolicy>(EBasePassDrawListType DrawType)
 {
 	return MobileBasePassUniformLightMapPolicyDrawListWithCSM[DrawType];
 }

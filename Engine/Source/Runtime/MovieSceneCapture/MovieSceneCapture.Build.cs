@@ -21,6 +21,7 @@ public class MovieSceneCapture : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"LevelSequence",
+				"TimeManagement",
 			}
 		);
 
@@ -32,6 +33,7 @@ public class MovieSceneCapture : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"InputCore",
+				"ImageWriteQueue",
 				"Json",
 				"JsonUtilities",
 				"MovieScene",
@@ -41,6 +43,7 @@ public class MovieSceneCapture : ModuleRules
 				"ShaderCore",
 				"Slate",
 				"SlateCore",
+				"AudioMixer"
 			}
 		);
     }

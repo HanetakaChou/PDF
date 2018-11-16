@@ -39,7 +39,7 @@ struct FAutomationWorkerFindWorkers
 	FGuid SessionId;
 
 	/** Default constructor. */
-	FAutomationWorkerFindWorkers() { }
+	FAutomationWorkerFindWorkers() : Changelist(0) { }
 
 	/** Creates and initializes a new instance. */
 	FAutomationWorkerFindWorkers(int32 InChangelist, const FString& InGameName, const FString& InProcessName, const FGuid& InSessionId)
@@ -100,7 +100,7 @@ struct FAutomationWorkerFindWorkersResponse
 	FGuid SessionId;
 
 	/** Default constructor. */
-	FAutomationWorkerFindWorkersResponse() { }
+	FAutomationWorkerFindWorkersResponse() : RAMInGB(0) { }
 };
 
 
@@ -133,6 +133,15 @@ struct FAutomationWorkerResetTests
 
 
 /**
+*/
+USTRUCT()
+struct FAutomationWorkerStopTests
+{
+	GENERATED_USTRUCT_BODY()
+};
+
+
+/**
  */
 USTRUCT()
 struct FAutomationWorkerPong
@@ -158,7 +167,7 @@ struct FAutomationWorkerRequestTests
 	uint32 RequestedTestFlags;
 
 	/** Default constructor. */
-	FAutomationWorkerRequestTests() { }
+	FAutomationWorkerRequestTests() : DeveloperDirectoryIncluded(false), RequestedTestFlags(0) { }
 
 	/** Creates and initializes a new instance. */
 	FAutomationWorkerRequestTests(bool InDeveloperDirectoryIncluded, uint32 InRequestedTestFlags)
@@ -207,7 +216,7 @@ struct FAutomationWorkerSingleTestReply
 	uint32 NumParticipantsRequired;
 
 	/** Default constructor. */
-	FAutomationWorkerSingleTestReply() { }
+	FAutomationWorkerSingleTestReply() : SourceFileLine(0), TestFlags(0), NumParticipantsRequired(0) { }
 
 	/** Creates and initializes a new instance. */
 	FAutomationWorkerSingleTestReply(const FAutomationTestInfo& InTestInfo)
@@ -283,7 +292,7 @@ struct FAutomationWorkerRunTests
 	bool bSendAnalytics;
 
 	/** Default constructor. */
-	FAutomationWorkerRunTests( ) { }
+	FAutomationWorkerRunTests( ) :ExecutionCount(0), RoleIndex(0), bSendAnalytics(false) { }
 
 	/** Creates and initializes a new instance. */
 	FAutomationWorkerRunTests( uint32 InExecutionCount, int32 InRoleIndex, FString InTestName, FString InBeautifiedTestName, bool InSendAnalytics)
@@ -312,7 +321,7 @@ public:
 
 	/** */
 	UPROPERTY(EditAnywhere, Category="Message")
-	TArray<FAutomationEvent> Events;
+	TArray<FAutomationExecutionEntry> Entries;
 
 	UPROPERTY(EditAnywhere, Category="Message")
 	int32 WarningTotal;
@@ -346,7 +355,7 @@ struct FAutomationWorkerRequestNextNetworkCommand
 	uint32 ExecutionCount;
 
 	/** Default constructor. */
-	FAutomationWorkerRequestNextNetworkCommand() { }
+	FAutomationWorkerRequestNextNetworkCommand() : ExecutionCount(0) { }
 
 	/** Creates and initializes a new instance. */
 	FAutomationWorkerRequestNextNetworkCommand(uint32 InExecutionCount)
@@ -375,6 +384,8 @@ public:
 	FString Name;
 	UPROPERTY(EditAnywhere, Category="Message")
 	FString Context;
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString Notes;
 
 	UPROPERTY(EditAnywhere, Category="Message")
 	FGuid Id;
@@ -453,6 +464,28 @@ public:
 public:
 
 	FAutomationScreenshotMetadata()
+		: Width(0)
+		, Height(0)
+		, bIsStereo(false)
+		, ResolutionQuality(0.0f)
+		, ViewDistanceQuality(0)
+		, AntiAliasingQuality(0)
+		, ShadowQuality(0)
+		, PostProcessQuality(0)
+		, TextureQuality(0)
+		, EffectsQuality(0)
+		, FoliageQuality(0)
+		, bHasComparisonRules(0)
+		, ToleranceRed(0)
+		, ToleranceGreen(0)
+		, ToleranceBlue(0)
+		, ToleranceAlpha(0)
+		, ToleranceMinBrightness(0)
+		, ToleranceMaxBrightness(0)
+		, MaximumLocalError(0.0f)
+		, MaximumGlobalError(0.0f)
+		, bIgnoreAntiAliasing(false)
+		, bIgnoreColors(false)
 	{
 	}
 
@@ -463,6 +496,7 @@ public:
 		// Human readable name and associated context the screenshot was taken in.
 		Name = Data.Name;
 		Context = Data.Context;
+		Notes = Data.Notes;
 
 		// Unique Id so we know if this screenshot has already been imported.
 		Id = Data.Id;
@@ -527,15 +561,7 @@ public:
 			Score += 1000;
 		}
 
-		if (ResolutionQuality == OtherMetadata.ResolutionQuality && 
-			ViewDistanceQuality == OtherMetadata.ViewDistanceQuality &&
-			AntiAliasingQuality == OtherMetadata.AntiAliasingQuality &&
-			ShadowQuality == OtherMetadata.ShadowQuality &&
-			PostProcessQuality == OtherMetadata.PostProcessQuality &&
-			TextureQuality == OtherMetadata.TextureQuality &&
-			EffectsQuality == OtherMetadata.EffectsQuality &&
-			FoliageQuality == OtherMetadata.FoliageQuality
-			)
+		if (Vendor == OtherMetadata.Vendor)
 		{
 			Score += 100;
 		}
@@ -560,11 +586,6 @@ public:
 			Score += 10;
 		}
 
-		if (Vendor == OtherMetadata.Vendor)
-		{
-			Score += 10;
-		}
-
 		if (AdapterName == OtherMetadata.AdapterName)
 		{
 			Score += 10;
@@ -576,6 +597,46 @@ public:
 		}
 
 		if (AdapterUserDriverVersion == OtherMetadata.AdapterUserDriverVersion)
+		{
+			Score += 10;
+		}
+
+		if (ResolutionQuality == OtherMetadata.ResolutionQuality)
+		{
+			Score += 10;
+		}
+
+		if (ViewDistanceQuality == OtherMetadata.ViewDistanceQuality)
+		{
+			Score += 10;
+		}
+
+		if (AntiAliasingQuality == OtherMetadata.AntiAliasingQuality)
+		{
+			Score += 10;
+		}
+
+		if (ShadowQuality == OtherMetadata.ShadowQuality)
+		{
+			Score += 10;
+		}
+
+		if (PostProcessQuality == OtherMetadata.PostProcessQuality)
+		{
+			Score += 10;
+		}
+
+		if (TextureQuality == OtherMetadata.TextureQuality)
+		{
+			Score += 10;
+		}
+
+		if (EffectsQuality == OtherMetadata.EffectsQuality)
+		{
+			Score += 10;
+		}
+
+		if (FoliageQuality == OtherMetadata.FoliageQuality)
 		{
 			Score += 10;
 		}
@@ -620,17 +681,24 @@ public:
 	FAutomationWorkerImageComparisonResults()
 		: bNew(false)
 		, bSimilar(false)
+		, MaxLocalDifference(0.0)
+		, GlobalDifference(0.0)
 	{
 	}
 
-	FAutomationWorkerImageComparisonResults(bool InIsNew, bool InAreSimilar, double InMaxLocalDifference, double InGlobalDifference, FString InErrorMessage)
-		: bNew(InIsNew)
+	FAutomationWorkerImageComparisonResults(FGuid InUniqueId, bool InIsNew, bool InAreSimilar, double InMaxLocalDifference, double InGlobalDifference, FString InErrorMessage)
+		: UniqueId(InUniqueId)
+		, bNew(InIsNew)
 		, bSimilar(InAreSimilar)
 		, MaxLocalDifference(InMaxLocalDifference)
 		, GlobalDifference(InGlobalDifference)
 		, ErrorMessage(InErrorMessage)
 	{
 	}
+
+	/** The unique id for the comparison. */
+	UPROPERTY(EditAnywhere, Category="Message")
+	FGuid UniqueId;
 
 	/** Was this a new image we've never seen before and have no ground truth for? */
 	UPROPERTY(EditAnywhere, Category="Message")

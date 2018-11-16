@@ -985,7 +985,7 @@ namespace SceneOutliner
 		PendingOperations.RemoveAt(0, End);
 		SetParentsExpansionState(ExpansionStateInfo);
 
-		if (bMadeAnySignificantChanges)
+		if (bMadeAnySignificantChanges && !SharedData->bRepresentingPlayWorld)
 		{
 			RequestSort();
 		}
@@ -2294,7 +2294,7 @@ namespace SceneOutliner
 
 		if ( !IsFilterActive() )
 		{
-			if (SelectedActorCount == 0)
+			if (SelectedActorCount == 0) //-V547
 			{
 				return FText::Format( LOCTEXT("ShowingAllActorsFmt", "{0} actors"), FText::AsNumber( TotalActorCount ) );
 			}
@@ -2307,7 +2307,7 @@ namespace SceneOutliner
 		{
 			return FText::Format( LOCTEXT("ShowingNoActorsFmt", "No matching actors ({0} total)"), FText::AsNumber( TotalActorCount ) );
 		}
-		else if (SelectedActorCount != 0)
+		else if (SelectedActorCount != 0) //-V547
 		{
 			return FText::Format( LOCTEXT("ShowingOnlySomeActorsSelectedFmt", "Showing {0} of {1} actors ({2} selected)"), FText::AsNumber( FilteredActorCount ), FText::AsNumber( TotalActorCount ), FText::AsNumber( SelectedActorCount ) );
 		}
@@ -2376,6 +2376,23 @@ namespace SceneOutliner
 			FSlateApplication::Get().GeneratePathToWidgetUnchecked( OutlinerTreeView.ToSharedRef(), OutlinerTreeViewWidgetPath );
 			FSlateApplication::Get().SetKeyboardFocus( OutlinerTreeViewWidgetPath, EFocusCause::SetDirectly );
 		}
+	}
+
+	const FSlateBrush* SSceneOutliner::GetCachedIconForClass(FName InClassName) const
+	{ 
+		if (CachedIcons.Find(InClassName))
+		{
+			return *CachedIcons.Find(InClassName);
+		}
+		else
+		{
+			return nullptr;
+		}
+	}
+
+	void SSceneOutliner::CacheIconForClass(FName InClassName, const FSlateBrush* InSlateBrush)
+	{
+		CachedIcons.Emplace(InClassName, InSlateBrush);
 	}
 
 	bool SSceneOutliner::SupportsKeyboardFocus() const
@@ -2469,7 +2486,7 @@ namespace SceneOutliner
 						}
 					}
 
-					if (GUnrealEd->CanDeleteSelectedActors( SharedData->RepresentingWorld, true, false ))
+					if (GUnrealEd->CanDeleteSelectedActors( SharedData->RepresentingWorld, true, true ))
 					{
 						GEditor->edactDeleteSelected( SharedData->RepresentingWorld );
 					}

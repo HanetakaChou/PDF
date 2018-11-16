@@ -95,10 +95,9 @@ struct FHittestGrid::FGridTestingParams
 	bool bTestWidgetIsInteractive;
 };
 
-
-
 FHittestGrid::FHittestGrid()
 : WidgetsCachedThisFrame()
+, NumCellsExcess(0, 0)
 {
 }
 
@@ -218,11 +217,15 @@ TArray<FWidgetAndPointer> FHittestGrid::GetBubblePath(FVector2D DesktopSpaceCoor
 
 void FHittestGrid::ClearGridForNewFrame(const FSlateRect& HittestArea)
 {
+#if SLATE_VERBOSE_NAMED_EVENTS
+	SCOPED_NAMED_EVENT_TEXT("FHittestGrid::ClearGridForNewFrame", FColor::Magenta);
+#endif
 	//LogGrid();
 
 	GridOrigin = HittestArea.GetTopLeft();
 	const FVector2D GridSize = HittestArea.GetSize();
 	NumCells = FIntPoint(FMath::CeilToInt(GridSize.X / CellSize.X), FMath::CeilToInt(GridSize.Y / CellSize.Y));
+	NumCells += NumCellsExcess;
 	WidgetsCachedThisFrame.Reset();
 
 	const int32 NewTotalCells = NumCells.X * NumCells.Y;
@@ -393,16 +396,16 @@ TSharedPtr<SWidget> FHittestGrid::FindFocusableWidget(FSlateRect WidgetRect, con
 
 		for (StrideCellPoint[StrideAxis] = StrideAxisMin; StrideCellPoint[StrideAxis] <= StrideAxisMax; ++StrideCellPoint[StrideAxis])
 		{
-			FHittestGrid::FCell& Cell = FHittestGrid::CellAt(StrideCellPoint.X, StrideCellPoint.Y);
+			const FHittestGrid::FCell& Cell = FHittestGrid::CellAt(StrideCellPoint.X, StrideCellPoint.Y);
 			const TArray<int32>& IndexesInCell = Cell.CachedWidgetIndexes;
 
 			for (int32 i = IndexesInCell.Num() - 1; i >= 0; --i)
 			{
-				int32 CurrentIndex = IndexesInCell[i];
+				const int32 CurrentIndex = IndexesInCell[i];
 				check(CurrentIndex < WidgetsCachedThisFrame.Num());
 
 				const FCachedWidget& TestCandidate = WidgetsCachedThisFrame[CurrentIndex];
-				FSlateRect TestCandidateRect = TestCandidate.CachedGeometry.GetRenderBoundingRect().OffsetBy(-GridOrigin);
+				const FSlateRect TestCandidateRect = TestCandidate.CachedGeometry.GetRenderBoundingRect().OffsetBy(-GridOrigin);
 
 				if (CompareFunc(DestSideFunc(TestCandidateRect), CurrentSourceSide) && FSlateRect::DoRectanglesIntersect(SweptRect, TestCandidateRect))
 				{
@@ -682,7 +685,7 @@ FHittestGrid::FIndexAndDistance FHittestGrid::GetHitIndexFromCellIndex(const FGr
 
 			check(WidgetsCachedThisFrame.IsValidIndex(WidgetIndex));
 
-			const FHittestGrid::FCachedWidget& TestCandidate = WidgetsCachedThisFrame[WidgetIndex];
+			const FCachedWidget& TestCandidate = WidgetsCachedThisFrame[WidgetIndex];
 
 			// When performing a point hittest, accept all hittestable widgets.
 			// When performing a hittest with a radius, only grab interactive widgets.
@@ -736,7 +739,7 @@ TArray<FWidgetAndPointer> FHittestGrid::GetBubblePathFromHitIndex(const int32 Hi
 		do
 		{
 			check(CurWidgetIndex < WidgetsCachedThisFrame.Num());
-			const FHittestGrid::FCachedWidget& CurCachedWidget = WidgetsCachedThisFrame[CurWidgetIndex];
+			const FCachedWidget& CurCachedWidget = WidgetsCachedThisFrame[CurWidgetIndex];
 			const TSharedPtr<SWidget> CachedWidgetPtr = CurCachedWidget.WidgetPtr.Pin();
 
 

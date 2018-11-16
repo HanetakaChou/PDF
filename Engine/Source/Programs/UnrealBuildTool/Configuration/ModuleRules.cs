@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Tools.DotNETCommon;
 
 namespace UnrealBuildTool
 {
@@ -130,6 +131,11 @@ namespace UnrealBuildTool
 			public string Path;
 
 			/// <summary>
+			/// The initial location for this file. It will be copied to Path at build time, ready for staging.
+			/// </summary>
+			public string SourcePath;
+
+			/// <summary>
 			/// How to stage this file.
 			/// </summary>
 			public StagedFileType Type;
@@ -142,6 +148,19 @@ namespace UnrealBuildTool
 			public RuntimeDependency(string InPath, StagedFileType InType = StagedFileType.NonUFS)
 			{
 				Path = InPath;
+				Type = InType;
+			}
+
+			/// <summary>
+			/// Constructor
+			/// </summary>
+			/// <param name="InPath">Path to the runtime dependency</param>
+			/// <param name="InSourcePath">Source path for the file in the working tree</param>
+			/// <param name="InType">How to stage the given path</param>
+			public RuntimeDependency(string InPath, string InSourcePath, StagedFileType InType = StagedFileType.NonUFS)
+			{
+				Path = InPath;
+				SourcePath = InSourcePath;
 				Type = InType;
 			}
 		}
@@ -181,6 +200,17 @@ namespace UnrealBuildTool
 			public void Add(string InPath, StagedFileType InType)
 			{
 				Inner.Add(new RuntimeDependency(InPath, InType));
+			}
+
+			/// <summary>
+			/// Add a runtime dependency to the list
+			/// </summary>
+			/// <param name="InPath">Path to the runtime dependency. May include wildcards.</param>
+			/// <param name="InSourcePath">Source path for the file to be added as a dependency. May include wildcards.</param>
+			/// <param name="InType">How to stage this file</param>
+			public void Add(string InPath, string InSourcePath, StagedFileType InType = StagedFileType.NonUFS)
+			{
+				Inner.Add(new RuntimeDependency(InPath, InSourcePath, InType));
 			}
 
 			/// <summary>
@@ -226,12 +256,36 @@ namespace UnrealBuildTool
 			/// Add a receipt property to the list
 			/// </summary>
 			/// <param name="InReceiptProperty">ReceiptProperty instance</param>
-			[Obsolete("Constructing a ReceiptProperty object is deprecated. Call RuntimeDependencies.Add() with the path to the file to stage.")]
+			[Obsolete("Constructing a ReceiptProperty object is deprecated. Call ReceiptProperties.Add() with the path to the file to stage.")]
 			public void Add(ReceiptProperty InReceiptProperty)
 			{
 				Inner.Add(InReceiptProperty);
 			}
 		}
+
+		/// <summary>
+		/// Name of this module
+		/// </summary>
+		public string Name
+		{
+			get;
+			internal set;
+		}
+
+		/// <summary>
+		/// File containing this module
+		/// </summary>
+		internal FileReference File;
+
+		/// <summary>
+		/// Directory containing this module
+		/// </summary>
+		internal DirectoryReference Directory;
+
+		/// <summary>
+		/// Plugin containing this module
+		/// </summary>
+		internal PluginInfo Plugin;
 
 		/// <summary>
 		/// Rules for the target that this module belongs to
@@ -274,6 +328,18 @@ namespace UnrealBuildTool
 		/// Precompiled header usage for this module
 		/// </summary>
 		public PCHUsageMode PCHUsage = PCHUsageMode.Default;
+
+		/// <summary>
+		/// Whether this module should be treated as an engine module (eg. using engine definitions, PCHs, compiled with optimizations enabled in DebugGame configurations, etc...).
+		/// Initialized to a default based on the rules assembly it was created from.
+		/// </summary>
+		public bool bTreatAsEngineModule;
+
+		/// <summary>
+		/// Whether to use backwards compatible defaults for this module. By default, engine modules always use the latest default settings, while project modules do not (to support
+		/// an easier migration path).
+		/// </summary>
+		public bool bUseBackwardsCompatibleDefaults;
 
 		/// <summary>
 		/// Use run time type information
@@ -360,6 +426,16 @@ namespace UnrealBuildTool
 		public bool bAddDefaultIncludePaths = true;
 
 		/// <summary>
+		/// Whether this module should be precompiled. Defaults to the bPrecompile flag from the target. Clear this flag to prevent a module being precompiled.
+		/// </summary>
+		public bool bPrecompile;
+
+		/// <summary>
+		/// Whether this module should use precompiled data. Always true for modules created from installed assemblies.
+		/// </summary>
+		public bool bUsePrecompiled;
+
+		/// <summary>
 		/// List of modules names (no path needed) with header files that our module's public headers needs access to, but we don't need to "import" or link against.
 		/// </summary>
 		public List<string> PublicIncludePathModuleNames = new List<string>();
@@ -405,6 +481,16 @@ namespace UnrealBuildTool
 		/// List of system/library paths (directory of .lib files) - typically used for External (third party) modules
 		/// </summary>
 		public List<string> PublicLibraryPaths = new List<string>();
+
+		/// <summary>
+		/// List of search paths for libraries at runtime (eg. .so files)
+		/// </summary>
+		public List<string> PrivateRuntimeLibraryPaths = new List<string>();
+
+		/// <summary>
+		/// List of search paths for libraries at runtime (eg. .so files)
+		/// </summary>
+		public List<string> PublicRuntimeLibraryPaths = new List<string>();
 
 		/// <summary>
 		/// List of additional libraries (names of the .lib files including extension) - typically used for External (third party) modules
@@ -470,7 +556,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Extra modules this module may require at run time, that are on behalf of another platform (i.e. shader formats and the like)
 		/// </summary>
-		public List<string> PlatformSpecificDynamicallyLoadedModuleNames = new List<string>();
+		[Obsolete("PlatformSpecificDynamicallyLoadedModuleNames is deprecated; use DynamicallyLoadedModuleNames instead")]
+		public List<string> PlatformSpecificDynamicallyLoadedModuleNames
+		{
+			get { return DynamicallyLoadedModuleNames; }
+		}
 
 		/// <summary>
 		/// List of files which this module depends on at runtime. These files will be staged along with the target.
@@ -493,13 +583,48 @@ namespace UnrealBuildTool
 		public List<string> ExternalDependencies = new List<string>();
 
 		/// <summary>
+		/// Whether this module qualifies included headers from other modules relative to the root of their 'Public' folder. This reduces the number
+		/// of search paths that have to be passed to the compiler, improving performance and reducing the length of the compiler command line.
+		/// </summary>
+		public bool? bLegacyPublicIncludePaths;
+
+		/// <summary>
+		/// The current engine directory
+		/// </summary>
+		public string EngineDirectory
+		{
+			get
+			{
+				return UnrealBuildTool.EngineDirectory.FullName;
+			}
+		}
+
+		/// <summary>
+		/// Property for the directory containing this plugin. Useful for adding paths to third party dependencies.
+		/// </summary>
+		public string PluginDirectory
+		{
+			get
+			{
+				if(Plugin == null)
+				{
+					throw new BuildException("Module '{0}' does not belong to a plugin; PluginDirectory property is invalid.", Name);
+				}
+				else
+				{
+					return Plugin.Directory.FullName;
+				}
+			}
+		}
+
+		/// <summary>
 		/// Property for the directory containing this module. Useful for adding paths to third party dependencies.
 		/// </summary>
 		public string ModuleDirectory
 		{
 			get
 			{
-				return Path.GetDirectoryName(RulesCompiler.GetFileNameFromType(GetType()));
+				return Directory.FullName;
 			}
 		}
 
@@ -510,6 +635,7 @@ namespace UnrealBuildTool
 		/// <param name="Target">Rules for building this target</param>
 		public ModuleRules(ReadOnlyTargetRules Target)
 		{
+			this.Target = Target;
 		}
 
 		/// <summary>
@@ -522,7 +648,7 @@ namespace UnrealBuildTool
 		/// <param name="ModuleNames">The names of the modules to add</param>
 		public void AddEngineThirdPartyPrivateStaticDependencies(ReadOnlyTargetRules Target, params string[] ModuleNames)
 		{
-			if (!UnrealBuildTool.IsEngineInstalled() || Target.LinkType == TargetLinkType.Monolithic)
+			if (!bUsePrecompiled || Target.LinkType == TargetLinkType.Monolithic)
 			{
 				PrivateDependencyModuleNames.AddRange(ModuleNames);
 			}
@@ -538,7 +664,7 @@ namespace UnrealBuildTool
 		/// <param name="ModuleNames">The names of the modules to add</param>
 		public void AddEngineThirdPartyPrivateDynamicDependencies(ReadOnlyTargetRules Target, params string[] ModuleNames)
 		{
-			if (!UnrealBuildTool.IsEngineInstalled() || Target.LinkType == TargetLinkType.Monolithic)
+			if (!bUsePrecompiled || Target.LinkType == TargetLinkType.Monolithic)
 			{
 				PrivateIncludePathModuleNames.AddRange(ModuleNames);
 				DynamicallyLoadedModuleNames.AddRange(ModuleNames);
@@ -546,14 +672,35 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Setup this module for PhysX/APEX support (based on the settings in UEBuildConfiguration)
+		/// Setup this module for physics support (based on the settings in UEBuildConfiguration)
 		/// </summary>
-		public void SetupModulePhysXAPEXSupport(ReadOnlyTargetRules Target)
+		public void SetupModulePhysicsSupport(ReadOnlyTargetRules Target)
 		{
-			// definitions used outside of PhysX/APEX need to be set here, not in PhysX.Build.cs or APEX.Build.cs, 
-			// since we need to make sure we always set it, even to 0 (because these are Private dependencies, the
-			// defines inside their Build.cs files won't leak out)
-			if (Target.bCompilePhysX == true)
+            bool bUseNonPhysXInterface = Target.bUseApeiron == true || Target.bCompileImmediatePhysics == true;
+
+            // 
+            if (Target.bCompileApeiron == true || Target.bUseApeiron == true)
+            {
+                PublicDefinitions.Add("INCLUDE_APEIRON=1");
+                PublicIncludePathModuleNames.AddRange(
+                    new string[] {
+                        "Apeiron",
+                    }
+                );
+                PublicDependencyModuleNames.AddRange(
+                  new string[] {
+                        "Apeiron",
+                  }
+                );
+            }
+            else
+            {
+                PublicDefinitions.Add("INCLUDE_APEIRON=0");
+            }
+            // definitions used outside of PhysX/APEX need to be set here, not in PhysX.Build.cs or APEX.Build.cs, 
+            // since we need to make sure we always set it, even to 0 (because these are Private dependencies, the
+            // defines inside their Build.cs files won't leak out)
+            if (Target.bCompilePhysX == true)
 			{
 				PrivateDependencyModuleNames.Add("PhysX");
 				PublicDefinitions.Add("WITH_PHYSX=1");
@@ -563,43 +710,129 @@ namespace UnrealBuildTool
 				PublicDefinitions.Add("WITH_PHYSX=0");
 			}
 
-			if (Target.bCompileAPEX == true)
+			if(!bUseNonPhysXInterface)
 			{
-				if (!Target.bCompilePhysX)
+				// Disable non-physx interfaces
+				PublicDefinitions.Add("WITH_APEIRON=0");
+				PublicDefinitions.Add("PHYSICS_INTERFACE_LLIMMEDIATE=0");
+
+				if (Target.bCompilePhysX)
 				{
-					throw new BuildException("APEX is enabled, without PhysX. This is not supported!");
+					PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=1");
+				}
+				else
+				{
+					PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=0");
 				}
 
-				PrivateDependencyModuleNames.Add("APEX");
-				PublicDefinitions.Add("WITH_APEX=1");
-				PublicDefinitions.Add("WITH_APEX_CLOTHING=1");
-				PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
-				PublicDefinitions.Add("WITH_PHYSX_COOKING=1");  // APEX currently relies on cooking even at runtime
+				if (Target.bCompileAPEX == true)
+				{
+					if (!Target.bCompilePhysX)
+					{
+						throw new BuildException("APEX is enabled, without PhysX. This is not supported!");
+					}
+					PrivateDependencyModuleNames.Add("APEX");
+					PublicDefinitions.Add("WITH_APEX=1");
+					PublicDefinitions.Add("WITH_APEX_CLOTHING=1");
+					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
+					PublicDefinitions.Add("WITH_PHYSX_COOKING=1");  // APEX currently relies on cooking even at runtime
 
+				}
+				else
+				{
+					PublicDefinitions.Add("WITH_APEX=0");
+					PublicDefinitions.Add("WITH_APEX_CLOTHING=0");
+					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=0");
+					PublicDefinitions.Add(string.Format("WITH_PHYSX_COOKING={0}", Target.bBuildEditor && Target.bCompilePhysX ? 1 : 0));  // without APEX, we only need cooking in editor builds
+				}
+
+				if (Target.bCompileNvCloth == true)
+				{
+					if (!Target.bCompilePhysX)
+					{
+						throw new BuildException("NvCloth is enabled, without PhysX. This is not supported!");
+					}
+
+					PrivateDependencyModuleNames.Add("NvCloth");
+					PublicDefinitions.Add("WITH_NVCLOTH=1");
+
+				}
+				else
+				{
+					PublicDefinitions.Add("WITH_NVCLOTH=0");
+				}
 			}
 			else
 			{
+				// Disable apex/cloth/physx interface
+				PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=0");
 				PublicDefinitions.Add("WITH_APEX=0");
 				PublicDefinitions.Add("WITH_APEX_CLOTHING=0");
 				PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=0");
 				PublicDefinitions.Add(string.Format("WITH_PHYSX_COOKING={0}", Target.bBuildEditor && Target.bCompilePhysX ? 1 : 0));  // without APEX, we only need cooking in editor builds
-			}
+				PublicDefinitions.Add("WITH_NVCLOTH=0");
 
-			if (Target.bCompileNvCloth == true)
-			{
-				if (!Target.bCompilePhysX)
+				if(Target.bUseApeiron)
 				{
-					throw new BuildException("NvCloth is enabled, without PhysX. This is not supported!");
+					PublicDefinitions.Add("WITH_APEIRON=1");
+					PublicDefinitions.Add("COMPILE_ID_TYPES_AS_INTS=0");
+					
+					PublicIncludePathModuleNames.AddRange(
+						new string[] {
+						"Apeiron",
+						}
+					);
+
+					PublicDependencyModuleNames.AddRange(
+						new string[] {
+						"Apeiron",
+						}
+					);
+				}
+				else
+				{
+					PublicDefinitions.Add("WITH_APEIRON=0");
 				}
 
-				PrivateDependencyModuleNames.Add("NvCloth");
-                PublicDefinitions.Add("WITH_NVCLOTH=1");
+				if(Target.bCompileImmediatePhysics)
+				{
+					PublicDefinitions.Add("PHYSICS_INTERFACE_LLIMMEDIATE=1");
+					PublicDependencyModuleNames.Add("PhysX");
+				}
+				else
+				{
+					PublicDefinitions.Add("PHYSICS_INTERFACE_LLIMMEDIATE=0");
+				}
+			}
 
-			}
-			else
+			// Unused interface
+			PublicDefinitions.Add("WITH_IMMEDIATE_PHYSX=0");
+		}
+
+		/// <summary>
+		/// Determines if this module can be precompiled for the current target.
+		/// </summary>
+		/// <param name="RulesFile">Path to the module rules file</param>
+		/// <returns>True if the module can be precompiled, false otherwise</returns>
+		internal bool IsValidForTarget(FileReference RulesFile)
+		{
+			if(Type == ModuleRules.ModuleType.CPlusPlus)
 			{
-				PublicDefinitions.Add("WITH_NVCLOTH=0");
+				switch (PrecompileForTargets)
+				{
+					case ModuleRules.PrecompileTargetsType.None:
+						return false;
+					case ModuleRules.PrecompileTargetsType.Default:
+						return !RulesFile.IsUnderDirectory(UnrealBuildTool.EngineSourceDeveloperDirectory) || Target.Type == TargetType.Editor;
+					case ModuleRules.PrecompileTargetsType.Game:
+						return (Target.Type == TargetType.Client || Target.Type == TargetType.Server || Target.Type == TargetType.Game);
+					case ModuleRules.PrecompileTargetsType.Editor:
+						return (Target.Type == TargetType.Editor);
+					case ModuleRules.PrecompileTargetsType.Any:
+						return true;
+				}
 			}
+			return false;
 		}
 	}
 }

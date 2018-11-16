@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2017 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2018 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -334,6 +334,13 @@ SetupWindowData(_THIS, SDL_Window * window, Window w, BOOL created)
 /* EG BEGIN */
 #ifdef SDL_WITH_EPIC_EXTENSIONS
     data->initiate_maximize = SDL_FALSE;
+
+#if SDL_VIDEO_DRIVER_X11_XFIXES
+    data->pointer_barrier_active = SDL_FALSE;
+    SDL_memset(&data->barrier, 0, sizeof(data->barrier));
+    SDL_memset(&data->barrier_rect, 0, sizeof(SDL_Rect));
+#endif
+
 #endif /* SDL_WITH_EPIC_EXTENSIONS */
 /* EG END */
 
@@ -400,7 +407,6 @@ X11_CreateWindow(_THIS, SDL_Window * window)
     const char *wintype_name = NULL;
     long compositor = 1;
     Atom _NET_WM_PID;
-    Atom XdndAware, xdnd_version = 5;
     long fevent = 0;
 
 #if SDL_VIDEO_OPENGL_GLX || SDL_VIDEO_OPENGL_EGL
@@ -591,7 +597,7 @@ X11_CreateWindow(_THIS, SDL_Window * window)
     } else if (window->flags & SDL_WINDOW_DIALOG) {
         wintype_name = "_NET_WM_WINDOW_TYPE_DIALOG";
  #endif /* SDL_WITH_EPIC_EXTENSIONS */
-/* EG END */       
+/* EG END */
     } else if (window->flags & SDL_WINDOW_TOOLTIP) {
         wintype_name = "_NET_WM_WINDOW_TYPE_TOOLTIP";
     } else if (window->flags & SDL_WINDOW_POPUP_MENU) {
@@ -606,11 +612,14 @@ X11_CreateWindow(_THIS, SDL_Window * window)
     wintype = X11_XInternAtom(display, wintype_name, False);
     X11_XChangeProperty(display, w, _NET_WM_WINDOW_TYPE, XA_ATOM, 32,
                     PropModeReplace, (unsigned char *)&wintype, 1);
+    if (SDL_GetHintBoolean(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, SDL_TRUE)) {
+        _NET_WM_BYPASS_COMPOSITOR = X11_XInternAtom(display, "_NET_WM_BYPASS_COMPOSITOR", False);
+        X11_XChangeProperty(display, w, _NET_WM_BYPASS_COMPOSITOR, XA_CARDINAL, 32,
+                        PropModeReplace,
+                        (unsigned char *)&compositor, 1);
 
-    _NET_WM_BYPASS_COMPOSITOR = X11_XInternAtom(display, "_NET_WM_BYPASS_COMPOSITOR", False);
-    X11_XChangeProperty(display, w, _NET_WM_BYPASS_COMPOSITOR, XA_CARDINAL, 32,
-                    PropModeReplace,
-                    (unsigned char *)&compositor, 1);
+    }
+
 /* EG BEGIN */
 #ifdef SDL_WITH_EPIC_EXTENSIONS
     // Disable focus on first show (see https://mail.gnome.org/archives/desktop-devel-list/2004-August/msg00158.html)
@@ -687,11 +696,6 @@ X11_CreateWindow(_THIS, SDL_Window * window)
                  PointerMotionMask | KeyPressMask | KeyReleaseMask |
                  PropertyChangeMask | StructureNotifyMask |
                  KeymapStateMask | fevent));
-
-    XdndAware = X11_XInternAtom(display, "XdndAware", False);
-    X11_XChangeProperty(display, w, XdndAware, XA_ATOM, 32,
-                 PropModeReplace,
-                 (unsigned char*)&xdnd_version, 1);
 
     X11_XFlush(display);
 
@@ -1108,7 +1112,8 @@ X11_ShowWindow(_THIS, SDL_Window * window)
         /* Blocking wait for "MapNotify" event.
          * We use X11_XIfEvent because pXWindowEvent takes a mask rather than a type,
          * and XCheckTypedWindowEvent doesn't block */
-        X11_XIfEvent(display, &event, &isMapNotify, (XPointer)&data->xwindow);
+        if(!(window->flags & SDL_WINDOW_FOREIGN))
+            X11_XIfEvent(display, &event, &isMapNotify, (XPointer)&data->xwindow);
         X11_XFlush(display);
     }
 
@@ -1130,7 +1135,8 @@ X11_HideWindow(_THIS, SDL_Window * window)
     if (X11_IsWindowMapped(_this, window)) {
         X11_XWithdrawWindow(display, data->xwindow, displaydata->screen);
         /* Blocking wait for "UnmapNotify" event */
-        X11_XIfEvent(display, &event, &isUnmapNotify, (XPointer)&data->xwindow);
+        if(!(window->flags & SDL_WINDOW_FOREIGN))
+            X11_XIfEvent(display, &event, &isUnmapNotify, (XPointer)&data->xwindow);
         X11_XFlush(display);
     }
 }
@@ -1564,12 +1570,13 @@ X11_SetWindowGrab(_THIS, SDL_Window * window, SDL_bool grabbed)
     if (oldstyle_fullscreen || grabbed) {
         /* Try to grab the mouse */
         if (!data->videodata->broken_pointer_grab) {
+            const unsigned int mask = ButtonPressMask | ButtonReleaseMask | PointerMotionMask | FocusChangeMask;
             int attempts;
             int result;
 
             /* Try for up to 5000ms (5s) to grab. If it still fails, stop trying. */
             for (attempts = 0; attempts < 100; attempts++) {
-                result = X11_XGrabPointer(display, data->xwindow, True, 0, GrabModeAsync,
+                result = X11_XGrabPointer(display, data->xwindow, True, mask, GrabModeAsync,
                                  GrabModeAsync, data->xwindow, None, CurrentTime);
                 if (result == GrabSuccess) {
                     break;
@@ -1638,6 +1645,20 @@ X11_DestroyWindow(_THIS, SDL_Window * window)
             X11_XFlush(display);
         }
         SDL_free(data);
+
+/* EG BEGIN */
+#ifdef SDL_WITH_EPIC_EXTENSIONS
+
+#if SDL_VIDEO_DRIVER_X11_XFIXES   
+        /* If the pointer barriers are active for this, deactivate it.*/
+        if (videodata->active_cursor_confined_window == window) {
+            X11_DestroyPointerBarrier(_this, window);
+        }
+#endif
+
+#endif /* SDL_WITH_EPIC_EXTENSIONS */
+/* EG END */
+
     }
     window->driverdata = NULL;
 }
@@ -1665,6 +1686,22 @@ int
 X11_SetWindowHitTest(SDL_Window *window, SDL_bool enabled)
 {
     return 0;  /* just succeed, the real work is done elsewhere. */
+}
+
+void
+X11_AcceptDragAndDrop(SDL_Window * window, SDL_bool accept)
+{
+    SDL_WindowData *data = (SDL_WindowData *) window->driverdata;
+    Display *display = data->videodata->display;
+    Atom XdndAware = X11_XInternAtom(display, "XdndAware", False);
+
+    if (accept) {
+        Atom xdnd_version = 5;
+        X11_XChangeProperty(display, data->xwindow, XdndAware, XA_ATOM, 32,
+                     PropModeReplace, (unsigned char*)&xdnd_version, 1);
+    } else {
+        X11_XDeleteProperty(display, data->xwindow, XdndAware);
+    }
 }
 
 #endif /* SDL_VIDEO_DRIVER_X11 */

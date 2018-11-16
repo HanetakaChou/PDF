@@ -19,6 +19,7 @@ class SGraphPanel;
 class SGraphPin;
 class SHorizontalBox;
 class SImage;
+class SWrapBox;
 
 #define NAME_DefaultPinLabelStyle TEXT("Graph.Node.PinName")
 
@@ -178,10 +179,23 @@ public:
 	/** Returns whether or not this pin is currently connectable */
 	bool GetIsConnectable() const;
 
-	/** Get the widget we should put into the 'default value' space, shown when nothing connected */
+	/** Build the widget we should put into the 'default value' space, shown when nothing connected */
 	virtual TSharedRef<SWidget>	GetDefaultValueWidget();
 
+	/** Get the widget created by GetDefaultValueWidget() */
+	TSharedRef<SWidget>	GetValueWidget() const { return ValueWidget.ToSharedRef(); }
+
+	/** Get the label/value part of the pin widget */
+	TSharedRef<SWrapBox> GetLabelAndValue() const { return LabelAndValue.ToSharedRef(); }
+
+	/** True if pin can be edited */
+	bool IsEditingEnabled() const;
+
 protected:
+
+	/** If true the graph pin subclass is responsible for setting the IsEnabled delegates for the aspects it cares about. If false, the default value widget enabling is done by the base class */
+	virtual bool DoesWidgetHandleSettingEditingEnabled() const { return false; }
+
 	FText GetPinLabel() const;
 
 	/** If we should show the label on this pin */
@@ -226,9 +240,6 @@ protected:
 
 	/** Spawns a FDragConnection or similar class for the pin drag event */
 	virtual TSharedRef<FDragDropOperation> SpawnPinDragEvent(const TSharedRef<class SGraphPanel>& InGraphPanel, const TArray< TSharedRef<SGraphPin> >& InStartingPins);
-	
-	/** True if pin can be edited */
-	bool IsEditingEnabled() const;
 
 	// Should we use low-detail pin names?
 	virtual bool UseLowDetailPinNames() const;
@@ -243,8 +254,14 @@ protected:
 	/** Image of pin */
 	TSharedPtr<SWidget> PinImage;
 
+	/** Label and value */
+	TSharedPtr<SWrapBox> LabelAndValue;
+
 	/** Horizontal box that holds the full detail pin widget, useful for outsiders to inject widgets into the pin */
 	TWeakPtr<SHorizontalBox> FullPinHorizontalRowWidget;
+
+	/** Value widget for the pin, created with GetDefaultValueWidget() */
+	TSharedPtr<SWidget> ValueWidget;
 
 	/** The GraphPin that this widget represents. */
 	class UEdGraphPin* GraphPinObj;

@@ -9,9 +9,34 @@
 
 
 #include "declare.hpp"
+#include "imp_StageInputOutputDescriptor.hpp"
 #include "device.hpp"
 
 MTLPP_BEGIN
+
+namespace ue4
+{
+	template<>
+	inline ITable<MTLBufferLayoutDescriptor*, void>* CreateIMPTable(MTLBufferLayoutDescriptor* handle)
+	{
+		static ITable<MTLBufferLayoutDescriptor*, void> Table(object_getClass(handle));
+		return &Table;
+	}
+	
+	template<>
+	inline ITable<MTLAttributeDescriptor*, void>* CreateIMPTable(MTLAttributeDescriptor* handle)
+	{
+		static ITable<MTLAttributeDescriptor*, void> Table(object_getClass(handle));
+		return &Table;
+	}
+	
+	template<>
+	inline ITable<MTLStageInputOutputDescriptor*, void>* CreateIMPTable(MTLStageInputOutputDescriptor* handle)
+	{
+		static ITable<MTLStageInputOutputDescriptor*, void> Table(object_getClass(handle));
+		return &Table;
+	}
+}
 
 namespace mtlpp
 {
@@ -113,11 +138,12 @@ namespace mtlpp
     }
     MTLPP_AVAILABLE(10_12, 10_0);
 
-    class BufferLayoutDescriptor : public ns::Object<MTLBufferLayoutDescriptor*>
+    class MTLPP_EXPORT BufferLayoutDescriptor : public ns::Object<MTLBufferLayoutDescriptor*>
     {
     public:
         BufferLayoutDescriptor();
-        BufferLayoutDescriptor(MTLBufferLayoutDescriptor* handle) : ns::Object<MTLBufferLayoutDescriptor*>(handle) { }
+		BufferLayoutDescriptor(ns::Ownership const retain) : ns::Object<MTLBufferLayoutDescriptor*>(retain) {}
+        BufferLayoutDescriptor(MTLBufferLayoutDescriptor* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLBufferLayoutDescriptor*>(handle, retain) { }
 
         NSUInteger     GetStride() const;
         StepFunction GetStepFunction() const;
@@ -129,11 +155,12 @@ namespace mtlpp
     }
     MTLPP_AVAILABLE(10_12, 10_0);
 
-    class AttributeDescriptor : public ns::Object<MTLAttributeDescriptor*>
+    class MTLPP_EXPORT AttributeDescriptor : public ns::Object<MTLAttributeDescriptor*>
     {
     public:
         AttributeDescriptor();
-        AttributeDescriptor(MTLAttributeDescriptor* handle) : ns::Object<MTLAttributeDescriptor*>(handle) { }
+		AttributeDescriptor(ns::Ownership const retain) : ns::Object<MTLAttributeDescriptor*>(retain) {}
+        AttributeDescriptor(MTLAttributeDescriptor* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLAttributeDescriptor*>(handle, retain) { }
 
         AttributeFormat GetFormat() const;
         NSUInteger        GetOffset() const;
@@ -145,15 +172,16 @@ namespace mtlpp
     }
     MTLPP_AVAILABLE(10_12, 10_0);
 
-    class StageInputOutputDescriptor : public ns::Object<MTLStageInputOutputDescriptor*>
+    class MTLPP_EXPORT StageInputOutputDescriptor : public ns::Object<MTLStageInputOutputDescriptor*>
     {
     public:
         StageInputOutputDescriptor();
-        StageInputOutputDescriptor(MTLStageInputOutputDescriptor* handle) : ns::Object<MTLStageInputOutputDescriptor*>(handle) { }
+		StageInputOutputDescriptor(ns::Ownership const retain)  : ns::Object<MTLStageInputOutputDescriptor*>(retain) {}
+        StageInputOutputDescriptor(MTLStageInputOutputDescriptor* handle, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<MTLStageInputOutputDescriptor*>(handle, retain) { }
 
 
-        ns::Array<BufferLayoutDescriptor> GetLayouts() const;
-        ns::Array<AttributeDescriptor>    GetAttributes() const;
+        ns::AutoReleased<ns::Array<BufferLayoutDescriptor>> GetLayouts() const;
+        ns::AutoReleased<ns::Array<AttributeDescriptor>>    GetAttributes() const;
         IndexType                         GetIndexType() const;
         NSUInteger                          GetIndexBufferIndex() const;
 

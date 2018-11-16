@@ -15,25 +15,29 @@ USoundNodeAttenuation::USoundNodeAttenuation(const FObjectInitializer& ObjectIni
 {
 }
 
-float USoundNodeAttenuation::MaxAudibleDistance( float CurrentMaxDistance ) 
+float USoundNodeAttenuation::GetMaxDistance() const 
 { 
-	float RadiusMax = WORLD_MAX;
-	
-	if (bOverrideAttenuation)
+	float MaxDistance = WORLD_MAX;
+	const FSoundAttenuationSettings* Settings = GetAttenuationSettingsToApply();
+	if (Settings)
 	{
-		RadiusMax = AttenuationOverrides.GetMaxDimension();
-	}
-	else if (AttenuationSettings)
-	{
-		RadiusMax = AttenuationSettings->Attenuation.GetMaxDimension();
+		MaxDistance = Settings->GetMaxDimension();
 	}
 
-	return FMath::Max<float>( CurrentMaxDistance, RadiusMax );
+	for (USoundNode* ChildNode : ChildNodes)
+	{
+		if (ChildNode)
+		{
+			ChildNode->ConditionalPostLoad();
+			MaxDistance = FMath::Max(ChildNode->GetMaxDistance(), MaxDistance);
+		}
+	}
+	return MaxDistance;
 }
 
-FSoundAttenuationSettings* USoundNodeAttenuation::GetAttenuationSettingsToApply()
+const FSoundAttenuationSettings* USoundNodeAttenuation::GetAttenuationSettingsToApply() const
 {
-	FSoundAttenuationSettings* Settings = nullptr;
+	const FSoundAttenuationSettings* Settings = nullptr;
 
 	if (bOverrideAttenuation)
 	{
@@ -49,7 +53,7 @@ FSoundAttenuationSettings* USoundNodeAttenuation::GetAttenuationSettingsToApply(
 
 void USoundNodeAttenuation::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances )
 {
-	FSoundAttenuationSettings* Settings = (ActiveSound.bAllowSpatialization ? GetAttenuationSettingsToApply() : NULL);
+	const FSoundAttenuationSettings* Settings = (ActiveSound.bAllowSpatialization ? GetAttenuationSettingsToApply() : NULL);
 
 	FSoundParseParameters UpdatedParseParams = ParseParams;
 	if (Settings)

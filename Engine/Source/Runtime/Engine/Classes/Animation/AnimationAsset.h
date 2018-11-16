@@ -16,6 +16,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "AnimInterpFilter.h"
 #include "AnimEnums.h"
+#include "Interfaces/Interface_PreviewMeshProvider.h"
 #include "AnimationAsset.generated.h"
 
 class UAssetMappingTable;
@@ -50,6 +51,12 @@ struct FMarkerTickRecord
 	bool IsValid() const { return PreviousMarker.MarkerIndex != MarkerIndexSpecialValues::Unitialized && NextMarker.MarkerIndex != MarkerIndexSpecialValues::Unitialized; }
 
 	void Reset() { PreviousMarker.Reset(); NextMarker.Reset(); }
+
+	/** Debug output function*/
+	FString ToString() const
+	{
+		return FString::Printf(TEXT("[PreviousMarker Index/Time %i/%.2f, NextMarker Index/Time %i/%.2f]"), PreviousMarker.MarkerIndex, PreviousMarker.TimeToMarker, NextMarker.MarkerIndex, NextMarker.TimeToMarker);
+	}
 };
 
 /** Transform definition */
@@ -85,9 +92,11 @@ struct FBlendSampleData
 
 	FBlendSampleData()
 		:	SampleDataIndex(0)
+		,	Animation(nullptr)
 		,	TotalWeight(0.f)
 		,	Time(0.f)
 		,	PreviousTime(0.f)
+		,	SamplePlayRate(0.0f)
 	{}
 	FBlendSampleData(int32 Index)
 		:	SampleDataIndex(Index)
@@ -95,6 +104,7 @@ struct FBlendSampleData
 		,	TotalWeight(0.f)
 		,	Time(0.f)
 		,	PreviousTime(0.f)
+		,	SamplePlayRate(0.0f)
 	{}
 	bool operator==( const FBlendSampleData& Other ) const 
 	{
@@ -130,6 +140,37 @@ struct FBlendFilter
 	}
 };
 
+/*
+ * Pose Curve container for extraction
+ * This is used by pose anim node
+ * Saves UID/PoseIndex/Value of the curve
+ */
+struct FPoseCurve
+{
+
+	// alignment is weird, but 4 here
+	// UID of the curve. Used to get curve value
+	// and also can be used to verify 
+	SmartName::UID_Type	UID;
+	// PoseIndex of pose asset it's dealing with
+	// used to extract pose value fast
+	int32				PoseIndex;
+	// Curve Value
+	float				Value;
+
+	FPoseCurve()
+		: UID(SmartName::MaxUID)
+		, PoseIndex(INDEX_NONE)
+		, Value(0.f)
+	{}
+
+	FPoseCurve(int32 InPoseIndex, SmartName::UID_Type	InUID, float  InValue )
+		: UID(InUID)
+		, PoseIndex(InPoseIndex)
+		, Value(InValue)
+	{}
+};
+
 /** Animation Extraction Context */
 struct FAnimExtractContext
 {
@@ -142,9 +183,8 @@ struct FAnimExtractContext
 	/** 
 	 * Pose Curve Values to extract pose from pose assets. 
 	 * This is used by pose asset extraction 
-	 * This always has to match with pose # in the asset it's extracting from
 	 */
-	TArray<float> PoseCurves;
+	TArray<FPoseCurve> PoseCurves;
 
 	FAnimExtractContext()
 		: bExtractRootMotion(false)
@@ -164,13 +204,6 @@ struct FAnimExtractContext
 	{
 	}
 
-	FAnimExtractContext(TArray<float>& InPoseCurves)
-		: bExtractRootMotion(false)
-		, CurrentTime(0.f)
-		, PoseCurves(InPoseCurves)
-	{
-		// @todo: no support on root motion
-	}
 };
 
 //Represent a current play position in an animation
@@ -199,6 +232,7 @@ struct FMarkerSyncAnimPosition
 	bool IsValid() const { return (PreviousMarkerName != NAME_None && NextMarkerName != NAME_None); }
 
 	FMarkerSyncAnimPosition()
+		: PositionBetweenMarkers(0.0f)
 	{}
 
 	FMarkerSyncAnimPosition(const FName& InPrevMarkerName, const FName& InNextMarkerName, const float& InAlpha)
@@ -268,7 +302,8 @@ struct FAnimTickRecord
 
 public:
 	FAnimTickRecord()
-		: TimeAccumulator(nullptr)
+		: SourceAsset(nullptr)
+		, TimeAccumulator(nullptr)
 		, PlayRateMultiplier(1.f)
 		, EffectiveBlendWeight(0.f)
 		, RootMotionWeightModifier(1.f)
@@ -286,8 +321,16 @@ public:
 class FMarkerTickContext
 {
 public:
-	FMarkerTickContext(const TArray<FName>& ValidMarkerNames) : ValidMarkers(ValidMarkerNames) {}
-	FMarkerTickContext() {}
+
+	static const TArray<FName> DefaultMarkerNames;
+
+	FMarkerTickContext(const TArray<FName>& ValidMarkerNames) 
+		: ValidMarkers(&ValidMarkerNames) 
+	{}
+
+	FMarkerTickContext() 
+		: ValidMarkers(&DefaultMarkerNames) 
+	{}
 
 	void SetMarkerSyncStartPosition(const FMarkerSyncAnimPosition& SyncPosition)
 	{
@@ -311,7 +354,7 @@ public:
 
 	const TArray<FName>& GetValidMarkerNames() const
 	{
-		return ValidMarkers;
+		return *ValidMarkers;
 	}
 
 	bool IsMarkerSyncStartValid() const
@@ -323,8 +366,8 @@ public:
 	{
 		// does it have proper end position
 		return MarkerSyncEndPostion.IsValid();
-		
 	}
+
 	TArray<FPassedMarker> MarkersPassedThisTick;
 
 	/** Debug output function */
@@ -332,7 +375,7 @@ public:
 	{
 		FString MarkerString;
 
-		for (const auto& ValidMarker : ValidMarkers)
+		for (const auto& ValidMarker : *ValidMarkers)
 		{
 			MarkerString.Append(FString::Printf(TEXT("%s,"), *ValidMarker.ToString()));
 		}
@@ -348,9 +391,8 @@ private:
 	// Structure representing our sync position based on markers after tick
 	FMarkerSyncAnimPosition MarkerSyncEndPostion;
 
-
 	// Valid marker names for this sync group
-	TArray<FName> ValidMarkers;
+	const TArray<FName>* ValidMarkers;
 };
 
 
@@ -620,7 +662,7 @@ public:
 		, bOnlyOneAnimationInGroup(bInOnlyOneAnimationInGroup)
 	{
 	}
-	
+
 	// Are we the leader of our sync group (or ungrouped)?
 	bool IsLeader() const
 	{
@@ -743,7 +785,7 @@ struct FAnimationGroupReference
 };
 
 UCLASS(abstract, MinimalAPI)
-class UAnimationAsset : public UObject, public IInterface_AssetUserData
+class UAnimationAsset : public UObject, public IInterface_AssetUserData, public IInterface_PreviewMeshProvider
 {
 	GENERATED_UCLASS_BODY()
 
@@ -838,6 +880,11 @@ public:
 	ENGINE_API void RemoveMetaData(class UAnimMetaData* MetaDataInstance);
 	ENGINE_API void RemoveMetaData(const TArray<class UAnimMetaData*> MetaDataInstances);
 
+	/** IInterface_PreviewMeshProvider interface */
+	virtual void SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty = true) override;
+	virtual USkeletalMesh* GetPreviewMesh(bool bFindIfNotSet = false) override;
+	virtual USkeletalMesh* GetPreviewMesh() const override;
+
 #if WITH_EDITOR
 	/** Replace Skeleton 
 	 * 
@@ -861,18 +908,6 @@ public:
 	 * @param ReplacementMap	Mapping of original asset to new asset
 	 **/
 	ENGINE_API virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap);
-
-	/** Set the preview mesh for this animation asset */
-	ENGINE_API void SetPreviewMesh(USkeletalMesh* PreviewMesh);
-
-	/** 
-	 * Get the preview mesh for this animation asset 
-	 * Note: loads the mesh if it is not already loaded, or nulls it out if the skeleton has changed since.
-	 */
-	ENGINE_API USkeletalMesh* GetPreviewMesh();
-
-	/** Get the preview mesh for this animation asset */
-	ENGINE_API USkeletalMesh* GetPreviewMesh() const;
 
 	ENGINE_API virtual int32 GetMarkerUpdateCounter() const { return 0; }
 

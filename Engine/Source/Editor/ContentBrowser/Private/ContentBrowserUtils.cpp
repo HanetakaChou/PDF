@@ -31,9 +31,9 @@
 #include "Engine/World.h"
 #include "Settings/ContentBrowserSettings.h"
 #include "Settings/EditorExperimentalSettings.h"
-#include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlModule.h"
+#include "SourceControlHelpers.h"
 #include "FileHelpers.h"
 #include "ARFilter.h"
 #include "AssetRegistryModule.h"
@@ -41,6 +41,7 @@
 #include "AssetToolsModule.h"
 #include "NativeClassHierarchy.h"
 #include "EmptyFolderVisibilityManager.h"
+#include "Settings/EditorExperimentalSettings.h"
 
 #include "Toolkits/AssetEditorManager.h"
 #include "PackagesDialog.h"
@@ -58,7 +59,7 @@
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
-#define MAX_CLASS_NAME_LENGTH 32 // Enforce a reasonable class name length so the path is not too long for PLATFORM_MAX_FILEPATH_LENGTH
+#define MAX_CLASS_NAME_LENGTH 32 // Enforce a reasonable class name length so the path is not too long for FPlatformMisc::GetMaxPathLength()
 
 
 namespace ContentBrowserUtils
@@ -581,8 +582,10 @@ bool ContentBrowserUtils::DeleteFolders(const TArray<FString>& PathsToDelete)
 			// Make sure we loaded all of them
 			if ( LoadedAssets.Num() == NumAssetsInPaths )
 			{
-				const int32 NumAssetsDeleted = ContentBrowserUtils::DeleteAssets(LoadedAssets);
-				if ( NumAssetsDeleted == NumAssetsInPaths )
+				TArray<UObject*> ToDelete = LoadedAssets;
+				ObjectTools::AddExtraObjectsToDelete(ToDelete);
+				const int32 NumAssetsDeleted = ContentBrowserUtils::DeleteAssets(ToDelete);
+				if ( NumAssetsDeleted == ToDelete.Num() )
 				{
 					// Successfully deleted all assets in the specified path. Allow the folder to be removed.
 					bAllowFolderDelete = true;
@@ -679,25 +682,6 @@ void ContentBrowserUtils::GetAssetsInPaths(const TArray<FString>& InPaths, TArra
 
 bool ContentBrowserUtils::SavePackages(const TArray<UPackage*>& Packages)
 {
-	TArray< UPackage* > PackagesWithExternalRefs;
-	FString PackageNames;
-	if( PackageTools::CheckForReferencesToExternalPackages( &Packages, &PackagesWithExternalRefs ) )
-	{
-		for(int32 PkgIdx = 0; PkgIdx < PackagesWithExternalRefs.Num(); ++PkgIdx)
-		{
-			PackageNames += FString::Printf(TEXT("%s\n"), *PackagesWithExternalRefs[ PkgIdx ]->GetName());
-		}
-		bool bProceed = EAppReturnType::Yes == FMessageDialog::Open(
-			EAppMsgType::YesNo,
-			FText::Format(
-				NSLOCTEXT("UnrealEd", "Warning_ExternalPackageRef", "The following assets have references to external assets: \n{0}\nExternal assets won't be found when in a game and all references will be broken.  Proceed?"),
-				FText::FromString(PackageNames) ) );
-		if(!bProceed)
-		{
-			return false;
-		}
-	}
-
 	const bool bCheckDirty = false;
 	const bool bPromptToSave = false;
 	const FEditorFileUtils::EPromptReturnCode Return = FEditorFileUtils::PromptForCheckoutAndSave(Packages, bCheckDirty, bPromptToSave);
@@ -742,7 +726,7 @@ TArray<UPackage*> ContentBrowserUtils::LoadPackages(const TArray<FString>& Packa
 		else
 		{
 			// The package is unloaded. Try to load the package from disk.
-			Package = PackageTools::LoadPackage(PackageName);
+			Package = UPackageTools::LoadPackage(PackageName);
 		}
 
 		// If the package was loaded, add it to the loaded packages list.
@@ -796,7 +780,8 @@ bool ContentBrowserUtils::CopyFolders(const TArray<FString>& InSourcePathNames, 
 	for ( auto PathIt = SourcePathToLoadedAssets.CreateConstIterator(); PathIt; ++PathIt )
 	{
 		// Put dragged folders in a sub-folder under the destination path
-		FString SubFolderName = FPackageName::GetLongPackageAssetName(PathIt.Key());
+		const FString SourcePath = PathIt.Key();
+		FString SubFolderName = FPackageName::GetLongPackageAssetName(SourcePath);
 		FString Destination = DestPath + TEXT("/") + SubFolderName;
 
 		// Add the new path to notify sources views
@@ -810,7 +795,18 @@ bool ContentBrowserUtils::CopyFolders(const TArray<FString>& InSourcePathNames, 
 		if ( PathIt.Value().Num() > 0 )
 		{
 			// Copy assets and supply a source path to indicate it is relative
-			ObjectTools::DuplicateObjects( PathIt.Value(), PathIt.Key(), Destination, /*bOpenDialog=*/false );
+			ObjectTools::DuplicateObjects( PathIt.Value(), SourcePath, Destination, /*bOpenDialog=*/false );
+		}
+
+		// Attempt to copy the folder color to the new path location
+		if (FPaths::FileExists(GEditorPerProjectIni))
+		{
+			FString ColorStr;
+			if (GConfig->GetString(TEXT("PathColor"), *SourcePath, ColorStr, GEditorPerProjectIni))
+			{
+				// Add the new path
+				GConfig->SetString(TEXT("PathColor"), *Destination, *ColorStr, GEditorPerProjectIni);
+			}
 		}
 	}
 
@@ -872,6 +868,20 @@ bool ContentBrowserUtils::MoveFolders(const TArray<FString>& InSourcePathNames, 
 		if (DeleteEmptyFolderFromDisk(SourcePath))
 		{
 			AssetRegistryModule.Get().RemovePath(SourcePath);
+		}
+
+		// Attempt to move the folder color to the new path location
+		if (FPaths::FileExists(GEditorPerProjectIni))
+		{
+			FString ColorStr;
+			if (GConfig->GetString(TEXT("PathColor"), *SourcePath, ColorStr, GEditorPerProjectIni))
+			{
+				// Remove the old path
+				GConfig->RemoveKey(TEXT("PathColor"), *SourcePath, GEditorPerProjectIni);
+
+				// Add the new path
+				GConfig->SetString(TEXT("PathColor"), *Destination, *ColorStr, GEditorPerProjectIni);
+			}
 		}
 	}
 
@@ -1262,10 +1272,10 @@ bool ContentBrowserUtils::IsValidFolderName(const FString& FolderName, FText& Re
 		return false;
 	}
 
-	if ( FolderName.Len() > MAX_UNREAL_FILENAME_LENGTH )
+	if ( FolderName.Len() > FPlatformMisc::GetMaxPathLength() )
 	{
 		Reason = FText::Format( LOCTEXT("InvalidFolderName_TooLongForCooking", "Filename '{0}' is too long; this may interfere with cooking for consoles. Unreal filenames should be no longer than {1} characters." ),
-			FText::FromString(FolderName), FText::AsNumber(MAX_UNREAL_FILENAME_LENGTH) );
+			FText::FromString(FolderName), FText::AsNumber(FPlatformMisc::GetMaxPathLength()) );
 		return false;
 	}
 
@@ -1661,7 +1671,7 @@ FText ContentBrowserUtils::GetExploreFolderText()
 }
 
 static const auto CVarMaxFullPathLength = 
-	IConsoleManager::Get().RegisterConsoleVariable( TEXT("MaxAssetFullPath"), PLATFORM_MAX_FILEPATH_LENGTH, TEXT("Maximum full path name of an asset.") )->AsVariableInt();
+	IConsoleManager::Get().RegisterConsoleVariable( TEXT("MaxAssetFullPath"), FPlatformMisc::GetMaxPathLength(), TEXT("Maximum full path name of an asset.") )->AsVariableInt();
 
 bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, FText& OutErrorMessage, bool bAllowExistingAsset)
 {
@@ -1700,12 +1710,12 @@ bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, 
 	// Make sure we are not creating an path that is too long for the OS
 	const FString RelativePathFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());	// full relative path with name + extension
 	const FString FullPath = FPaths::ConvertRelativePathToFull(RelativePathFilename);	// path to file on disk
-	if ( ObjectPath.Len() > (PLATFORM_MAX_FILEPATH_LENGTH - MAX_CLASS_NAME_LENGTH) || FullPath.Len() > CVarMaxFullPathLength->GetValueOnGameThread() )
+	if ( ObjectPath.Len() > (FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH) || FullPath.Len() > CVarMaxFullPathLength->GetValueOnGameThread() )
 	{
 		// The full path for the asset is too long
 		OutErrorMessage = FText::Format( LOCTEXT("AssetPathTooLong", 
 			"The full path for the asset is too deep, the maximum is '{0}'. \nPlease choose a shorter name for the asset or create it in a shallower folder structure."), 
-			FText::AsNumber(PLATFORM_MAX_FILEPATH_LENGTH) );
+			FText::AsNumber(FPlatformMisc::GetMaxPathLength()) );
 		// Return false to indicate that the user should enter a new name
 		return false;
 	}
@@ -1744,12 +1754,12 @@ bool ContentBrowserUtils::IsValidFolderPathForCreate(const FString& InFolderPath
 	}
 
 	// Make sure we are not creating a folder path that is too long
-	if (NewFolderPath.Len() > PLATFORM_MAX_FILEPATH_LENGTH - MAX_CLASS_NAME_LENGTH)
+	if (NewFolderPath.Len() > FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH)
 	{
 		// The full path for the folder is too long
 		OutErrorMessage = FText::Format(LOCTEXT("RenameFolderPathTooLong",
 			"The full path for the folder is too deep, the maximum is '{0}'. Please choose a shorter name for the folder or create it in a shallower folder structure."),
-			FText::AsNumber(PLATFORM_MAX_FILEPATH_LENGTH));
+			FText::AsNumber(FPlatformMisc::GetMaxPathLength()));
 		// Return false to indicate that the user should enter a new name for the folder
 		return false;
 	}
@@ -1766,6 +1776,9 @@ bool ContentBrowserUtils::IsValidFolderPathForCreate(const FString& InFolderPath
 
 int32 ContentBrowserUtils::GetPackageLengthForCooking(const FString& PackageName, bool IsInternalBuild)
 {
+	// We assume the game name is 20 characters (the maximum allowed) to make sure that content can be ported between projects
+	static const int32 MaxGameNameLen = 20;
+
 	// Pad out the game name to the maximum allowed
 	const FString GameName = FApp::GetProjectName();
 	FString GameNamePadded = GameName;
@@ -1830,6 +1843,7 @@ bool ContentBrowserUtils::IsValidPackageForCooking(const FString& PackageName, F
 {
 	int32 AbsoluteCookPathToAssetLength = GetPackageLengthForCooking(PackageName, FEngineBuildSettings::IsInternalBuild());
 
+	int32 MaxCookPathLen = GetMaxCookPathLen();
 	if (AbsoluteCookPathToAssetLength > MaxCookPathLen)
 	{
 		// See TTP# 332328:
@@ -1969,7 +1983,10 @@ void ShowSyncDependenciesDialog(const TArray<FString>& InDependencies, TArray<FS
 
 			for (UPackage* SelectedPackage : SelectedPackages)
 			{
-				OutExtraPackagesToSync.Emplace(SelectedPackage->GetName());
+				if (SelectedPackage)
+				{
+					OutExtraPackagesToSync.Emplace(SelectedPackage->GetName());
+				}
 			}
 		}
 	}
@@ -2032,10 +2049,10 @@ void ContentBrowserUtils::SyncPackagesFromSourceControl(const TArray<FString>& P
 		});
 
 		// Hot-reload the new packages...
-		PackageTools::ReloadPackages(LoadedPackages);
+		UPackageTools::ReloadPackages(LoadedPackages);
 
 		// Unload any deleted packages...
-		PackageTools::UnloadPackages(PackagesToUnload);
+		UPackageTools::UnloadPackages(PackagesToUnload);
 
 		// Re-cache the SCC state...
 		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
@@ -2145,11 +2162,17 @@ void ContentBrowserUtils::SyncPathsFromSourceControl(const TArray<FString>& Cont
 			return false; // keep package
 		});
 
+		UE_LOG(LogContentBrowser, Log, TEXT("Syncing %d path(s):"), ContentPaths.Num());
+		for (const UPackage* Package : LoadedPackages)
+		{
+			UE_LOG(LogContentBrowser, Log, TEXT("\t - %s"), *Package->GetName());
+		}
+
 		// Hot-reload the new packages...
-		PackageTools::ReloadPackages(LoadedPackages);
+		UPackageTools::ReloadPackages(LoadedPackages);
 
 		// Unload any deleted packages...
-		PackageTools::UnloadPackages(PackagesToUnload);
+		UPackageTools::UnloadPackages(PackagesToUnload);
 
 		// Re-cache the SCC state...
 		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PathsOnDisk, EConcurrency::Asynchronous);
@@ -2263,6 +2286,20 @@ void ContentBrowserUtils::RemoveFavoriteFolder(const FString& FolderPath, bool b
 const TArray<FString>& ContentBrowserUtils::GetFavoriteFolders()
 {
 	return FContentBrowserSingleton::Get().FavoriteFolderPaths;
+}
+
+int32 ContentBrowserUtils::GetMaxCookPathLen()
+{
+	if (GetDefault<UEditorExperimentalSettings>()->bEnableLongPathsSupport)
+	{
+		// Allow the longest path allowed by the system
+		return FPlatformMisc::GetMaxPathLength();
+	}
+	else
+	{
+		// 260 characters is the limit on Windows, which is the shortest max path of any platforms that support cooking
+		return 260;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

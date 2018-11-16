@@ -7,6 +7,7 @@
 
 class IDetailLayoutBuilder;
 class IPropertyHandle;
+class ULightComponent;
 
 class FLightComponentDetails : public IDetailCustomization
 {
@@ -16,6 +17,8 @@ public:
 
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails( IDetailLayoutBuilder& DetailBuilder ) override;
+
+	static void SetComponentIntensity(ULightComponent* Component, float InIntensity);
 
 private:
 
@@ -27,6 +30,8 @@ private:
 	bool IsCastVXGIIndirectLightingEnabled() const;
 	// NVCHANGE_END: Add VXGI
 
+	void ResetIntensityToDefault(TSharedPtr<IPropertyHandle> PropertyHandle, ULightComponent* Component);
+	bool IsIntensityResetToDefaultVisible(TSharedPtr<IPropertyHandle> PropertyHandle, ULightComponent* Component) const;
 
 private:
 	TSharedPtr<IPropertyHandle> IESBrightnessTextureProperty;

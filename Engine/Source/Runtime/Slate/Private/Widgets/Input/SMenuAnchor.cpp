@@ -21,7 +21,7 @@ static FVector2D GetMenuOffsetForPlacement(const FGeometry& AllottedGeometry, EM
 			return FVector2D(-((PopupSizeLocalSpace.X / 2) - (AllottedGeometry.GetLocalSize().X / 2)), AllottedGeometry.GetLocalSize().Y);
 			break;
 		case MenuPlacement_BelowRightAnchor:
-			return FVector2D( -( PopupSizeLocalSpace.X ) - ( AllottedGeometry.GetLocalSize().X ), AllottedGeometry.GetLocalSize().Y );
+			return FVector2D( -( PopupSizeLocalSpace.X ) + ( AllottedGeometry.GetLocalSize().X ), AllottedGeometry.GetLocalSize().Y );
 			break;
 		case MenuPlacement_ComboBox:
 			return FVector2D(0.0f, AllottedGeometry.GetLocalSize().Y);
@@ -78,8 +78,8 @@ SMenuAnchor::FPopupPlacement::FPopupPlacement(const FGeometry& PlacementGeometry
  */
 void SMenuAnchor::Construct( const FArguments& InArgs )
 {
-	Children.Add( new FSimpleSlot() );
-	Children.Add( new FSimpleSlot() );
+	Children.Add( new FSimpleSlot(this) );
+	Children.Add( new FSimpleSlot(this) );
 	
 
 	Children[0]
@@ -214,8 +214,7 @@ int32 SMenuAnchor::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 		const bool bHasArrangedAnchorContent = FirstChild.Widget == Children[0].GetWidget();
 		if ( bHasArrangedAnchorContent )
 		{
-			const FSlateRect ChildClippingRect = AllottedGeometry.GetLayoutBoundingRect().IntersectionWith(MyCullingRect);
-			LayerId = FirstChild.Widget->Paint(Args.WithNewParent(this), FirstChild.Geometry, ChildClippingRect, OutDrawElements, LayerId + 1, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
+			LayerId = FirstChild.Widget->Paint(Args.WithNewParent(this), FirstChild.Geometry, MyCullingRect, OutDrawElements, LayerId + 1, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
 		}
 
 		const bool bIsOpen = IsOpen();
@@ -613,6 +612,7 @@ SMenuAnchor::SMenuAnchor()
 	, Method()
 	, MethodInUse()
 	, LocalPopupPosition( FVector2D::ZeroVector )
+	, Children(this)
 {
 }
 
@@ -621,6 +621,16 @@ SMenuAnchor::~SMenuAnchor()
 	if (PopupMenuPtr.IsValid())
 	{
 		PopupMenuPtr.Pin()->Dismiss();
+
+		// If the menu hasn't been dismissed, then dismiss it now
+		if (!bDismissedThisTick)
+		{
+			bDismissedThisTick = true;
+			if (OnMenuOpenChanged.IsBound())
+			{
+				OnMenuOpenChanged.Execute(false);
+			}
+		}
 	}
 		
 	// We no longer have a popup open, so reset all the tracking state associated.

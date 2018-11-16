@@ -152,8 +152,7 @@ public:
 			return buzz::XMPP_RETURN_BADSTATE;
 		}
 
-		buzz::Jid ToJidFull(ToJid.node(), GetClient()->jid().domain(), buzz::STR_EMPTY);
-		buzz::XmlElement* Stanza = ChatToStanza(ToJidFull, ChatMessage);
+		buzz::XmlElement* Stanza = ChatToStanza(ToJid, ChatMessage);
 		QueueStanza(Stanza);
 		delete Stanza;
 
@@ -242,15 +241,22 @@ static void ConvertFromMessage(FXmppChatMessageJingle& OutMessageJingle, const F
 
 static void DebugPrintChat(const FXmppChatMessage& ChatMessage)
 {
-	UE_LOG(LogXmpp, Log, TEXT("   FromJid = %s"), *ChatMessage.FromJid.GetFullPath());
-	UE_LOG(LogXmpp, Log, TEXT("   ToJid= %s"), *ChatMessage.ToJid.GetFullPath());
+	UE_LOG(LogXmpp, Log, TEXT("   FromJid = %s"), *ChatMessage.FromJid.ToDebugString());
+	UE_LOG(LogXmpp, Log, TEXT("   ToJid= %s"), *ChatMessage.ToJid.ToDebugString());
 	UE_LOG(LogXmpp, Log, TEXT("   Body= %s"), *ChatMessage.Body);
 }
 
-bool FXmppChatJingle::SendChat(const FString& RecipientId, const FXmppChatMessage& ChatMessage)
+bool FXmppChatJingle::SendChat(const FXmppUserJid& RecipientId, const FString& Message)
 {
+	if (!RecipientId.IsValid())
+	{
+		UE_LOG(LogXmpp, Warning, TEXT("Unable to send chat message. Invalid jid: %s"), *RecipientId.ToDebugString());
+		return false;
+	}
+
 	FXmppChatMessageJingle* NewChat = new FXmppChatMessageJingle();
-	ConvertFromMessage(*NewChat, ChatMessage);
+	FXmppJingle::ConvertFromJid(NewChat->ToJid, RecipientId);
+	NewChat->Body = TCHAR_TO_UTF8(*Message);
 	bool bChatSent = SendChatQueue.Enqueue(NewChat);
 	bChatSent ? NumSentChat++ : 0;
 	return bChatSent;

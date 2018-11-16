@@ -7,8 +7,12 @@
 #include "ISequencer.h"
 #include "Modules/ModuleInterface.h"
 #include "AnimatedPropertyKey.h"
+#include "ISequencerChannelInterface.h"
+#include "MovieSceneSequenceEditor.h"
 
+class IKeyArea;
 class FExtender;
+class FStructOnScope;
 class FExtensibilityManager;
 class FMenuBuilder;
 class ISequencerTrackEditor;
@@ -16,11 +20,23 @@ class ISequencerEditorObjectBinding;
 class IToolkitHost;
 class UMovieSceneSequence;
 
+/** Forward declaration for the default templated channel interface. Include SequencerChannelInterface.h for full definition. */
+template<typename> struct TSequencerChannelInterface;
+
 namespace SequencerMenuExtensionPoints
 {
 	static const FName AddTrackMenu_PropertiesSection("AddTrackMenu_PropertiesSection");
 }
 
+/** Enum representing supported scrubber styles */
+enum class ESequencerScrubberStyle : uint8
+{
+	/** Scrubber is represented as a single thin line for the current time, with a constant-sized thumb. */
+	Vanilla,
+
+	/** Scrubber thumb occupies a full 'display rate' frame, with a single thin line for the current time. Tailored to frame-accuracy scenarios. */
+	FrameBlock,
+};
 
 /** A delegate which will create an auto-key handler. */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerTrackEditor>, FOnCreateTrackEditor, TSharedRef<ISequencer>);
@@ -31,6 +47,9 @@ DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerEditorObjectBinding>, FOnC
 /** A delegate that is executed when adding menu content. */
 DECLARE_DELEGATE_TwoParams(FOnGetAddMenuContent, FMenuBuilder& /*MenuBuilder*/, TSharedRef<ISequencer>);
 
+/** A delegate that is executed when menu object is clicked. Unlike FExtender delegates we pass in the FGuid which exists even for deleted objects. */
+DECLARE_DELEGATE_TwoParams(FOnBuildCustomContextMenuForGuid, FMenuBuilder&, FGuid);
+
 /** A delegate that gets executed then a sequencer is created */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnSequencerCreated, TSharedRef<ISequencer>);
 
@@ -39,10 +58,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnSequencerCreated, TSharedRef<ISequencer>)
  */
 struct FSequencerViewParams
 {
-	/** Initial Scrub Position. */
-	float InitialScrubPosition;
-
 	FOnGetAddMenuContent OnGetAddMenuContent;
+
+	FOnBuildCustomContextMenuForGuid OnBuildCustomContextMenuForGuid;
 
 	/** Called when this sequencer has received user focus */
 	FSimpleDelegate OnReceivedFocus;
@@ -59,10 +77,13 @@ struct FSequencerViewParams
 	/** Whether the sequencer is read-only */
 	bool bReadOnly;
 
+	/** Style of scrubber to use */
+	ESequencerScrubberStyle ScrubberStyle;
+
 	FSequencerViewParams(FString InName = FString())
-		: InitialScrubPosition(0.0f)
-		, UniqueName(MoveTemp(InName))
+		: UniqueName(MoveTemp(InName))
 		, bReadOnly(false)
+		, ScrubberStyle(ESequencerScrubberStyle::Vanilla)
 	{ }
 };
 
@@ -101,7 +122,6 @@ struct FSequencerInitParams
 	{}
 };
 
-
 /**
  * Interface for the Sequencer module.
  */
@@ -109,6 +129,8 @@ class ISequencerModule
 	: public IModuleInterface
 {
 public:
+
+	virtual ~ISequencerModule();
 
 	/**
 	 * Create a new instance of a standalone sequencer that can be added to other UIs.
@@ -199,6 +221,72 @@ public:
 	 */
 	virtual TSharedPtr<FExtensibilityManager> GetToolBarExtensibilityManager() const = 0;
 
+	/**
+	 * Register a sequencer channel type using a default channel interface.
+	 */
+	template<typename ChannelType>
+	void RegisterChannelInterface();
+
+	/**
+	 * Register a sequencer channel type using the specified interface.
+	 */
+	template<typename ChannelType>
+	void RegisterChannelInterface(TUniquePtr<ISequencerChannelInterface>&& InInterface);
+
+	/**
+	 * Find a sequencer channel for the specified channel type name
+	 */
+	ISequencerChannelInterface* FindChannelEditorInterface(FName ChannelTypeName) const;
+
+public:
+
+	/**
+	 * Register a sequence editor for the specified type of sequence. Sequence editors provide editor-only functionality for particular sequence types.
+	 */
+	FDelegateHandle RegisterSequenceEditor(UClass* SequenceClass, TUniquePtr<FMovieSceneSequenceEditor>&& InSequenceEditor)
+	{
+		check(SequenceClass);
+
+		FDelegateHandle NewHandle(FDelegateHandle::GenerateNewHandle);
+
+		SequenceEditors.Add(FSequenceEditorEntry{ NewHandle, SequenceClass, MoveTemp(InSequenceEditor) });
+
+		return NewHandle;
+	}
+
+	/**
+	 * Unregister a sequence editor for the specified type of sequence.
+	 */
+	void UnregisterSequenceEditor(FDelegateHandle Handle)
+	{
+		SequenceEditors.RemoveAll([Handle](const FSequenceEditorEntry& In){ return In.Handle == Handle; });
+	}
+
+	/**
+	 * Find a sequence editor for the specified sequence class
+	 */
+	FMovieSceneSequenceEditor* FindSequenceEditor(UClass* SequenceClass) const
+	{
+		check(SequenceClass);
+
+		UClass* MostRelevantClass = nullptr;
+		FMovieSceneSequenceEditor* SequenceEditor = nullptr;
+
+		for (const FSequenceEditorEntry& Entry : SequenceEditors)
+		{
+			if (SequenceClass->IsChildOf(Entry.ApplicableClass))
+			{
+				if (!MostRelevantClass || Entry.ApplicableClass->IsChildOf(MostRelevantClass))
+				{
+					MostRelevantClass = Entry.ApplicableClass;
+					SequenceEditor = Entry.Editor.Get();
+				}
+			}
+		}
+
+		return SequenceEditor;
+	}
+
 public:
 
 	/** 
@@ -227,4 +315,50 @@ public:
 	{
 		UnRegisterTrackEditor(InHandle);
 	}
+
+private:
+
+	/** Map of sequencer interfaces for movie scene channel types, keyed on channel UStruct name */
+	TMap<FName, TUniquePtr<ISequencerChannelInterface>> ChannelToEditorInterfaceMap;
+
+	struct FSequenceEditorEntry
+	{
+		FDelegateHandle Handle;
+		UClass* ApplicableClass;
+		TUniquePtr<FMovieSceneSequenceEditor> Editor;
+	};
+
+	/** Array of sequence editor entries */
+	TArray<FSequenceEditorEntry> SequenceEditors;
 };
+
+
+/**
+ * Register a sequencer channel type using a default channel interface.
+ */
+template<typename ChannelType>
+void ISequencerModule::RegisterChannelInterface()
+{
+	RegisterChannelInterface<ChannelType>(TUniquePtr<ISequencerChannelInterface>(new TSequencerChannelInterface<ChannelType>()));
+}
+
+/**
+ * Register a sequencer channel type using the specified interface.
+ */
+template<typename ChannelType>
+void ISequencerModule::RegisterChannelInterface(TUniquePtr<ISequencerChannelInterface>&& InInterface)
+{
+	const FName ChannelTypeName = ChannelType::StaticStruct()->GetFName();
+	check(!ChannelToEditorInterfaceMap.Contains(ChannelTypeName));
+	ChannelToEditorInterfaceMap.Add(ChannelTypeName, MoveTemp(InInterface));
+}
+
+/**
+ * Find a sequencer channel for the specified channel type name
+ */
+inline ISequencerChannelInterface* ISequencerModule::FindChannelEditorInterface(FName ChannelTypeName) const
+{
+	const TUniquePtr<ISequencerChannelInterface>* Found = ChannelToEditorInterfaceMap.Find(ChannelTypeName);
+	ensureMsgf(Found, TEXT("No channel interface found for type ID. Did you call RegisterChannelInterface<> for that type?"));
+	return Found ? Found->Get() : nullptr;
+}

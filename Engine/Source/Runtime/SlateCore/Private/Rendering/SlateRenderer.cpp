@@ -16,6 +16,7 @@ FSlateFontServices::FSlateFontServices(TSharedRef<class FSlateFontCache> InGameT
 	, GameThreadFontMeasure(FSlateFontMeasure::Create(GameThreadFontCache))
 	, RenderThreadFontMeasure((GameThreadFontCache == RenderThreadFontCache) ? GameThreadFontMeasure : FSlateFontMeasure::Create(RenderThreadFontCache))
 {
+	UE_LOG(LogSlate, Log, TEXT("SlateFontServices - WITH_FREETYPE: %d, WITH_HARFBUZZ: %d"), WITH_FREETYPE, WITH_HARFBUZZ);
 }
 
 
@@ -51,32 +52,32 @@ TSharedRef<class FSlateFontMeasure> FSlateFontServices::GetFontMeasureService() 
 }
 
 
-void FSlateFontServices::FlushFontCache()
+void FSlateFontServices::FlushFontCache(const FString& FlushReason)
 {
 	const ESlateTextureAtlasThreadId AtlasThreadId = GetCurrentSlateTextureAtlasThreadId();
 	check(AtlasThreadId != ESlateTextureAtlasThreadId::Unknown);
 
 	if (AtlasThreadId == ESlateTextureAtlasThreadId::Game)
 	{
-		return FlushGameThreadFontCache();
+		return FlushGameThreadFontCache(FlushReason);
 	}
 	else
 	{
-		return FlushRenderThreadFontCache();
+		return FlushRenderThreadFontCache(FlushReason);
 	}
 }
 
 
-void FSlateFontServices::FlushGameThreadFontCache()
+void FSlateFontServices::FlushGameThreadFontCache(const FString& FlushReason)
 {
-	GameThreadFontCache->RequestFlushCache();
+	GameThreadFontCache->RequestFlushCache(FlushReason);
 	GameThreadFontMeasure->FlushCache();
 }
 
 
-void FSlateFontServices::FlushRenderThreadFontCache()
+void FSlateFontServices::FlushRenderThreadFontCache(const FString& FlushReason)
 {
-	RenderThreadFontCache->RequestFlushCache();
+	RenderThreadFontCache->RequestFlushCache(FlushReason);
 	RenderThreadFontMeasure->FlushCache();
 }
 

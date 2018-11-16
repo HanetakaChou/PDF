@@ -3,28 +3,39 @@
 #pragma once
 
 // moved the setup from VulkanRHIPrivate.h to the platform headers
-#include "WindowsHWrapper.h"
+#include "Windows/WindowsHWrapper.h"
+#include "RHI.h"
 
 #define VK_USE_PLATFORM_WIN32_KHR				1
 #define VK_USE_PLATFORM_WIN32_KHX				1
 
-//#define VULKAN_USE_NEW_QUERIES					1
-//#define VULKAN_USE_PER_PIPELINE_DESCRIPTOR_POOLS	1
-//#define VULKAN_USE_DESCRIPTOR_POOL_MANAGER			0
-
-
-#define	VULKAN_CUSTOM_MEMORY_MANAGER_ENABLED	(PLATFORM_64BITS)
+#define	VULKAN_SHOULD_ENABLE_DRAW_MARKERS		(UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT)
 #define VULKAN_HAS_PHYSICAL_DEVICE_PROPERTIES2	1
-#define VULKAN_ENABLE_DUMP_LAYER				0
-#define VULKAN_COMMANDWRAPPERS_ENABLE			1
-#define VULKAN_DYNAMICALLYLOADED				0
+#define VULKAN_USE_CREATE_WIN32_SURFACE			1
+#define VULKAN_DYNAMICALLYLOADED				1
 #define VULKAN_ENABLE_DESKTOP_HMD_SUPPORT		1
 #define VULKAN_SIGNAL_UNIMPLEMENTED()			checkf(false, TEXT("Unimplemented vulkan functionality: %s"), TEXT(__FUNCTION__))
+#define	VULKAN_SUPPORTS_DEDICATED_ALLOCATION	0
+#define VULKAN_SUPPORTS_AMD_BUFFER_MARKER			1
+#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT	1
 
-#include "AllowWindowsPlatformTypes.h"
-	#include <vulkan.h>
-#include "HideWindowsPlatformTypes.h"
+// 32-bit windows has warnings on custom mem mgr callbacks
+#define VULKAN_SHOULD_USE_LLM					(UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT) && !PLATFORM_32BITS
 
+#define ENUM_VK_ENTRYPOINTS_PLATFORM_BASE(EnumMacro)
+
+#define ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(EnumMacro)	\
+	EnumMacro(PFN_vkCreateWin32SurfaceKHR, vkCreateWin32SurfaceKHR) \
+	EnumMacro(PFN_vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceProperties2KHR) \
+	EnumMacro(PFN_vkGetImageMemoryRequirements2KHR , vkGetImageMemoryRequirements2KHR) \
+	EnumMacro(PFN_vkCmdWriteBufferMarkerAMD, vkCmdWriteBufferMarkerAMD) \
+	EnumMacro(PFN_vkCmdSetCheckpointNV, vkCmdSetCheckpointNV) \
+	EnumMacro(PFN_vkGetQueueCheckpointDataNV, vkGetQueueCheckpointDataNV) \
+	EnumMacro(PFN_vkGetBufferMemoryRequirements2KHR , vkGetBufferMemoryRequirements2KHR)
+
+#define ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(EnumMacro)
+
+#include "../VulkanLoader.h"
 
 // and now, include the GenericPlatform class
 #include "../VulkanGenericPlatform.h"
@@ -40,6 +51,21 @@ public:
 	static void GetDeviceExtensions(TArray<const ANSICHAR*>& OutExtensions);
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
+
+	static bool SupportsDeviceLocalHostVisibleWithNoPenalty();
+
+	static void WriteCrashMarker(const FOptionalVulkanDeviceExtensions& OptionalExtensions, VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TArrayView<uint32>& Entries, bool bAdding);
+
+	// Some platforms only support real or non-real UBs, so this function can optimize it out
+	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs)
+	{
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+		static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
+		return (CVar && CVar->GetValueOnAnyThread() == 0) ? false : bCodeHeaderUseRealUBs;
+#else
+		return GMaxRHIFeatureLevel >= ERHIFeatureLevel::ES3_1 ? bCodeHeaderUseRealUBs : false;
+#endif
+	}
 };
 
 typedef FVulkanWindowsPlatform FVulkanPlatform;

@@ -133,12 +133,12 @@ static void GetLobbyKeyValuePairsFromSessionSettings(const FOnlineSessionSetting
 				}
 				else
 				{
-					UE_LOG_ONLINE(Warning, TEXT("Empty session setting %s %s of type %s"), *Key.ToString(), *Setting.ToString(), EOnlineKeyValuePairDataType::ToString(Setting.Data.GetType()));
+					UE_LOG_ONLINE_SESSION(Warning, TEXT("Empty session setting %s %s of type %s"), *Key.ToString(), *Setting.ToString(), EOnlineKeyValuePairDataType::ToString(Setting.Data.GetType()));
 				}
 			}
 			else
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Unsupported session setting %s %s of type %s"), *Key.ToString(), *Setting.ToString(), EOnlineKeyValuePairDataType::ToString(Setting.Data.GetType()));
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Unsupported session setting %s %s of type %s"), *Key.ToString(), *Setting.ToString(), EOnlineKeyValuePairDataType::ToString(Setting.Data.GetType()));
 			}
 		}
 	}
@@ -150,19 +150,19 @@ static void GetLobbyKeyValuePairsFromSessionSettings(const FOnlineSessionSetting
  * @param SessionInfo session info to get key, value pairs from
  * @param KeyValuePairs key value pair structure to add to
  */
-static void GetLobbyKeyValuePairsFromSessionInfo(const FOnlineSessionInfoSteam* SessionInfo, FSteamSessionKeyValuePairs& KeyValuePairs)
+static void GetLobbyKeyValuePairsFromSessionInfo(const FOnlineSessionInfoSteam& SessionInfo, FSteamSessionKeyValuePairs& KeyValuePairs)
 {
-	if (SessionInfo->HostAddr.IsValid())
+	if (SessionInfo.HostAddr.IsValid())
 	{
 		uint32 HostAddr;
-		SessionInfo->HostAddr->GetIp(HostAddr);
+		SessionInfo.HostAddr->GetIp(HostAddr);
 		KeyValuePairs.Add(STEAMKEY_HOSTIP, FString::FromInt(HostAddr));
-		KeyValuePairs.Add(STEAMKEY_HOSTPORT, FString::FromInt(SessionInfo->HostAddr->GetPort()));
+		KeyValuePairs.Add(STEAMKEY_HOSTPORT, FString::FromInt(SessionInfo.HostAddr->GetPort()));
 	}
 
-	if (SessionInfo->SteamP2PAddr.IsValid())
+	if (SessionInfo.SteamP2PAddr.IsValid())
 	{
-		TSharedPtr<FInternetAddrSteam> SteamAddr = StaticCastSharedPtr<FInternetAddrSteam>(SessionInfo->SteamP2PAddr);
+		TSharedPtr<FInternetAddrSteam> SteamAddr = StaticCastSharedPtr<FInternetAddrSteam>(SessionInfo.SteamP2PAddr);
 		KeyValuePairs.Add(STEAMKEY_P2PADDR, SteamAddr->ToString(false));
 		KeyValuePairs.Add(STEAMKEY_P2PPORT, FString::FromInt(SteamAddr->GetPort()));
 	}
@@ -176,16 +176,19 @@ static void GetLobbyKeyValuePairsFromSessionInfo(const FOnlineSessionInfoSteam* 
  */
 static void GetLobbyKeyValuePairsFromSession(const FOnlineSession* Session, FSteamSessionKeyValuePairs& KeyValuePairs)
 {
-	FUniqueNetIdSteam* SteamId = (FUniqueNetIdSteam*)(Session->OwningUserId.Get());
-	KeyValuePairs.Add(STEAMKEY_OWNINGUSERID, SteamId->ToString());
+	TSharedPtr<const FUniqueNetIdSteam> SteamId = StaticCastSharedPtr<const FUniqueNetIdSteam>(Session->OwningUserId);
+	if (SteamId.IsValid())
+	{
+		KeyValuePairs.Add(STEAMKEY_OWNINGUSERID, SteamId->ToString());
+	}
 	KeyValuePairs.Add(STEAMKEY_OWNINGUSERNAME, Session->OwningUserName);
 	KeyValuePairs.Add(STEAMKEY_NUMOPENPRIVATECONNECTIONS, FString::FromInt(Session->NumOpenPrivateConnections));
 	KeyValuePairs.Add(STEAMKEY_NUMOPENPUBLICCONNECTIONS, FString::FromInt(Session->NumOpenPublicConnections));
 
 	if (Session->SessionInfo.IsValid())
 	{
-		FOnlineSessionInfoSteam* SessionInfo = (FOnlineSessionInfoSteam*)(Session->SessionInfo.Get());
-		GetLobbyKeyValuePairsFromSessionInfo(SessionInfo, KeyValuePairs);
+		TSharedPtr<FOnlineSessionInfoSteam> SessionInfo = StaticCastSharedPtr<FOnlineSessionInfoSteam>(Session->SessionInfo);
+		GetLobbyKeyValuePairsFromSessionInfo(*SessionInfo, KeyValuePairs);
 	}
 
 	GetLobbyKeyValuePairsFromSessionSettings(Session->SessionSettings, KeyValuePairs);
@@ -211,7 +214,7 @@ bool FillSessionFromLobbyData(FUniqueNetIdSteam& LobbyId, FOnlineSession& Sessio
 	Session.SessionSettings.Settings.Empty();
 
 	// Create the session info
-	TSharedPtr<FOnlineSessionInfoSteam> SessionInfo = MakeShareable(new FOnlineSessionInfoSteam(ESteamSession::LobbySession, FUniqueNetIdSteam(LobbyId)));
+	TSharedPtr<FOnlineSessionInfoSteam> SessionInfo = MakeShared<FOnlineSessionInfoSteam>(ESteamSession::LobbySession, FUniqueNetIdSteam(LobbyId));
 	TSharedRef<FInternetAddr> HostAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
 	TSharedRef<FInternetAddrSteam> SteamP2PAddr = MakeShareable(new FInternetAddrSteam);
 	
@@ -263,12 +266,8 @@ bool FillSessionFromLobbyData(FUniqueNetIdSteam& LobbyId, FOnlineSession& Sessio
 		}
 		else if (FCStringAnsi::Stricmp(Key, STEAMKEY_BUILDUNIQUEID) == 0)
 		{
-			int32 BuildUniqueId = FCString::Atoi(ANSI_TO_TCHAR(Value));
-			if (BuildUniqueId != 0)
-			{
-				Session.SessionSettings.BuildUniqueId = BuildUniqueId;
-				KeysFound++;
-			}
+			Session.SessionSettings.BuildUniqueId = FCString::Atoi(ANSI_TO_TCHAR(Value));
+			KeysFound++;
 		}
 		else if (FCStringAnsi::Stricmp(Key, STEAMKEY_OWNINGUSERID) == 0)
 		{
@@ -341,7 +340,7 @@ bool FillSessionFromLobbyData(FUniqueNetIdSteam& LobbyId, FOnlineSession& Sessio
 			else
 			{
 				bSuccess = false;
-				UE_LOG_ONLINE(Warning, TEXT("Failed to parse setting from key %s value %s"), ANSI_TO_TCHAR(Key), ANSI_TO_TCHAR(Value));
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Failed to parse setting from key %s value %s"), ANSI_TO_TCHAR(Key), ANSI_TO_TCHAR(Value));
 			}
 		}
 	}
@@ -350,7 +349,7 @@ bool FillSessionFromLobbyData(FUniqueNetIdSteam& LobbyId, FOnlineSession& Sessio
 	if (bSuccess && (KeysFound == STEAMKEY_NUMREQUIREDLOBBYKEYS) && (HostKeysFound == 2 || SteamAddrKeysFound == 2))
 	{
 		int32 BuildUniqueId = GetBuildUniqueId();
-		if (Session.SessionSettings.BuildUniqueId != 0 && Session.SessionSettings.BuildUniqueId == BuildUniqueId)
+		if (Session.SessionSettings.BuildUniqueId == BuildUniqueId)
 		{
 			if (HostKeysFound == 2)
 			{
@@ -367,7 +366,7 @@ bool FillSessionFromLobbyData(FUniqueNetIdSteam& LobbyId, FOnlineSession& Sessio
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Removed incompatible build: ServerBuildUniqueId = 0x%08x, GetBuildUniqueId() = 0x%08x"),
+			UE_LOG_ONLINE_SESSION(Warning, TEXT("Removed incompatible build: ServerBuildUniqueId = 0x%08x, GetBuildUniqueId() = 0x%08x"),
 				Session.SessionSettings.BuildUniqueId, BuildUniqueId);
 		}
 	}
@@ -403,10 +402,10 @@ bool FillMembersFromLobbyData(FUniqueNetIdSteam& LobbyId, FNamedOnlineSession& S
 			// Auto update joinability based on lobby population
 			bool bLobbyJoinable = Session.SessionSettings.bAllowJoinInProgress && (LobbyMemberCount < MaxLobbyMembers);
 
-			UE_LOG_ONLINE(Log, TEXT("Updating lobby joinability to %s."), bLobbyJoinable ? TEXT("true") : TEXT("false"));
+			UE_LOG_ONLINE_SESSION(Log, TEXT("Updating lobby joinability to %s."), bLobbyJoinable ? TEXT("true") : TEXT("false"));
 			if (!SteamMatchmakingPtr->SetLobbyJoinable(LobbyId, bLobbyJoinable))
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Failed to update lobby joinability."));
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Failed to update lobby joinability."));
 				bSuccess = false;
 			}
 		}
@@ -420,7 +419,7 @@ bool FillMembersFromLobbyData(FUniqueNetIdSteam& LobbyId, FNamedOnlineSession& S
  */
 FString FOnlineAsyncTaskSteamCreateLobby::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamCreateLobby bWasSuccessful: %d LobbyId: %llu LobbyType: %d Result: %s"), bWasSuccessful, CallbackResults.m_ulSteamIDLobby, (int32)LobbyType, *SteamResultString(CallbackResults.m_eResult));
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamCreateLobby bWasSuccessful: %d LobbyId: %llu LobbyType: %d Result: %s"), WasSuccessful(), CallbackResults.m_ulSteamIDLobby, (int32)LobbyType, *SteamResultString(CallbackResults.m_eResult));
 }
 
 /**
@@ -482,17 +481,17 @@ void FOnlineAsyncTaskSteamCreateLobby::Finalize()
 			FUniqueNetIdSteam LobbyId(CallbackResults.m_ulSteamIDLobby);
 
 			// Setup the host session info now that we have a lobby id
-			FOnlineSessionInfoSteam* NewSessionInfo = new FOnlineSessionInfoSteam(ESteamSession::LobbySession, LobbyId);
+			TSharedRef<FOnlineSessionInfoSteam> NewSessionInfo = MakeShared<FOnlineSessionInfoSteam>(ESteamSession::LobbySession, LobbyId);
 			NewSessionInfo->Init();
 			// Lobby sessions don't have a valid IP
 			NewSessionInfo->HostAddr = NULL;
 			// Copy the P2P addr
-			FInternetAddrSteam* SteamAddr = new FInternetAddrSteam(FUniqueNetIdSteam(SteamUser()->GetSteamID()));
+			TSharedRef<FInternetAddrSteam> SteamAddr = MakeShared<FInternetAddrSteam>(FUniqueNetIdSteam(SteamUser()->GetSteamID()));
 			SteamAddr->SetPort(Subsystem->GetGameServerGamePort());
-			NewSessionInfo->SteamP2PAddr = MakeShareable(SteamAddr);
-			
+			NewSessionInfo->SteamP2PAddr = SteamAddr;
+
 			// Set the info on the session
-			Session->SessionInfo = MakeShareable(NewSessionInfo);
+			Session->SessionInfo = NewSessionInfo;
 
 			// Set the game state as pending (not started)
 			Session->SessionState = EOnlineSessionState::Pending;
@@ -503,7 +502,7 @@ void FOnlineAsyncTaskSteamCreateLobby::Finalize()
 			// Register session properties with Steam lobby
 			for (FSteamSessionKeyValuePairs::TConstIterator It(KeyValuePairs); It; ++It)
 			{
-				UE_LOG_ONLINE(Verbose, TEXT("Lobby Data (%s, %s)"), *It.Key(), *It.Value());
+				UE_LOG_ONLINE_SESSION(Verbose, TEXT("Lobby Data (%s, %s)"), *It.Key(), *It.Value());
 				if (!SteamMatchMakingPtr->SetLobbyData(LobbyId, TCHAR_TO_UTF8(*It.Key()), TCHAR_TO_UTF8(*It.Value())))
 				{
 					bWasSuccessful = false;
@@ -516,7 +515,7 @@ void FOnlineAsyncTaskSteamCreateLobby::Finalize()
 				bWasSuccessful = false;
 				SteamMatchMakingPtr->LeaveLobby(LobbyId);
 				SessionInt->RemoveNamedSession(SessionName);
-				UE_LOG_ONLINE(Warning, TEXT("Failed to set lobby data for session %s, cleaning up."), *SessionName.ToString());
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Failed to set lobby data for session %s, cleaning up."), *SessionName.ToString());
 			}
 			else
 			{
@@ -550,7 +549,7 @@ void FOnlineAsyncTaskSteamCreateLobby::TriggerDelegates()
 FString FOnlineAsyncTaskSteamJoinLobby::ToString() const
 {
 	return FString::Printf(TEXT("FOnlineAsyncTaskSteamJoinLobby bWasSuccessful: %d Session: %s LobbyId: %s Result: %s"), 
-		bWasSuccessful, 
+		WasSuccessful(),
 		*SessionName.ToString(), 
 		*LobbyId.ToDebugString(),
 		*SteamChatRoomEnterResponseString((EChatRoomEnterResponse)CallbackResults.m_EChatRoomEnterResponse));
@@ -562,7 +561,7 @@ FString FOnlineAsyncTaskSteamJoinLobby::ToString() const
 FString FOnlineAsyncTaskSteamUpdateLobby::ToString() const
 {
 	return FString::Printf(TEXT("FOnlineAsyncTaskSteamUpdateLobby bWasSuccessful: %d Session: %s"),
-		bWasSuccessful, 
+		WasSuccessful(),
 		*SessionName.ToString());
 }
 
@@ -581,73 +580,75 @@ void FOnlineAsyncTaskSteamUpdateLobby::Tick()
 		FNamedOnlineSession* Session = SessionInt->GetNamedSession(SessionName);
 		if (Session)
 		{
-			FOnlineSessionInfoSteam* SessionInfo = (FOnlineSessionInfoSteam*)(Session->SessionInfo.Get());
-
-			bool bUsesPresence = Session->SessionSettings.bUsesPresence;
-			if (bUsesPresence != NewSessionSettings.bUsesPresence)
+			TSharedPtr<FOnlineSessionInfoSteam> SessionInfo = StaticCastSharedPtr<FOnlineSessionInfoSteam>(Session->SessionInfo);
+			if (SessionInfo.IsValid())
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Can't change presence settings on existing session %s, ignoring."), *SessionName.ToString());
-			}
-
-			FSteamSessionKeyValuePairs OldKeyValuePairs;
-			GetLobbyKeyValuePairsFromSession(Session, OldKeyValuePairs);
-
-			Session->SessionSettings = NewSessionSettings;
-			Session->SessionSettings.bUsesPresence = bUsesPresence;
-
-			if (bUpdateOnlineData)
-			{
-				ISteamMatchmaking* SteamMatchmakingPtr = SteamMatchmaking();
-				check(SteamMatchmakingPtr);
-
-				ELobbyType LobbyType = BuildLobbyType(&Session->SessionSettings);
-				if (SteamMatchmakingPtr->SetLobbyType(SessionInfo->SessionId, LobbyType))
+				bool bUsesPresence = Session->SessionSettings.bUsesPresence;
+				if (bUsesPresence != NewSessionSettings.bUsesPresence)
 				{
-					int32 LobbyMemberCount = SteamMatchmakingPtr->GetNumLobbyMembers(SessionInfo->SessionId);
-					int32 MaxLobbyMembers = SteamMatchmakingPtr->GetLobbyMemberLimit(SessionInfo->SessionId);
-					bool bLobbyJoinable = Session->SessionSettings.bAllowJoinInProgress && (LobbyMemberCount < MaxLobbyMembers);
-					if (SteamMatchmakingPtr->SetLobbyJoinable(SessionInfo->SessionId, bLobbyJoinable))
+					UE_LOG_ONLINE_SESSION(Warning, TEXT("Can't change presence settings on existing session %s, ignoring."), *SessionName.ToString());
+				}
+
+				FSteamSessionKeyValuePairs OldKeyValuePairs;
+				GetLobbyKeyValuePairsFromSession(Session, OldKeyValuePairs);
+
+				Session->SessionSettings = NewSessionSettings;
+				Session->SessionSettings.bUsesPresence = bUsesPresence;
+
+				if (bUpdateOnlineData)
+				{
+					ISteamMatchmaking* SteamMatchmakingPtr = SteamMatchmaking();
+					check(SteamMatchmakingPtr);
+
+					ELobbyType LobbyType = BuildLobbyType(&Session->SessionSettings);
+					if (SteamMatchmakingPtr->SetLobbyType(SessionInfo->SessionId, LobbyType))
 					{
-						int32 NumConnections = Session->SessionSettings.NumPrivateConnections + Session->SessionSettings.NumPublicConnections;
-						if (SteamMatchmakingPtr->SetLobbyMemberLimit(SessionInfo->SessionId, NumConnections))
+						int32 LobbyMemberCount = SteamMatchmakingPtr->GetNumLobbyMembers(SessionInfo->SessionId);
+						int32 MaxLobbyMembers = SteamMatchmakingPtr->GetLobbyMemberLimit(SessionInfo->SessionId);
+						bool bLobbyJoinable = Session->SessionSettings.bAllowJoinInProgress && (LobbyMemberCount < MaxLobbyMembers);
+						if (SteamMatchmakingPtr->SetLobbyJoinable(SessionInfo->SessionId, bLobbyJoinable))
 						{
-							bWasSuccessful = true;
-
-							FSteamSessionKeyValuePairs KeyValuePairs;
-							GetLobbyKeyValuePairsFromSession(Session, KeyValuePairs);
-
-							// @TODO ONLINE Make sure to only remove/set data that has changed
-							// Unregister old session properties with Steam lobby
-							for (FSteamSessionKeyValuePairs::TConstIterator It(OldKeyValuePairs); It; ++It)
+							int32 NumConnections = Session->SessionSettings.NumPrivateConnections + Session->SessionSettings.NumPublicConnections;
+							if (SteamMatchmakingPtr->SetLobbyMemberLimit(SessionInfo->SessionId, NumConnections))
 							{
-								UE_LOG_ONLINE(Verbose, TEXT("Removing Lobby Data (%s, %s)"), *It.Key(), *It.Value());
-								if (!SteamMatchmakingPtr->SetLobbyData(SessionInfo->SessionId, TCHAR_TO_UTF8(*It.Key()), ""))
-								{
-									bWasSuccessful = false;
-									break;
-								}
-							}
+								bWasSuccessful = true;
 
-							if (bWasSuccessful)
-							{
-								// Register session properties with Steam lobby
-								for (FSteamSessionKeyValuePairs::TConstIterator It(KeyValuePairs); It; ++It)
+								FSteamSessionKeyValuePairs KeyValuePairs;
+								GetLobbyKeyValuePairsFromSession(Session, KeyValuePairs);
+
+								// @TODO ONLINE Make sure to only remove/set data that has changed
+								// Unregister old session properties with Steam lobby
+								for (FSteamSessionKeyValuePairs::TConstIterator It(OldKeyValuePairs); It; ++It)
 								{
-									UE_LOG_ONLINE(Verbose, TEXT("Updating Lobby Data (%s, %s)"), *It.Key(), *It.Value());
-									if (!SteamMatchmakingPtr->SetLobbyData(SessionInfo->SessionId, TCHAR_TO_UTF8(*It.Key()), TCHAR_TO_UTF8(*It.Value())))
+									UE_LOG_ONLINE_SESSION(Verbose, TEXT("Removing Lobby Data (%s, %s)"), *It.Key(), *It.Value());
+									if (!SteamMatchmakingPtr->SetLobbyData(SessionInfo->SessionId, TCHAR_TO_UTF8(*It.Key()), ""))
 									{
 										bWasSuccessful = false;
 										break;
+									}
+								}
+
+								if (bWasSuccessful)
+								{
+									// Register session properties with Steam lobby
+									for (FSteamSessionKeyValuePairs::TConstIterator It(KeyValuePairs); It; ++It)
+									{
+										UE_LOG_ONLINE_SESSION(Verbose, TEXT("Updating Lobby Data (%s, %s)"), *It.Key(), *It.Value());
+										if (!SteamMatchmakingPtr->SetLobbyData(SessionInfo->SessionId, TCHAR_TO_UTF8(*It.Key()), TCHAR_TO_UTF8(*It.Value())))
+										{
+											bWasSuccessful = false;
+											break;
+										}
 									}
 								}
 							}
 						}
 					}
 				}
-			}
-			else
-			{
-				bWasSuccessful = true;
+				else
+				{
+					bWasSuccessful = true;
+				}
 			}
 		}
 	}
@@ -729,7 +730,7 @@ void FOnlineAsyncTaskSteamJoinLobby::Finalize()
 			}
 			else
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Session %s not found when trying to join"), *SessionName.ToString());
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Session %s not found when trying to join"), *SessionName.ToString());
 			}
 		}
 	}
@@ -758,7 +759,7 @@ void FOnlineAsyncTaskSteamJoinLobby::TriggerDelegates()
  */
 FString FOnlineAsyncTaskSteamLeaveLobby::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamLeaveLobby bWasSuccessful: %d SessionName: %s LobbyId: %s"), bWasSuccessful, *SessionName.ToString(), *LobbyId.ToDebugString());
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamLeaveLobby bWasSuccessful: %d SessionName: %s LobbyId: %s"), WasSuccessful(), *SessionName.ToString(), *LobbyId.ToDebugString());
 }
 
 /**
@@ -824,7 +825,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::CreateQuery()
 						break;
 					}
 				default:
-					UE_LOG_ONLINE(Warning, TEXT("Unable to set search parameter %s"), *SearchParam.ToString());
+					UE_LOG_ONLINE_SESSION(Warning, TEXT("Unable to set search parameter %s"), *SearchParam.ToString());
 					break;
 				}	
 			}
@@ -856,20 +857,20 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::CreateQuery()
 						}	
 						else
 						{
-							UE_LOG_ONLINE(Warning, TEXT("Empty search parameter %s: %s"), *Key.ToString(), *SearchParam.ToString());
+							UE_LOG_ONLINE_SESSION(Warning, TEXT("Empty search parameter %s: %s"), *Key.ToString(), *SearchParam.ToString());
 						}
 
 						break;
 					}
 				default:
-					UE_LOG_ONLINE(Warning, TEXT("Unable to set search parameter %s: %s"), *Key.ToString(), *SearchParam.ToString());
+					UE_LOG_ONLINE_SESSION(Warning, TEXT("Unable to set search parameter %s: %s"), *Key.ToString(), *SearchParam.ToString());
 					break;
 				}
 			}
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Unsupported search setting %s %s of type %s"), *Key.ToString(), *SearchParam.ToString(), EOnlineComparisonOp::ToString(SearchParam.ComparisonOp));
+			UE_LOG_ONLINE_SESSION(Warning, TEXT("Unsupported search setting %s %s of type %s"), *Key.ToString(), *SearchParam.ToString(), EOnlineComparisonOp::ToString(SearchParam.ComparisonOp));
 		}
 	}
 }
@@ -884,7 +885,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::ParseSearchResult(FUniqueNetIdSteam& 
 	FOnlineSessionSearchResult* NewSearchResult = new (SearchSettings->SearchResults) FOnlineSessionSearchResult();
 	if (!FillSessionFromLobbyData(LobbyId, NewSearchResult->Session))
 	{
-		UE_LOG_ONLINE(Warning, TEXT("Unable to parse search result for lobby '%s'"), *LobbyId.ToDebugString());
+		UE_LOG_ONLINE_SESSION(Warning, TEXT("Unable to parse search result for lobby '%s'"), *LobbyId.ToDebugString());
 		// Remove the failed element
 		SearchSettings->SearchResults.RemoveAtSwap(SearchSettings->SearchResults.Num() - 1);
 	}
@@ -909,7 +910,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Tick()
 				// Make sure they are logged in to play online
 				if (SteamUser()->BLoggedOn())
 				{
-					UE_LOG_ONLINE(Verbose, TEXT("Starting search for Internet games..."));
+					UE_LOG_ONLINE_SESSION(Verbose, TEXT("Starting search for Internet games..."));
 
 					// Setup the filters
 					CreateQuery();
@@ -918,12 +919,12 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Tick()
 				}
 				else
 				{
-					UE_LOG_ONLINE(Warning, TEXT("You must be logged in to an online profile to search for internet games"));
+					UE_LOG_ONLINE_SESSION(Warning, TEXT("You must be logged in to an online profile to search for internet games"));
 				}
 			}
 			else
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Can't search for an internet game without a network connection"));
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Can't search for an internet game without a network connection"));
 			}
 
 			if (CallbackHandle == k_uAPICallInvalid)
@@ -949,11 +950,19 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Tick()
 				bWasSuccessful = bSuccessCallResult && !bFailedCall && !bFailedResult;
 				if (bWasSuccessful)
 				{
+					FOnlineSessionSteamPtr SessionInt = StaticCastSharedPtr<FOnlineSessionSteam>(Subsystem->GetSessionInterface());
+					check(SessionInt.IsValid());
+
 					// Trigger the lobby data requests
 					int32 NumLobbies = (int32)CallbackResults.m_nLobbiesMatching;
 					for (int32 LobbyIdx = 0; LobbyIdx < NumLobbies; LobbyIdx++)
 					{
-						LobbyIDs.Add(SteamMatchmakingPtr->GetLobbyByIndex(LobbyIdx));
+						// We cannot matchmake any lobbies that we are currently in as this is unsupported by the platform
+						FUniqueNetIdSteam LobbyID(SteamMatchmakingPtr->GetLobbyByIndex(LobbyIdx));
+						if (!SessionInt->IsMemberOfLobby(LobbyID))
+						{
+							LobbyIDs.Add(LobbyID);
+						}
 					}
 					FindLobbiesState = EFindLobbiesState::RequestLobbyData;
 				}
@@ -1009,7 +1018,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Tick()
 		}
 	default:
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Unexpected state %d reached in FOnlineAsyncTaskSteamFindLobbiesBase::Tick, ending task."), (int32)FindLobbiesState);
+			UE_LOG_ONLINE_SESSION(Warning, TEXT("Unexpected state %d reached in FOnlineAsyncTaskSteamFindLobbiesBase::Tick, ending task."), (int32)FindLobbiesState);
 			bWasSuccessful = false;
 			FindLobbiesState = EFindLobbiesState::Finished;
 			break;
@@ -1025,7 +1034,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Finalize()
 {
 	FOnlineSessionSteamPtr SessionInt = StaticCastSharedPtr<FOnlineSessionSteam>(Subsystem->GetSessionInterface());
 
-	UE_LOG_ONLINE(Log, TEXT("Found %d lobbies, finalizing the search"), SessionInt->PendingSearchLobbyIds.Num());
+	UE_LOG_ONLINE_SESSION(Log, TEXT("Found %d lobbies, finalizing the search"), SessionInt->PendingSearchLobbyIds.Num());
 
 	if (bWasSuccessful)
 	{
@@ -1033,7 +1042,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Finalize()
 		for (int32 LobbyIdx=0; LobbyIdx < SessionInt->PendingSearchLobbyIds.Num(); LobbyIdx++)
 		{
 			FUniqueNetIdSteam& LobbyId = SessionInt->PendingSearchLobbyIds[LobbyIdx];
-			UE_LOG_ONLINE(Log, TEXT("Search result %d: LobbyId=%s, LobbyId.IsValid()=%s, CSteamID(LobbyId).IsLobby()=%s"),
+			UE_LOG_ONLINE_SESSION(Log, TEXT("Search result %d: LobbyId=%s, LobbyId.IsValid()=%s, CSteamID(LobbyId).IsLobby()=%s"),
 				LobbyIdx, *LobbyId.ToDebugString(), LobbyId.IsValid() ? TEXT("true") : TEXT("false"), CSteamID(LobbyId).IsLobby() ? TEXT("true") : TEXT("false")
 				);
 			if (LobbyId.IsValid() && CSteamID(LobbyId).IsLobby())
@@ -1042,7 +1051,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Finalize()
 			}
 			else
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Lobby %d is invalid (or not a lobby), skipping."), LobbyIdx);
+				UE_LOG_ONLINE_SESSION(Warning, TEXT("Lobby %d is invalid (or not a lobby), skipping."), LobbyIdx);
 			}
 		}
 
@@ -1067,7 +1076,7 @@ void FOnlineAsyncTaskSteamFindLobbiesBase::Finalize()
 */
 FString FOnlineAsyncTaskSteamFindLobbies::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForFindSessions bWasSuccessful: %d NumResults: %d"), bWasSuccessful, CallbackResults.m_nLobbiesMatching);
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForFindSessions bWasSuccessful: %d NumResults: %d"), WasSuccessful(), CallbackResults.m_nLobbiesMatching);
 }
 
 /**
@@ -1087,7 +1096,7 @@ void FOnlineAsyncTaskSteamFindLobbies::TriggerDelegates()
 */
 FString FOnlineAsyncTaskSteamFindLobbiesForInviteSession::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForInviteSession bWasSuccessful: %d Lobby ID: %llu"), bWasSuccessful, LobbyIDs[0].ConvertToUint64());
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForInviteSession bWasSuccessful: %d Lobby ID: %llu"), WasSuccessful(), LobbyIDs[0].ConvertToUint64());
 }
 
 /**
@@ -1111,7 +1120,7 @@ void FOnlineAsyncTaskSteamFindLobbiesForInviteSession::TriggerDelegates()
 */
 FString FOnlineAsyncTaskSteamFindLobbiesForFriendSession::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForFriendSession bWasSuccessful: %d Lobby ID: %llu"), bWasSuccessful, LobbyIDs[0].ConvertToUint64());
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamFindLobbiesForFriendSession bWasSuccessful: %d Lobby ID: %llu"), WasSuccessful(), LobbyIDs[0].ConvertToUint64());
 }
 
 /**
@@ -1158,6 +1167,6 @@ void FOnlineAsyncEventSteamLobbyInviteAccepted::Finalize()
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("Invalid session or search already in progress when accepting invite.  Ignoring invite request."));
+		UE_LOG_ONLINE_SESSION(Warning, TEXT("Invalid session or search already in progress when accepting invite.  Ignoring invite request."));
 	}
 }

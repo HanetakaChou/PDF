@@ -6,6 +6,7 @@
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "UObject/UObjectIterator.h"
+#include "AudioDevice.h"
 
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
@@ -19,7 +20,190 @@ TSharedPtr<ISoundSubmixAudioEditor> USoundSubmix::SoundSubmixAudioEditor = nullp
 USoundSubmix::USoundSubmix(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	EnvelopeFollowerAttackTime = 10;
+	EnvelopeFollowerReleaseTime = 500;
 }
+
+void USoundSubmix::StartRecordingOutput(const UObject* WorldContextObject, float ExpectedDuration)
+{
+	if (!GEngine)
+	{
+		return;
+	}
+
+	// Find device for this specific audio recording thing.
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	FAudioDevice* DesiredAudioDevice = ThisWorld->GetAudioDevice();
+
+	StartRecordingOutput(DesiredAudioDevice, ExpectedDuration);
+}
+
+void USoundSubmix::StartRecordingOutput(FAudioDevice* InDevice, float ExpectedDuration)
+{
+	if (InDevice)
+	{
+		InDevice->StartRecording(this, ExpectedDuration);
+	}
+}
+
+void USoundSubmix::StopRecordingOutput(const UObject* WorldContextObject, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite)
+{
+	if (!GEngine)
+	{
+		return;
+	}
+
+	// Find device for this specific audio recording thing.
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	FAudioDevice* DesiredAudioDevice = ThisWorld->GetAudioDevice();
+
+	StopRecordingOutput(DesiredAudioDevice, ExportType, Name, Path, ExistingSoundWaveToOverwrite);
+}
+
+void USoundSubmix::StopRecordingOutput(FAudioDevice* InDevice, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite /*= nullptr*/)
+{
+	if (InDevice)
+	{
+		float SampleRate;
+		float ChannelCount;
+
+		Audio::AlignedFloatBuffer& RecordedBuffer = InDevice->StopRecording(this, ChannelCount, SampleRate);
+
+		// This occurs when Stop Recording Output is called when Start Recording Output was not called.
+		if (RecordedBuffer.Num() == 0)
+		{
+			return;
+		}
+
+		// Pack output data into DSPSampleBuffer and record it out!
+		RecordingData.Reset(new Audio::FAudioRecordingData());
+
+		RecordingData->InputBuffer = Audio::TSampleBuffer<int16>(RecordedBuffer, ChannelCount, SampleRate);
+
+		switch (ExportType)
+		{
+			case EAudioRecordingExportType::SoundWave:
+			{
+				// If we're using the editor, we can write out a USoundWave to the content directory. Otherwise, we just generate a USoundWave without writing it to disk.
+				if (GIsEditor)
+				{
+					RecordingData->Writer.BeginWriteToSoundWave(Name, RecordingData->InputBuffer, Path, [this](const USoundWave* Result)
+					{
+						if (OnSubmixRecordedFileDone.IsBound())
+						{
+							OnSubmixRecordedFileDone.Broadcast(Result);
+						}
+					});
+				}
+				else
+				{
+					RecordingData->Writer.BeginGeneratingSoundWaveFromBuffer(RecordingData->InputBuffer, nullptr, [this](const USoundWave* Result)
+					{
+						if (OnSubmixRecordedFileDone.IsBound())
+						{
+							OnSubmixRecordedFileDone.Broadcast(Result);
+						}
+					});
+				}
+			}
+			break;
+			
+			case EAudioRecordingExportType::WavFile:
+			{
+				RecordingData->Writer.BeginWriteToWavFile(RecordingData->InputBuffer, Name, Path, [this]()
+				{
+					if (OnSubmixRecordedFileDone.IsBound())
+					{
+						OnSubmixRecordedFileDone.Broadcast(nullptr);
+					}
+				});
+			}
+			break;
+
+			default:
+			break;
+		}
+	}
+}
+
+void USoundSubmix::StartEnvelopeFollowing(const UObject* WorldContextObject)
+{
+	if (!GEngine)
+	{
+		return;
+	}
+
+	// Find device for this specific audio recording thing.
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice();
+
+	StartEnvelopeFollowing(AudioDevice);
+}
+
+void USoundSubmix::StartEnvelopeFollowing(FAudioDevice* InAudioDevice)
+{
+	if (InAudioDevice)
+	{
+		InAudioDevice->StartEnvelopeFollowing(this);
+
+		// Track which audio devices were envelope following with. Note this may be multiple devices if running with multiple PIE.
+		//EnvelopeFollowingDevices.AddUnique(InAudioDevice);
+	}
+}
+
+void USoundSubmix::StopEnvelopeFollowing(const UObject* WorldContextObject)
+{
+	if (!GEngine)
+	{
+		return;
+	}
+
+	// Find device for this specific audio recording thing.
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice();
+
+	StopEnvelopeFollowing(AudioDevice);
+}
+
+void USoundSubmix::StopEnvelopeFollowing(FAudioDevice* InAudioDevice)
+{
+	if (InAudioDevice)
+	{
+		InAudioDevice->StopEnvelopeFollowing(this);
+
+		// Stop tracking audio device for envelope following data
+		//EnvelopeFollowingDevices.RemoveSingleSwap(InAudioDevice);
+	}
+}
+
+void USoundSubmix::AddEnvelopeFollowerDelegate(const UObject* WorldContextObject, const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP)
+{
+	if (!GEngine)
+	{
+		return;
+	}
+
+	// Find device for this specific audio recording thing.
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice();
+	if (AudioDevice)
+	{
+		AudioDevice->AddEnvelopeFollowerDelegate(this, OnSubmixEnvelopeBP);
+
+// 		FSubmixEnvelopeData* EnvelopeData = EnvelopeFollowingData.Find(AudioDevice);
+// 		if (EnvelopeData)
+// 		{
+// 			EnvelopeData->OnSubmixEnvelope.AddUnique(OnSubmixEnvelopeBP);
+// 		}
+// 		else
+// 		{
+// 			FSubmixEnvelopeData& NewEnvelopeData = EnvelopeFollowingData.Add(AudioDevice, FSubmixEnvelopeData());
+// 			NewEnvelopeData.OnSubmixEnvelope.AddUnique(OnSubmixEnvelopeBP);
+// 		}
+	}
+
+}
+
 
 FString USoundSubmix::GetDesc()
 {

@@ -10,10 +10,20 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"CinematicCamera",
 					"Core",
 					"CoreUObject",
-					"Engine"
-				}
+					"Engine",
+                    "ShaderCore",
+                }
+			);
+
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"Landscape",
+                    "Projects",
+                }
 			);
 		}
 	}

@@ -45,12 +45,20 @@ public:
 	 */
 	struct FLayerDesc
 	{
+		void SetLayerId(uint32 InId) { Id = InId; }
+		uint32 GetLayerId() const { return Id; }
+
+		const static uint32	INVALID_LAYER_ID = UINT_MAX;
+		// The layer's ID
+		uint32				Id			= INVALID_LAYER_ID;
 		// View space transform
 		FTransform			Transform	 = FTransform::Identity;
 		// Size of rendered quad
 		FVector2D			QuadSize	 = FVector2D(1.0f, 1.0f);
-		// UVs of rendered quad
+		// UVs of rendered quad in UE units
 		FBox2D				UVRect		 = FBox2D(FVector2D(0.0f, 0.0f), FVector2D(1.0f, 1.0f));
+		// Size of texture that the compositor should allocate. Un-necessary if Texture is provided. The compositor will allocate a cubemap whose faces are of LayerSize if ShapeType is CubemapLayer.
+		FIntPoint			LayerSize = FIntPoint(0, 0);
 		// Render order priority, higher priority render on top of lower priority. Face-Locked layers are rendered on top of other layer types regardless of priority. 
 		int32				Priority	 = 0;
 		// Which space the layer is locked within
@@ -173,13 +181,22 @@ public:
 		// Default debug layer desc
 		IStereoLayers::FLayerDesc StereoLayerDesc;
 		StereoLayerDesc.Transform = FTransform(FVector(100.f, 0, 0));
-		StereoLayerDesc.QuadSize = FVector2D(200.f, 200.f);
+		StereoLayerDesc.QuadSize = FVector2D(120.f, 120.f);
 		StereoLayerDesc.PositionType = IStereoLayers::ELayerType::FaceLocked;
 		StereoLayerDesc.ShapeType = IStereoLayers::ELayerShape::QuadLayer;
 		StereoLayerDesc.Texture = Texture;
 		StereoLayerDesc.Flags = IStereoLayers::ELayerFlags::LAYER_FLAG_TEX_CONTINUOUS_UPDATE;
 		StereoLayerDesc.Flags |= IStereoLayers::ELayerFlags::LAYER_FLAG_QUAD_PRESERVE_TEX_RATIO;
 		return StereoLayerDesc;
+	}
+
+	/**
+	* Get texture reference to HMD swapchain to avoid the copy path, useful for continuous update layers
+	*/
+	virtual void GetAllocatedTexture(uint32 LayerId, FTextureRHIRef &Texture, FTextureRHIRef &LeftTexture)
+	{
+		Texture = nullptr;
+		LeftTexture = nullptr;
 	}
 
 protected:

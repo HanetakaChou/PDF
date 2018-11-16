@@ -52,7 +52,9 @@ bool FOnlineExternalUIGameCircle::ShowLeaderboardUI(const FString& LeaderboardNa
 
 bool FOnlineExternalUIGameCircle::ShowWebURL(const FString& Url, const FShowWebUrlParams& ShowParams, const FOnShowWebUrlClosedDelegate& Delegate)
 {
-	return false;
+	FPlatformProcess::LaunchURL(*Url, nullptr, nullptr);
+
+	return true;
 }
 
 bool FOnlineExternalUIGameCircle::CloseWebURL()
@@ -89,15 +91,15 @@ void FOnlineExternalUIGameCircle::GameActivityOnResume()
 
 			if (ShowLoginDelegate.IsBound())
 			{
-				TSharedPtr<const FUniqueNetIdString> PlayerId = Subsystem->GetIdentityGameCircle()->GetCurrentUserId();
+				TSharedPtr<const FUniqueNetIdGameCircle> PlayerId = Subsystem->GetIdentityGameCircle()->GetCurrentUserId();
 				if (!PlayerId.IsValid())
 				{
 					FPlatformMisc::LowLevelOutputDebugString(TEXT("PlayerId from Identity Interface is Invalid"));
-					PlayerId = MakeShareable(new FUniqueNetIdString());
+					PlayerId = MakeShareable(new FUniqueNetIdGameCircle());
 					Subsystem->GetIdentityGameCircle()->SetCurrentUserId(PlayerId);
 				}
 				FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Executing ShowLoginUI Delegate if safe. PlayerId - %s  Index=%d"), *PlayerId->ToString(), ShowLoginControllerIndex);
-				ShowLoginDelegate.ExecuteIfBound(PlayerId, ShowLoginControllerIndex);
+				ShowLoginDelegate.ExecuteIfBound(PlayerId, ShowLoginControllerIndex, FOnlineError(true));
 
 				ShowLoginDelegate.Unbind();
 			}

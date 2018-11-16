@@ -48,14 +48,12 @@ void FDragTool_ActorBoxSelect::StartDrag(FEditorViewportClient* InViewportClient
 		// Add the persistent level always
 		ModelsToCheck.Add( World->PersistentLevel->Model );
 		// Add all streaming level models
-		for( int32 LevelIndex = 0; LevelIndex < World->StreamingLevels.Num(); ++LevelIndex )
+		for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
 		{
-			ULevelStreaming* StreamingLevel = World->StreamingLevels[LevelIndex];
 			// Only add streaming level models if the level is visible
-			if( StreamingLevel != NULL && StreamingLevel->bShouldBeVisibleInEditor )
+			if (StreamingLevel && StreamingLevel->GetShouldBeVisibleInEditor())
 			{	
-				ULevel* Level = StreamingLevel->GetLoadedLevel();
-				if ( Level != NULL )
+				if (ULevel* Level = StreamingLevel->GetLoadedLevel())
 				{
 					ModelsToCheck.Add( Level->Model );
 				}
@@ -306,13 +304,10 @@ bool FDragTool_ActorBoxSelect::IntersectsBox( AActor& InActor, const FBox& InBox
 	if( !bActorIsHiddenByShowFlags && !InActor.IsHiddenEd() && !FActorEditorUtils::IsABuilderBrush(&InActor) && bActorRecentlyRendered )
 	{
 		// Iterate over all actor components, selecting out primitive components
-		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-		InActor.GetComponents(PrimitiveComponents);
-
-		for (const UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		for (UActorComponent* Component : InActor.GetComponents())
 		{
-			check(PrimitiveComponent != nullptr);
-			if (PrimitiveComponent->IsRegistered() && PrimitiveComponent->IsVisibleInEditor())
+			UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component);
+			if (PrimitiveComponent && PrimitiveComponent->IsRegistered() && PrimitiveComponent->IsVisibleInEditor())
 			{
 				if (PrimitiveComponent->ComponentIsTouchingSelectionBox(InBox, LevelViewportClient->EngineShowFlags, bGeometryMode, bUseStrictSelection))
 				{

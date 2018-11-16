@@ -14,6 +14,7 @@
 #include "EnvironmentQuery/Contexts/EnvQueryContext_Item.h"
 #include "EnvironmentQuery/Generators/EnvQueryGenerator_Composite.h"
 #include "AISystem.h"
+#include "AITypes.h"
 
 #if UE_BUILD_SHIPPING
 #define eqs_ensure ensure
@@ -121,11 +122,16 @@ bool FEnvQueryInstance::PrepareContext(UClass* ContextClass, FEnvQueryContextDat
 		if (CachedData == NULL)
 		{
 			UEnvQueryManager* QueryManager = UEnvQueryManager::GetCurrent(World);
-			UEnvQueryContext* ContextOb = QueryManager->PrepareLocalContext(ContextClass);
+			const UEnvQueryContext* ContextOb = QueryManager->PrepareLocalContext(ContextClass);
 
+			check(ContextOb);
 			ContextOb->ProvideContext(*this, ContextData);
 
-			DEC_MEMORY_STAT_BY(STAT_AI_EQS_InstanceMemory, GetContextAllocatedSize());
+#if STATS
+			// this contraption has been added to nail down a location of a rare bug
+			const uint32 AllocatedSize = GetContextAllocatedSize();
+			DEC_MEMORY_STAT_BY(STAT_AI_EQS_InstanceMemory, AllocatedSize);
+#endif // STATS
 
 			ContextCache.Add(ContextClass, ContextData);
 
@@ -195,15 +201,24 @@ bool FEnvQueryInstance::PrepareContext(UClass* Context, TArray<FVector>& Data)
 		const uint16 DefTypeValueSize = DefTypeOb->GetValueSize();
 		uint8* ContextRawData = (uint8*)ContextData.RawData.GetData();
 
-		Data.SetNumUninitialized(ContextData.NumValues);
+		Data.Reserve(ContextData.NumValues);
 		for (int32 ValueIndex = 0; ValueIndex < ContextData.NumValues; ValueIndex++)
 		{
-			Data[ValueIndex] = DefTypeOb->GetItemLocation(ContextRawData);
+			const FVector ItemLocation = DefTypeOb->GetItemLocation(ContextRawData);
+			if (FAISystem::IsValidLocation(ItemLocation))
+			{
+				Data.Add(ItemLocation);
+			}
 			ContextRawData += DefTypeValueSize;
+		}
+
+		if (Data.Num() != ContextData.NumValues)
+		{
+			UE_LOG(LogEQS, Warning, TEXT("FEnvQuery::PrepareContext found %d invalid vectors from context %s"), ContextData.NumValues - Data.Num(), *Context->GetPathName());
 		}
 	}
 
-	return bSuccess;
+	return Data.Num() > 0;
 }
 
 bool FEnvQueryInstance::PrepareContext(UClass* Context, TArray<FRotator>& Data)
@@ -222,15 +237,24 @@ bool FEnvQueryInstance::PrepareContext(UClass* Context, TArray<FRotator>& Data)
 		const uint16 DefTypeValueSize = DefTypeOb->GetValueSize();
 		uint8* ContextRawData = ContextData.RawData.GetData();
 
-		Data.SetNumUninitialized(ContextData.NumValues);
+		Data.Reserve(ContextData.NumValues);
 		for (int32 ValueIndex = 0; ValueIndex < ContextData.NumValues; ValueIndex++)
 		{
-			Data[ValueIndex] = DefTypeOb->GetItemRotation(ContextRawData);
+			const FRotator ItemRotation = DefTypeOb->GetItemRotation(ContextRawData);
+			if (FAISystem::IsValidRotation(ItemRotation))
+			{
+				Data.Add(ItemRotation);
+			}
 			ContextRawData += DefTypeValueSize;
+		}
+
+		if (Data.Num() != ContextData.NumValues)
+		{
+			UE_LOG(LogEQS, Warning, TEXT("FEnvQuery::PrepareContext found %d invalid rotators from context %s"), ContextData.NumValues - Data.Num(), *Context->GetPathName());
 		}
 	}
 
-	return bSuccess;
+	return Data.Num() > 0;
 }
 
 bool FEnvQueryInstance::PrepareContext(UClass* Context, TArray<AActor*>& Data)

@@ -6,9 +6,6 @@ public class AlembicLibrary : ModuleRules
 {
     public AlembicLibrary(ReadOnlyTargetRules Target) : base(Target)
 	{
-        PublicIncludePaths.Add("AlembicLibrary/Public");
-        PrivateIncludePaths.Add("AlembicLibrary/Private"); 
-
         PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -16,7 +13,6 @@ public class AlembicLibrary : ModuleRules
 				"Engine",
                 "InputCore",
                 "UnrealEd",
-                "RawMesh",
                 "GeometryCache",
                 "AlembicLib",
                 "MeshUtilities",
@@ -36,7 +32,9 @@ public class AlembicLibrary : ModuleRules
                 "Core",
                 "CoreUObject",
                 "Engine",
-                "UnrealEd"
+                "UnrealEd",
+                "MeshDescription",
+                "MeshDescriptionOperations",
             }
         );
 

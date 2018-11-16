@@ -23,16 +23,18 @@ bool APostProcessVolume::EncompassesPoint(FVector Point, float SphereRadius/*=0.
 	return AVolume::EncompassesPoint(Point, SphereRadius, OutDistanceToPoint);
 }
 
-#if WITH_EDITOR
 void APostProcessVolume::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
-
-	if(Ar.IsLoading())
+#if WITH_EDITOR
+	if (Ar.IsLoading())
 	{
 		Settings.OnAfterLoad();
 	}
+#endif
 }
+
+#if WITH_EDITOR
 
 void APostProcessVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -63,6 +65,7 @@ bool APostProcessVolume::CanEditChange(const UProperty* InProperty) const
 		FString PropertyName = InProperty->GetName();
 
 		// Settings, can be shared for multiple objects types (volume, component, camera, player)
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		{
 			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldScale))
 			{
@@ -94,7 +97,9 @@ bool APostProcessVolume::CanEditChange(const UProperty* InProperty) const
 			}
 
 			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldDepthBlurAmount) ||
-				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldDepthBlurRadius))
+				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldDepthBlurRadius) ||
+				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldMinFstop) ||
+				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DepthOfFieldBladeCount))
 			{
 				return Settings.DepthOfFieldMethod == EDepthOfFieldMethod::DOFM_CircleDOF;
 			}
@@ -169,6 +174,7 @@ bool APostProcessVolume::CanEditChange(const UProperty* InProperty) const
 			}
 
 		}
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(APostProcessVolume, bEnabled))
 		{

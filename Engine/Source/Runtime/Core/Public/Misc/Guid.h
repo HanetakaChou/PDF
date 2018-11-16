@@ -6,6 +6,7 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/Crc.h"
 #include "Containers/UnrealString.h"
+#include "Serialization/StructuredArchiveFromArchive.h"
 
 class FArchive;
 class FOutputDevice;
@@ -179,14 +180,38 @@ public:
 	 * @param Ar The archive to serialize from or into.
 	 * @param G The GUID to serialize.
 	 */
-	friend FArchive& operator<<(FArchive& Ar, FGuid& G)
-	{
-		return Ar << G.A << G.B << G.C << G.D;
-	}
+	CORE_API friend FArchive& operator<<(FArchive& Ar, FGuid& G);
+
+	/**
+	 * Serializes a GUID from or into a structured archive slot.
+	 *
+	 * @param Slot The structured archive slot to serialize from or into
+	 * @param G The GUID to serialize.
+	 */
+	CORE_API friend void operator<<(FStructuredArchive::FSlot Slot, FGuid& G);
 
 	bool Serialize(FArchive& Ar)
 	{
 		Ar << *this;
+		return true;
+	}
+
+	/**
+	* Guid default string conversion.
+	*/
+	friend FString LexToString(const FGuid& Value)
+	{
+		return Value.ToString();
+	}
+
+	friend void LexFromString(FGuid& Result, const TCHAR* String)
+	{
+		FGuid::Parse(String, Result);
+	}
+
+	bool Serialize(FStructuredArchive::FSlot Slot)
+	{
+		Slot << *this;
 		return true;
 	}
 
@@ -319,14 +344,3 @@ public:
 
 
 template <> struct TIsPODType<FGuid> { enum { Value = true }; };
-
-namespace Lex
-{
-	/**
-	 * Guid default string conversion.
-	 */
-	inline FString ToString(const FGuid& Value)
-	{
-		return Value.ToString();
-	}
-}

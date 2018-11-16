@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealGameSync
 {
@@ -39,24 +39,26 @@ namespace UnrealGameSync
 			this.MessageLabel.Dock = System.Windows.Forms.DockStyle.Fill;
 			this.MessageLabel.Location = new System.Drawing.Point(0, 0);
 			this.MessageLabel.Name = "MessageLabel";
-			this.MessageLabel.Size = new System.Drawing.Size(401, 53);
+			this.MessageLabel.Size = new System.Drawing.Size(414, 55);
 			this.MessageLabel.TabIndex = 0;
 			this.MessageLabel.Text = "Please wait...";
 			this.MessageLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
 			// 
 			// ModalTaskWindow
 			// 
-			this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
-			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-			this.ClientSize = new System.Drawing.Size(401, 53);
+			this.AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
+			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
+			this.ClientSize = new System.Drawing.Size(414, 55);
 			this.Controls.Add(this.MessageLabel);
 			this.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-			this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedToolWindow;
-			this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
+			this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+			this.MaximizeBox = false;
+			this.MinimizeBox = false;
 			this.Name = "ModalTaskWindow";
+			this.ShowIcon = false;
+			this.ShowInTaskbar = false;
 			this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
-			this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.OpenProjectWindow_FormClosing);
-			this.Load += new System.EventHandler(this.OpenProjectWindow_Load);
+			this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.ModalTaskWindow_FormClosing);
 			this.ResumeLayout(false);
 
 		}

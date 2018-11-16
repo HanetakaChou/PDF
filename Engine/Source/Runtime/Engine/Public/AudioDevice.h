@@ -419,6 +419,23 @@ public:
 	virtual void OnDefaultDeviceChanged() = 0;
 };
 
+/** Abstract interface for receiving audio data from a given submix. */
+class ENGINE_API ISubmixBufferListener
+{
+public:
+	/* 
+	Called when a new buffer has been rendered for a given submix
+	@param OwningSubmix	The submix object which has renderered a new buffer
+	@param AudioData		Ptr to the audio buffer
+	@param NumSamples		The number of audio samples in the audio buffer
+	@param NumChannels		The number of channels of audio in the buffer (e.g. 2 for stereo, 6 for 5.1, etc)
+	@param SampleRate		The sample rate of the audio buffer
+	@param AudioClock		Double audio clock value, from start of audio rendering. 
+	*/
+	virtual void OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* AudioData, int32 NumSamples, int32 NumChannels, const int32 SampleRate, double AudioClock) = 0;
+};
+
+
 class ENGINE_API FAudioDevice : public FExec
 {
 public:
@@ -477,6 +494,7 @@ private:
 	bool HandleAudioSoloSoundCue(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleAudioMixerDebugSound(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleSoundClassFixup(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleAudioDebugSound(const TCHAR* Cmd, FOutputDevice& Ar);
 
 	/**
 	* Lists a summary of loaded sound collated by class
@@ -525,6 +543,9 @@ public:
 	 */
 	void Update(bool bGameTicking);
 
+	/** Update called on game thread. */
+	virtual void UpdateGameThread() {}
+
 	/**
 	 * Suspend/resume all sounds (global pause for device suspend/resume, etc.)
 	 *
@@ -560,6 +581,9 @@ public:
 	 * Stop all the audio components and sources attached to the world. nullptr world means all components.
 	 */
 	void Flush(UWorld* WorldToFlush, bool bClearActivatedReverb = true);
+
+	/** Allows audio rendering command queue to flush during audio device flush. */
+	virtual void FlushAudioRenderingCommands() {}
 
 	/**
 	 * Stop any playing sounds that are using a particular SoundWave
@@ -623,11 +647,17 @@ public:
 	 */
 	void SetListener(UWorld* World, int32 InListenerIndex, const FTransform& ListenerTransform, float InDeltaSeconds);
 
+	/** Sets an override for the listener to do attenuation calculations. */
+	void SetListenerAttenuationOverride(const FVector AttenuationPosition);
+
+	/** Removes a listener attenuation override. */
+	void ClearListenerAttenuationOverride();
+
 	const TArray<FListener>& GetListeners() const { check(IsInAudioThread()); return Listeners; }
 
 	/**
-	 * Get ambisonics mixer, if one is available
-	 */
+	* Get ambisonics mixer, if one is available
+	*/
 	TAmbisonicsMixerPtr GetAmbisonicsMixer() { return AmbisonicsMixer; };
 
 	/** 
@@ -647,6 +677,7 @@ public:
 		FCreateComponentParams(FAudioDevice* AudioDevice);
 
 		USoundAttenuation* AttenuationSettings;
+		TSubclassOf<UAudioComponent> AudioComponentClass = UAudioComponent::StaticClass();
 		USoundConcurrency* ConcurrencySettings;
 		bool bAutoDestroy;
 		bool bPlay;
@@ -720,6 +751,9 @@ public:
 	*/
 	void PauseActiveSound(uint64 AudioComponentID, const bool bInIsPaused);
 
+	/** Notify that a pending async occlusion trace finished on the active sound. */
+	void NotifyActiveSoundOcclusionTraceDone(FActiveSound* ActiveSound, bool bIsOccluded);
+
 	/**
 	* Finds the active sound for the specified audio component ID
 	*/
@@ -790,6 +824,24 @@ public:
 	/** Unregisters the sound submix */
 	virtual void UnregisterSoundSubmix(USoundSubmix* SoundSubmix) {}
 
+	/** 
+	 * Registers the submix buffer listener with the given submix. 
+	 * A nullptr for SoundSubmix will register the listener with the master submix.
+	*/
+	virtual void RegisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submix buffer listener only works with the audio mixer. Please run with audio mixer enabled."));
+	}
+
+	/** 
+	 * Unregisters the submix buffer listener with the given submix. 
+	 * A nullptr for SoundSubmix will unregister the listener with the master submix.
+	*/
+	virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submix buffer listener only works with the audio mixer. Please run with audio mixer enabled."));
+	}
+
 	virtual void InitSoundEffectPresets() {}
 
 	/**
@@ -808,7 +860,7 @@ public:
 	/**
 	* Checks to see if a coordinate is within a distance of the given listener
 	*/
-	static bool LocationIsAudible(const FVector& Location, const FTransform& ListenerTransform, const float MaxDistance);
+	bool LocationIsAudible(const FVector& Location, const FTransform& ListenerTransform, const float MaxDistance) const;
 
 	/**
 	 * Sets the Sound Mix that should be active by default
@@ -899,6 +951,12 @@ public:
 		return false;
 	}
 
+	/** Whether or not the platform disables caching of decompressed PCM data (i.e. to save memory on fixed memory platforms */
+	virtual bool DisablePCMAudioCaching() const
+	{
+		return false;
+	}
+
 	/** Creates a Compressed audio info class suitable for decompressing this SoundWave */
 	virtual ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* SoundWave) { return nullptr; }
 
@@ -937,12 +995,14 @@ public:
 
 		bHRTFEnabledForAll_OnGameThread = bNewHRTFEnabledForAll;
 
+		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.SetHRTFEnabledForAll"), STAT_SetHRTFEnabledForAll, STATGROUP_AudioThreadCommands);
+
 		FAudioDevice* AudioDevice = this;
 		FAudioThread::RunCommandOnAudioThread([AudioDevice, bNewHRTFEnabledForAll]()
 		{
 			AudioDevice->bHRTFEnabledForAll = bNewHRTFEnabledForAll;
 
-		});
+		}, GET_STATID(STAT_SetHRTFEnabledForAll));
 	}
 
 	void SetSpatializationInterfaceEnabled(bool InbSpatializationInterfaceEnabled)
@@ -1031,6 +1091,9 @@ public:
 	/** Returns the number of active sound sources */
 	virtual int32 GetNumActiveSources() const { return 0; }
 
+	/** Returns the number of free sources. */
+	int32 GetNumFreeSources() const { return Sources.Num(); }
+
 	/** Returns the sample rate used by the audio device. */
 	float GetSampleRate() const { return SampleRate; }
 
@@ -1085,11 +1148,50 @@ public:
 		return bAudioMixerModuleLoaded;
 	}
 
+	/** Returns if stopping voices is enabled. */
+	bool IsStoppingVoicesEnabled() const
+	{
+		return bIsStoppingVoicesEnabled;
+	}
+
 	/** Updates the source effect chain. Only implemented in audio mixer. */
 	virtual void UpdateSourceEffectChain(const uint32 SourceEffectChainId, const TArray<FSourceEffectChainEntry>& SourceEffectChain, const bool bPlayEffectChainTails) {}
 
 	/** Returns the current source effect chain entries set dynamically from BP or elsewhere. */
 	virtual bool GetCurrentSourceEffectChain(const uint32 SourceEffectChainId, TArray<FSourceEffectChainEntry>& OutCurrentSourceEffectChainEntries) { return false; }
+
+	/** This is called by a USoundSubmix to start recording a submix instance on this device. */
+	virtual void StartRecording(USoundSubmix* InSubmix, float ExpectedRecordingDuration) 
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submix recording only works with the audio mixer. Please run using -audiomixer to or set INI file use submix recording."));
+	}
+
+	/** This is called by a USoundSubmix when we stop recording a submix on this device. */
+	virtual Audio::AlignedFloatBuffer& StopRecording(USoundSubmix* InSubmix, float& OutNumChannels, float& OutSampleRate) 
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submix recording only works with the audio mixer. Please run using -audiomixer to or set INI file use submix recording."));
+		
+		static Audio::AlignedFloatBuffer InvalidBuffer;
+		return InvalidBuffer;
+	}
+
+	/** This is called by a USoundSubmix to start envelope following on a submix isntance on this device. */
+	virtual void StartEnvelopeFollowing(USoundSubmix* InSubmix)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Envelope following submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
+	/** This is called by a USoundSubmix when we stop envelope following a submix instance on this device. */
+	virtual void StopEnvelopeFollowing(USoundSubmix* InSubmix)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Envelope following submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
+	/** Adds an envelope follower delegate to the submix for this audio device. */
+	virtual void AddEnvelopeFollowerDelegate(USoundSubmix* InSubmix, const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Envelope following submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
 
 protected:
 	friend class FSoundSource;
@@ -1247,6 +1349,16 @@ public:
 		return Effects;
 	}
 
+	TMap<USoundMix *, FSoundMixState> GetSoundMixModifiers()
+	{
+		return SoundMixModifiers;
+	}
+
+	void SetSoundMixModifiers(TMap<USoundMix *, FSoundMixState>& InSoundMixModifiers)
+	{
+		SoundMixModifiers = InSoundMixModifiers;
+	}
+
 private:
 	/**
 	 * Internal helper function used by ParseSoundClasses to traverse the tree.
@@ -1278,6 +1390,11 @@ public:
 	{
 	}
 
+	/** Updates timing information for hardware. */
+	virtual void UpdateHardwareTiming()
+	{
+	}
+
 	/** Lets the platform any tick actions */
 	virtual void UpdateHardware()
 	{
@@ -1306,7 +1423,7 @@ public:
 	float GetGameDeltaTime() const;
 
 	/** Sets the update delta time for the audio frame */
-	void UpdateDeviceDeltaTime()
+	virtual void UpdateDeviceDeltaTime()
 	{
 		const double CurrTime = FPlatformTime::Seconds();
 		DeviceDeltaTime = CurrTime - LastUpdateTime;
@@ -1322,6 +1439,15 @@ public:
 private:
 	/** Processes the set of pending sounds that need to be stopped */ 
 	void ProcessingPendingActiveSoundStops(bool bForceDelete = false);
+
+	/** Stops oldest sound source. */
+	void StopOldestStoppingSource();
+
+	/** Processes any pending active sounds. */
+	void ProcessPendingNewActiveSounds();
+
+	/** Adds new active sound on the audio thread */
+	void AddNewActiveSoundInternal(FActiveSound* NewActiveSound);
 
 	/** Check whether we should use attenuation settings */
 	bool ShouldUseAttenuation(const UWorld* World) const;
@@ -1396,6 +1522,12 @@ public:
 	/** The maximum number of concurrent audible sounds */
 	int32 MaxChannels;
 
+	/** The number of sources to reserve for stopping sounds. */
+	int32 NumStoppingVoices;
+
+	/** The maximum number of wave instances allowed. */
+	int32 MaxWaveInstances;
+
 	/** The sample rate of all the audio devices */
 	int32 SampleRate;
 
@@ -1464,6 +1596,13 @@ private:
 protected:
 	// Audio thread representation of listeners
 	TArray<FListener> Listeners;
+
+	// A listener attenuation override to use for distance and attenuation calculations
+	FVector ListenerAttenuationOverride;
+
+	// Whether or not to use the listener attenuation override
+	bool bUseListenerAttenuationOverride;
+
 	TArray<FSoundSource*> Sources;
 	TArray<FSoundSource*> FreeSources;
 
@@ -1517,7 +1656,9 @@ public:
 	uint8 bDisableAudioCaching:1;
 
 	/** Whether or not the lower-level audio device hardware initialized. */
-	uint32 bIsAudioDeviceHardwareInitialized : 1;
+	uint8 bIsAudioDeviceHardwareInitialized : 1;
+
+	uint8 bIsStoppingVoicesEnabled : 1;
 
 	/** Whether or not the audio mixer module is being used by this device. */
 	uint8 bAudioMixerModuleLoaded : 1;
@@ -1556,6 +1697,11 @@ protected:
 	/** Whether or not we allow center channel panning (audio mixer only feature.) */
 	uint8 bAllowCenterChannel3DPanning : 1;
 
+	float DeviceDeltaTime;
+
+	/** Whether the device was initialized. */
+	FORCEINLINE bool IsInitialized() const { return bIsInitialized; }
+
 private:
 
 	/** Whether the value in HighestPriorityActivatedReverb should be used - Audio Thread owned */
@@ -1572,9 +1718,12 @@ private:
 	FAudioStats AudioStats;
 #endif
 	/** The audio thread update delta time for this audio thread update tick. */
-	float DeviceDeltaTime;
+	
 
 	TArray<FActiveSound*> ActiveSounds;
+	/** Array of sound waves to add references to avoid GC until gauranteed to be done with precache or decodes. */
+	TArray<USoundWave*> ReferencedSoundWaves;
+	TArray<USoundWave*> PrecachingSoundWaves;
 	TArray<FWaveInstance*> ActiveWaveInstances;
 
 	/** Cached copy of sound class adjusters array. Cached to avoid allocating every frame. */
@@ -1582,6 +1731,12 @@ private:
 
 	/** Set of sounds which will be stopped next audio frame update */
 	TSet<FActiveSound*> PendingSoundsToStop;
+
+	/** Pending active sounds waiting to be added. */
+	TQueue<FActiveSound*> PendingAddedActiveSounds;
+
+	/** Max number of active sounds to add per frame. */
+	int32 MaxActiveSoundsAddedPerFrame;
 
 	/** A set of sounds which need to be deleted but weren't able to be deleted due to pending async operations */
 	TArray<FActiveSound*> PendingSoundsToDelete;
@@ -1600,6 +1755,12 @@ private:
 
 	/** Inverse listener transformation, used for spatialization */
 	FMatrix InverseListenerTransform;
+
+	/** A count of the number of one-shot active sounds. */
+	uint32 OneShotCount;
+
+	/** Threshold priority for allowing oneshot active sounds through the max oneshot active sound limit. */
+	float OneShotPriorityCullThreshold;
 };
 
 

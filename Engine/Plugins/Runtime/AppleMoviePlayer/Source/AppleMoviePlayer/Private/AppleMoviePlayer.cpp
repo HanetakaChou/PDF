@@ -1,9 +1,11 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "AppleMoviePlayer.h"
-#include "ModuleInterface.h"
+#include "Modules/ModuleInterface.h"
 #include "MoviePlayer.h"
 #include "AppleMovieStreamer.h"
+
+#include "Misc/CoreDelegates.h"
 
 TSharedPtr<FAVPlayerMovieStreamer> AppleMovieStreamer;
 
@@ -14,12 +16,17 @@ class FAppleMoviePlayerModule : public IModuleInterface
 	{
 		FAVPlayerMovieStreamer *Streamer = new FAVPlayerMovieStreamer;
 		AppleMovieStreamer = MakeShareable(Streamer);
-		GetMoviePlayer()->RegisterMovieStreamer(AppleMovieStreamer);
+
+        FCoreDelegates::RegisterMovieStreamerDelegate.Broadcast(AppleMovieStreamer);
 	}
 
 	virtual void ShutdownModule() override
 	{
-		AppleMovieStreamer.Reset();
+        if (AppleMovieStreamer.IsValid())
+        {
+            FCoreDelegates::UnRegisterMovieStreamerDelegate.Broadcast(AppleMovieStreamer);
+            AppleMovieStreamer.Reset();
+        }
 	}
 };
 

@@ -21,8 +21,9 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"TimeManagement"
 				}
-				);
+			);
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
@@ -48,8 +49,9 @@ namespace UnrealBuildTool.Rules
 					"CinematicCamera",
                     "EditorWidgets",
                     "Kismet",
-				}
-				);
+                    "LiveLinkInterface",
+                }
+                );
 
 			DynamicallyLoadedModuleNames.AddRange(
 				new string[]

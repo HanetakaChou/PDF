@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "MovieSceneFwd.h"
 #include "MovieSceneExecutionToken.h"
-#include "ObjectKey.h"
+#include "UObject/ObjectKey.h"
 #include "IMovieScenePlayer.h"
 
 struct IMovieSceneBlendingActuator;
@@ -19,7 +19,7 @@ struct FMovieSceneRemoveInitialValueTokenProducer : IMovieScenePreAnimatedTokenP
 	/** Construction from the object whose initial value to remove, and the actuator to remove it from */
 	MOVIESCENE_API FMovieSceneRemoveInitialValueTokenProducer(TWeakPtr<IMovieSceneBlendingActuator> InWeakActuator);
 
-	virtual IMovieScenePreAnimatedTokenPtr CacheExistingState(UObject& InObject) const override;
+	MOVIESCENE_API virtual IMovieScenePreAnimatedTokenPtr CacheExistingState(UObject& InObject) const override;
 
 private:
 	/** The actuator to remove the initial value from */
@@ -32,7 +32,7 @@ struct FMovieSceneRemoveInitialGlobalValueTokenProducer : IMovieScenePreAnimated
 	/** Construction from the object whose initial value to remove, and the actuator to remove it from */
 	MOVIESCENE_API FMovieSceneRemoveInitialGlobalValueTokenProducer(TWeakPtr<IMovieSceneBlendingActuator> InWeakActuator);
 
-	virtual IMovieScenePreAnimatedGlobalTokenPtr CacheExistingState() const override;
+	MOVIESCENE_API virtual IMovieScenePreAnimatedGlobalTokenPtr CacheExistingState() const override;
 
 private:
 	/** The actuator to remove the initial value from */

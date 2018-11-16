@@ -8,6 +8,8 @@
 
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
+#include "SceneTypes.h"
+#include "RHIDefinitions.h"
 
 /** Names of the built-in editor build types. */
 struct FBuildOptions
@@ -132,6 +134,16 @@ public:
 	 */
 	static UNREALED_API bool EditorBuildTextureStreaming( UWorld* InWorld, EViewModeIndex SelectedViewMode = VMI_Unknown);
 
+
+	/**
+	* Similar to EditorBuildTextureStreaming, but attempts to rebuild TextureStreamingData for all materials in loaded package(s).
+	*
+	* @param	Package				If non-NULL, only looks at materials under the specified package.
+	*
+	* @return	true if any packages were dirtied in the process.
+	*/
+	static UNREALED_API bool EditorBuildMaterialTextureStreamingData(UPackage* Package);
+
 	/**
 	 * Compiled required shader for the given viewmode
 	 *
@@ -238,6 +250,15 @@ private:
 	 * @param	BuildSettings	Build settings that will be used for the editor build
 	 */
 	static void TriggerHierarchicalLODBuilder(UWorld* InWorld, FName Id);
+
+	/** this will attempt to trigger the associated real shader in respect to the current (mobile) emulated versions used by the editor and copy
+	 * obtained number of instructions in place of the emulated ones
+	 *
+	 * @param	QualityLevel	Material quality setting for which the shaders to be compiled
+	 * @param	FeatureLevel	RHI feature level
+	 * @param	Materials		Set of materials to compile shaders for
+	 */
+	static bool CompileShadersComplexityViewMode(EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<class UMaterialInterface*>& Materials, struct FSlowTask& ProgressTask);
 
 	/** Intentionally hide constructors, etc. to prevent instantiation */
 	FEditorBuildUtils();

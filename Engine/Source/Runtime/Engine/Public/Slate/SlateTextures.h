@@ -23,7 +23,6 @@ public:
 	virtual ~FSlateTexture2DRHIRef();
 
 	virtual void Cleanup() override;
-	virtual void FinishCleanup() override;
 
 	virtual uint32 GetWidth() const override { return Width; }
 	virtual uint32 GetHeight() const override { return Height; }
@@ -92,6 +91,8 @@ protected:
 	/** Height of this texture */
 	uint32 Height;
 private:
+	void SetTextureData(const TArray<uint8>& Bytes);
+
 	/** Texture creation flags for if this texture needs to be recreated dynamically */
 	uint32 TexCreateFlags;
 	/** Data used between ReleaseDynamicRHI and InitDynamicRHI.  May be null if the data is not used */

@@ -7,6 +7,7 @@
 #include "UObject/UnrealType.h"
 #include "UObject/PropertyHelper.h"
 #include "UObject/LinkerPlaceholderBase.h"
+#include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 
 static inline void PreloadInnerStructMembers(UStructProperty* StructProperty)
 {
@@ -34,14 +35,14 @@ static inline void PreloadInnerStructMembers(UStructProperty* StructProperty)
 	UStructProperty.
 -----------------------------------------------------------------------------*/
 
-UStructProperty::UStructProperty(ECppProperty, int32 InOffset, uint64 InFlags, UScriptStruct* InStruct)
+UStructProperty::UStructProperty(ECppProperty, int32 InOffset, EPropertyFlags InFlags, UScriptStruct* InStruct)
 	: UProperty(FObjectInitializer::Get(), EC_CppProperty, InOffset, InStruct->GetCppStructOps() ? InStruct->GetCppStructOps()->GetComputedPropertyFlags() | InFlags : InFlags)
 	, Struct(InStruct)
 {
 	ElementSize = Struct->PropertiesSize;
 }
 
-UStructProperty::UStructProperty( const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, uint64 InFlags, UScriptStruct* InStruct )
+UStructProperty::UStructProperty( const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, EPropertyFlags InFlags, UScriptStruct* InStruct )
 	:	UProperty( ObjectInitializer, EC_CppProperty, InOffset, InStruct->GetCppStructOps() ? InStruct->GetCppStructOps()->GetComputedPropertyFlags() | InFlags : InFlags )
 	,	Struct( InStruct )
 {
@@ -83,6 +84,19 @@ void UStructProperty::LinkInternal(FArchive& Ar)
 		// User Defined structs won't have UScriptStruct::ICppStructOps. Setting their flags here.
 		PropertyFlags |= CPF_HasGetValueTypeHash;
 	}
+
+	if (Struct->StructFlags & STRUCT_ZeroConstructor)
+	{
+		PropertyFlags |= CPF_ZeroConstructor;
+	}
+	if (Struct->StructFlags & STRUCT_IsPlainOldData)
+	{
+		PropertyFlags |= CPF_IsPlainOldData;
+	}
+	if (Struct->StructFlags & STRUCT_NoDestructor)
+	{
+		PropertyFlags |= CPF_NoDestructor;
+	}
 }
 
 bool UStructProperty::Identical( const void* A, const void* B, uint32 PortFlags ) const
@@ -105,7 +119,7 @@ uint32 UStructProperty::GetValueTypeHashInternal(const void* Src) const
 	return Struct->GetStructTypeHash(Src);
 }
 
-void UStructProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaults ) const
+void UStructProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const
 {
 	check(Struct);
 
@@ -113,7 +127,7 @@ void UStructProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defa
 	FScopedPlaceholderPropertyTracker ImportPropertyTracker(this);
 #endif
 
-	Struct->SerializeItem(Ar, Value, Defaults);
+	Struct->SerializeItem(Slot, Value, Defaults);
 }
 
 bool UStructProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData ) const
@@ -137,6 +151,11 @@ bool UStructProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Da
 	UE_LOG( LogProperty, Fatal, TEXT( "Deprecated code path" ) );
 
 	return 1;
+}
+
+bool UStructProperty::SupportsNetSharedSerialization() const
+{
+	return !(Struct->StructFlags & STRUCT_NetSerializeNative) || (Struct->StructFlags & STRUCT_NetSharedSerialization);
 }
 
 void UStructProperty::GetPreloadDependencies(TArray<UObject*>& OutDeps)
@@ -234,8 +253,31 @@ const TCHAR* UStructProperty::ImportText_Internal(const TCHAR* InBuffer, void* D
 {
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	FScopedPlaceholderPropertyTracker ImportPropertyTracker(this);
+
+	uint32 PropagatedLoadFlags = 0;
+	if (FLinkerLoad* Linker = GetLinker())
+	{
+		PropagatedLoadFlags |= (Linker->LoadFlags & LOAD_DeferDependencyLoads);
+	}
+
+	uint32 OldFlags = 0;
+	FLinkerLoad* StructLinker = Struct->GetLinker();
+	if (StructLinker)
+	{
+		OldFlags = StructLinker->LoadFlags;
+		StructLinker->LoadFlags |= OldFlags | PropagatedLoadFlags;
+	}
 #endif 
-	return Struct->ImportText(InBuffer, Data, Parent, PortFlags, ErrorText, GetName(), true);
+	const TCHAR* Result = Struct->ImportText(InBuffer, Data, Parent, PortFlags, ErrorText, GetName(), true);
+
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+	if (StructLinker)
+	{
+		StructLinker->LoadFlags = OldFlags;
+	}
+#endif
+	
+	return Result;
 }
 
 const TCHAR* UStructProperty::ImportText_Static(UScriptStruct* InStruct, const FString& Name, const TCHAR* InBuffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText)
@@ -284,9 +326,9 @@ bool UStructProperty::SameType(const UProperty* Other) const
 	return Super::SameType(Other) && (Struct == ((UStructProperty*)Other)->Struct);
 }
 
-bool UStructProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, bool& bOutAdvanceProperty)
+EConvertFromTypeResult UStructProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
 {
-	bOutAdvanceProperty = false;
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 
 	auto CanSerializeFromStructWithDifferentName = [](const FArchive& InAr, const FPropertyTag& PropertyTag, const UStructProperty* StructProperty)
 	{
@@ -303,43 +345,52 @@ bool UStructProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uin
 		if ((Struct->StructFlags & STRUCT_SerializeFromMismatchedTag) && (Tag.Type != NAME_StructProperty || (Tag.StructName != Struct->GetFName())))
 		{
 			UScriptStruct::ICppStructOps* CppStructOps = Struct->GetCppStructOps();
-			check(CppStructOps && CppStructOps->HasSerializeFromMismatchedTag()); // else should not have STRUCT_SerializeFromMismatchedTag
+			check(CppStructOps && (CppStructOps->HasSerializeFromMismatchedTag() || CppStructOps->HasStructuredSerializeFromMismatchedTag())); // else should not have STRUCT_SerializeFromMismatchedTag
 			void* DestAddress = ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex);
-			if (CppStructOps->SerializeFromMismatchedTag(Tag, Ar, DestAddress))
+			if (CppStructOps->HasStructuredSerializeFromMismatchedTag() && CppStructOps->StructuredSerializeFromMismatchedTag(Tag, Slot, DestAddress))
 			{
-				bOutAdvanceProperty = true;
-			}			
-			else
-			{
-				UE_LOG(LogClass, Warning, TEXT("SerializeFromMismatchedTag failed: Type mismatch in %s of %s - Previous (%s) Current(StructProperty) for package:  %s"), *Tag.Name.ToString(), *GetName(), *Tag.Type.ToString(), *Ar.GetArchiveName());
+				return EConvertFromTypeResult::Converted;
 			}
-			return true;
+			else 
+			{
+				FArchiveUObjectFromStructuredArchive Ar(Slot);
+				if (CppStructOps->HasSerializeFromMismatchedTag() && CppStructOps->SerializeFromMismatchedTag(Tag, Ar, DestAddress))
+				{
+
+					return EConvertFromTypeResult::Converted;
+				}
+				else
+				{
+					UE_LOG(LogClass, Warning, TEXT("SerializeFromMismatchedTag failed: Type mismatch in %s of %s - Previous (%s) Current(StructProperty) for package:  %s"), *Tag.Name.ToString(), *GetName(), *Tag.Type.ToString(), *UnderlyingArchive.GetArchiveName());
+					return EConvertFromTypeResult::CannotConvert;
+				}
+			}
 		}
-		else if (Tag.Type == NAME_StructProperty && Tag.StructName != Struct->GetFName() && !CanSerializeFromStructWithDifferentName(Ar, Tag, this))
+
+		if (Tag.Type == NAME_StructProperty && Tag.StructName != Struct->GetFName() && !CanSerializeFromStructWithDifferentName(UnderlyingArchive, Tag, this))
 		{
 			//handle Vector -> Vector4 upgrades here because using the SerializeFromMismatchedTag system would cause a dependency from Core -> CoreUObject
 			if (Tag.StructName == NAME_Vector && Struct->GetFName() == NAME_Vector4)
 			{
 				void* DestAddress = ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex);
 				FVector OldValue;
-				Ar << OldValue;
+				Slot << OldValue;
 
 				//only set X/Y/Z.  The W should already have been set to the property specific default and we don't want to trash it by forcing 0 or 1.
-				FVector4* DestValue = (FVector4*)DestAddress;				
+				FVector4* DestValue = (FVector4*)DestAddress;
 				DestValue->X = OldValue.X;
 				DestValue->Y = OldValue.Y;
 				DestValue->Z = OldValue.Z;
-			}
-			else
-			{
-				UE_LOG(LogClass, Warning, TEXT("Property %s of %s has a struct type mismatch (tag %s != prop %s) in package:  %s. If that struct got renamed, add an entry to ActiveStructRedirects."),
-					*Tag.Name.ToString(), *GetName(), *Tag.StructName.ToString(), *Struct->GetName(), *Ar.GetArchiveName());
+
+				return EConvertFromTypeResult::Converted;
 			}
 
-			return true;
+			UE_LOG(LogClass, Warning, TEXT("Property %s of %s has a struct type mismatch (tag %s != prop %s) in package:  %s. If that struct got renamed, add an entry to ActiveStructRedirects."),
+				*Tag.Name.ToString(), *GetName(), *Tag.StructName.ToString(), *Struct->GetName(), *UnderlyingArchive.GetArchiveName());
+			return EConvertFromTypeResult::CannotConvert;
 		}
 	}
-	return false;
+	return EConvertFromTypeResult::UseSerializeItem;
 }
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UStructProperty, UProperty,

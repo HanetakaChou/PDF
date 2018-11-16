@@ -215,15 +215,18 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, ShadowBias(InLightComponent->ShadowBias)
 	, ShadowSharpen(InLightComponent->ShadowSharpen)
 	, ContactShadowLength(InLightComponent->ContactShadowLength)
-	, MinRoughness(InLightComponent->MinRoughness)
+	, SpecularScale(InLightComponent->SpecularScale)
 	, LightGuid(InLightComponent->LightGuid)
+	, RayStartOffsetDepthScale(InLightComponent->RayStartOffsetDepthScale)
 	, IESTexture(0)
+	, bContactShadowLengthInWS(InLightComponent->ContactShadowLengthInWS ? true : false)
 	, bMovable(InLightComponent->IsMovable())
 	, bStaticLighting(InLightComponent->HasStaticLighting())
 	, bStaticShadowing(InLightComponent->HasStaticShadowing())
 	, bCastDynamicShadow(InLightComponent->CastShadows && InLightComponent->CastDynamicShadows)
 	, bCastStaticShadow(InLightComponent->CastShadows && InLightComponent->CastStaticShadows)
 	, bCastTranslucentShadows(InLightComponent->CastTranslucentShadows)
+	, bTransmission(InLightComponent->bTransmission && bCastDynamicShadow && !bStaticShadowing)
 	, bCastVolumetricShadow(InLightComponent->bCastVolumetricShadow)
 	, bCastShadowsFromCinematicObjectsOnly(InLightComponent->bCastShadowsFromCinematicObjectsOnly)
 	, bForceCachedShadowsForMovablePrimitives(InLightComponent->bForceCachedShadowsForMovablePrimitives)
@@ -234,7 +237,6 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, bUseRayTracedDistanceFieldShadows(InLightComponent->bUseRayTracedDistanceFieldShadows)
 	, bCastModulatedShadows(false)
 	, bUseWholeSceneCSMForMovableObjects(false)
-	, RayStartOffsetDepthScale(InLightComponent->RayStartOffsetDepthScale)
 	// NVCHANGE_BEGIN: Add VXGI
 	// Disable VXGI for Static and Stationary lights because Lightmass is already baking their indirect lighting
 #if WITH_GFSDK_VXGI
@@ -243,9 +245,9 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	// NVCHANGE_END: Add VXGI
 	, LightType(InLightComponent->GetLightType())	
 	, LightingChannelMask(GetLightingChannelMaskForStruct(InLightComponent->LightingChannels))
+	, StatId(InLightComponent->GetStatID(true))
 	, ComponentName(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetFName() : InLightComponent->GetFName())
 	, LevelName(InLightComponent->GetOutermost()->GetFName())
-	, StatId(InLightComponent->GetStatID(true))
 	, FarShadowDistance(0)
 	, FarShadowCascadeCount(0)
 {
@@ -357,16 +359,18 @@ ULightComponent::ULightComponent(const FObjectInitializer& ObjectInitializer)
 	ShadowBias = 0.5f;
 	ShadowSharpen = 0.0f;
 	ContactShadowLength = 0.0f;
+	ContactShadowLengthInWS = false;
 	bUseIESBrightness = false;
 	IESBrightnessScale = 1.0f;
 	IESTexture = NULL;
 
 	bAffectTranslucentLighting = true;
+	bTransmission = false;
 	LightFunctionScale = FVector(1024.0f, 1024.0f, 1024.0f);
 
 	LightFunctionFadeDistance = 100000.0f;
 	DisabledBrightness = 0.5f;
-	MinRoughness = 0.08f;
+	SpecularScale = 1.0f;
 
 	bEnableLightShaftBloom = false;
 	BloomScale = .2f;
@@ -425,6 +429,27 @@ float ULightComponent::ComputeLightBrightness() const
 	return LightBrightness;
 }
 
+#if WITH_EDITOR
+void ULightComponent::SetLightBrightness(float InBrightness)
+{
+	if (IESTexture && IESTexture->TextureMultiplier > 0)
+	{
+		if(bUseIESBrightness && IESBrightnessScale > 0)
+		{
+			IESTexture->Brightness = InBrightness / IESBrightnessScale / IESTexture->TextureMultiplier;
+		}
+		else
+		{
+			Intensity = InBrightness / IESTexture->TextureMultiplier;
+		}
+	}
+	else
+	{
+		Intensity = InBrightness;
+	}
+}
+#endif // WITH_EDITOR
+
 void ULightComponent::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
@@ -444,6 +469,12 @@ void ULightComponent::Serialize(FArchive& Ar)
 			LegacyLightData.Data = LegacyData;
 			GLightComponentsWithLegacyBuildData.AddAnnotation(this, LegacyLightData);
 		}
+	}
+
+	if( MinRoughness_DEPRECATED == 1.0f )
+	{
+		MinRoughness_DEPRECATED = 0.0f;
+		SpecularScale = 0.0f;
 	}
 }
 
@@ -552,6 +583,7 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	const FString PropertyName = PropertyThatChanged ? PropertyThatChanged->GetName() : TEXT("");
 
 	Intensity = FMath::Max(0.0f, Intensity);
+	SpecularScale = FMath::Clamp( SpecularScale, 0.0f, 1.0f );
 
 	if (HasStaticLighting())
 	{
@@ -566,7 +598,8 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastShadowsFromCinematicObjectsOnly) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, CastDynamicShadows) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bAffectTranslucentLighting) &&
-		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, MinRoughness) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bTransmission) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, SpecularScale) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionMaterial) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionScale) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionFadeDistance) &&
@@ -575,6 +608,7 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowBias) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowSharpen) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLength) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLengthInWS) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bEnableLightShaftBloom) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomScale) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomThreshold) &&
@@ -867,6 +901,17 @@ void ULightComponent::SetAffectTranslucentLighting(bool bNewValue)
 		MarkRenderStateDirty();
 	}
 }
+void ULightComponent::SetTransmission(bool bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& bTransmission != bNewValue)
+	{
+		bTransmission = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+
 
 void ULightComponent::SetEnableLightShaftBloom(bool bNewValue)
 {
@@ -1357,7 +1402,7 @@ void ULightComponent::ReassignStationaryLightChannels(UWorld* TargetWorld, bool 
 
 			if (CurrentLight->Channel == INDEX_NONE)
 			{
-				FMessageLog("LightingResults").Error()
+				FMessageLog("LightingResults").PerformanceWarning()
 					->AddToken(FUObjectToken::Create(CurrentLight->Light->GetOwner()))
 					->AddToken(FTextToken::Create( NSLOCTEXT("Lightmass", "LightmassError_FailedToAllocateShadowmapChannel", "Severe performance loss: Failed to allocate shadowmap channel for stationary light due to overlap - light will fall back to dynamic shadows!") ) );
 			}

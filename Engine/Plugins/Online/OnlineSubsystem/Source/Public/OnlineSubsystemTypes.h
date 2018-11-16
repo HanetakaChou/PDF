@@ -4,7 +4,24 @@
 
 #include "CoreMinimal.h"
 #include "UObject/CoreOnline.h"
+#include "OnlineSubsystemNames.h"  // can be removed once we have no more temporary FUniqueNetId subtypes
 #include "OnlineSubsystemPackage.h"
+
+
+#if UE_GAME && UE_BUILD_SHIPPING
+extern ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
+#define OSS_UNIQUEID_REDACT(UniqueId, x) ( !IsUniqueIdLocal(UniqueId) ? ((x.Len() > 10) ? (x.Left(5) + TEXT("...") + x.Right(5)) : FString(TEXT("<Redacted>"))) : x)
+#endif
+
+#ifndef OSS_UNIQUEID_REDACT
+#define OSS_UNIQUEID_REDACT(UniqueId, x) (x)
+#endif
+
+#if UE_BUILD_SHIPPING
+#define OSS_REDACT(x) TEXT("<Redacted>")
+#else
+#define OSS_REDACT(x) (x)
+#endif
 
 /** Maximum players supported on a given platform */
 #if PLATFORM_XBOXONE
@@ -17,29 +34,18 @@
 #define MAX_LOCAL_PLAYERS 1
 #endif
 
-/** TODO: Yuck. Public headers should not depend on redefining platform-specific macros like ERROR_SUCCESS below */
-#if PLATFORM_WINDOWS
-#include "WindowsHWrapper.h"
+#define DEDICATED_SERVER_USER_INDEX 0
+
+#ifndef ONLINE_SUCCESS
+#define ONLINE_SUCCESS 0
 #endif
 
-#ifndef ERROR_SUCCESS
-#define ERROR_SUCCESS 0
+#ifndef ONLINE_FAIL
+#define ONLINE_FAIL (uint32)-1
 #endif
 
-#ifndef E_FAIL
-#define E_FAIL (uint32)-1
-#endif
-
-#ifndef E_NOTIMPL
-#define E_NOTIMPL (uint32)-2
-#endif
-
-#ifndef ERROR_IO_PENDING
-#define ERROR_IO_PENDING 997
-#endif
-
-#ifndef S_OK
-#define S_OK 0
+#ifndef ONLINE_IO_PENDING
+#define ONLINE_IO_PENDING 997
 #endif
 
 /**
@@ -201,11 +207,15 @@ namespace EOnlineServerConnectionStatus
 			}
 			case NotAuthorized:
 			{
-				return TEXT("Not Authorized");
+				return TEXT("NotAuthorized");
 			}
 			case InvalidSession:
 			{
-				return TEXT("Invalid Session");
+				return TEXT("InvalidSession");
+			}
+			default:
+			{
+				return TEXT("Unknown");
 			}
 		}
 		return TEXT("");
@@ -802,6 +812,9 @@ public:
 	}
 };
 
+// placeholder "type" until we can make FUniqueNetIdString sufficiently abstract
+static FName NAME_Unset = TEXT("UNSET");
+
 /**
  * Unique net id wrapper for a string
  */
@@ -810,6 +823,8 @@ class FUniqueNetIdString : public FUniqueNetId
 public:
 	/** Holds the net id for a player */
 	FString UniqueNetIdStr;
+
+	FName Type = NAME_Unset;
 
 	// Define these to increase visibility to public (from parent's protected)
 	FUniqueNetIdString() = default;
@@ -828,6 +843,7 @@ public:
 	 */
 	explicit FUniqueNetIdString(const FString& InUniqueNetId)
 		: UniqueNetIdStr(InUniqueNetId)
+		, Type(NAME_Unset)
 	{
 	}
 
@@ -838,6 +854,7 @@ public:
 	 */
 	explicit FUniqueNetIdString(FString&& InUniqueNetId)
 		: UniqueNetIdStr(MoveTemp(InUniqueNetId))
+		, Type(NAME_Unset)
 	{
 	}
 
@@ -848,10 +865,25 @@ public:
 	 */
 	explicit FUniqueNetIdString(const FUniqueNetId& Src)
 		: UniqueNetIdStr(Src.ToString())
+		, Type(Src.GetType())
+	{
+	}
+
+	/** 
+	* don.eubanks - Including a constructor that allows for type passing to make transitioning easier, if we determine we want to abstract-ify this class, this constructor will be removed
+	*/
+	FUniqueNetIdString(const FString& InUniqueNetId, const FName InType)
+		: UniqueNetIdStr(InUniqueNetId)
+		, Type(InType)
 	{
 	}
 
 	// IOnlinePlatformData
+
+	virtual FName GetType() const override
+	{
+		return Type;
+	}
 
 	virtual const uint8* GetBytes() const override
 	{
@@ -875,7 +907,7 @@ public:
 
 	virtual FString ToDebugString() const override
 	{
-		return UniqueNetIdStr;
+		return OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr);
 	}
 
 	/** Needed for TMap::GetTypeHash() */
@@ -883,6 +915,41 @@ public:
 	{
 		return ::GetTypeHash(A.UniqueNetIdStr);
 	}
+};
+
+
+#define TEMP_UNIQUENETIDSTRING_SUBCLASS(SUBCLASSNAME, TYPE) \
+class SUBCLASSNAME : public FUniqueNetIdString \
+{ \
+public: \
+	SUBCLASSNAME() \
+		: FUniqueNetIdString()	 \
+	{ \
+		Type = TYPE; \
+	} \
+	explicit SUBCLASSNAME(const FString& InUniqueNetId) \
+		: FUniqueNetIdString(InUniqueNetId, TYPE) \
+	{ \
+	} \
+	explicit SUBCLASSNAME(FString&& InUniqueNetId) \
+		: FUniqueNetIdString(MoveTemp(InUniqueNetId), TYPE) \
+	{ \
+	} \
+	explicit SUBCLASSNAME(const FUniqueNetId& Src) \
+		: FUniqueNetIdString(Src) \
+	{ \
+		check(GetType() == TYPE); \
+	} \
+	friend uint32 GetTypeHash(const SUBCLASSNAME& A) \
+	{ \
+		return ::GetTypeHash(A.UniqueNetIdStr); \
+	} \
+	static const TSharedRef<const SUBCLASSNAME>& GetInvalidId() \
+	{ \
+		static const TSharedRef<const SUBCLASSNAME> InvalidId = MakeShared<const SUBCLASSNAME>(FString()); \
+		return InvalidId; \
+		\
+	} \
 };
 
 /** 
@@ -1084,6 +1151,15 @@ struct FCloudFile
 };
 
 /**
+ * User attribution constants for GetUserAttribute()
+ */
+#define USER_ATTR_REALNAME TEXT("realName")
+#define USER_ATTR_DISPLAYNAME TEXT("displayName")
+#define USER_ATTR_PREFERRED_DISPLAYNAME TEXT("prefDisplayName")
+#define USER_ATTR_ID TEXT("id")
+#define USER_ATTR_EMAIL TEXT("email")
+
+/**
  * Base for all online user info
  */
 class FOnlineUser
@@ -1110,7 +1186,19 @@ public:
 	 * @return Any additional user data associated with a registered user
 	 */
 	virtual bool GetUserAttribute(const FString& AttrName, FString& OutAttrValue) const = 0;
+
+	/**
+	 * @return Whether a local attribute for a user was successfully set.
+	 */
+	virtual bool SetUserLocalAttribute(const FString& AttrName, const FString& InAttrValue) { return false; /* Not Implemented by default */};
 };
+
+/**
+ * Auth attribution constants for GetAuthAttribute()
+ */
+#define AUTH_ATTR_REFRESH_TOKEN TEXT("refresh_token")
+#define AUTH_ATTR_ID_TOKEN TEXT("id_token")
+#define AUTH_ATTR_AUTHORIZATION_CODE TEXT("authorization_code")
 
 /**
  * User account information returned via IOnlineIdentity interface
@@ -1189,7 +1277,7 @@ namespace EInviteStatus
 class FOnlineFriend : public FOnlineUser
 {
 public:
-	
+
 	/**
 	 * @return the current invite status of a friend wrt to user that queried
 	 */

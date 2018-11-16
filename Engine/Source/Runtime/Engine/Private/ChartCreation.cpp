@@ -19,6 +19,8 @@
 #include "GameFramework/GameUserSettings.h"
 #include "Performance/EnginePerformanceTargets.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogChartCreation, Log, All);
 
@@ -43,7 +45,13 @@ static TAutoConsoleVariable<int32> GFPSChartOpenFolderOnDump(
 	TEXT("Should we explore to the folder that contains the .log / etc... when a dump is finished?  This can be disabled for automated testing\n")
 	TEXT(" default: 1"));
 
-float GMaximumFrameTimeToConsiderForHitchesAndBinning = 1.0f;
+static TAutoConsoleVariable<int32> GFPSChartDoCsvProfile(
+	TEXT("t.FPSChart.DoCsvProfile"),
+	0,
+	TEXT("Whether to record a CSV profile when recording FPSChart data\n")
+	TEXT(" default: 0"));
+
+float GMaximumFrameTimeToConsiderForHitchesAndBinning = 10.0f;
 
 static FAutoConsoleVariableRef GMaximumFrameTimeToConsiderForHitchesAndBinningCVar(
 	TEXT("t.FPSChart.MaxFrameDeltaSecsBeforeDiscarding"),
@@ -63,6 +71,11 @@ static TAutoConsoleVariable<FString> GFPSChartInterestingFramerates(
 
 /** Array of interesting summary thresholds (e.g., 30 Hz, 60 Hz, 120 Hz) */
 TArray<int32> GTargetFrameRatesForSummary;
+
+TWeakObjectPtr<UDeviceProfileManager> GDeviceProfileManager = nullptr;
+
+/** Are we recording a CSV profile? */
+static bool GFPSChartCSVProfileActive = false;
 
 //////////////////////////////////////////////////////////////////////
 // FDumpFPSChartToEndpoint
@@ -84,12 +97,8 @@ void FDumpFPSChartToEndpoint::FillOutMemberStats()
 	UGameUserSettings* UserSettingsObj = GEngine->GetGameUserSettings();
 	check(UserSettingsObj);
 	ScalabilityQuality = UserSettingsObj->ScalabilityQuality;
-}
-
-void FDumpFPSChartToEndpoint::HandleFPSBucket(float BucketTimePercentage, float BucketFramePercentage, double StartFPS, double EndFPS)
-{
-	// Log bucket index, time and frame Percentage.
-	PrintToEndpoint(FString::Printf(TEXT("Bucket: %.1f - %.1f  Time: %5.2f  Frame: %5.2f"), StartFPS, EndFPS, BucketTimePercentage, BucketFramePercentage));
+	GameResolution = UserSettingsObj->GetScreenResolution();
+	WindowMode = LexToString(UserSettingsObj->GetFullscreenMode());
 }
 
 void FDumpFPSChartToEndpoint::HandleHitchBucket(const FHistogram& HitchHistogram, int32 BucketIndex)
@@ -117,18 +126,23 @@ void FDumpFPSChartToEndpoint::HandleHitchSummary(int32 TotalHitchCount, double T
 	const double ReciprocalNumHitches = (TotalHitchCount > 0) ? (1.0 / (double)TotalHitchCount) : 0.0;
 	PrintToEndpoint(FString::Printf(TEXT("Hitch frames bound by game thread:  %i  (%0.1f percent)"), Chart.TotalGameThreadBoundHitchCount, ReciprocalNumHitches * Chart.TotalGameThreadBoundHitchCount));
 	PrintToEndpoint(FString::Printf(TEXT("Hitch frames bound by render thread:  %i  (%0.1f percent)"), Chart.TotalRenderThreadBoundHitchCount, ReciprocalNumHitches * Chart.TotalRenderThreadBoundHitchCount));
+	PrintToEndpoint(FString::Printf(TEXT("Hitch frames bound by RHI thread:  %i  (%0.1f percent)"), Chart.TotalRHIThreadBoundHitchCount, ReciprocalNumHitches * Chart.TotalRHIThreadBoundHitchCount));
 	PrintToEndpoint(FString::Printf(TEXT("Hitch frames bound by GPU:  %i  (%0.1f percent)"), Chart.TotalGPUBoundHitchCount, ReciprocalNumHitches * Chart.TotalGPUBoundHitchCount));
 	PrintToEndpoint(FString::Printf(TEXT("Hitches / min:  %.2f"), Chart.GetAvgHitchesPerMinute()));
 	PrintToEndpoint(FString::Printf(TEXT("Time spent in hitch buckets:  %.2f s"), TotalTimeSpentInHitchBuckets));
 	PrintToEndpoint(FString::Printf(TEXT("Avg. hitch frame length:  %.2f s"), Chart.GetAvgHitchFrameLength()));
 }
 
-void FDumpFPSChartToEndpoint::HandleFPSThreshold(int32 TargetFPS, int32 NumFramesBelow, float PctTimeAbove, float PctMissedFrames)
+void FDumpFPSChartToEndpoint::HandleFPSThreshold(int32 TargetFPS, float PctMissedFrames)
 {
-	const float PercentFramesAbove = float(NumFrames - NumFramesBelow) / float(NumFrames)*100.0f;
-
-	PrintToEndpoint(FString::Printf(TEXT("  Target %d FPS: %.2f %% syncs missed, %4.2f %% of time spent > %d FPS (%.2f %% of frames)"), TargetFPS, PctMissedFrames, PctTimeAbove, TargetFPS, PercentFramesAbove));
+	PrintToEndpoint(FString::Printf(TEXT("  Target %d FPS: %.2f %% syncs missed"), TargetFPS, PctMissedFrames));
 }
+
+void FDumpFPSChartToEndpoint::HandleDynamicResThreshold(int32 TargetScreenPercentage, float PctTimeAbove)
+{ 
+	PrintToEndpoint(FString::Printf(TEXT("DynamicRes above %d%% : %.2f%% of frames"), TargetScreenPercentage, PctTimeAbove));
+}
+
 
 void FDumpFPSChartToEndpoint::HandleBasicStats()
 {
@@ -139,6 +153,7 @@ void FDumpFPSChartToEndpoint::HandleBasicStats()
 	PrintToEndpoint(TEXT("Machine info:"));
 	PrintToEndpoint(FString::Printf(TEXT("\tOS: %s %s"), *OSMajor, *OSMinor));
 	PrintToEndpoint(FString::Printf(TEXT("\tCPU: %s %s"), *CPUVendor, *CPUBrand));
+	PrintToEndpoint(FString::Printf(TEXT("\tDeviceProfile: %s"), *DeviceProfileName));
 
 	FString CompositeGPUString = FString::Printf(TEXT("\tGPU: %s"), *ActualGPUBrand);
 	if (ActualGPUBrand != DesktopGPUBrand)
@@ -156,35 +171,57 @@ void FDumpFPSChartToEndpoint::HandleBasicStats()
 	PrintToEndpoint(FString::Printf(TEXT("\tEffects Quality: %d"), ScalabilityQuality.EffectsQuality));
 	PrintToEndpoint(FString::Printf(TEXT("\tFoliage Quality: %d"), ScalabilityQuality.FoliageQuality));
 
-	PrintToEndpoint(FString::Printf(TEXT("%i frames collected over %4.2f seconds, disregarding %4.2f seconds for a %4.2f FPS average"),
-		NumFrames,
+	PrintToEndpoint(FString::Printf(TEXT("\tWindow Mode: %s"), *WindowMode));
+	PrintToEndpoint(FString::Printf(TEXT("\tResolution: %dx%d"), GameResolution.X, GameResolution.Y));
+
+	PrintToEndpoint(FString::Printf(TEXT("%i frames collected over %4.2f seconds, disregarding %4.2f seconds (%d frames) for a %4.2f FPS average"),
+		Chart.GetNumFrames(),
 		WallClockTimeFromStartOfCharting,
-		TimeDisregarded,
-		AvgFPS));
+		Chart.TimeDisregarded,
+		Chart.FramesDisregarded,
+		Chart.GetAverageFramerate()));
 	PrintToEndpoint(FString::Printf(TEXT("Average GPU frametime: %4.2f ms"), AvgGPUFrameTime));
+	PrintToEndpoint(FString::Printf(TEXT("Average RenderThread frametime: %4.2f ms"), AvgRenderThreadFrameTime));
+	PrintToEndpoint(FString::Printf(TEXT("Average GameThread frametime: %4.2f ms"), AvgGameThreadFrameTime));
+
+	PrintToEndpoint(FString::Printf(TEXT("Total time spent flushing async loading: %4.2f ms"), TotalFlushAsyncLoadingTimeInMS));
+	PrintToEndpoint(FString::Printf(TEXT("Total flushing async loading calls: %d"), TotalFlushAsyncLoadingCalls));
+	PrintToEndpoint(FString::Printf(TEXT("Max flush async loading time: %4.2f ms"), MaxFlushAsyncLoadingTimeInMS));
+	PrintToEndpoint(FString::Printf(TEXT("Average flush async loading time: %4.2f ms"), AvgFlushAsyncLoadingTimeInMS));
+
+	PrintToEndpoint(FString::Printf(TEXT("Total sync loads: %d"), TotalSyncLoadCount));
+
 	PrintToEndpoint(FString::Printf(TEXT("BoundGameThreadPct: %4.2f"), BoundGameThreadPct));
 	PrintToEndpoint(FString::Printf(TEXT("BoundRenderThreadPct: %4.2f"), BoundRenderThreadPct));
 	PrintToEndpoint(FString::Printf(TEXT("BoundGPUPct: %4.2f"), BoundGPUPct));
 	PrintToEndpoint(FString::Printf(TEXT("ExcludeIdleTime: %d"), GFPSChartExcludeIdleTime.GetValueOnGameThread()));
 }
 
-void FDumpFPSChartToEndpoint::DumpChart(double InWallClockTimeFromStartOfCharting, const FString& InMapName)
+void FDumpFPSChartToEndpoint::DumpChart(double InWallClockTimeFromStartOfCharting, FString InMapName, FString InDeviceProfileName)
 {
 	FillOutMemberStats();
 
-	TotalTime = Chart.FramerateHistogram.GetSumOfAllMeasures();
+	int32 TotalTime = Chart.GetTotalTime();
 	WallClockTimeFromStartOfCharting = InWallClockTimeFromStartOfCharting;
-	NumFrames = Chart.FramerateHistogram.GetNumMeasurements();
-	MapName = InMapName;
+	int32 NumFrames = (int32)Chart.GetNumFrames();
+	MapName = MoveTemp(InMapName);
+	DeviceProfileName = MoveTemp(InDeviceProfileName);
 
 	if (TotalTime > WallClockTimeFromStartOfCharting)
 	{
 		UE_LOG(LogChartCreation, Log, TEXT("Weirdness: wall clock time (%f) is smaller than total frame time (%f)"), WallClockTimeFromStartOfCharting, TotalTime);
 	}
 
-	AvgFPS = NumFrames / TotalTime;
-	TimeDisregarded = FMath::Max<float>(0, WallClockTimeFromStartOfCharting - TotalTime);
 	AvgGPUFrameTime = float((Chart.TotalFrameTime_GPU / NumFrames)*1000.0);
+	AvgRenderThreadFrameTime = float((Chart.TotalFrameTime_RenderThread / NumFrames)*1000.0);
+	AvgGameThreadFrameTime = float((Chart.TotalFrameTime_GameThread / NumFrames)*1000.0);
+
+	TotalFlushAsyncLoadingTimeInMS = Chart.TotalFlushAsyncLoadingTime * 1000.0;
+	TotalFlushAsyncLoadingCalls = Chart.TotalFlushAsyncLoadingCalls;
+	MaxFlushAsyncLoadingTimeInMS = Chart.MaxFlushAsyncLoadingTime * 1000.0;
+	AvgFlushAsyncLoadingTimeInMS = (TotalFlushAsyncLoadingCalls > 0) ? (TotalFlushAsyncLoadingTimeInMS / TotalFlushAsyncLoadingCalls) : 0;
+
+	TotalSyncLoadCount = Chart.TotalSyncLoadCount;
 
 	BoundGameThreadPct = (float(Chart.NumFramesBound_GameThread) / float(NumFrames))*100.0f;
 	BoundRenderThreadPct = (float(Chart.NumFramesBound_RenderThread) / float(NumFrames))*100.0f;
@@ -193,52 +230,14 @@ void FDumpFPSChartToEndpoint::DumpChart(double InWallClockTimeFromStartOfChartin
 	// Let the derived class process the members we've set up
 	HandleBasicStats();
 
-	// keep track of the number of frames below X FPS, and the percentage of time above X FPS
-	TArray<float, TInlineAllocator<4>> TimesSpentAboveThreshold;
-	TArray<int32, TInlineAllocator<4>> FramesSpentBelowThreshold;
-	TimesSpentAboveThreshold.AddZeroed(GTargetFrameRatesForSummary.Num());
-	FramesSpentBelowThreshold.AddZeroed(GTargetFrameRatesForSummary.Num());
-
-	// Iterate over all FPS chart buckets, dumping percentages.
-	//@TODO: Try adding an iterator to the histogram
-	for (int32 NumBins = Chart.FramerateHistogram.GetNumBins(), BinIndex = 0; BinIndex < NumBins; ++BinIndex)
-	{
-		const double ChartEntrySumTime = Chart.FramerateHistogram.GetBinObservationsSum(BinIndex);
-		const int32 ChartEntryCount = Chart.FramerateHistogram.GetBinObservationsCount(BinIndex);
-		const double StartFPS = Chart.FramerateHistogram.GetBinLowerBound(BinIndex);
-		const double EndFPS = Chart.FramerateHistogram.GetBinUpperBound(BinIndex);
-
-		// Figure out bucket time and frame percentage.
-		const float BucketTimePercentage = 100.f * ChartEntrySumTime / TotalTime;
-		const float BucketFramePercentage = (100.f * ChartEntryCount) / NumFrames;
-
-		for (int32 ThresholdIndex = 0; ThresholdIndex < GTargetFrameRatesForSummary.Num(); ++ThresholdIndex)
-		{
-			const int32 FrameRateThreshold = GTargetFrameRatesForSummary[ThresholdIndex];
-
-			if (StartFPS >= FrameRateThreshold)
-			{
-				TimesSpentAboveThreshold[ThresholdIndex] += BucketTimePercentage;
-			}
-			else
-			{
-				FramesSpentBelowThreshold[ThresholdIndex] += ChartEntryCount;
-			}
-		}
-
-		HandleFPSBucket(BucketTimePercentage, BucketFramePercentage, StartFPS, EndFPS);
-	}
-
 	// Handle threhsolds
 	for (int32 ThresholdIndex = 0; ThresholdIndex < GTargetFrameRatesForSummary.Num(); ++ThresholdIndex)
 	{
 		const int32 TargetFPS = GTargetFrameRatesForSummary[ThresholdIndex];
 
-		const float PctTimeAbove = TimesSpentAboveThreshold[ThresholdIndex];
-		const int32 NumFramesBelow = FramesSpentBelowThreshold[ThresholdIndex];
 		const float PctMissedFrames = (float)Chart.GetPercentMissedVSync(TargetFPS);
 
-		HandleFPSThreshold(TargetFPS, NumFramesBelow, PctTimeAbove, PctMissedFrames);
+		HandleFPSThreshold(TargetFPS, PctMissedFrames);
 	}
 
 	// Dump hitch data
@@ -257,10 +256,26 @@ void FDumpFPSChartToEndpoint::DumpChart(double InWallClockTimeFromStartOfChartin
 
 		PrintToEndpoint(TEXT("--- End"));
 	}
+
+	for (int32 NumBins = Chart.DynamicResHistogram.GetNumBins(), BinIndex = 0; BinIndex < NumBins; ++BinIndex)
+	{
+		// Get the sub of this and all subsequent bins data. This is O(N^2), but we only have 5 bins... 
+		int32 ChartEntryCount = 0;
+		for (int BinIndex2 = BinIndex; BinIndex2 < NumBins; BinIndex2++)
+		{
+			ChartEntryCount += Chart.DynamicResHistogram.GetBinObservationsCount(BinIndex2);
+		}
+		const double MinScreenPercentage = Chart.DynamicResHistogram.GetBinLowerBound(BinIndex);
+
+		float PctTimeAbove = 100.0f * float(ChartEntryCount) / float(Chart.DynamicResHistogram.GetNumMeasurements());
+
+		HandleDynamicResThreshold(MinScreenPercentage, PctTimeAbove);
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
 
+/** WARNING: This class is effectively deprecated, and all decisions of what to send to analytics have been moved into respective game classes. */
 struct FDumpFPSChartToAnalyticsArray : public FDumpFPSChartToEndpoint
 {
 	FDumpFPSChartToAnalyticsArray(const FPerformanceTrackingChart& InChart, TArray<FAnalyticsEventAttribute>& InParamArray, bool bShouldIncludeClientHWInfo, bool bIncludeHistograms)
@@ -278,17 +293,6 @@ protected:
 protected:
 	virtual void PrintToEndpoint(const FString& Text) override
 	{
-	}
-
-	virtual void HandleFPSBucket(float BucketTimePercentage, float BucketFramePercentage, double StartFPS, double EndFPS) override
-	{
-		if (bIncludeHistogramInfo)
-		{
-			const int32 IntegralStartFPS = (int32)StartFPS;
-			const int32 IntegralEndFPS = (EndFPS == FLT_MAX) ? 999 : (int32)EndFPS;
-			check((IntegralStartFPS != IntegralEndFPS) && (IntegralStartFPS < IntegralEndFPS));
-			ParamArray.Add(FAnalyticsEventAttribute(FString::Printf(TEXT("Bucket_%i_%i_TimePercentage"), IntegralStartFPS, IntegralEndFPS), BucketTimePercentage));
-		}
 	}
 
 	virtual void HandleHitchBucket(const FHistogram& HitchHistogram, int32 BucketIndex) override
@@ -340,22 +344,22 @@ protected:
 		const double TimeSpentHitching = TotalTimeSpentInHitchBuckets - RegularFramePortionForHitchFrames;
 		ensure(TimeSpentHitching >= 0.0);
 
-		const double PercentSpentHitching = (TotalTime > 0.0) ? (100.0 * TimeSpentHitching / TotalTime) : 0.0;
+		const double PercentSpentHitching = (Chart.GetTotalTime() > 0.0) ? (100.0 * TimeSpentHitching / Chart.GetTotalTime()) : 0.0;
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("PercentSpentHitching"), PercentSpentHitching));
 	}
 
-	virtual void HandleFPSThreshold(int32 TargetFPS, int32 NumFramesBelow, float PctTimeAbove, float PctMissedFrames) override
+	virtual void HandleFPSThreshold(int32 TargetFPS, float PctMissedFrames) override
 	{
-		{
-			const FString ParamName = FString::Printf(TEXT("PercentAbove%d"), TargetFPS);
-			const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctTimeAbove);
-			ParamArray.Add(FAnalyticsEventAttribute(ParamName, ParamValue));
-		}
-		{
-			const FString ParamName = FString::Printf(TEXT("MVP%d"), TargetFPS);
-			const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctMissedFrames);
-			ParamArray.Add(FAnalyticsEventAttribute(ParamName, ParamValue));
-		}
+		const FString ParamName = FString::Printf(TEXT("MVP%d"), TargetFPS);
+		const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctMissedFrames);
+		ParamArray.Add(FAnalyticsEventAttribute(ParamName, ParamValue));
+	}
+
+	virtual void HandleDynamicResThreshold(int32 TargetScreenPercentage, float PctTimeAbove) override
+	{
+		const FString ParamName = FString::Printf(TEXT("DynRes%dPlus"), TargetScreenPercentage);
+		const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctTimeAbove);
+		ParamArray.Add(FAnalyticsEventAttribute(ParamName, ParamValue));
 	}
 
 	virtual void HandleBasicStats() override
@@ -365,9 +369,9 @@ protected:
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("BuildType"), EBuildConfigurations::ToString(FApp::GetBuildConfiguration())));
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("DateStamp"), FDateTime::Now().ToString()));
 
-		ParamArray.Add(FAnalyticsEventAttribute(TEXT("Platform"), FString::Printf(TEXT("%s"), ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName()))));
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("OS"), FString::Printf(TEXT("%s %s"), *OSMajor, *OSMinor)));
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("CPU"), FString::Printf(TEXT("%s %s"), *CPUVendor, *CPUBrand)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("DeviceProfile"), DeviceProfileName));
 
 		if (bIncludeClientHWInfo)
 		{
@@ -386,10 +390,21 @@ protected:
 			ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgGPUTime"), FString::Printf(TEXT("%4.2f"), AvgGPUFrameTime)));
 		}
 
-		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgFPS"), FString::Printf(TEXT("%4.2f"), AvgFPS)));
-		ParamArray.Add(FAnalyticsEventAttribute(TEXT("TimeDisregarded"), FString::Printf(TEXT("%4.2f"), TimeDisregarded)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgRenderThreadTime"), FString::Printf(TEXT("%4.2f"), AvgRenderThreadFrameTime)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgGameThreadTime"), FString::Printf(TEXT("%4.2f"), AvgGameThreadFrameTime)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgFPS"), FString::Printf(TEXT("%4.2f"), Chart.GetAverageFramerate())));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgFrameTime"), FString::Printf(TEXT("%4.2f"), 1000.0f/Chart.GetAverageFramerate())));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("TimeDisregarded"), FString::Printf(TEXT("%4.2f"), Chart.TimeDisregarded)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("FramesDisregarded"), FString::Printf(TEXT("%d"), Chart.FramesDisregarded)));
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("Time"), FString::Printf(TEXT("%4.2f"), WallClockTimeFromStartOfCharting)));
-		ParamArray.Add(FAnalyticsEventAttribute(TEXT("FrameCount"), FString::Printf(TEXT("%i"), NumFrames)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("FrameCount"), FString::Printf(TEXT("%i"), (int32)Chart.GetNumFrames())));
+
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("FlushAsyncLoadTime"), FString::Printf(TEXT("%4.2f"), TotalFlushAsyncLoadingTimeInMS)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("FlushAsyncLoadCalls"), FString::Printf(TEXT("%d"), TotalFlushAsyncLoadingCalls)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("MaxFlushAsyncLoadTime"), FString::Printf(TEXT("%4.2f"), MaxFlushAsyncLoadingTimeInMS)));
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("AvgFlushAsyncLoadTime"), FString::Printf(TEXT("%4.2f"), AvgFlushAsyncLoadingTimeInMS)));
+
+		ParamArray.Add(FAnalyticsEventAttribute(TEXT("SyncLoadCount"), FString::Printf(TEXT("%d"), TotalSyncLoadCount)));
 
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("PercentGameThreadBound"), FString::Printf(TEXT("%4.2f"), BoundGameThreadPct)));
 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("PercentRenderThreadBound"), FString::Printf(TEXT("%4.2f"), BoundRenderThreadPct)));
@@ -451,19 +466,6 @@ protected:
 	{
 	}
 
-	virtual void HandleFPSBucket(float BucketTimePercentage, float BucketFramePercentage, double StartFPS, double EndFPS) override
-	{
-		const int32 IntegralStartFPS = (int32)StartFPS;
-		const int32 IntegralEndFPS = (EndFPS == FLT_MAX) ? 999 : (int32)EndFPS;
-		check((IntegralStartFPS != IntegralEndFPS) && (IntegralStartFPS < IntegralEndFPS));
-
-		const FString SrcToken = FString::Printf(TEXT("TOKEN_%i_%i"), IntegralStartFPS, IntegralEndFPS);
-		const FString DstToken = FString::Printf(TEXT("%5.2f"), BucketTimePercentage);
-
-		// Replace token with actual values.
-		FPSChartRow = FPSChartRow.Replace(*SrcToken, *DstToken, ESearchCase::CaseSensitive);
-	}
-
 	virtual void HandleHitchBucket(const FHistogram& HitchHistogram, int32 BucketIndex) override
 	{
 		const double UpperBoundSecs = HitchHistogram.GetBinUpperBound(BucketIndex);
@@ -495,19 +497,18 @@ protected:
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_HITCHES_PER_MIN"), *FString::Printf(TEXT("%.2f"), Chart.GetAvgHitchesPerMinute()), ESearchCase::CaseSensitive);
 	}
 
-	virtual void HandleFPSThreshold(int32 TargetFPS, int32 NumFramesBelow, float PctTimeAbove, float PctMissedFrames) override
+	virtual void HandleFPSThreshold(int32 TargetFPS, float PctMissedFrames) override
 	{
-		{
-			const FString ParamName = FString::Printf(TEXT("TOKEN_PCT_ABOVE_%d"), TargetFPS);
-			const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctTimeAbove);
-			FPSChartRow = FPSChartRow.Replace(*ParamName, *ParamValue, ESearchCase::CaseSensitive);
-		}
+		const FString ParamName = FString::Printf(TEXT("TOKEN_MVP_%d"), TargetFPS);
+		const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctMissedFrames);
+		FPSChartRow = FPSChartRow.Replace(*ParamName, *ParamValue, ESearchCase::CaseSensitive);
+	}
 
-		{
-			const FString ParamName = FString::Printf(TEXT("TOKEN_MVP_%d"), TargetFPS);
-			const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctMissedFrames);
-			FPSChartRow = FPSChartRow.Replace(*ParamName, *ParamValue, ESearchCase::CaseSensitive);
-		}
+	virtual void HandleDynamicResThreshold(int32 TargetScreenPercentage, float PctTimeAbove) override
+	{
+		const FString ParamName = FString::Printf(TEXT("TOKEN_DYNRES_%d_PLUS"), TargetScreenPercentage);
+		const FString ParamValue = FString::Printf(TEXT("%4.2f"), PctTimeAbove);
+		FPSChartRow = FPSChartRow.Replace(*ParamName, *ParamValue, ESearchCase::CaseSensitive);
 	}
 
 	virtual void HandleBasicStats() override
@@ -517,6 +518,7 @@ protected:
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_CHANGELIST"), *FString::Printf(TEXT("%i"), GetChangeListNumberForPerfTesting()), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_BUILDCONFIG"), EBuildConfigurations::ToString(FApp::GetBuildConfiguration()), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_DATESTAMP"), *FString::Printf(TEXT("%s"), *FDateTime::Now().ToString()), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_DEVICE_PROFILE"), *DeviceProfileName, ESearchCase::CaseSensitive);
 
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_OS"), *FString::Printf(TEXT("%s %s"), *OSMajor, *OSMinor), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_CPU"), *FString::Printf(TEXT("%s %s"), *CPUVendor, *CPUBrand), ESearchCase::CaseSensitive);
@@ -530,10 +532,10 @@ protected:
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_SETTINGS_FX"), *FString::Printf(TEXT("%d"), ScalabilityQuality.EffectsQuality), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_SETTINGS_FLG"), *FString::Printf(TEXT("%d"), ScalabilityQuality.FoliageQuality), ESearchCase::CaseSensitive);
 
-		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_FPS"), *FString::Printf(TEXT("%4.2f"), AvgFPS), ESearchCase::CaseSensitive);
-		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_TIME_DISREGARDED"), *FString::Printf(TEXT("%4.2f"), TimeDisregarded), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_FPS"), *FString::Printf(TEXT("%4.2f"), Chart.GetAverageFramerate()), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_TIME_DISREGARDED"), *FString::Printf(TEXT("%4.2f"), Chart.TimeDisregarded), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_TIME"), *FString::Printf(TEXT("%4.2f"), WallClockTimeFromStartOfCharting), ESearchCase::CaseSensitive); //@TODO: Questionable given multiple charts
-		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_FRAMECOUNT"), *FString::Printf(TEXT("%i"), NumFrames), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_FRAMECOUNT"), *FString::Printf(TEXT("%i"), (int32)Chart.GetNumFrames()), ESearchCase::CaseSensitive);
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_GPUTIME"), *FString::Printf(TEXT("%4.2f ms"), AvgGPUFrameTime), ESearchCase::CaseSensitive);
 
 		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_BOUND_GAME_THREAD_PERCENT"), *FString::Printf(TEXT("%4.2f"), BoundGameThreadPct), ESearchCase::CaseSensitive);
@@ -545,8 +547,8 @@ protected:
 		// 		ParamArray.Add(FAnalyticsEventAttribute(TEXT("Platform"), FString::Printf(TEXT("%s"), ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName()))));
 
 		// Sum up FrameTimes and GameTimes
-		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_RENDTIME"), *FString::Printf(TEXT("%4.2f ms"), float((Chart.TotalFrameTime_RenderThread / NumFrames)*1000.0)), ESearchCase::CaseSensitive);
-		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_GAMETIME"), *FString::Printf(TEXT("%4.2f ms"), float((Chart.TotalFrameTime_GameThread / NumFrames)*1000.0)), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_RENDTIME"), *FString::Printf(TEXT("%4.2f ms"), AvgRenderThreadFrameTime), ESearchCase::CaseSensitive);
+		FPSChartRow = FPSChartRow.Replace(TEXT("TOKEN_AVG_GAMETIME"), *FString::Printf(TEXT("%4.2f ms"), AvgGameThreadFrameTime), ESearchCase::CaseSensitive);
 	}
 };
 #endif
@@ -556,29 +558,70 @@ protected:
 
 FPerformanceTrackingChart::FPerformanceTrackingChart(const FDateTime& InStartTime, const FString& InChartLabel)
 	: ChartLabel(InChartLabel)
-	, NumFramesBound_GameThread(0)
-	, NumFramesBound_RenderThread(0)
-	, NumFramesBound_GPU(0)
-	, TotalFramesBoundTime_GameThread(0.0)
-	, TotalFramesBoundTime_RenderThread(0.0)
-	, TotalFramesBoundTime_GPU(0.0)
-	, TotalFrameTime_GameThread(0.0)
-	, TotalFrameTime_RenderThread(0.0)
-	, TotalFrameTime_GPU(0.0)
-	, TotalGameThreadBoundHitchCount(0)
-	, TotalRenderThreadBoundHitchCount(0)
-	, TotalGPUBoundHitchCount(0)
-	, CaptureStartTime(InStartTime)
-	, AccumulatedChartTime(0.0){
-	{
-		const double FPSThresholds[] = { 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 120.0 };
+{
+	Reset(InStartTime);
 
-		FHistogramBuilder Builder(FramerateHistogram, 0.0);
-		for (double Threshold : FPSThresholds)
-		{
-			Builder.AddBin(Threshold);
-		}
+	// Lazy init the DP manager. Need a weak ptr to it to tell if it still exists
+	if (GDeviceProfileManager == nullptr)
+	{
+		GDeviceProfileManager = &UDeviceProfileManager::Get(); 
 	}
+
+	if (GDeviceProfileManager.IsValid())
+	{
+		DeviceProfilesUpdatedDelegateHandle = UDeviceProfileManager::Get().OnManagerUpdated().AddRaw(this, &FPerformanceTrackingChart::OnDeviceProfileManagerUpdated);
+	}
+}
+
+FPerformanceTrackingChart::FPerformanceTrackingChart()
+{
+	Reset(FDateTime::MinValue());
+}
+
+FPerformanceTrackingChart::~FPerformanceTrackingChart()
+{
+	if (GDeviceProfileManager.IsValid() && DeviceProfilesUpdatedDelegateHandle.IsValid() )
+	{
+		UDeviceProfileManager::Get().OnManagerUpdated().Remove(DeviceProfilesUpdatedDelegateHandle);
+	}
+}
+
+// Discard all accumulated data
+void FPerformanceTrackingChart::Reset(const FDateTime& InStartTime)
+{
+	CaptureStartTime = InStartTime;
+
+	NumFramesBound_GameThread = 0;
+	NumFramesBound_RenderThread = 0;
+	NumFramesBound_RHIThread = 0;
+	NumFramesBound_GPU = 0;
+	TotalFramesBoundTime_GameThread = 0.0;
+	TotalFramesBoundTime_RenderThread = 0.0;
+	TotalFramesBoundTime_RHIThread = 0.0;
+	TotalFramesBoundTime_GPU = 0.0;
+	TotalFrameTime_GameThread = 0.0;
+	TotalFrameTime_RenderThread = 0.0;
+	TotalFrameTime_RHIThread = 0.0;
+	TotalFrameTime_GPU = 0.0;
+	TotalFlushAsyncLoadingTime = 0.0;
+	TotalFlushAsyncLoadingCalls = 0;
+	MaxFlushAsyncLoadingTime = 0.0;
+	TotalSyncLoadCount = 0;
+	TotalGameThreadBoundHitchCount = 0;
+	TotalRenderThreadBoundHitchCount = 0;
+	TotalRHIThreadBoundHitchCount = 0;
+	TotalGPUBoundHitchCount = 0;
+	MaxDrawCalls = 0;
+	MinDrawCalls = INT_MAX;
+	TotalDrawCalls = 0;
+	MaxDrawnPrimitives = 0;
+	MinDrawnPrimitives = INT_MAX;
+	TotalDrawnPrimitives = 0;
+	AccumulatedChartTime = 0.0;
+	TimeDisregarded = 0.0;
+	FramesDisregarded = 0;
+
+	FrametimeHistogram.InitFromArray({ 0.0/1000.0, 15.0/1000.0, 20.0/1000.0, 30.0/1000.0, 35.0/1000.0, 60.0/1000.0, 100.0/1000.0, 1000.0/1000.0 });
 
 	{
 		const double HitchThresholdsMS[] = { 30.0, 60.0, 100.0, 150.0, 200.0, 300.0, 500.0, 750.0, 1000.0, 1500.0, 2000.0, 2500.0, 5000.0 };
@@ -590,31 +633,98 @@ FPerformanceTrackingChart::FPerformanceTrackingChart(const FDateTime& InStartTim
 			Builder.AddBin(ThresholdMS * MSToSeconds);
 		}
 	}
+
+	{
+		FHistogramBuilder Builder(DynamicResHistogram, 60.0);
+		const double DynamicResMaxPercentages[] = { 70.0, 80.0, 90.0, 100.0 };
+
+		for (double MaxPercentage : DynamicResMaxPercentages)
+		{
+			Builder.AddBin(MaxPercentage);
+		}
+	}
+
+	StartTemperatureLevel = -1.0f;
+	StopTemperatureLevel = -1.0f;
+
+	StartBatteryLevel = -1;
+	StopBatteryLevel = -1;
+	DeviceProfileName = UDeviceProfileManager::GetActiveProfileName();
+}
+
+
+void FPerformanceTrackingChart::AccumulateWith(const FPerformanceTrackingChart& Chart)
+{
+	FrametimeHistogram += Chart.FrametimeHistogram;
+	HitchTimeHistogram += Chart.HitchTimeHistogram;
+	NumFramesBound_GameThread += Chart.NumFramesBound_GameThread;
+	NumFramesBound_RenderThread += Chart.NumFramesBound_RenderThread;
+	NumFramesBound_RHIThread += Chart.NumFramesBound_RHIThread;
+	NumFramesBound_GPU += Chart.NumFramesBound_GPU;
+	TotalFramesBoundTime_GameThread += Chart.TotalFramesBoundTime_GameThread;
+	TotalFramesBoundTime_RenderThread += Chart.TotalFramesBoundTime_RenderThread;
+	TotalFramesBoundTime_RHIThread += Chart.TotalFramesBoundTime_RHIThread;
+	TotalFramesBoundTime_GPU += Chart.TotalFramesBoundTime_GPU;
+	TotalFrameTime_GameThread += Chart.TotalFrameTime_GameThread;
+	TotalFrameTime_RenderThread += Chart.TotalFrameTime_RenderThread;
+	TotalFrameTime_RHIThread += Chart.TotalFrameTime_RHIThread;
+	TotalFrameTime_GPU += Chart.TotalFrameTime_GPU;
+	TotalFlushAsyncLoadingTime += Chart.TotalFlushAsyncLoadingTime;
+	TotalFlushAsyncLoadingCalls += Chart.TotalFlushAsyncLoadingCalls;
+	MaxFlushAsyncLoadingTime = FMath::Max(MaxFlushAsyncLoadingTime, Chart.MaxFlushAsyncLoadingTime);
+	TotalSyncLoadCount += Chart.TotalSyncLoadCount;
+	TotalGameThreadBoundHitchCount += Chart.TotalGameThreadBoundHitchCount;
+	TotalRenderThreadBoundHitchCount += Chart.TotalRenderThreadBoundHitchCount;
+	TotalRHIThreadBoundHitchCount += Chart.TotalRHIThreadBoundHitchCount;
+	TotalGPUBoundHitchCount += Chart.TotalGPUBoundHitchCount;
+	MaxDrawCalls = FMath::Max(MaxDrawCalls, Chart.MaxDrawCalls);
+	MinDrawCalls = FMath::Min(MinDrawCalls, Chart.MinDrawCalls);
+	TotalDrawCalls += Chart.TotalDrawCalls;
+	MaxDrawnPrimitives = FMath::Max(MaxDrawnPrimitives, Chart.MaxDrawnPrimitives);
+	MinDrawnPrimitives = FMath::Min(MinDrawnPrimitives, Chart.MinDrawnPrimitives);
+	TotalDrawnPrimitives += Chart.TotalDrawnPrimitives;
+	// Assume these charts are appended in order. We won't change the start values, but will update the end values.
+	StopTemperatureLevel = Chart.StopTemperatureLevel;
+	StopBatteryLevel = Chart.StopBatteryLevel;
+	AccumulatedChartTime += Chart.AccumulatedChartTime;
+	TimeDisregarded += Chart.TimeDisregarded;
+	FramesDisregarded += Chart.FramesDisregarded;
+	CaptureStartTime = FMath::Min(CaptureStartTime, Chart.CaptureStartTime);
 }
 
 void FPerformanceTrackingChart::StartCharting()
 {
+	StartTemperatureLevel = FPlatformMisc::GetDeviceTemperatureLevel();
+	StartBatteryLevel = FPlatformMisc::GetBatteryLevel();
+	DeviceProfileName = UDeviceProfileManager::GetActiveProfileName();
 }
 
 void FPerformanceTrackingChart::StopCharting()
 {
+	StopTemperatureLevel = FPlatformMisc::GetDeviceTemperatureLevel();
+	StopBatteryLevel = FPlatformMisc::GetBatteryLevel();
+}
+
+void FPerformanceTrackingChart::OnDeviceProfileManagerUpdated()
+{
+	FString CurrentDeviceProfileName = UDeviceProfileManager::GetActiveProfileName();
+	if (CurrentDeviceProfileName != DeviceProfileName)
+	{
+		DeviceProfileName = TEXT("Mixed");
+	}
 }
 
 void FPerformanceTrackingChart::ProcessFrame(const FFrameData& FrameData)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FPerformanceTrackingChart_ProcessFrame);
+
 	AccumulatedChartTime += FrameData.TrueDeltaSeconds;
 
-	// Handle the frame time histogram
+	// if we aren't binning this frame (it took too long) then don't update anything but the relevant disregard stats.
 	if (FrameData.bBinThisFrame)
 	{
-		{
-			const float CurrentFPS_Raw = 1.0f / FrameData.DeltaSeconds;
-
-			const bool bShouldRound = GRoundChartingFPSBeforeBinning.GetValueOnGameThread() != 0;
-			const float CurrentFPS = bShouldRound ? FMath::RoundToFloat(CurrentFPS_Raw) : CurrentFPS_Raw;
-
-			FramerateHistogram.AddMeasurement(CurrentFPS, FrameData.DeltaSeconds);//@TODO: Should we round the actual delta seconds measurement value too?
-		}
+		// Handle the frame time histogram
+		FrametimeHistogram.AddMeasurement(FrameData.DeltaSeconds);
 
 		if (FrameData.bGameThreadBound)
 		{
@@ -628,36 +738,68 @@ void FPerformanceTrackingChart::ProcessFrame(const FFrameData& FrameData)
 			TotalFramesBoundTime_RenderThread += FrameData.DeltaSeconds;
 		}
 
+		if (FrameData.bRHIThreadBound)
+		{
+			NumFramesBound_RHIThread++;
+			TotalFramesBoundTime_RHIThread += FrameData.DeltaSeconds;
+		}
+
 		if (FrameData.bGPUBound)
 		{
 			TotalFramesBoundTime_GPU += FrameData.DeltaSeconds;
 			NumFramesBound_GPU++;
 		}
-	}
 
-	// Track per frame stats.
-	TotalFrameTime_GameThread += FrameData.GameThreadTimeSeconds;
-	TotalFrameTime_RenderThread += FrameData.RenderThreadTimeSeconds;
-	TotalFrameTime_GPU += FrameData.GPUTimeSeconds;
+		// Track per frame stats.
+		TotalFrameTime_GameThread += FrameData.GameThreadTimeSeconds;
+		TotalFrameTime_RenderThread += FrameData.RenderThreadTimeSeconds;
+		TotalFrameTime_RHIThread += FrameData.RHIThreadTimeSeconds;
+		TotalFrameTime_GPU += FrameData.GPUTimeSeconds;
 
-	// Handle hitching
-	if (FrameData.HitchStatus != EFrameHitchType::NoHitch)
-	{
-		// Track the hitch by bucketing it based on time severity
-		HitchTimeHistogram.AddMeasurement(FrameData.DeltaSeconds);
+		// Async loading stats.
+		TotalFlushAsyncLoadingTime += FrameData.FlushAsyncLoadingTime;
+		TotalFlushAsyncLoadingCalls += FrameData.FlushAsyncLoadingCount;
+		MaxFlushAsyncLoadingTime = FMath::Max(MaxFlushAsyncLoadingTime, FrameData.FlushAsyncLoadingTime);
+		TotalSyncLoadCount += FrameData.SyncLoadCount;
 
-		switch (FrameData.HitchStatus)
+		// Track draw calls
+		MaxDrawCalls = FMath::Max(MaxDrawCalls, GNumDrawCallsRHI);
+		MinDrawCalls = FMath::Min(MinDrawCalls, GNumDrawCallsRHI);
+		TotalDrawCalls += GNumDrawCallsRHI;
+
+		// Track primitives
+		MaxDrawnPrimitives = FMath::Max(MaxDrawnPrimitives, GNumPrimitivesDrawnRHI);
+		MinDrawnPrimitives = FMath::Min(MinDrawnPrimitives, GNumPrimitivesDrawnRHI);
+		TotalDrawnPrimitives += GNumPrimitivesDrawnRHI;
+
+		// Handle hitching
+		if (FrameData.HitchStatus != EFrameHitchType::NoHitch)
 		{
-		case EFrameHitchType::GameThread:
-			++TotalGameThreadBoundHitchCount;
-			break;
-		case EFrameHitchType::RenderThread:
-			++TotalRenderThreadBoundHitchCount;
-			break;
-		case EFrameHitchType::GPU:
-			++TotalGPUBoundHitchCount;
-			break;
+			// Track the hitch by bucketing it based on time severity
+			HitchTimeHistogram.AddMeasurement(FrameData.DeltaSeconds);
+
+			switch (FrameData.HitchStatus)
+			{
+			case EFrameHitchType::GameThread:
+				++TotalGameThreadBoundHitchCount;
+				break;
+			case EFrameHitchType::RenderThread:
+				++TotalRenderThreadBoundHitchCount;
+				break;
+			case EFrameHitchType::RHIThread:
+				++TotalRHIThreadBoundHitchCount;
+				break;
+			case EFrameHitchType::GPU:
+				++TotalGPUBoundHitchCount;
+				break;
+			}
 		}
+		DynamicResHistogram.AddMeasurement(FrameData.DynamicResolutionScreenPercentage);
+	}
+	else
+	{
+		TimeDisregarded += FrameData.DeltaSeconds;
+		FramesDisregarded++;
 	}
 }
 
@@ -691,7 +833,7 @@ void FPerformanceTrackingChart::DumpChartsToOutputLog(double WallClockElapsed, c
 	for (const FPerformanceTrackingChart* Chart : Charts)
 	{
 		FDumpFPSChartToLogEndpoint Endpoint(*Chart);
-		Endpoint.DumpChart(WallClockElapsed, InMapName);
+		Endpoint.DumpChart(WallClockElapsed, InMapName, DeviceProfileName);
 	}
 }
 
@@ -704,7 +846,7 @@ void FPerformanceTrackingChart::DumpChartsToLogFile(double WallClockElapsed, con
 		for (const FPerformanceTrackingChart* pChart : Charts)
 		{
 			FDumpFPSChartToFileEndpoint FileEndpoint(*pChart, OutputFile);
-			FileEndpoint.DumpChart(WallClockElapsed, InMapName);
+			FileEndpoint.DumpChart(WallClockElapsed, InMapName, DeviceProfileName);
 		}
 
 		OutputFile->Logf(LINE_TERMINATOR LINE_TERMINATOR LINE_TERMINATOR);
@@ -728,14 +870,11 @@ void FPerformanceTrackingChart::DumpChartsToLogFile(double WallClockElapsed, con
 void FPerformanceTrackingChart::DumpChartToAnalyticsParams(const FString& InMapName, TArray<struct FAnalyticsEventAttribute>& InParamArray, bool bIncludeClientHWInfo, bool bIncludeHistograms) const
 {
 	// Iterate over all buckets, gathering total frame count and cumulative time.
-	const double TotalTime = FramerateHistogram.GetSumOfAllMeasures();
-	const int32 NumFrames = FramerateHistogram.GetNumMeasurements();
-
-	if ((TotalTime > 0.f) && (NumFrames > 0))
+	if ((GetTotalTime() > 0.0) && (GetNumFrames() > 0))
 	{
 		// Dump all the basic stats
 		FDumpFPSChartToAnalyticsArray AnalyticsEndpoint(*this, InParamArray, bIncludeClientHWInfo, bIncludeHistograms);
-		AnalyticsEndpoint.DumpChart(AccumulatedChartTime, InMapName);
+		AnalyticsEndpoint.DumpChart(AccumulatedChartTime, InMapName, DeviceProfileName);
 
 		if (bIncludeClientHWInfo)
 		{
@@ -774,6 +913,10 @@ void FPerformanceTrackingChart::DumpChartToAnalyticsParams(const FString& InMapN
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("GPUDriverVerI"), GRHIAdapterInternalDriverVersion));
 			GRHIAdapterUserDriverVersion.TrimStartAndEndInline();
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("GPUDriverVerU"), GRHIAdapterUserDriverVersion));
+
+			FString FeatureLevelName;
+			GetFeatureLevelName(GMaxRHIFeatureLevel, FeatureLevelName);
+			InParamArray.Add(FAnalyticsEventAttribute(TEXT("RHIFeatureLevel"), FeatureLevelName));
 
 			// Benchmark results
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("CPUBM"), UserSettingsObj->GetLastCPUBenchmarkResult()));
@@ -818,6 +961,11 @@ void FPerformanceTrackingChart::DumpChartToAnalyticsParams(const FString& InMapN
 
 			const float FrameRateLimit = UserSettingsObj->GetFrameRateLimit();
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("FrameRateLimit"), FrameRateLimit));
+
+			InParamArray.Add(FAnalyticsEventAttribute(TEXT("StartTemp"), StartTemperatureLevel));
+			InParamArray.Add(FAnalyticsEventAttribute(TEXT("StopTemp"), StopTemperatureLevel));
+			InParamArray.Add(FAnalyticsEventAttribute(TEXT("StartBatteryLevel"), StartBatteryLevel));
+			InParamArray.Add(FAnalyticsEventAttribute(TEXT("StopBatteryLevel"), StopBatteryLevel));
 		}
 	}
 }
@@ -925,35 +1073,38 @@ void FFineGrainedPerformanceTracker::ProcessFrame(const FFrameData& FrameData)
 	GPUFrameTimes.Add(FrameData.GPUTimeSeconds);
 	FrameTimes.Add(FrameData.DeltaSeconds);
 	ActiveModes.Add(CurrentModeContext);
+	DynamicResolutionScreenPercentages.Add(FrameData.DynamicResolutionScreenPercentage);
 }
 
 void FFineGrainedPerformanceTracker::DumpFrameTimesToStatsLog(const FString& FrameTimeFilename)
 {
 	if (FArchive* OutputFile = IFileManager::Get().CreateDebugFileWriter(*FrameTimeFilename))
 	{
-		OutputFile->Logf(TEXT("Percentile,Frame (ms), GT (ms), RT (ms), GPU (ms),Context"));
+		OutputFile->Logf(TEXT("Percentile,Frame (ms), GT (ms), RT (ms), GPU (ms),DynRes,Context"));
 		TArray<float> FrameTimesCopy = FrameTimes;
 		TArray<float> GameThreadFrameTimesCopy = GameThreadFrameTimes;
 		TArray<float> RenderThreadFrameTimesCopy = RenderThreadFrameTimes;
 		TArray<float> GPUFrameTimesCopy = GPUFrameTimes;
+		TArray<float> DynamicResolutionScreenPercentagesCopy = DynamicResolutionScreenPercentages;
 		// using selection a few times should still be faster than full sort once,
 		// since it's linear vs non-linear (O(n) vs O(n log n) for quickselect vs quicksort)
 		for (int32 Percentile = 25; Percentile <= 75; Percentile += 25)
 		{
-			OutputFile->Logf(TEXT("%d,%.2f,%.2f,%.2f,%.2f,%d"), Percentile,
+			OutputFile->Logf(TEXT("%d,%.2f,%.2f,%.2f,%.2f,%.2f,%d"), Percentile,
 				GetPercentileValue(FrameTimesCopy, Percentile) * 1000,
 				GetPercentileValue(GameThreadFrameTimesCopy, Percentile) * 1000,
 				GetPercentileValue(RenderThreadFrameTimesCopy, Percentile) * 1000,
 				GetPercentileValue(GPUFrameTimesCopy, Percentile) * 1000,
+				GetPercentileValue(DynamicResolutionScreenPercentagesCopy, Percentile),
 				0
 				);
 		}
 
-		OutputFile->Logf(TEXT("Time (sec),Frame (ms), GT (ms), RT (ms), GPU (ms),Context"));
+		OutputFile->Logf(TEXT("Time (sec),Frame (ms), GT (ms), RT (ms), GPU (ms),DynRes,Context"));
 		double ElapsedTime = 0.0;
 		for (int32 i = 0; i < FrameTimes.Num(); i++)
 		{
-			OutputFile->Logf(TEXT("%.2f,%.2f,%.2f,%.2f,%.2f,%d"), ElapsedTime, FrameTimes[i] * 1000, GameThreadFrameTimes[i] * 1000, RenderThreadFrameTimes[i] * 1000, GPUFrameTimes[i] * 1000, ActiveModes[i]);
+			OutputFile->Logf(TEXT("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d"), ElapsedTime, FrameTimes[i] * 1000, GameThreadFrameTimes[i] * 1000, RenderThreadFrameTimes[i] * 1000, GPUFrameTimes[i] * 1000, DynamicResolutionScreenPercentages[i], ActiveModes[i]);
 			ElapsedTime += FrameTimes[i];
 		}
 		delete OutputFile;
@@ -1003,6 +1154,7 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 
 	// Copy these locally since the RT may update it between reads otherwise
 	const uint32 LocalRenderThreadTime = GRenderThreadTime;
+	const uint32 LocalRHIThreadTime = GRHIThreadTime;
 	const uint32 LocalGPUFrameTime = GGPUFrameTime;
 
 	const double CurrentTime = FPlatformTime::Seconds();
@@ -1058,14 +1210,22 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 	FrameData.IdleSeconds = FApp::GetIdleTime();
 	FrameData.GameThreadTimeSeconds = FPlatformTime::ToSeconds(GGameThreadTime);
 	FrameData.RenderThreadTimeSeconds = FPlatformTime::ToSeconds(LocalRenderThreadTime);
+	FrameData.RHIThreadTimeSeconds = FPlatformTime::ToSeconds(LocalRHIThreadTime);
 	FrameData.GPUTimeSeconds = FPlatformTime::ToSeconds(LocalGPUFrameTime);
 
-	// Optionally disregard frames that took longer than one second when accumulating data.
-	const bool bBinThisFrame = (DeltaSeconds < GMaximumFrameTimeToConsiderForHitchesAndBinning) || (GMaximumFrameTimeToConsiderForHitchesAndBinning <= 0.0f);
-	if (bBinThisFrame)
-	{
-		FrameData.bBinThisFrame = true;
+	extern COREUOBJECT_API double GFlushAsyncLoadingTime;
+	extern COREUOBJECT_API uint32 GFlushAsyncLoadingCount;
+	extern COREUOBJECT_API uint32 GSyncLoadCount;
 
+	FrameData.FlushAsyncLoadingTime = GFlushAsyncLoadingTime;
+	FrameData.FlushAsyncLoadingCount = GFlushAsyncLoadingCount;
+	FrameData.SyncLoadCount = GSyncLoadCount;
+
+	// Optionally disregard frames that took too long when accumulating data.
+	FrameData.bBinThisFrame = (DeltaSeconds < GMaximumFrameTimeToConsiderForHitchesAndBinning) || (GMaximumFrameTimeToConsiderForHitchesAndBinning <= 0.0f);
+	// We don't measure boundedness of a frame we are disregarding.
+	if (FrameData.bBinThisFrame)
+	{
 		// if frame time is greater than our target then we are bounded by something
 		const float TargetThreadTimeSeconds = EngineTargetMS * MSToSeconds;
 		if (DeltaSeconds > TargetThreadTimeSeconds)
@@ -1082,6 +1242,12 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 			if (FrameData.RenderThreadTimeSeconds >= TargetThreadTimeSeconds)
 			{
 				FrameData.bRenderThreadBound = true;
+				bAreWeGPUBoundIfInferred = false;
+			}
+
+			if (FrameData.RHIThreadTimeSeconds >= TargetThreadTimeSeconds)
+			{
+				FrameData.bRHIThreadBound = true;
 				bAreWeGPUBoundIfInferred = false;
 			}
 
@@ -1131,6 +1297,11 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 						// Bound by render thread
 						FrameData.HitchStatus = EFrameHitchType::RenderThread;
 					}
+					else if (LocalRHIThreadTime >= (MaxThreadTimeValue - EpsilonCycles))
+					{
+						// Bound by RHI thread
+						FrameData.HitchStatus = EFrameHitchType::RHIThread;
+					}
 					else if (PossibleGPUTime == MaxThreadTimeValue)
 					{
 						// Bound by GPU
@@ -1152,6 +1323,19 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 
 		// Store stats for the next frame to look at (used in hitch rejection)
 		LastDeltaSeconds = DeltaSeconds;
+	}
+
+	// Add dynamic resolution to the frame data. Default to 100 where dynamic resolution is disabled
+	{
+		FrameData.DynamicResolutionScreenPercentage = 100.0f;
+
+		FDynamicResolutionStateInfos DynamicResolutionStateInfos;
+		GEngine->GetDynamicResolutionCurrentStateInfos(/* out */ DynamicResolutionStateInfos);
+
+		if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Enabled || DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::DebugForceEnabled)
+		{
+			FrameData.DynamicResolutionScreenPercentage = DynamicResolutionStateInfos.ResolutionFractionApproximation * 100.0f;
+		}
 	}
 
 	return FrameData;
@@ -1193,8 +1377,17 @@ void UEngine::TickPerformanceMonitoring(float DeltaSeconds)
 {
 	LLM_SCOPE(ELLMTag::Stats);
 
+#if !UE_BUILD_SHIPPING
+	FPlatformMisc::CustomNamedStat("NumDrawCallsRHI", (float)GNumDrawCallsRHI, "Rendering", "Count");
+	FPlatformMisc::CustomNamedStat("NumPrimitivesDrawnRHI", (float)GNumPrimitivesDrawnRHI, "Rendering", "Count");
+
+	FPlatformMisc::CustomNamedStat("MemoryUsed", (float)FPlatformMemory::GetMemoryUsedFast(), "Memory", "Bytes");
+#endif // !UE_BUILD_SHIPPING
+
 	if (ActivePerformanceDataConsumers.Num() > 0)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_ProcessActivePerfDataConsumers);
+
 		const IPerformanceDataConsumer::FFrameData FrameData = GPerformanceTrackingSystem.AnalyzeFrame(DeltaSeconds);
 
 		// Route the frame data to all consumers
@@ -1260,6 +1453,20 @@ void UEngine::StartFPSChart(const FString& Label, bool bRecordPerFrameTimes)
 		}
 	}
 #endif
+
+#if CSV_PROFILER
+	if (GFPSChartDoCsvProfile.GetValueOnGameThread())
+	{
+		if (!FCsvProfiler::Get()->IsCapturing())
+		{
+			GFPSChartCSVProfileActive = true;
+			FString OutputDirectory = FPerformanceTrackingSystem::CreateOutputDirectory(CaptureStartTime);
+			const FString PlatformName = FPlatformProperties::PlatformName();
+			FString CsvProfileFilename = TEXT("CsvProfile-") + CaptureStartTime.ToString() + TEXT("-") + PlatformName + TEXT(".csv");
+			FCsvProfiler::Get()->BeginCapture(-1, OutputDirectory, CsvProfileFilename, FString(), false);
+		}
+	}
+#endif
 }
 
 void UEngine::StopFPSChart(const FString& InMapName)
@@ -1283,6 +1490,17 @@ void UEngine::StopFPSChart(const FString& InMapName)
 		ActiveFrameTimesChart.Reset();
 	}
 #endif
+
+#if CSV_PROFILER
+	if (GFPSChartCSVProfileActive)
+	{
+		GFPSChartCSVProfileActive = false;
+		if ( FCsvProfiler::Get()->IsCapturing() )
+		{
+			FCsvProfiler::Get()->EndCapture();
+		}
+	}
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1291,210 +1509,230 @@ void UEngine::StopFPSChart(const FString& InMapName)
 #if ALLOW_DEBUG_FILES
 
 const TCHAR* GFPSChartPreamble =
-L"<HTML>\n"
-L"   <HEAD>\n"
-L"    <TITLE>FPS Chart</TITLE>\n"
-L"\n"
-L"    <META HTTP-EQUIV=\"CONTENT-TYPE\" CONTENT=\"TEXT/HTML; CHARSET=UTF-8\">\n"
-L"    <LINK TITLE=\"default style\" REL=\"STYLESHEET\" HREF=\"../../Engine/Stats/ChartStyle.css\" TYPE=\"text/css\">\n"
-L"    <LINK TITLE=\"default style\" REL=\"STYLESHEET\" HREF=\"../../Engine/Stats/FPSStyle.css\" TYPE=\"text/css\">\n"
-L"\n"
-L"  </HEAD>\n"
-L"</HEAD>\n"
-L"<BODY>\n"
-L"\n"
-L"<DIV CLASS=\"ChartStyle\">\n"
-L"\n"
-L"<TABLE BORDER=\"0\" CELLSPACING=\"0\" CELLPADDING=\"0\" BGCOLOR=\"#808080\">\n"
-L"<TR><TD>\n"
-L"<TABLE WIDTH=\"4000\" HEIGHT=\"100%\" BORDER=\"0\" CELLSPACING=\"1\" CELLPADDING=\"3\" BGCOLOR=\"#808080\">\n"
-L"\n"
-L"<TR CLASS=\"rowHeader\">\n"
-L"<TD CLASS=\"rowHeadermapname\"><DIV CLASS=\"rowHeaderValue\">mapname</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderChangelist\"><DIV CLASS=\"rowHeaderValue\">changelist</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderDateStamp\"><DIV CLASS=\"rowHeaderValue\">datestamp</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderOS\"><DIV CLASS=\"rowHeaderValue\">OS</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderCPU\"><DIV CLASS=\"rowHeaderValue\">CPU</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderGPU\"><DIV CLASS=\"rowHeaderValue\">GPU</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderBuildConfig\"><DIV CLASS=\"rowHeaderValue\">BuildConfig</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsRes\"><DIV CLASS=\"rowHeaderValue\">Res Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsVD\"><DIV CLASS=\"rowHeaderValue\">View Dist Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsAA\"><DIV CLASS=\"rowHeaderValue\">AA Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsShadow\"><DIV CLASS=\"rowHeaderValue\">Shadow Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsPP\"><DIV CLASS=\"rowHeaderValue\">PP Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsTex\"><DIV CLASS=\"rowHeaderValue\">Tex Qual</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSettingsFX\"><DIV CLASS=\"rowHeaderValue\">FX Qual</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>avg FPS</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% over 30 FPS</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% over 60 FPS</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% over 120 FPS</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>Hitches/Min</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 30</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 60</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 120</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>avg GPU time</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>avg RT time</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderSummary\"><DIV>avg GT time</DIV></TD>\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>Game Thread Bound By Percent</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>Render Thread Bound By Percent</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>GPU Bound By Percent</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0 - 5</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">5 - 10</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">10 - 15</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">15 - 20</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">20 - 25</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">25 - 30</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">30 - 40</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">40 - 50</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">50 - 60</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">60 - 70</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">70 - 80</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">80 - 90</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">90 - 100</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">100 - 110</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">110 - 120</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">120 - INF</DIV></TD>\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowHeaderTimes\"><DIV>time</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderTimes\"><DIV>frame count</DIV></TD>\n"
-L"<TD CLASS=\"rowHeaderTimes\"<DIV>time disregarded</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderTimes\">Total Hitches</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderTimes\">Game Thread Bound Hitch Frames</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderTimes\">Render Thread Bound Hitch Frames</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderTimes\">GPU Bound Hitch Frames</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">5.0 - INF</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">2.5 - 5.0</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">2.0 - 2.5</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">1.5 - 2.0</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">1.0 - 1.5</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.75 - 1.00</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.50 - 0.75</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.30 - 0.50</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.20 - 0.30</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.15 - 0.20</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.10 - 0.15</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.06 - 0.10</DIV></TD>\n"
-L"<TD><DIV CLASS=\"rowHeaderValue\">0.03 - 0.06</DIV></TD>\n"
-L"\n"
-L"</TR>\n"
-L"\n"
-L"<UE4></UE4>";
+TEXT("<HTML>\n")
+TEXT("   <HEAD>\n")
+TEXT("    <TITLE>FPS Chart</TITLE>\n")
+TEXT("\n")
+TEXT("    <META HTTP-EQUIV=\"CONTENT-TYPE\" CONTENT=\"TEXT/HTML; CHARSET=UTF-8\">\n")
+TEXT("    <LINK TITLE=\"default style\" REL=\"STYLESHEET\" HREF=\"../../Engine/Stats/ChartStyle.css\" TYPE=\"text/css\">\n")
+TEXT("    <LINK TITLE=\"default style\" REL=\"STYLESHEET\" HREF=\"../../Engine/Stats/FPSStyle.css\" TYPE=\"text/css\">\n")
+TEXT("\n")
+TEXT("  </HEAD>\n")
+TEXT("</HEAD>\n")
+TEXT("<BODY>\n")
+TEXT("\n")
+TEXT("<DIV CLASS=\"ChartStyle\">\n")
+TEXT("\n")
+TEXT("<TABLE BORDER=\"0\" CELLSPACING=\"0\" CELLPADDING=\"0\" BGCOLOR=\"#808080\">\n")
+TEXT("<TR><TD>\n")
+TEXT("<TABLE WIDTH=\"4000\" HEIGHT=\"100%\" BORDER=\"0\" CELLSPACING=\"1\" CELLPADDING=\"3\" BGCOLOR=\"#808080\">\n")
+TEXT("\n")
+TEXT("<TR CLASS=\"rowHeader\">\n")
+TEXT("<TD CLASS=\"rowHeadermapname\"><DIV CLASS=\"rowHeaderValue\">mapname</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderChangelist\"><DIV CLASS=\"rowHeaderValue\">changelist</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderDateStamp\"><DIV CLASS=\"rowHeaderValue\">datestamp</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderOS\"><DIV CLASS=\"rowHeaderValue\">OS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderCPU\"><DIV CLASS=\"rowHeaderValue\">CPU</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderGPU\"><DIV CLASS=\"rowHeaderValue\">GPU</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderBuildConfig\"><DIV CLASS=\"rowHeaderValue\">BuildConfig</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderDeviceProfile\"><DIV CLASS=\"rowHeaderValue\">Device Profile</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsRes\"><DIV CLASS=\"rowHeaderValue\">Res Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsVD\"><DIV CLASS=\"rowHeaderValue\">View Dist Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsAA\"><DIV CLASS=\"rowHeaderValue\">AA Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsShadow\"><DIV CLASS=\"rowHeaderValue\">Shadow Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsPP\"><DIV CLASS=\"rowHeaderValue\">PP Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsTex\"><DIV CLASS=\"rowHeaderValue\">Tex Qual</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSettingsFX\"><DIV CLASS=\"rowHeaderValue\">FX Qual</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>avg FPS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% over 20 FPS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% over 30 FPS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% over 60 FPS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% over 120 FPS</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>Hitches/Min</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 20</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 30</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 60</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>% Missed VSync 120</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>avg GPU time</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>avg RT time</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderSummary\"><DIV>avg GT time</DIV></TD>\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>Game Thread Bound By Percent</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>Render Thread Bound By Percent</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>GPU Bound By Percent</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0 - 5</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">5 - 10</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">10 - 15</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">15 - 20</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">20 - 25</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">25 - 30</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">30 - 40</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">40 - 50</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">50 - 60</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">60 - 70</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">70 - 80</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">80 - 90</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">90 - 100</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">100 - 110</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">110 - 120</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">120 - INF</DIV></TD>\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowHeaderTimes\"><DIV>time</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderTimes\"><DIV>frame count</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowHeaderTimes\"<DIV>time disregarded</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderTimes\">Total Hitches</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderTimes\">Game Thread Bound Hitch Frames</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderTimes\">Render Thread Bound Hitch Frames</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderTimes\">GPU Bound Hitch Frames</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">5.0 - INF</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">2.5 - 5.0</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">2.0 - 2.5</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">1.5 - 2.0</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">1.0 - 1.5</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.75 - 1.00</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.50 - 0.75</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.30 - 0.50</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.20 - 0.30</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.15 - 0.20</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.10 - 0.15</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.06 - 0.10</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">0.03 - 0.06</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">DynRes 60%+</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">DynRes 70%+</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">DynRes 80%+</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">DynRes 90%+</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"rowHeaderValue\">DynRes 100%+</DIV></TD>\n")
+TEXT("\n")
+TEXT("</TR>\n")
+TEXT("\n")
+TEXT("<UE4></UE4>");
 
 const TCHAR* GFPSChartPostamble =
-L"</TABLE>\n"
-L"</TD></TR></TABLE>\n"
-L"\n"
-L"</DIV> <!-- <DIV CLASS=\"ChartStyle\"> -->\n"
-L"\n"
-L"</BODY>\n"
-L"</HTML>\n"
-L"";
+TEXT("</TABLE>\n")
+TEXT("</TD></TR></TABLE>\n")
+TEXT("\n")
+TEXT("</DIV> <!-- <DIV CLASS=\"ChartStyle\"> -->\n")
+TEXT("\n")
+TEXT("</BODY>\n")
+TEXT("</HTML>\n")
+TEXT("");
 
 const TCHAR* GFPSChartRow =
-L"<TR CLASS=\"dataRow\">\n"
-L"<TD CLASS=\"rowEntryMapName\"><DIV>TOKEN_MAPNAME</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryChangelist\"><DIV>TOKEN_CHANGELIST</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryDateStamp\"><DIV>TOKEN_DATESTAMP</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryOS\"><DIV>TOKEN_OS</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryCPU\"><DIV>TOKEN_CPU</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryGPU\"><DIV>TOKEN_GPU</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryBuildConfig\"><DIV>TOKEN_BUILDCONFIG</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsRes\"><DIV>TOKEN_SETTINGS_RES</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsVD\"><DIV>TOKEN_SETTINGS_VD</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsAA\"><DIV>TOKEN_SETTINGS_AA</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsShadow\"><DIV>TOKEN_SETTINGS_SHADOW</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsPP\"><DIV>TOKEN_SETTINGS_PP</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsTex\"><DIV>TOKEN_SETTINGS_TEX</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySettingsFX\"><DIV>TOKEN_SETTINGS_FX</DIV></TD>\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_FPS</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_30</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_60</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_120</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_HITCHES_PER_MIN</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_30</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_60</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_120</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_GPUTIME</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_RENDTIME</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_GAMETIME</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_GAME_THREAD_PERCENT</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_RENDER_THREAD_PERCENT</DIV></TD>\n"
-L"<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_GPU_PERCENT</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_0_5</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_5_10</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_10_15</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_15_20</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_20_25</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_25_30</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_30_40</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_40_50</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_50_60</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_60_70</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_70_80</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_80_90</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_90_100</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_100_110</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_110_120</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_120_999</DIV></TD>\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"\n"
-L"\n"
-L"<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_TIME</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_FRAMECOUNT</DIV></TD>\n"
-L"<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_TIME_DISREGARDED</DIV></TD>\n"
-L"\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_TOTAL</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_GAME_BOUND_COUNT</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_RENDER_BOUND_COUNT</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_GPU_BOUND_COUNT</DIV></TD>\n"
-L"\n"
-L"<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_5000_PLUS</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_2500_5000</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_2000_2500</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_1500_2000</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_1000_1500</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_750_1000</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_500_750</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_300_500</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_200_300</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_150_200</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_100_150</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_60_100</DIV></TD>\n"
-L"<TD><DIV CLASS=\"value\">TOKEN_HITCH_30_60</DIV></TD>\n"
-L"\n"
-L"</TR>";
+TEXT("<TR CLASS=\"dataRow\">\n")
+TEXT("<TD CLASS=\"rowEntryMapName\"><DIV>TOKEN_MAPNAME</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryChangelist\"><DIV>TOKEN_CHANGELIST</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryDateStamp\"><DIV>TOKEN_DATESTAMP</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryOS\"><DIV>TOKEN_OS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryCPU\"><DIV>TOKEN_CPU</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryGPU\"><DIV>TOKEN_GPU</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryBuildConfig\"><DIV>TOKEN_BUILDCONFIG</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsDeviceProfile\"><DIV>TOKEN_DEVICE_PROFILE</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsRes\"><DIV>TOKEN_SETTINGS_RES</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsVD\"><DIV>TOKEN_SETTINGS_VD</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsAA\"><DIV>TOKEN_SETTINGS_AA</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsShadow\"><DIV>TOKEN_SETTINGS_SHADOW</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsPP\"><DIV>TOKEN_SETTINGS_PP</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsTex\"><DIV>TOKEN_SETTINGS_TEX</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySettingsFX\"><DIV>TOKEN_SETTINGS_FX</DIV></TD>\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_FPS</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_20</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_30</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_60</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_PCT_ABOVE_120</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_HITCHES_PER_MIN</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_20</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_30</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_60</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_MVP_120</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_GPUTIME</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_RENDTIME</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_AVG_GAMETIME</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_GAME_THREAD_PERCENT</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_RENDER_THREAD_PERCENT</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntrySummary\"><DIV>TOKEN_BOUND_GPU_PERCENT</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_0_5</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_5_10</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_10_15</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_15_20</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_20_25</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_25_30</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_30_40</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_40_50</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_50_60</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_60_70</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_70_80</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_80_90</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_90_100</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_100_110</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_110_120</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_120_999</DIV></TD>\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_TIME</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_FRAMECOUNT</DIV></TD>\n")
+TEXT("<TD CLASS=\"rowEntryTimes\"><DIV>TOKEN_TIME_DISREGARDED</DIV></TD>\n")
+TEXT("\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_TOTAL</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_GAME_BOUND_COUNT</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_RENDER_BOUND_COUNT</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_GPU_BOUND_COUNT</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_5000_PLUS</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_2500_5000</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_2000_2500</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_1500_2000</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_1000_1500</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_750_1000</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_500_750</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_300_500</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_200_300</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_150_200</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_100_150</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_60_100</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_HITCH_30_60</DIV></TD>\n")
+TEXT("\n")
+TEXT("<TD CLASS=\"columnSeparator\"><DIV>&nbsp;</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_DYNRES_60_PLUS</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_DYNRES_70_PLUS</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_DYNRES_80_PLUS</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_DYNRES_90_PLUS</DIV></TD>\n")
+TEXT("<TD><DIV CLASS=\"value\">TOKEN_DYNRES_100_PLUS</DIV></TD>\n")
+TEXT("\n")
+TEXT("</TR>");
 
 void FPerformanceTrackingChart::DumpChartsToHTML(double WallClockElapsed, const TArray<const FPerformanceTrackingChart*>& Charts, const FString& InMapName, const FString& HTMLFilename)
 {
@@ -1515,7 +1753,7 @@ void FPerformanceTrackingChart::DumpChartsToHTML(double WallClockElapsed, const 
 	{
 		FString NewRow = FPSChartRowStructure;
 		FDumpFPSChartToHTMLEndpoint HTMLEndpoint(*Chart, /*inout*/ NewRow);
-		HTMLEndpoint.DumpChart(WallClockElapsed, InMapName);
+		HTMLEndpoint.DumpChart(WallClockElapsed, InMapName, DeviceProfileName);
 
 		NewRows += NewRow;
 	}

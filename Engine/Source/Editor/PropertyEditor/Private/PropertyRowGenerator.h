@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "WeakObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
 #include "PropertyPath.h"
 #include "TickableEditorObject.h"
 #include "IPropertyUtilities.h"
@@ -18,7 +18,7 @@ class IDetailCustomization;
 class IDetailNodeTree;
 class FComplexPropertyNode;
 class FDetailTreeNode;
-
+class IPropertyGenerationUtilities;
 
 struct FPropertyNodeMap
 {
@@ -100,21 +100,26 @@ public:
 	virtual TStatId GetStatId() const override;
 
 	/** IPropertyUtilities interface */
-	virtual class FNotifyHook* GetNotifyHook() const { return nullptr; }
+	virtual class FNotifyHook* GetNotifyHook() const { return Args.NotifyHook; }
 	virtual void EnqueueDeferredAction(FSimpleDelegate DeferredAction);	
 	virtual bool IsPropertyEditingEnabled() const { return true; }
 	virtual void ForceRefresh();
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const;
 	virtual bool HasClassDefaultObject() const { return bViewingClassDefaultObject; }
 	virtual const TArray<TWeakObjectPtr<UObject>>& GetSelectedObjects() const { return SelectedObjects;  }
+
+	const FCustomPropertyTypeLayoutMap& GetInstancedPropertyTypeLayoutMap() const;
+	void UpdateDetailRows();
+
 private:
 	void PreSetObject(int32 NumNewObjects, bool bHasStructRoots);
 	void PostSetObject();
-	void UpdateDetailRows();
 	void UpdatePropertyMaps();
 	void UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> InRootPropertyNode, FDetailLayoutData& LayoutData);
 	bool ValidatePropertyNodes(const FRootPropertyNodeList& PropertyNodeList);
 	TSharedPtr<IDetailTreeNode> FindTreeNodeRecursive(const TSharedPtr<IDetailTreeNode>& StartNode, TSharedPtr<IPropertyHandle> PropertyHandle) const;
+	void LayoutNodeVisibilityChanged();
+
 private:
 	const FPropertyRowGeneratorArgs Args;
 	/** The root property nodes of the property tree for a specific set of UObjects */
@@ -141,5 +146,8 @@ private:
 	TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
 	/** Utility class for accessing commonly used helper methods from customizations */
 	TSharedRef<IPropertyUtilities> PropertyUtilities;
+	/** Utility class for accessing internal helper methods */
+	TSharedRef<IPropertyGenerationUtilities> PropertyGenerationUtilities;
+
 	bool bViewingClassDefaultObject;
 };

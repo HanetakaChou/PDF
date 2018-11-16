@@ -10,7 +10,7 @@
 #include "GameFramework/Actor.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EditorSupportDelegates.h"
 #include "Logging/TokenizedMessage.h"
@@ -172,19 +172,14 @@ void AActor::PostEditMove(bool bFinished)
 
 	if (bFinished)
 	{
-		// update actor and all its components in navigation system after finishing move
-		// USceneComponent::UpdateNavigationData works only in game world
-		UNavigationSystem::UpdateNavOctreeBounds(this);
+		FNavigationSystem::OnPostEditActorMove(*this);
+	}
 
-		TArray<AActor*> ParentedActors;
-		GetAttachedActors(ParentedActors);
-		for (int32 Idx = 0; Idx < ParentedActors.Num(); Idx++)
-		{
-			UNavigationSystem::UpdateNavOctreeBounds(ParentedActors[Idx]);
-		}
-
-		// not doing manual update of all attached actors since UpdateActorAndComponentsInNavOctree should take care of it
-		UNavigationSystem::UpdateActorAndComponentsInNavOctree(*this);
+	if (!bFinished)
+	{
+		// Snapshot the transaction buffer for this actor if we've not finished moving yet
+		// This allows listeners to be notified of intermediate changes of state
+		SnapshotTransactionBuffer(this);
 	}
 }
 
@@ -280,11 +275,112 @@ void AActor::DebugShowOneComponentHierarchy( USceneComponent* SceneComp, int32& 
 	}
 }
 
-AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* Actor, const bool bCacheRootComponentData)
-	: ComponentInstanceData(Actor)
+FArchive& operator<<(FArchive& Ar, AActor::FActorRootComponentReconstructionData::FAttachedActorInfo& ActorInfo)
 {
-	USceneComponent* ActorRootComponent = Actor->GetRootComponent();
-	if (bCacheRootComponentData && ActorRootComponent && ActorRootComponent->IsCreatedByConstructionScript())
+	enum class EVersion : uint8
+	{
+		InitialVersion = 0,
+		// -----<new versions can be added above this line>-------------------------------------------------
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	EVersion Version = EVersion::LatestVersion;
+	Ar << Version;
+
+	if (Version > EVersion::LatestVersion)
+	{
+		Ar.SetError();
+		return Ar;
+	}
+
+	Ar << ActorInfo.Actor;
+	Ar << ActorInfo.AttachParent;
+	Ar << ActorInfo.AttachParentName;
+	Ar << ActorInfo.SocketName;
+	Ar << ActorInfo.RelativeTransform;
+
+	return Ar;
+}
+
+FArchive& operator<<(FArchive& Ar, AActor::FActorRootComponentReconstructionData& RootComponentData)
+{
+	enum class EVersion : uint8
+	{
+		InitialVersion = 0,
+		// -----<new versions can be added above this line>-------------------------------------------------
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	EVersion Version = EVersion::LatestVersion;
+	Ar << Version;
+
+	if (Version > EVersion::LatestVersion)
+	{
+		Ar.SetError();
+		return Ar;
+	}
+
+	Ar << RootComponentData.Transform;
+
+	if (Ar.IsSaving())
+	{
+		FQuat TransformRotationQuat = RootComponentData.TransformRotationCache.GetCachedQuat();
+		Ar << TransformRotationQuat;
+	}
+	else if (Ar.IsLoading())
+	{
+		FQuat TransformRotationQuat;
+		Ar << TransformRotationQuat;
+		RootComponentData.TransformRotationCache.NormalizedQuatToRotator(TransformRotationQuat);
+	}
+	
+	Ar << RootComponentData.AttachedParentInfo;
+	
+	Ar << RootComponentData.AttachedToInfo;
+
+	return Ar;
+}
+
+TSharedRef<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::Create()
+{
+	return MakeShareable(new FActorTransactionAnnotation());
+}
+
+TSharedRef<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::Create(const AActor* InActor, const bool InCacheRootComponentData)
+{
+	return MakeShareable(new FActorTransactionAnnotation(InActor, FComponentInstanceDataCache(InActor), InCacheRootComponentData));
+}
+
+TSharedPtr<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::CreateIfRequired(const AActor* InActor, const bool InCacheRootComponentData)
+{
+	// Don't create a transaction annotation for something that has no instance data, or a root component that's created by a construction script
+	FComponentInstanceDataCache TempComponentInstanceData(InActor);
+	if (!TempComponentInstanceData.HasInstanceData())
+	{
+		USceneComponent* ActorRootComponent = InActor->GetRootComponent();
+		if (!InCacheRootComponentData || !ActorRootComponent || !ActorRootComponent->IsCreatedByConstructionScript())
+		{
+			return nullptr;
+		}
+	}
+
+	return MakeShareable(new FActorTransactionAnnotation(InActor, MoveTemp(TempComponentInstanceData), InCacheRootComponentData));
+}
+
+AActor::FActorTransactionAnnotation::FActorTransactionAnnotation()
+	: bRootComponentDataCached(false)
+{
+}
+
+AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData)
+	: ComponentInstanceData(MoveTemp(InComponentInstanceData))
+{
+	Actor = InActor;
+
+	USceneComponent* ActorRootComponent = InActor->GetRootComponent();
+	if (InCacheRootComponentData && ActorRootComponent && ActorRootComponent->IsCreatedByConstructionScript())
 	{
 		bRootComponentDataCached = true;
 		RootComponentData.Transform = ActorRootComponent->GetComponentTransform();
@@ -303,7 +399,7 @@ AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* A
 		for (USceneComponent* AttachChild : ActorRootComponent->GetAttachChildren())
 		{
 			AActor* ChildOwner = (AttachChild ? AttachChild->GetOwner() : NULL);
-			if (ChildOwner && ChildOwner != Actor)
+			if (ChildOwner && ChildOwner != InActor)
 			{
 				// Save info about actor to reattach
 				FActorRootComponentReconstructionData::FAttachedActorInfo Info;
@@ -325,27 +421,57 @@ void AActor::FActorTransactionAnnotation::AddReferencedObjects(FReferenceCollect
 	ComponentInstanceData.AddReferencedObjects(Collector);
 }
 
+void AActor::FActorTransactionAnnotation::Serialize(FArchive& Ar)
+{
+	enum class EVersion : uint8
+	{
+		InitialVersion = 0,
+		// -----<new versions can be added above this line>-------------------------------------------------
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	EVersion Version = EVersion::LatestVersion;
+	Ar << Version;
+
+	if (Version > EVersion::LatestVersion)
+	{
+		Ar.SetError();
+		return;
+	}
+
+	Ar << Actor;
+	if (Ar.IsLoading())
+	{
+		ComponentInstanceData = FComponentInstanceDataCache(Actor.Get());
+	}
+
+	Ar << bRootComponentDataCached;
+
+	if (bRootComponentDataCached)
+	{
+		Ar << RootComponentData;
+	}
+}
+
 bool AActor::FActorTransactionAnnotation::HasInstanceData() const
 {
 	return (bRootComponentDataCached || ComponentInstanceData.HasInstanceData());
 }
 
-TSharedPtr<ITransactionObjectAnnotation> AActor::GetTransactionAnnotation() const
+TSharedPtr<ITransactionObjectAnnotation> AActor::FactoryTransactionAnnotation(const ETransactionAnnotationCreationMode InCreationMode) const
 {
+	if (InCreationMode == ETransactionAnnotationCreationMode::DefaultInstance)
+	{
+		return FActorTransactionAnnotation::Create();
+	}
+
 	if (CurrentTransactionAnnotation.IsValid())
 	{
 		return CurrentTransactionAnnotation;
 	}
 
-	TSharedPtr<FActorTransactionAnnotation> TransactionAnnotation = MakeShareable(new FActorTransactionAnnotation(this));
-
-	if (!TransactionAnnotation->HasInstanceData())
-	{
-		// If there is nothing in the annotation don't bother storing it.
-		TransactionAnnotation = nullptr;
-	}
-
-	return TransactionAnnotation;
+	return FActorTransactionAnnotation::CreateIfRequired(this);
 }
 
 void AActor::PreEditUndo()
@@ -372,7 +498,7 @@ void AActor::PreEditUndo()
 	}
 
 	// let navigation system know to not care about this actor anymore
-	UNavigationSystem::ClearNavOctreeAll(this);
+	FNavigationSystem::RemoveActorData(*this);
 
 	Super::PreEditUndo();
 }
@@ -411,11 +537,11 @@ bool AActor::InternalPostEditUndo()
 		BlueprintCreatedComponents.Reset();
 
 		// notify navigation system
-		UNavigationSystem::UpdateActorAndComponentsInNavOctree(*this);
+		FNavigationSystem::UpdateActorAndComponentData(*this);
 	}
 	else
 	{
-		UNavigationSystem::ClearNavOctreeAll(this);
+		FNavigationSystem::RemoveActorData(*this);
 	}
 
 	// This is a normal undo, so call super
@@ -461,27 +587,37 @@ void AActor::EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, b
 {
 	if( RootComponent != NULL )
 	{
-		const FRotator Rot = RootComponent->GetAttachParent() != NULL ? GetActorRotation() : RootComponent->RelativeRotation;
-
+		FRotator Rot = RootComponent->GetAttachParent() != NULL ? GetActorRotation() : RootComponent->RelativeRotation;
 		FRotator ActorRotWind, ActorRotRem;
 		Rot.GetWindingAndRemainder(ActorRotWind, ActorRotRem);
-
 		const FQuat ActorQ = ActorRotRem.Quaternion();
 		const FQuat DeltaQ = DeltaRotation.Quaternion();
-		const FQuat ResultQ = DeltaQ * ActorQ;
-		const FRotator NewActorRotRem = FRotator( ResultQ );
-		FRotator DeltaRot = NewActorRotRem - ActorRotRem;
-		DeltaRot.Normalize();
 
-		if( RootComponent->GetAttachParent() != NULL )
+		FRotator NewActorRotRem;
+		if(RootComponent->GetAttachParent() != NULL )
 		{
-			RootComponent->SetWorldRotation( Rot + DeltaRot );
+			//first we get the new rotation in relative space.
+			const FQuat ResultQ = DeltaQ * ActorQ;
+			NewActorRotRem = FRotator(ResultQ);
+			FRotator DeltaRot = NewActorRotRem - ActorRotRem;
+			FRotator NewRotation = Rot + DeltaRot;
+			FQuat NewRelRotation = NewRotation.Quaternion();
+			NewRelRotation = RootComponent->GetRelativeRotationFromWorld(NewRelRotation);
+			NewActorRotRem = FRotator(NewRelRotation);
+			//now we need to get current relative rotation to find the diff
+			Rot = RootComponent->RelativeRotation;
+			Rot.GetWindingAndRemainder(ActorRotWind, ActorRotRem);
 		}
 		else
 		{
-			// No attachment.  Directly set relative rotation (to support winding)
-			RootComponent->SetRelativeRotation( Rot + DeltaRot );
+			const FQuat ResultQ = DeltaQ * ActorQ;
+			NewActorRotRem = FRotator(ResultQ);
 		}
+
+		ActorRotRem.SetClosestToMe(NewActorRotRem);
+		FRotator DeltaRot = NewActorRotRem - ActorRotRem;
+		DeltaRot.Normalize();
+		RootComponent->SetRelativeRotationExact( Rot + DeltaRot );
 	}
 	else
 	{
@@ -546,7 +682,7 @@ void AActor::EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotL
 
 	if( RootComponent != NULL )
 	{
-		GetRootComponent()->SetRelativeRotation( NewRot.Rotator() );
+		GetRootComponent()->SetRelativeRotationExact( NewRot.Rotator() );
 		FVector Loc = GetActorLocation();
 		Loc -= PivotLocation;
 		Loc *= MirrorScale;
@@ -656,57 +792,66 @@ void AActor::SetActorLabel( const FString& NewActorLabelDirty, bool bMarkDirty )
 	SetActorLabelInternal(NewActorLabelDirty, bMakeGloballyUniqueFName, bMarkDirty );
 }
 
-void AActor::SetActorLabelInternal( const FString& NewActorLabelDirty, bool bMakeGloballyUniqueFName, bool bMarkDirty )
+void AActor::SetActorLabelInternal(const FString& NewActorLabelDirty, bool bMakeGloballyUniqueFName, bool bMarkDirty)
 {
 	// Clean up the incoming string a bit
 	FString NewActorLabel = NewActorLabelDirty;
 	NewActorLabel.TrimStartAndEndInline();
 
-
-	// First, update the actor label
+	// Validate incoming string before proceeding
+	FText OutErrorMessage;
+	if (!FActorEditorUtils::ValidateActorName(FText::FromString(NewActorLabel), OutErrorMessage))
 	{
-		// Has anything changed?
-		if( FCString::Strcmp( *NewActorLabel, *GetActorLabel() ) != 0 )
-		{
-			// Store new label
-			Modify( bMarkDirty );
-			ActorLabel = NewActorLabel;
-		}
+		//Invalid actor name
+		UE_LOG(LogActor, Warning, TEXT("SetActorLabel failed: %s"), *OutErrorMessage.ToString());
 	}
-
-
-	// Next, update the actor's name
+	else
 	{
-		// Generate an object name for the actor's label
-		const FName OldActorName = GetFName();
-		FName NewActorName = MakeObjectNameFromDisplayLabel( GetActorLabel(), OldActorName );
-
-		// Has anything changed?
-		if( OldActorName != NewActorName )
+		// First, update the actor label
 		{
-			// Try to rename the object
-			UObject* NewOuter = NULL;		// Outer won't be changing
-			ERenameFlags RenFlags = bMakeGloballyUniqueFName ? (REN_DontCreateRedirectors | REN_ForceGlobalUnique) : REN_DontCreateRedirectors;
-			bool bCanRename = Rename( *NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags );
-			if( bCanRename )
+			// Has anything changed?
+			if (FCString::Strcmp(*NewActorLabel, *GetActorLabel()) != 0)
 			{
-				// NOTE: Will assert internally if rename fails
-				const bool bWasRenamed = Rename( *NewActorName.ToString(), NewOuter, RenFlags );
+				// Store new label
+				Modify(bMarkDirty);
+				ActorLabel = NewActorLabel;
 			}
-			else
-			{
-				// Unable to rename the object.  Use a unique object name variant.
-				NewActorName = MakeUniqueObjectName( bMakeGloballyUniqueFName ? ANY_PACKAGE : GetOuter(), GetClass(), NewActorName );
+		}
 
-				bCanRename = Rename( *NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags );
-				if( bCanRename )
+
+		// Next, update the actor's name
+		{
+			// Generate an object name for the actor's label
+			const FName OldActorName = GetFName();
+			FName NewActorName = MakeObjectNameFromDisplayLabel(GetActorLabel(), OldActorName);
+
+			// Has anything changed?
+			if (OldActorName != NewActorName)
+			{
+				// Try to rename the object
+				UObject* NewOuter = NULL;		// Outer won't be changing
+				ERenameFlags RenFlags = bMakeGloballyUniqueFName ? (REN_DontCreateRedirectors | REN_ForceGlobalUnique) : REN_DontCreateRedirectors;
+				bool bCanRename = Rename(*NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags);
+				if (bCanRename)
 				{
 					// NOTE: Will assert internally if rename fails
-					const bool bWasRenamed = Rename( *NewActorName.ToString(), NewOuter, RenFlags );
+					const bool bWasRenamed = Rename(*NewActorName.ToString(), NewOuter, RenFlags);
 				}
 				else
 				{
-					// Unable to rename the object.  Oh well, not a big deal.
+					// Unable to rename the object.  Use a unique object name variant.
+					NewActorName = MakeUniqueObjectName(bMakeGloballyUniqueFName ? ANY_PACKAGE : GetOuter(), GetClass(), NewActorName);
+
+					bCanRename = Rename(*NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags);
+					if (bCanRename)
+					{
+						// NOTE: Will assert internally if rename fails
+						const bool bWasRenamed = Rename(*NewActorName.ToString(), NewOuter, RenFlags);
+					}
+					else
+					{
+						// Unable to rename the object.  Oh well, not a big deal.
+					}
 				}
 			}
 		}
@@ -762,7 +907,7 @@ void AActor::CheckForDeprecated()
 	if ( GetClass()->HasAnyClassFlags(CLASS_Deprecated) )
 	{
 		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("ActorName"), FText::FromString(GetName()));
+		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
 		FMessageLog("MapCheck").Warning()
 			->AddToken(FUObjectToken::Create(this))
 			->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_ActorIsObselete_Deprecated", "{ActorName} : Obsolete and must be removed! (Class is deprecated)" ), Arguments) ))
@@ -772,7 +917,7 @@ void AActor::CheckForDeprecated()
 	if ( !(GetFlags() & RF_ClassDefaultObject) && GetClass()->HasAnyClassFlags(CLASS_Abstract) )
 	{
 		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("ActorName"), FText::FromString(GetName()));
+		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
 		FMessageLog("MapCheck").Warning()
 			->AddToken(FUObjectToken::Create(this))
 			->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_ActorIsObselete_Abstract", "{ActorName} : Obsolete and must be removed! (Class is abstract)" ), Arguments) ) )
@@ -793,7 +938,7 @@ void AActor::CheckForErrors()
 	if( PrimComp && (PrimComp->Mobility != EComponentMobility::Movable) && PrimComp->BodyInstance.bSimulatePhysics)
 	{
 		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("ActorName"), FText::FromString(GetName()));
+		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
 		FMessageLog("MapCheck").Warning()
 			->AddToken(FUObjectToken::Create(this))
 			->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_StaticPhysNone", "{ActorName} : Static object with bSimulatePhysics set to true" ), Arguments) ))
@@ -803,7 +948,7 @@ void AActor::CheckForErrors()
 	if( RootComponent && FMath::IsNearlyZero( GetRootComponent()->RelativeScale3D.X * GetRootComponent()->RelativeScale3D.Y * GetRootComponent()->RelativeScale3D.Z ) )
 	{
 		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("ActorName"), FText::FromString(GetName()));
+		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
 		FMessageLog("MapCheck").Error()
 			->AddToken(FUObjectToken::Create(this))
 			->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_InvalidDrawscale", "{ActorName} : Invalid DrawScale/DrawScale3D" ), Arguments) ))
@@ -811,13 +956,9 @@ void AActor::CheckForErrors()
 	}
 
 	// Route error checking to components.
-	TInlineComponentArray<UActorComponent*> Components;
-	GetComponents(Components);
-
-	for ( int32 ComponentIndex = 0 ; ComponentIndex < Components.Num() ; ++ComponentIndex )
+	for (UActorComponent* ActorComponent : GetComponents())
 	{
-		UActorComponent* ActorComponent = Components[ ComponentIndex ];
-		if (ActorComponent->IsRegistered())
+		if (ActorComponent && ActorComponent->IsRegistered())
 		{
 			ActorComponent->CheckForErrors();
 		}
@@ -832,24 +973,6 @@ bool AActor::GetReferencedContentObjects( TArray<UObject*>& Objects ) const
 		Objects.AddUnique(Blueprint);
 	}
 	return true;
-}
-
-void AActor::SetLODParent(UPrimitiveComponent* InLODParent, float InParentDrawDistance)
-{
-	if(InLODParent)
-	{
-		InLODParent->MinDrawDistance = InParentDrawDistance;
-		InLODParent->MarkRenderStateDirty();
-	}
-
-	TArray<UPrimitiveComponent*> ComponentsToBeReplaced;
-	GetComponents(ComponentsToBeReplaced);
-
-	for(UPrimitiveComponent* Component : ComponentsToBeReplaced)
-	{
-		// parent primitive will be null if no LOD parent is selected
-		Component->SetLODParentPrimitive(InLODParent);
-	}
 }
 
 EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)

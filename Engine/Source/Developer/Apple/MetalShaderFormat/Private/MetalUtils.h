@@ -1,5 +1,4 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
-// .
 
 #pragma once
 
@@ -57,6 +56,13 @@ struct extern_var : public exec_node
 };
 
 
+template<typename T>
+struct ir_type_compare {
+	bool operator() (const T* const& lhs, const T* const& rhs) const {
+		return lhs->id < rhs->id;
+	}
+};
+
 struct FBuffers
 {
 	TIRVarSet AtomicVariables;
@@ -67,6 +73,8 @@ struct FBuffers
 
 	// Information about textures & samplers; we need to have unique samplerstate indices, as one they can be used independent of each other
 	TArray<std::string> UniqueSamplerStates;
+	
+	uint32 MaxTextures;
 
 	void AddBuffer(ir_variable* Var)
 	{
@@ -166,13 +174,15 @@ struct FBuffers
 		{
 			auto* Var = Buffers[i]->as_variable();
 			check(Var);
-            if(Var->type->sampler_buffer && Var->type->inner_type->components() != 3 && !Var->invariant)
+			bool bIsStructuredBuffer = (!strncmp(Var->type->name, "RWStructuredBuffer<", 19) || !strncmp(Var->type->name, "StructuredBuffer<", 17));
+			bool bIsByteAddressBuffer = (!strncmp(Var->type->name, "RWByteAddressBuffer", 19) || !strncmp(Var->type->name, "ByteAddressBuffer", 17));
+			if (Var->type->is_image())
+			{
+				IBuffers.push_back(Var);
+			}
+			else if(Var->type->sampler_buffer && Var->type->inner_type->components() != 3 && !Var->invariant && !bIsStructuredBuffer && !bIsByteAddressBuffer)
             {
                 TBuffers.push_back(Var);
-            }
-            else if (Var->type->is_image())
-            {
-                IBuffers.push_back(Var);
             }
 			else if (Var->semantic && strlen(Var->semantic) == 1)
 			{
@@ -263,7 +273,7 @@ struct FBuffers
         
         uint32 TypedBuffers = 0;
         static const uint32 MaxBuffers = 30;
-        static const uint32 MaxTextures = 128;
+		check(MaxTextures > 0);
         
         for (int i = 0; i < MaxBuffers && !TBuffers.empty(); ++i)
         {
@@ -311,7 +321,7 @@ struct FBuffers
 			}
 		}
         
-        for(int i = 0; i < MaxTextures && !RTextures.empty(); i++)
+        for(int i = 0; i < (int)MaxTextures && !RTextures.empty(); i++)
         {
             // Can't override a typed-buffer/texture
             if ((i >= MaxBuffers || !(TypedBuffers & (1 << i))) && (i >= AllTextures.Num() || !AllTextures[i]))
@@ -336,7 +346,7 @@ struct FBuffers
             for (auto it : BufferList)
             {
                 _mesa_glsl_error(state, "Buffer '%s' cannot be allocated an appropriate index due to resource overflow.",
-                           *it->name);
+                           it && it->name ? it->name : "<null>");
             }
             
             TIRVarList TextureList;
@@ -347,7 +357,7 @@ struct FBuffers
             for (auto it : TextureList)
             {
                 _mesa_glsl_error(state, "Texture '%s' cannot be allocated an appropriate index due to resource overflow.",
-                                 *it->name);
+                                 it && it->name ? it->name : "<null>");
             }
         }
 
@@ -369,7 +379,7 @@ struct FSemanticQualifier
 
 namespace MetalUtils
 {
-	ir_dereference_variable* GenerateInput(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState, const char* InputSemantic,
+	ir_dereference_variable* GenerateInput(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState, const char* InputName, const char* InputSemantic,
 		const glsl_type* InputType, exec_list* DeclInstructions, exec_list* PreCallInstructions);
 
 	ir_dereference_variable* GenerateOutput(EHlslShaderFrequency Frequency, uint32 bIsDesktop, _mesa_glsl_parse_state* ParseState, const char* OutputSemantic,

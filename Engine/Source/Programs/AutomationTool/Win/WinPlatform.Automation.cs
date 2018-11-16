@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -107,6 +107,12 @@ public abstract class BaseWinPlatform : Platform
     {
     }
 
+	public override void GetTargetFile(string RemoteFilePath, string LocalFile, ProjectParams Params)
+	{
+		var SourceFile = FileReference.Combine(new DirectoryReference(Params.BaseStageDirectory), GetCookPlatform(Params.HasServerCookedTargets, Params.HasClientTargetDetected), RemoteFilePath);
+		CommandUtils.CopyFile(SourceFile.FullName, LocalFile);
+	}
+
 	void StageBootstrapExecutable(DeploymentContext SC, string ExeName, FileReference TargetFile, StagedFileReference StagedRelativeTargetPath, string StagedArguments)
 	{
 		FileReference InputFile = FileReference.Combine(SC.LocalRoot, "Engine", "Binaries", SC.PlatformDir, String.Format("BootstrapPackagedGame-{0}-Shipping.exe", SC.PlatformDir));
@@ -179,22 +185,44 @@ public abstract class BaseWinPlatform : Platform
 		return "Windows";
 	}
 
-    public override string GetPlatformPakCommandLine()
+    public override string GetPlatformPakCommandLine(ProjectParams Params, DeploymentContext SC)
     {
         return " -patchpaddingalign=2048";
     }
 
 	public override void Package(ProjectParams Params, DeploymentContext SC, int WorkingCL)
 	{
-        List<FileReference> ExeNames = GetExecutableNames(SC);
+		// If this is a content-only project and there's a custom icon, update the executable
+		if (!Params.HasDLCName && !Params.IsCodeBasedProject)
+		{
+			FileReference IconFile = FileReference.Combine(Params.RawProjectPath.Directory, "Build", "Windows", "Application.ico");
+			if(FileReference.Exists(IconFile))
+			{
+				CommandUtils.LogInformation("Updating executable with custom icon from {0}", IconFile);
 
-        // Select target configurations based on the exe list returned from GetExecutableNames
-        List<UnrealTargetConfiguration> TargetConfigs = SC.StageTargetConfigurations.GetRange(0, ExeNames.Count);
+				GroupIconResource GroupIcon = GroupIconResource.FromIco(IconFile.FullName);
 
-		WindowsExports.PrepForUATPackageOrDeploy(Params.RawProjectPath, Params.ShortProjectName, SC.ProjectRoot, TargetConfigs, ExeNames, SC.EngineRoot);
+				List<FileReference> ExecutablePaths = GetExecutableNames(SC);
+				foreach (FileReference ExecutablePath in ExecutablePaths)
+				{
+					using (ModuleResourceUpdate Update = new ModuleResourceUpdate(ExecutablePath.FullName, false))
+					{
+						const int IconResourceId = 123; // As defined in Engine\Source\Runtime\Launch\Resources\Windows\resource.h
+						if (GroupIcon != null)
+						{
+							Update.SetIcons(IconResourceId, GroupIcon);
+						}
+					}
+				}
+			}
+		}
 
-		// package up the program, potentially with an installer for Windows
 		PrintRunTime();
+	}
+
+	public override bool UseAbsLog
+	{
+		get { return BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32; }
 	}
 
 	public override bool CanHostPlatform(UnrealTargetPlatform Platform)
@@ -254,19 +282,16 @@ public abstract class BaseWinPlatform : Platform
 	{
 		// Check if there are any executables being staged in this directory. Usually we only need to stage runtime dependencies next to the executable, but we may be staging
 		// other engine executables too (eg. CEF)
-		List<StagedFileReference> FilesInTargetDir = SC.FilesToStage.NonUFSFiles.Keys.Where(x => x.IsUnderDirectory(StagedBinariesDir) && (x.CanonicalName.EndsWith(".exe") || x.CanonicalName.EndsWith(".dll"))).ToList();
+		List<StagedFileReference> FilesInTargetDir = SC.FilesToStage.NonUFSFiles.Keys.Where(x => x.IsUnderDirectory(StagedBinariesDir) && (x.HasExtension(".exe") || x.HasExtension(".dll"))).ToList();
 		if(FilesInTargetDir.Count > 0)
 		{
-			Log("Copying AppLocal dependencies from {0} to {1}", BaseAppLocalDependenciesPath, StagedBinariesDir);
+			LogInformation("Copying AppLocal dependencies from {0} to {1}", BaseAppLocalDependenciesPath, StagedBinariesDir);
 
 			// Stage files in subdirs
 			foreach (DirectoryReference DependencyDirectory in DirectoryReference.EnumerateDirectories(BaseAppLocalDependenciesPath))
 			{	
-				SC.StageFiles(StagedFileType.NonUFS, DependencyDirectory, StageFilesSearch.TopDirectoryOnly, StagedBinariesDir);
+				SC.StageFiles(StagedFileType.NonUFS, DependencyDirectory, StageFilesSearch.AllDirectories, StagedBinariesDir);
 			}
-				
-			// stage loose files here
-			SC.StageFiles(StagedFileType.NonUFS, BaseAppLocalDependenciesPath, StageFilesSearch.AllDirectories, StagedBinariesDir);
 		}
 	}
 
@@ -310,6 +335,46 @@ public abstract class BaseWinPlatform : Platform
         return true;
     }
 
+	public static bool TryGetPdbCopyLocation(out FileReference OutLocation)
+	{
+		// Try to find an installation of the Windows 10 SDK
+		string SdkInstallFolder =
+			(Microsoft.Win32.Registry.GetValue("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", null) as string) ??
+			(Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", null) as string) ??
+			(Microsoft.Win32.Registry.GetValue("HKEY_CURRENT_USER\\Software\\Wow6432Node\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", null) as string) ??
+			(Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", null) as string);
+
+		if(!String.IsNullOrEmpty(SdkInstallFolder))
+		{
+			FileReference Location = FileReference.Combine(new DirectoryReference(SdkInstallFolder), "Debuggers", "x64", "PDBCopy.exe");
+			if(FileReference.Exists(Location))
+			{
+				OutLocation = Location;
+				return true;
+			}
+		}
+
+		// Look for an installation of the MSBuild 14
+		FileReference LocationMsBuild14 = FileReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ProgramFilesX86), "MSBuild", "Microsoft", "VisualStudio", "v14.0", "AppxPackage", "PDBCopy.exe");
+		if(FileReference.Exists(LocationMsBuild14))
+		{
+			OutLocation = LocationMsBuild14;
+			return true;
+		}
+
+		// Look for an installation of the MSBuild 12
+		FileReference LocationMsBuild12 = FileReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ProgramFilesX86), "MSBuild", "Microsoft", "VisualStudio", "v12.0", "AppxPackage", "PDBCopy.exe");
+		if(FileReference.Exists(LocationMsBuild12))
+		{
+			OutLocation = LocationMsBuild12;
+			return true;
+		}
+
+		// Otherwise fail
+		OutLocation = null;
+		return false;
+	}
+
 	public override void StripSymbols(FileReference SourceFile, FileReference TargetFile)
 	{
 		bool bStripInPlace = false;
@@ -321,14 +386,14 @@ public abstract class BaseWinPlatform : Platform
 			bStripInPlace = true;
 		}
 
-		ProcessStartInfo StartInfo = new ProcessStartInfo();
-		string PDBCopyPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "MSBuild", "Microsoft", "VisualStudio", "v14.0", "AppxPackage", "PDBCopy.exe");
-		if (!File.Exists(PDBCopyPath))
+		FileReference PdbCopyLocation;
+		if(!TryGetPdbCopyLocation(out PdbCopyLocation))
 		{
-			// Fall back on VS2013 version
-			PDBCopyPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "MSBuild", "Microsoft", "VisualStudio", "v12.0", "AppxPackage", "PDBCopy.exe");
+			throw new AutomationException("Unable to find installation of PDBCOPY.EXE, which is required to strip symbols. This tool is included as part of the 'Windows Debugging Tools' component of the Windows 10 SDK (https://developer.microsoft.com/en-us/windows/downloads/windows-10-sdk).");
 		}
-		StartInfo.FileName = PDBCopyPath;
+
+		ProcessStartInfo StartInfo = new ProcessStartInfo();
+		StartInfo.FileName = PdbCopyLocation.FullName;
 		StartInfo.Arguments = String.Format("\"{0}\" \"{1}\" -p", SourceFile.FullName, TargetFile.FullName);
 		StartInfo.UseShellExecute = false;
 		StartInfo.CreateNoWindow = true;
@@ -352,21 +417,31 @@ public abstract class BaseWinPlatform : Platform
             return false;
         }
 
-        bool bSuccess = true;
-        foreach (var File in Files.Where(x => x.HasExtension(".pdb") || x.HasExtension(".exe") || x.HasExtension(".dll")))
-        {
-            ProcessStartInfo StartInfo = new ProcessStartInfo();
-            StartInfo.FileName = SymStoreExe.FullName;
-            StartInfo.Arguments = string.Format("add /f \"{0}\" /s \"{1}\" /t \"{2}\" /compress", File.FullName, SymbolStoreDirectory.FullName, Product);
-            StartInfo.UseShellExecute = false;
-            StartInfo.CreateNoWindow = true;
-            if (Utils.RunLocalProcessAndLogOutput(StartInfo) != 0)
-            {
-                bSuccess = false;
-            }
+		List<FileReference> FilesToAdd = Files.Where(x => x.HasExtension(".pdb") || x.HasExtension(".exe") || x.HasExtension(".dll")).ToList();
+		if(FilesToAdd.Count > 0)
+		{
+			string TempFileName = Path.GetTempFileName();
+			try
+			{
+				File.WriteAllLines(TempFileName, FilesToAdd.Select(x => x.FullName), Encoding.ASCII);
+
+				ProcessStartInfo StartInfo = new ProcessStartInfo();
+				StartInfo.FileName = SymStoreExe.FullName;
+				StartInfo.Arguments = string.Format("add /f \"@{0}\" /s \"{1}\" /t \"{2}\" /compress", TempFileName, SymbolStoreDirectory.FullName, Product);
+				StartInfo.UseShellExecute = false;
+				StartInfo.CreateNoWindow = true;
+				if (Utils.RunLocalProcessAndLogOutput(StartInfo) != 0)
+				{
+					return false;
+				}
+			}
+			finally
+			{
+				File.Delete(TempFileName);
+			}
         }
 
-        return bSuccess;
+		return true;
     }
 
     public override string[] SymbolServerDirectoryStructure

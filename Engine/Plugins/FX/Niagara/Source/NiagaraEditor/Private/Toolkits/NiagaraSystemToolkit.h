@@ -8,7 +8,7 @@
 #include "UObject/GCObject.h"
 #include "Toolkits/IToolkitHost.h"
 
-#include "AssetEditorToolkit.h"
+#include "Toolkits/AssetEditorToolkit.h"
 
 #include "ISequencer.h"
 #include "ISequencerTrackEditor.h"
@@ -63,7 +63,9 @@ public:
 	FText GetCompileStatusTooltip() const;
 
 	/** Compiles the system script. */
-	void CompileSystem(bool bForce);
+	void CompileSystem(bool bFullRebuild);
+
+	TSharedPtr<FNiagaraSystemViewModel> GetSystemViewModel();
 
 protected:
 	void OnToggleBounds();
@@ -78,7 +80,7 @@ protected:
 	virtual void SaveAsset_Execute() override;
 	virtual void SaveAssetAs_Execute() override;
 	virtual bool OnRequestClose() override;
-
+	
 private:
 	void InitializeInternal(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& InitToolkitHost);
 
@@ -90,6 +92,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_Sequencer(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_SystemScript(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_SystemDetails(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_SystemParameters(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_SelectedEmitterStack(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_SelectedEmitterGraph(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_DebugSpreadsheet(const FSpawnTabArgs& Args);
@@ -104,25 +107,38 @@ private:
 
 	void GetSequencerAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
 	TSharedRef<SWidget> CreateAddEmitterMenuContent();
-	static TSharedRef<SWidget> GenerateCompileMenuContent();
+	TSharedRef<SWidget> GenerateCompileMenuContent();
 
 	void EmitterAssetSelected(const FAssetData& AssetData);
 
 	static void ToggleCompileEnabled();
 	static bool IsAutoCompileEnabled();
-
+	
 	void OnApply();
 	bool OnApplyEnabled() const;
+
+	void OnPinnedCurvesChanged();
+	void OnRefresh();
 
 private:
 	TSharedRef<SWidget> GenerateBoundsMenuContent(TSharedRef<FUICommandList> InCommandList);
 	void OnSaveThumbnailImage();
+	void OnThumbnailCaptured(UTexture2D* Thumbnail);
+
+private:
 
 	/** The System being edited in system mode, or the placeholder system being edited in emitter mode. */
 	UNiagaraSystem* System;
 
 	/** The emitter being edited in emitter mode, or null when editing in system mode. */
 	UNiagaraEmitter* Emitter;
+
+	/** The value of the emitter change id from the last time it was in sync with the original emitter. */
+	FGuid LastSyncedEmitterChangeId;
+
+	/** Whether or not the emitter thumbnail has been updated.  The is needed because after the first update the
+		screenshot uobject is reused, so a pointer comparison doesn't work to checking if the images has been updated. */
+	bool bEmitterThumbnailUpdated;
 
 	ESystemToolkitMode SystemToolkitMode;
 
@@ -134,11 +150,16 @@ private:
 	/** The command list for this editor */
 	TSharedPtr<FUICommandList> EditorCommands;
 
+	TSharedPtr<class SNiagaraParameterMapView> ParameterMapView;
+
+	bool bChangesDiscarded;
+
 	static const FName ViewportTabID;
 	static const FName CurveEditorTabID;
 	static const FName SequencerTabID;
 	static const FName SystemScriptTabID;
 	static const FName SystemDetailsTabID;
+	static const FName SystemParametersTabID;
 	static const FName SelectedEmitterStackTabID;
 	static const FName SelectedEmitterGraphTabID;
 	static const FName DebugSpreadsheetTabID;

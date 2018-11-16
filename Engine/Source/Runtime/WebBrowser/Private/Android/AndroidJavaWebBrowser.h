@@ -3,7 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AndroidJava.h"
+
+#if USE_ANDROID_JNI
+
+#include "Android/AndroidPlatform.h"
+#include "Android/AndroidJava.h"
 #include "RHI.h"
 #include "RHIResources.h"
 
@@ -26,6 +30,7 @@ public:
 	void GoBack();
 	void GoForward();
 	void SetAndroid3DBrowser(bool InIsAndroid3DBrowser);
+	void SetVisibility(bool InIsVisible);
 	void Update(const int posX, const int posY, const int sizeX, const int sizeY);
 private:
 	static FName GetClassName();
@@ -44,6 +49,7 @@ private:
 	FJavaClassMethod CloseMethod;
 	FJavaClassMethod GoBackOrForwardMethod;
 	FJavaClassMethod SetAndroid3DBrowserMethod;
+	FJavaClassMethod SetVisibilityMethod;
 
 	// FrameUpdateInfo member field ids
 	jclass FrameUpdateInfoClass;
@@ -78,3 +84,5 @@ public:
 	}
 
 };
+
+#endif // USE_ANDROID_JNI

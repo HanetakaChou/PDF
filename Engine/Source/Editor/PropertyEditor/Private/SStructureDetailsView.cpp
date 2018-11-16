@@ -10,6 +10,7 @@
 #include "StructurePropertyNode.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "DetailsViewPropertyGenerationUtilities.h"
 
 
 #define LOCTEXT_NAMESPACE "SStructureDetailsView"
@@ -43,6 +44,7 @@ void SStructureDetailsView::Construct(const FArguments& InArgs)
 	RootNodes.Add(MakeShareable(new FStructurePropertyNode));
 		
 	PropertyUtilities = MakeShareable( new FPropertyDetailsUtilities( *this ) );
+	PropertyGenerationUtilities = MakeShareable(new FDetailsViewPropertyGenerationUtilities(*this));
 	
 	ColumnSizeData.LeftColumnWidth = TAttribute<float>(this, &SStructureDetailsView::OnGetLeftColumnWidth);
 	ColumnSizeData.RightColumnWidth = TAttribute<float>(this, &SStructureDetailsView::OnGetRightColumnWidth);
@@ -72,7 +74,36 @@ void SStructureDetailsView::Construct(const FArguments& InArgs)
 				EUserInterfaceActionType::ToggleButton 
 			);
 		}
-
+		if (DetailsViewArgs.bShowKeyablePropertiesOption)
+		{
+			DetailViewOptions.AddMenuEntry(
+				LOCTEXT("ShowOnlyKeyable", "Show Only Keyable Properties"),
+				LOCTEXT("ShowOnlyKeyable_ToolTip", "Displays only properties which are keyable"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SStructureDetailsView::OnShowKeyableClicked),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateSP(this, &SStructureDetailsView::IsShowKeyableChecked)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
+		if (DetailsViewArgs.bShowAnimatedPropertiesOption)
+		{
+			DetailViewOptions.AddMenuEntry(
+				LOCTEXT("ShowAnimated", "Show Only Animated Properties"),
+				LOCTEXT("ShowAnimated_ToolTip", "Displays only properties which are animated (have tracks)"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SStructureDetailsView::OnShowAnimatedClicked),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateSP(this, &SStructureDetailsView::IsShowAnimatedChecked)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
 		FUIAction ShowAllAdvancedAction( 
 			FExecuteAction::CreateSP(this, &SStructureDetailsView::OnShowAllAdvancedClicked),
 			FCanExecuteAction(),
@@ -186,6 +217,7 @@ void SStructureDetailsView::SetStructureData(TSharedPtr<FStructOnScope> InStruct
 	RootNodesPendingKill.Add(RootNode);
 
 	RootNodes.Empty(1);
+	ExpandedDetailNodes.Empty();
 
 	RootNode = MakeShareable(new FStructurePropertyNode);
 	RootNodes.Add(RootNode);
@@ -208,7 +240,7 @@ void SStructureDetailsView::SetStructureData(TSharedPtr<FStructOnScope> InStruct
 	InitParams.ArrayOffset = 0;
 	InitParams.ArrayIndex = INDEX_NONE;
 	InitParams.bAllowChildren = true;
-	InitParams.bForceHiddenPropertyVisibility = FPropertySettings::Get().ShowHiddenProperties();
+	InitParams.bForceHiddenPropertyVisibility = FPropertySettings::Get().ShowHiddenProperties() || DetailsViewArgs.bForceHiddenPropertyVisibility;
 	InitParams.bCreateCategoryNodes = false;
 
 	RootNode->InitNode(InitParams);

@@ -11,20 +11,20 @@
 #include "Stats/Stats.h"
 #include "GenericPlatform/GenericPlatformMemoryPoolStats.h"
 
-#include "MallocTBB.h"
-#include "MallocAnsi.h"
-#include "MallocStomp.h"
-#include "GenericPlatformMemoryPoolStats.h"
-#include "MemoryMisc.h"
-#include "MallocBinned.h"
-#include "MallocBinned2.h"
+#include "HAL/MallocTBB.h"
+#include "HAL/MallocAnsi.h"
+#include "HAL/MallocStomp.h"
+#include "GenericPlatform/GenericPlatformMemoryPoolStats.h"
+#include "HAL/MemoryMisc.h"
+#include "HAL/MallocBinned.h"
+#include "HAL/MallocBinned2.h"
 #include "Windows/WindowsHWrapper.h"
 
 #if ENABLE_WIN_ALLOC_TRACKING
 #include <crtdbg.h>
 #endif // ENABLE_WIN_ALLOC_TRACKING
 
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include <Psapi.h>
 #pragma comment(lib, "psapi.lib")
 
@@ -89,10 +89,6 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
-	else if (USE_MALLOC_STOMP)
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Stomp;
-	}
 	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBB_ALLOCATOR_ALLOWED)
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
@@ -114,10 +110,12 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
+#if TBB_ALLOCATOR_ALLOWED
 	else if (FCString::Stristr(CommandLine, TEXT("-tbbmalloc")))
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
 	}
+#endif
 	else if (FCString::Stristr(CommandLine, TEXT("-binnedmalloc2")))
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned2;
@@ -126,18 +124,26 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned;
 	}
-#endif
+#if WITH_MALLOC_STOMP
+	else if (FCString::Stristr(CommandLine, TEXT("-stompmalloc")))
+	{
+		AllocatorToUse = EMemoryAllocatorToUse::Stomp;
+	}
+#endif // WITH_MALLOC_STOMP
+#endif // !UE_BUILD_SHIPPING
 
 	switch (AllocatorToUse)
 	{
 	case EMemoryAllocatorToUse::Ansi:
 		return new FMallocAnsi();
-#if USE_MALLOC_STOMP
+#if WITH_MALLOC_STOMP
 	case EMemoryAllocatorToUse::Stomp:
 		return new FMallocStomp();
 #endif
+#if TBB_ALLOCATOR_ALLOWED
 	case EMemoryAllocatorToUse::TBB:
 		return new FMallocTBB();
+#endif
 	case EMemoryAllocatorToUse::Binned2:
 		return new FMallocBinned2();
 		
@@ -227,6 +233,7 @@ const FPlatformMemoryConstants& FWindowsPlatformMemory::GetConstants()
 		MemoryConstants.BinnedPageSize = SystemInfo.dwAllocationGranularity;	// Use this so we get larger 64KiB pages, instead of 4KiB
 		MemoryConstants.OsAllocationGranularity = SystemInfo.dwAllocationGranularity;	// VirtualAlloc cannot allocate memory less than that
 		MemoryConstants.PageSize = SystemInfo.dwPageSize;
+		MemoryConstants.AddressLimit = FPlatformMath::RoundUpToPowerOfTwo64(MemoryConstants.TotalPhysical);
 
 		MemoryConstants.TotalPhysicalGB = (MemoryConstants.TotalPhysical + 1024 * 1024 * 1024 - 1) / 1024 / 1024 / 1024;
 	}
@@ -258,7 +265,7 @@ bool FWindowsPlatformMemory::PageProtect(void* const Ptr, const SIZE_T Size, con
 }
 void* FWindowsPlatformMemory::BinnedAllocFromOS( SIZE_T Size )
 {
-	void* Ptr = VirtualAlloc( NULL, Size, MEM_COMMIT, PAGE_READWRITE );
+	void* Ptr = VirtualAlloc( NULL, Size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE );
 	LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Platform, Ptr, Size));
 	return Ptr;
 }

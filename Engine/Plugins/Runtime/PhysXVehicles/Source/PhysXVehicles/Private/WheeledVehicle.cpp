@@ -24,7 +24,7 @@ AWheeledVehicle::AWheeledVehicle(const FObjectInitializer& ObjectInitializer)
 	Mesh->BodyInstance.bNotifyRigidBodyCollision = true;
 	Mesh->BodyInstance.bUseCCD = true;
 	Mesh->bBlendPhysics = true;
-	Mesh->bGenerateOverlapEvents = true;
+	Mesh->SetGenerateOverlapEvents(true);
 	Mesh->SetCanEverAffectNavigation(false);
 	RootComponent = Mesh;
 
@@ -41,7 +41,7 @@ void AWheeledVehicle::DisplayDebug(UCanvas* Canvas, const FDebugDisplayInfo& Deb
 
 	if (DebugDisplay.IsDisplayOn(NAME_Vehicle))
 	{
-#if WITH_PHYSX
+#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
 		GetVehicleMovementComponent()->DrawDebug(Canvas, YL, YPos);
 #endif // WITH_PHYSX
 	}

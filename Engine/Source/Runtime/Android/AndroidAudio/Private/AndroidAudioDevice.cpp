@@ -24,6 +24,11 @@ public:
 };
 
 IMPLEMENT_MODULE(FSLESAudioDeviceModule, AndroidAudio );
+
+
+DEFINE_STAT(STAT_AudioAndroidSourcePlayerCreateTime);
+DEFINE_STAT(STAT_AudioAndroidSourcePlayerRealize);
+
 /*------------------------------------------------------------------------------------
 	UALAudioDevice constructor and UObject interface.
 ------------------------------------------------------------------------------------*/
@@ -191,7 +196,11 @@ class ICompressedAudioInfo* FSLESAudioDevice::CreateCompressedAudioInfo(USoundWa
 /** Check if any background music or sound is playing through the audio device */
 bool FSLESAudioDevice::IsExernalBackgroundSoundActive()
 {
+#if USE_ANDROID_JNI
 	extern bool AndroidThunkCpp_IsMusicActive();
 	return AndroidThunkCpp_IsMusicActive();
+#else
+	return false;
+#endif
 
 }

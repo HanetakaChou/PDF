@@ -1,8 +1,8 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "ShaderFormatD3D.h"
-#include "ModuleInterface.h"
-#include "ModuleManager.h"
+#include "Modules/ModuleInterface.h"
+#include "Modules/ModuleManager.h"
 #include "Interfaces/IShaderFormat.h"
 #include "Interfaces/IShaderFormatModule.h"
 
@@ -18,8 +18,8 @@ class FShaderFormatD3D : public IShaderFormat
 		/** Version for shader format, this becomes part of the DDC key. */
 		UE_SHADER_PCD3D_SM5_VER = 7,
 		UE_SHADER_PCD3D_SM4_VER = 7,
-		UE_SHADER_PCD3D_ES2_VER = 7,
-		UE_SHADER_PCD3D_ES3_1_VER = 7,
+		UE_SHADER_PCD3D_ES2_VER = 8,
+		UE_SHADER_PCD3D_ES3_1_VER = 8,
 	};
 
 	void CheckFormat(FName Format) const
@@ -80,6 +80,10 @@ public:
 		{
 			check(0);
 		}
+	}
+	virtual const TCHAR* GetPlatformIncludeDirectory() const
+	{
+		return TEXT("");
 	}
 };
 

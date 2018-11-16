@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -354,14 +354,13 @@ namespace UnrealBuildTool
 			CompilerResults CompileResults;
 			try
 			{
-				// Enable .NET 4.0 as we want modern language features like 'var'
 				Dictionary<string, string> ProviderOptions = new Dictionary<string, string>() { { "CompilerVersion", "v4.0" } };
 				CSharpCodeProvider Compiler = new CSharpCodeProvider(ProviderOptions);
 				CompileResults = Compiler.CompileAssemblyFromFile(CompileParams, SourceFileNames.Select(x => x.FullName).ToArray());
 			}
 			catch (Exception Ex)
 			{
-				throw new BuildException(Ex, "Failed to launch compiler to compile assembly from source files '{0}' (Exception: {1})", SourceFileNames.ToString(), Ex.Message);
+				throw new BuildException(Ex, "Failed to launch compiler to compile assembly from source files:\n  {0}\n(Exception: {1})", String.Join("\n  ", SourceFileNames), Ex.ToString());
 			}
 
 			// Display compilation warnings and errors
@@ -370,14 +369,7 @@ namespace UnrealBuildTool
 				Log.TraceInformation("While compiling {0}:", OutputAssemblyPath);
 				foreach (CompilerError CurError in CompileResults.Errors)
 				{
-					if (CurError.IsWarning)
-					{
-						Log.TraceWarning(CurError.ToString());
-					}
-					else
-					{
-						Log.TraceError(CurError.ToString());
-					}
+					Log.WriteLine(0, CurError.IsWarning? LogEventType.Warning : LogEventType.Error, LogFormatOptions.NoSeverityPrefix, "{0}", CurError.ToString());
 				}
 				if (CompileResults.Errors.HasErrors || TreatWarningsAsErrors)
 				{
@@ -440,6 +432,10 @@ namespace UnrealBuildTool
 					Log.TraceInformation(String.Format("Compiled assembly file '{0}' appears to be for a newer CLR version or is otherwise invalid.  Unreal Build Tool will try to recompile this assembly now.  (Exception: {1})", OutputAssemblyPath, Ex.Message));
 					bNeedsCompilation = true;
 				}
+				catch (FileNotFoundException)
+			    {
+				    throw new BuildException("Precompiled rules assembly '{0}' does not exist.", OutputAssemblyPath);
+			    }
 				catch (Exception Ex)
 				{
 					throw new BuildException(Ex, "Error while loading previously-compiled assembly file '{0}'.  (Exception: {1})", OutputAssemblyPath, Ex.Message);

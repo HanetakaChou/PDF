@@ -164,20 +164,40 @@ class UNREALED_API UBlueprintEditorProjectSettings : public UDeveloperSettings
 	GENERATED_UCLASS_BODY()
 
 public:
-	/** Flag to disable the new compilation manager for blueprints */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints)
-	uint32 bUseCompilationManager:1;
+	/**
+	 * Flag to disable the compilation manager for blueprints - requires editor restart.
+	 * This flag is deprecated! In 4.21 the compilation manager will be the only way to compile
+	 * blueprints. Report any compilation manager issues immediately.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = Blueprints, DisplayName = "Disable Compilation Manager (DEPRECATED)")
+	uint32 bDisableCompilationManager:1;
 	
-	/** Flag to enable faster compiles for individual blueprints if they have no function signature changes */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints)
-	uint32 bSkipUnneededDependencyCompilation:1;
+	/**
+	 * Flag to disable faster compiles for individual blueprints if they have no function signature
+	 * changes. This flag is deprecated! In 4.21 there will be no way to force all dependencies to 
+	 * compile when no changes are detected. Report any issues immediately.
+	 */
+	UPROPERTY(EditAnywhere, config, Category=Blueprints, DisplayName = "Force All Dependencies To Recompile (DEPRECATED)")
+	uint32 bForceAllDependenciesToRecompile:1;
 
 	/** If enabled, the editor will load packages to look for soft references to actors when deleting/renaming them. This can be slow in large projects so disable this to improve performance but increase the chance of breaking blueprints/sequences that use soft actor references */
 	UPROPERTY(EditAnywhere, config, Category=Actors)
 	uint32 bValidateUnloadedSoftActorReferences : 1;
 
-	// UObject interface
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	// End of UObject interface
+	/** 
+	 * List of compiler messages that have been suppressed outside of full, interactive editor sessions for 
+	 * the current project - useful for silencing warnings that were added to the engine after 
+	 * project inception and are going to be addressed as they are found by content authors
+	 */
+	UPROPERTY(EditAnywhere, config, Category= Blueprints, DisplayName = "Compiler Messages Disabled Except in Editor")
+	TArray<FName> DisabledCompilerMessagesExceptEditor;
+	
+	/** 
+	 * List of compiler messages that have been suppressed completely - message suppression is only 
+	 * advisable when using blueprints that you cannot update and are raising innocuous warnings. 
+	 * If useless messages are being raised prefer to contact support rather than disabling messages
+	 */
+	UPROPERTY(EditAnywhere, config, Category= Blueprints, DisplayName = "Compiler Messages Disabled Entirely")
+	TArray<FName> DisabledCompilerMessages;
 };
 

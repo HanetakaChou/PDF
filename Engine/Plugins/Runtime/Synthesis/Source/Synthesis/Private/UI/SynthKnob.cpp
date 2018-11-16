@@ -1,6 +1,6 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "SynthKnob.h"
+#include "UI/SynthKnob.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/CanvasPanelSlot.h"
 
@@ -9,6 +9,8 @@
 USynthKnob::USynthKnob(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	FSynthKnobStyle::Initialize();
+
 	StepSize = 0.01f;
 	MouseSpeed = 1.0f;
 	MouseFineTuneSpeed = 0.2f;

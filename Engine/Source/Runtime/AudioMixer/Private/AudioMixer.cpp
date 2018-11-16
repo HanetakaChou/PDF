@@ -15,6 +15,15 @@ FAutoConsoleVariableRef CVarLogRenderTimes(
 	TEXT("0: Not Log, 1: Log"),
 	ECVF_Default);
 
+// Command for setting the audio render thread priority.
+static int32 SetRenderThreadPriorityCVar = (int32)TPri_Highest;
+FAutoConsoleVariableRef CVarLogRenderThreadPriority(
+	TEXT("au.RenderThreadPriority"),
+	LogRenderTimesCVar,
+	TEXT("Sets audio render thread priority. Defaults to 3.\n")
+	TEXT("0: Normal, 1: Above Normal, 2: Below Normal, 3: Highest, 4: Lowest, 5: Slightly Below Normal, 6: Time Critical"),
+	ECVF_Default);
+
 DEFINE_STAT(STAT_AudioMixerRenderAudio);
 DEFINE_STAT(STAT_AudioMixerSourceManagerUpdate);
 DEFINE_STAT(STAT_AudioMixerSourceBuffers);
@@ -190,6 +199,8 @@ namespace Audio
 			}
 			break;
 		}
+
+		bIsReady = false;
 	}
 
 	/**
@@ -210,6 +221,8 @@ namespace Audio
 		, bPerformingFade(true)
 		, bFadedOut(false)
 		, bIsDeviceInitialized(false)
+		, bIsUsingNullDevice(false)
+		, NullDeviceCallback(nullptr)
 	{
 		FadeParam.SetValue(0.0f);
 	}
@@ -269,6 +282,28 @@ namespace Audio
 		FadeParam.Reset();
 	}
 
+	void IAudioMixerPlatformInterface::StartRunningNullDevice()
+	{
+		if (!NullDeviceCallback.IsValid())
+		{
+			float BufferDuration = ((float) OpenStreamParams.NumFrames) / OpenStreamParams.SampleRate;
+			NullDeviceCallback.Reset(new FMixerNullCallback( BufferDuration, [this]()
+			{
+				this->ReadNextBuffer();
+			}));
+			bIsUsingNullDevice = true;
+		}
+	}
+
+	void IAudioMixerPlatformInterface::StopRunningNullDevice()
+	{
+		if (NullDeviceCallback.IsValid())
+		{
+			NullDeviceCallback.Reset();
+			bIsUsingNullDevice = false;
+		}
+	}
+
 	void IAudioMixerPlatformInterface::ApplyMasterAttenuation()
 	{
 		const int32 NextReadIndex = (CurrentBufferReadIndex + 1) % NumOutputBuffers;
@@ -289,6 +324,8 @@ namespace Audio
 
 	void IAudioMixerPlatformInterface::ReadNextBuffer()
 	{
+		LLM_SCOPE(ELLMTag::AudioMixer);
+
 		// Don't read any more audio if we're not running or changing device
 		if (AudioStreamInfo.StreamState != EAudioOutputStreamState::Running || bAudioDeviceChanging)
 		{
@@ -380,7 +417,7 @@ namespace Audio
 		check(AudioFadeEvent != nullptr);
 
 		check(AudioRenderThread == nullptr);
-		AudioRenderThread = FRunnableThread::Create(this, *FString::Printf(TEXT("AudioMixerRenderThread(%d)"), AudioMixerTaskCounter.Increment()), 0, TPri_Highest, FPlatformAffinity::GetAudioThreadMask());
+		AudioRenderThread = FRunnableThread::Create(this, *FString::Printf(TEXT("AudioMixerRenderThread(%d)"), AudioMixerTaskCounter.Increment()), 0, (EThreadPriority)SetRenderThreadPriorityCVar, FPlatformAffinity::GetAudioThreadMask());
 		check(AudioRenderThread != nullptr);
 	}
 
@@ -423,6 +460,8 @@ namespace Audio
 
 	void IAudioMixerPlatformInterface::Tick()
 	{
+		LLM_SCOPE(ELLMTag::AudioMixer);
+
 		// In single-threaded mode, we simply render buffers until we run out of space
 		// The single-thread audio backend will consume these rendered buffers when they need to
 		if (AudioStreamInfo.StreamState == EAudioOutputStreamState::Running && bIsDeviceInitialized)
@@ -482,6 +521,8 @@ namespace Audio
 
 	uint32 IAudioMixerPlatformInterface::Run()
 	{	
+		LLM_SCOPE(ELLMTag::AudioMixer);
+
 		// Call different functions depending on if it's the "main" audio mixer instance. Helps debugging callstacks.
 		if (AudioStreamInfo.AudioMixer->IsMainAudioMixer())
 		{

@@ -1,14 +1,14 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "StringTable.h"
-#include "StringTableCore.h"
-#include "StringTableRegistry.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
+#include "Internationalization/StringTableRegistry.h"
 #include "UObject/SoftObjectPtr.h"
-#include "PackageName.h"
-#include "GCObject.h"
+#include "Misc/PackageName.h"
+#include "UObject/GCObject.h"
 #include "Misc/ScopeLock.h"
 #include "Templates/Casts.h"
-#include "SlateApplicationBase.h"
+#include "Application/SlateApplicationBase.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
 
 #if WITH_EDITORONLY_DATA
@@ -79,10 +79,10 @@ public:
 	}
 
 private:
-	//~ IStringTableEngineInterop interface
+	//~ IStringTableEngineBridge interface
 	virtual void RedirectAndLoadStringTableAssetImpl(FName& InOutTableId, const EStringTableLoadingPolicy InLoadingPolicy) override
 	{
-		FSoftObjectPath StringTableAssetReference = GetAssetReference(InOutTableId);
+		const FSoftObjectPath StringTableAssetReference = GetAssetReference(InOutTableId);
 		if (StringTableAssetReference.IsValid())
 		{
 			UStringTable* StringTableAsset = Cast<UStringTable>(StringTableAssetReference.ResolveObject());
@@ -103,12 +103,23 @@ private:
 		}
 	}
 
-	virtual void CollectStringTableAssetReferencesImpl(const FName InTableId, FArchive& InAr) override
+	virtual void CollectStringTableAssetReferencesImpl(const FName InTableId, FStructuredArchive::FSlot Slot) override
 	{
-		check(InAr.IsObjectReferenceCollector());
+		check(Slot.GetUnderlyingArchive().IsObjectReferenceCollector());
 
-		UStringTable* StringTableAsset = FStringTableRegistry::Get().FindStringTableAsset(InTableId);
-		InAr << StringTableAsset;
+		UObject* StringTableAsset = FStringTableRegistry::Get().FindStringTableAsset(InTableId);
+		Slot << StringTableAsset;
+	}
+
+	virtual bool IsStringTableFromAssetImpl(const FName InTableId) override
+	{
+		const FSoftObjectPath StringTableAssetReference = GetAssetReference(InTableId);
+		return StringTableAssetReference.IsValid();
+	}
+
+	virtual bool IsStringTableAssetBeingReplacedImpl(const UStringTable* InStringTableAsset) override
+	{
+		return InStringTableAsset && InStringTableAsset->HasAnyFlags(RF_NewerVersionExists);
 	}
 
 	static FSoftObjectPath GetAssetReference(const FName InTableId)

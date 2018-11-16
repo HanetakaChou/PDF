@@ -15,6 +15,9 @@
 #include "Engine/ActorChannel.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "NetworkingDistanceConstants.h"
+#include "PhysicsReplication.h"
+#include "PhysicsPublic.h"
+#include "DrawDebugHelpers.h"
 
 /*-----------------------------------------------------------------------------
 	AActor networking implementation.
@@ -26,6 +29,7 @@
 static bool		SavedbHidden;
 static AActor*	SavedOwner;
 static bool		SavedbRepPhysics;
+static ENetRole SavedRole;
 
 float AActor::GetNetPriority(const FVector& ViewPos, const FVector& ViewDir, AActor* Viewer, AActor* ViewTarget, UActorChannel* InChannel, float Time, bool bLowBandwidth)
 {
@@ -124,6 +128,7 @@ void AActor::PreNetReceive()
 	SavedbHidden = bHidden;
 	SavedOwner = Owner;
 	SavedbRepPhysics = ReplicatedMovement.bRepPhysics;
+	SavedRole = Role;
 }
 
 void AActor::PostNetReceive()
@@ -147,10 +152,36 @@ void AActor::PostNetReceive()
 	{
 		SetOwner(SavedOwner);
 	}
+
+	if (Role != SavedRole)
+	{
+		PostNetReceiveRole();
+	}
 }
+
+void AActor::PostNetReceiveRole()
+{
+}
+
+static TAutoConsoleVariable<int32> CVarDrawDebugRepMovement(TEXT("Net.RepMovement.DrawDebug"), 0, TEXT(""), ECVF_Default);
 
 void AActor::OnRep_ReplicatedMovement()
 {
+	// Since ReplicatedMovement and AttachmentReplication are REPNOTIFY_Always (and OnRep_AttachmentReplication may call OnRep_ReplicatedMovement directly),
+	// this check is needed since this can still be called on actors for which bReplicateMovement is false - for example, during fast-forward in replay playback.
+	// When this happens, the values in ReplicatedMovement aren't valid, and must be ignored.
+	if (!bReplicateMovement)
+	{
+		return;
+	}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		if (CVarDrawDebugRepMovement->GetInt() > 0)
+		{
+			DrawDebugCapsule(GetWorld(), ReplicatedMovement.Location, GetSimpleCollisionHalfHeight(), GetSimpleCollisionRadius(), ReplicatedMovement.Rotation.Quaternion(), FColor(100, 255, 100), true, 1.f);
+		}
+#endif
+
 	if (RootComponent)
 	{
 		if (SavedbRepPhysics != ReplicatedMovement.bRepPhysics)
@@ -219,7 +250,7 @@ void AActor::PostNetReceivePhysicState()
 		ReplicatedMovement.CopyTo(NewState, this);
 
 		FVector DeltaPos(FVector::ZeroVector);
-		RootPrimComp->ConditionalApplyRigidBodyState(NewState, GEngine->PhysicErrorCorrection, DeltaPos);
+		RootPrimComp->SetRigidBodyReplicatedTarget(NewState);
 	}
 }
 
@@ -231,6 +262,20 @@ void AActor::SyncReplicatedPhysicsSimulation()
 		if (RootPrimComp)
 		{
 			RootPrimComp->SetSimulatePhysics(ReplicatedMovement.bRepPhysics);
+
+			if(!ReplicatedMovement.bRepPhysics)
+			{
+				if (UWorld* World = GetWorld())
+				{
+					if (FPhysScene* PhysScene = World->GetPhysicsScene())
+					{
+						if (FPhysicsReplication* PhysicsReplication = PhysScene->GetPhysicsReplication())
+						{
+							PhysicsReplication->RemoveReplicatedTarget(RootPrimComp);
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -280,45 +325,48 @@ bool AActor::IsReplayRelevantFor(const AActor* RealViewer, const AActor* ViewTar
 
 void AActor::GatherCurrentMovement()
 {
-	AttachmentReplication.AttachParent = nullptr;
-
-	UPrimitiveComponent* RootPrimComp = Cast<UPrimitiveComponent>(GetRootComponent());
-	if (RootPrimComp && RootPrimComp->IsSimulatingPhysics())
+	if (bReplicateMovement || (RootComponent && RootComponent->GetAttachParent()))
 	{
-		FRigidBodyState RBState;
-		RootPrimComp->GetRigidBodyState(RBState);
+		AttachmentReplication.AttachParent = nullptr;
 
-		ReplicatedMovement.FillFrom(RBState, this);
-		// Don't replicate movement if we're welded to another parent actor.
-		// Their replication will affect our position indirectly since we are attached.
-		ReplicatedMovement.bRepPhysics = !RootPrimComp->IsWelded();
-	}
-	else if (RootComponent != nullptr)
-	{
-		// If we are attached, don't replicate absolute position, use AttachmentReplication instead.
-		if (RootComponent->GetAttachParent() != nullptr)
+		UPrimitiveComponent* RootPrimComp = Cast<UPrimitiveComponent>(GetRootComponent());
+		if (RootPrimComp && RootPrimComp->IsSimulatingPhysics())
 		{
-			// Networking for attachments assumes the RootComponent of the AttachParent actor. 
-			// If that's not the case, we can't update this, as the client wouldn't be able to resolve the Component and would detach as a result.
-			AttachmentReplication.AttachParent = RootComponent->GetAttachParent()->GetAttachmentRootActor();
-			if (AttachmentReplication.AttachParent != nullptr)
+			FRigidBodyState RBState;
+			RootPrimComp->GetRigidBodyState(RBState);
+
+			ReplicatedMovement.FillFrom(RBState, this);
+			// Don't replicate movement if we're welded to another parent actor.
+			// Their replication will affect our position indirectly since we are attached.
+			ReplicatedMovement.bRepPhysics = !RootPrimComp->IsWelded();
+		}
+		else if (RootComponent != nullptr)
+		{
+			// If we are attached, don't replicate absolute position, use AttachmentReplication instead.
+			if (RootComponent->GetAttachParent() != nullptr)
 			{
-				AttachmentReplication.LocationOffset = RootComponent->RelativeLocation;
-				AttachmentReplication.RotationOffset = RootComponent->RelativeRotation;
-				AttachmentReplication.RelativeScale3D = RootComponent->RelativeScale3D;
-				AttachmentReplication.AttachComponent = RootComponent->GetAttachParent();
-				AttachmentReplication.AttachSocket = RootComponent->GetAttachSocketName();
+				// Networking for attachments assumes the RootComponent of the AttachParent actor. 
+				// If that's not the case, we can't update this, as the client wouldn't be able to resolve the Component and would detach as a result.
+				AttachmentReplication.AttachParent = RootComponent->GetAttachParent()->GetAttachmentRootActor();
+				if (AttachmentReplication.AttachParent != nullptr)
+				{
+					AttachmentReplication.LocationOffset = RootComponent->RelativeLocation;
+					AttachmentReplication.RotationOffset = RootComponent->RelativeRotation;
+					AttachmentReplication.RelativeScale3D = RootComponent->RelativeScale3D;
+					AttachmentReplication.AttachComponent = RootComponent->GetAttachParent();
+					AttachmentReplication.AttachSocket = RootComponent->GetAttachSocketName();
+				}
 			}
-		}
-		else
-		{
-			ReplicatedMovement.Location = FRepMovement::RebaseOntoZeroOrigin(RootComponent->GetComponentLocation(), this);
-			ReplicatedMovement.Rotation = RootComponent->GetComponentRotation();
-			ReplicatedMovement.LinearVelocity = GetVelocity();
-			ReplicatedMovement.AngularVelocity = FVector::ZeroVector;
-		}
+			else
+			{
+				ReplicatedMovement.Location = FRepMovement::RebaseOntoZeroOrigin(RootComponent->GetComponentLocation(), this);
+				ReplicatedMovement.Rotation = RootComponent->GetComponentRotation();
+				ReplicatedMovement.LinearVelocity = GetVelocity();
+				ReplicatedMovement.AngularVelocity = FVector::ZeroVector;
+			}
 
-		ReplicatedMovement.bRepPhysics = false;
+			ReplicatedMovement.bRepPhysics = false;
+		}
 	}
 }
 
@@ -336,13 +384,16 @@ void AActor::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifeti
 	DOREPLIFETIME( AActor, Owner );
 	DOREPLIFETIME( AActor, bHidden );
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	DOREPLIFETIME( AActor, bTearOff );
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	DOREPLIFETIME( AActor, bCanBeDamaged );
-	DOREPLIFETIME_CONDITION( AActor, AttachmentReplication, COND_Custom );
+	DOREPLIFETIME_CONDITION_NOTIFY( AActor, AttachmentReplication, COND_Custom, REPNOTIFY_Always );
 
 	DOREPLIFETIME( AActor, Instigator );
 
-	DOREPLIFETIME_CONDITION( AActor, ReplicatedMovement, COND_SimulatedOrPhysics );
+	DOREPLIFETIME_CONDITION_NOTIFY( AActor, ReplicatedMovement, COND_SimulatedOrPhysics, REPNOTIFY_Always );
 }
 
 bool AActor::ReplicateSubobjects(UActorChannel *Channel, FOutBunch *Bunch, FReplicationFlags *RepFlags)

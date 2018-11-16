@@ -16,6 +16,7 @@
 #include "Engine/World.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "MovieSceneSequence.h"
+#include "Channels/MovieSceneChannelProxy.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceEditorActorSpawner"
 
@@ -34,20 +35,38 @@ TValueOrError<FNewSpawnable, FText> FLevelSequenceEditorActorSpawner::CreateNewS
 
 	FText ErrorText;
 
-	// First off, deal with creating a spawnable from a class
 	// Deal with creating a spawnable from an instance of an actor
 	if (AActor* Actor = Cast<AActor>(&SourceObject))
 	{
-		AActor* SpawnedActor = Cast<AActor>(StaticDuplicateObject(Actor, &OwnerMovieScene, TemplateName, RF_AllFlags & ~RF_Transactional));
+		// If the source actor is not transactional, temporarily add the flag to ensure that the duplicated object is created with the transactional flag.
+		// This is necessary for the creation of the object to exist in the transaction buffer for multi-user workflows
+		const bool bWasTransactional = Actor->HasAnyFlags(RF_Transactional);
+		if (!bWasTransactional)
+		{
+			Actor->SetFlags(RF_Transactional);
+		}
+
+		AActor* SpawnedActor = Cast<AActor>(StaticDuplicateObject(Actor, &OwnerMovieScene, TemplateName, RF_AllFlags));
 		SpawnedActor->bIsEditorPreviewActor = false;
 		NewSpawnable.ObjectTemplate = SpawnedActor;
-		NewSpawnable.Name = Actor->GetActorLabel();		
+		NewSpawnable.Name = Actor->GetActorLabel();
+
+		if (!bWasTransactional)
+		{
+			Actor->ClearFlags(RF_Transactional);
+		}
 	}
 
 	// If it's a blueprint, we need some special handling
 	else if (UBlueprint* SourceBlueprint = Cast<UBlueprint>(&SourceObject))
 	{
-		NewSpawnable.ObjectTemplate = NewObject<UObject>(&OwnerMovieScene, SourceBlueprint->GeneratedClass, TemplateName);
+		if (!OwnerMovieScene.GetClass()->IsChildOf(SourceBlueprint->GeneratedClass->ClassWithin))
+		{
+			ErrorText = FText::Format(LOCTEXT("ClassWithin", "Unable to add spawnable for class of type '{0}' since it has a required outer class '{1}'."), FText::FromString(SourceObject.GetName()), FText::FromString(SourceBlueprint->GeneratedClass->ClassWithin->GetName()));
+			return MakeError(ErrorText);
+		}
+
+		NewSpawnable.ObjectTemplate = NewObject<UObject>(&OwnerMovieScene, SourceBlueprint->GeneratedClass, TemplateName, RF_Transactional);
 	}
 
 	// At this point we have to assume it's an asset
@@ -73,7 +92,7 @@ TValueOrError<FNewSpawnable, FText> FLevelSequenceEditorActorSpawner::CreateNewS
 				}
 			}
 
-			AActor* Instance = FactoryToUse->CreateActor(&SourceObject, GWorld->PersistentLevel, FTransform(), RF_Transient, TemplateName );
+			AActor* Instance = FactoryToUse->CreateActor(&SourceObject, GWorld->PersistentLevel, FTransform(), RF_Transient | RF_Transactional, TemplateName );
 			Instance->bIsEditorPreviewActor = false;
 			NewSpawnable.ObjectTemplate = StaticDuplicateObject(Instance, &OwnerMovieScene, TemplateName, RF_AllFlags & ~RF_Transient);
 
@@ -93,7 +112,7 @@ TValueOrError<FNewSpawnable, FText> FLevelSequenceEditorActorSpawner::CreateNewS
 				return MakeError(ErrorText);
 			}
 
-			NewSpawnable.ObjectTemplate = NewObject<UObject>(&OwnerMovieScene, InClass, TemplateName);
+			NewSpawnable.ObjectTemplate = NewObject<UObject>(&OwnerMovieScene, InClass, TemplateName, RF_Transactional);
 		}
 
 		if (!NewSpawnable.ObjectTemplate || !NewSpawnable.ObjectTemplate->IsA<AActor>())
@@ -151,9 +170,9 @@ bool FLevelSequenceEditorActorSpawner::CanSetupDefaultsForSpawnable(UObject* Spa
 	return FLevelSequenceActorSpawner::CanSetupDefaultsForSpawnable(SpawnedObject);
 }
 
-void FLevelSequenceEditorActorSpawner::SetupDefaultsForSpawnable(UObject* SpawnedObject, const FGuid& Guid, const FTransformData& TransformData, TSharedRef<ISequencer> Sequencer, USequencerSettings* Settings)
+void FLevelSequenceEditorActorSpawner::SetupDefaultsForSpawnable(UObject* SpawnedObject, const FGuid& Guid, const TOptional<FTransformData>& TransformData, TSharedRef<ISequencer> Sequencer, USequencerSettings* Settings)
 {
-	FTransformData DefaultTransform = TransformData;
+	TOptional<FTransformData> DefaultTransform = TransformData;
 
 	AActor* SpawnedActor = Cast<AActor>(SpawnedObject);
 	if (SpawnedActor)
@@ -163,10 +182,11 @@ void FLevelSequenceEditorActorSpawner::SetupDefaultsForSpawnable(UObject* Spawne
 		{
 			PlaceActorInFrontOfCamera(SpawnedActor);
 		}
-		DefaultTransform.Translation = SpawnedActor->GetActorLocation();
-		DefaultTransform.Rotation = SpawnedActor->GetActorRotation();
-		DefaultTransform.Scale = FVector(1.0f, 1.0f, 1.0f);
-		DefaultTransform.bValid = true;
+		DefaultTransform.Reset();
+		DefaultTransform.Emplace();
+		DefaultTransform->Translation = SpawnedActor->GetActorLocation();
+		DefaultTransform->Rotation = SpawnedActor->GetActorRotation();
+		DefaultTransform->Scale = FVector(1.0f, 1.0f, 1.0f);
 
 		Sequencer->OnActorAddedToSequencer().Broadcast(SpawnedActor, Guid);
 
@@ -192,14 +212,17 @@ void FLevelSequenceEditorActorSpawner::SetupDefaultsForSpawnable(UObject* Spawne
 	if (SpawnTrack)
 	{
 		UMovieSceneBoolSection* SpawnSection = Cast<UMovieSceneBoolSection>(SpawnTrack->CreateNewSection());
-		SpawnSection->SetDefault(true);
-		SpawnSection->SetIsInfinite(Sequencer->GetInfiniteKeyAreas());
+		SpawnSection->GetChannel().SetDefault(true);
+		if (Sequencer->GetInfiniteKeyAreas())
+		{
+			SpawnSection->SetRange(TRange<FFrameNumber>::All());
+		}
 		SpawnTrack->AddSection(*SpawnSection);
 		SpawnTrack->SetObjectId(Guid);
 	}
 
 	// Ensure it will spawn in the right place
-	if (DefaultTransform.bValid)
+	if (DefaultTransform.IsSet())
 	{
 		UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(OwnerMovieScene->FindTrack(UMovieScene3DTransformTrack::StaticClass(), Guid, "Transform"));
 		if (!TransformTrack)
@@ -209,33 +232,39 @@ void FLevelSequenceEditorActorSpawner::SetupDefaultsForSpawnable(UObject* Spawne
 
 		if (TransformTrack)
 		{
-			const bool bUnwindRotation = false;
-
-			EMovieSceneKeyInterpolation Interpolation = Sequencer->GetKeyInterpolation();
-
 			const TArray<UMovieSceneSection*>& Sections = TransformTrack->GetAllSections();
 			if (!Sections.Num())
 			{
 				TransformTrack->AddSection(*TransformTrack->CreateNewSection());
 			}
 
+			FVector Location = DefaultTransform->Translation;
+			FVector Rotation = DefaultTransform->Rotation.Euler();
+			FVector Scale    = DefaultTransform->Scale;
+
 			for (UMovieSceneSection* Section : Sections)
 			{
 				UMovieScene3DTransformSection* TransformSection = CastChecked<UMovieScene3DTransformSection>(Section);
 
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Translation, EAxis::X, DefaultTransform.Translation.X, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Translation, EAxis::Y, DefaultTransform.Translation.Y, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Translation, EAxis::Z, DefaultTransform.Translation.Z, bUnwindRotation));
+				// Set the section to be infinite if necessary
+				if (Sequencer->GetInfiniteKeyAreas())
+				{
+					TransformSection->SetRange(TRange<FFrameNumber>::All());
+				}
 
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Rotation, EAxis::X, DefaultTransform.Rotation.Euler().X, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Rotation, EAxis::Y, DefaultTransform.Rotation.Euler().Y, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Rotation, EAxis::Z, DefaultTransform.Rotation.Euler().Z, bUnwindRotation));
+				// Set the section's default values to this default transform
+				TArrayView<FMovieSceneFloatChannel*> FloatChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+				FloatChannels[0]->SetDefault(Location.X);
+				FloatChannels[1]->SetDefault(Location.Y);
+				FloatChannels[2]->SetDefault(Location.Z);
 
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Scale, EAxis::X, DefaultTransform.Scale.X, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Scale, EAxis::Y, DefaultTransform.Scale.Y, bUnwindRotation));
-				TransformSection->SetDefault(FTransformKey(EKey3DTransformChannel::Scale, EAxis::Z, DefaultTransform.Scale.Z, bUnwindRotation));
+				FloatChannels[3]->SetDefault(Rotation.X);
+				FloatChannels[4]->SetDefault(Rotation.Y);
+				FloatChannels[5]->SetDefault(Rotation.Z);
 
-				TransformSection->SetIsInfinite(Sequencer->GetInfiniteKeyAreas());
+				FloatChannels[6]->SetDefault(Scale.X);
+				FloatChannels[7]->SetDefault(Scale.Y);
+				FloatChannels[8]->SetDefault(Scale.Z);
 			}
 		}
 	}

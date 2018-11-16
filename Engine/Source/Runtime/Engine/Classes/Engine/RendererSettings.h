@@ -7,6 +7,7 @@
 #include "Engine/EngineTypes.h"
 #include "Engine/Scene.h"
 #include "Engine/DeveloperSettings.h"
+#include "PixelFormat.h"
 
 #include "RendererSettings.generated.h"
 
@@ -90,6 +91,37 @@ namespace EEarlyZPass
 	};
 }
 
+/**
+ * Enumerates available options for alpha channel through post processing. The renderer will always generate premultiplied RGBA
+ * with alpha as translucency (0 = fully opaque; 1 = fully translucent).
+ */
+UENUM()
+namespace EAlphaChannelMode
+{
+	enum Type
+	{
+		/** Disabled, reducing GPU cost to the minimum. (default). */
+		Disabled = 0 UMETA(DisplayName = "Disabled"),
+
+		/** Maintain alpha channel only within linear color space. Tonemapper won't output alpha channel. */
+		LinearColorSpaceOnly = 1 UMETA(DisplayName="Linear color space only"),
+
+		/** Maintain alpha channel within linear color space, but also pass it through the tonemapper.
+		 *
+		 * CAUTION: Passing the alpha channel through the tonemapper can unevitably lead to pretty poor compositing quality as
+		 * opposed to linear color space compositing, especially on purely additive pixels bloom can generate. This settings is
+		 * exclusively targeting broadcast industry in case of hardware unable to do linear color space compositing and
+		 * tonemapping.
+		 */
+		AllowThroughTonemapper = 2 UMETA(DisplayName="Allow through tonemapper"),
+	};
+}
+
+namespace EAlphaChannelMode
+{
+	ENGINE_API EAlphaChannelMode::Type FromInt(int32 InAlphaChannelMode);
+}
+
 /** used by FPostProcessSettings AutoExposure*/
 UENUM()
 namespace EAutoExposureMethodUI
@@ -104,6 +136,28 @@ namespace EAutoExposureMethodUI
 		AEM_Manual   UMETA(DisplayName = "Manual"),
 		AEM_MAX,
 	};
+}
+
+/** used by GetDefaultBackBufferPixelFormat*/
+UENUM()
+namespace EDefaultBackBufferPixelFormat
+{
+	enum Type
+	{
+		DBBPF_B8G8R8A8 = 0				UMETA(DisplayName = "8bit RGBA"),
+		DBBPF_A16B16G16R16_DEPRECATED	UMETA(DisplayName = "DEPRECATED - 16bit RGBA", Hidden),
+		DBBPF_FloatRGB_DEPRECATED		UMETA(DisplayName = "DEPRECATED - Float RGB", Hidden),
+		DBBPF_FloatRGBA					UMETA(DisplayName = "Float RGBA"),
+		DBBPF_A2B10G10R10				UMETA(DisplayName = "10bit RGB, 2bit Alpha"),
+		DBBPF_MAX,
+	};
+}
+
+namespace EDefaultBackBufferPixelFormat
+{
+	ENGINE_API EPixelFormat Convert2PixelFormat(EDefaultBackBufferPixelFormat::Type InDefaultBackBufferPixelFormat);
+	ENGINE_API int32 NumberOfBitForAlpha(EDefaultBackBufferPixelFormat::Type InDefaultBackBufferPixelFormat);
+	ENGINE_API EDefaultBackBufferPixelFormat::Type FromInt(int32 InDefaultBackBufferPixelFormat);
 }
 
 /**
@@ -137,6 +191,24 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "Multi-sample anti-aliasing setting to use on mobile. MSAA is currently supported using Metal on iOS, and on Android devices with the required support using ES 2 or ES 3.1.\nIf MSAA is not available, the current default AA method will be used."))
 	TEnumAsByte<EMobileMSAASampleCount::Type> MobileMSAASampleCount;
 
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
+		ConsoleVariable = "r.Mobile.UseLegacyShadingModel", DisplayName = "Use legacy shading model",
+		ToolTip = "If true then mobile shaders will use the cheaper but lower quality specular calculation found in versions prior to 4.20.",
+		ConfigRestartRequired = true))
+		uint32 bMobileUseLegacyShadingModel : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta=(
+		ConsoleVariable="r.Mobile.AllowDitheredLODTransition", DisplayName="Allow Dithered LOD Transition",
+		ToolTip="Whether to support 'Dithered LOD Transition' material option on mobile platforms. Enabling this may degrade performance as rendering will not benefit from Early-Z optimization.",
+		ConfigRestartRequired=true))
+	uint32 bMobileAllowDitheredLODTransition:1;
+
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta=(
+		ConsoleVariable="r.Mobile.AllowSoftwareOcclusion", DisplayName="Support Software Occlusion Culling",
+		ToolTip="Whether to support 'Software Occlusion Culling' on mobile platforms. This will package occluder information and enable Software Occlusion Culling.",
+		ConfigRestartRequired=false))
+	uint32 bMobileAllowSoftwareOcclusionCulling:1;
+	
 	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
 		ConsoleVariable = "r.DiscardUnusedQuality", DisplayName = "Game Discards Unused Material Quality Levels",
 		ToolTip = "When running in game mode, whether to keep shaders for all quality levels in memory or only those needed for the current quality level.\nUnchecked: Keep all quality levels in memory allowing a runtime quality level change. (default)\nChecked: Discard unused quality levels when loading content for the game, saving some memory."))
@@ -276,15 +348,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = Postprocessing, meta = (
 		ConsoleVariable = "r.PostProcessing.PropagateAlpha", DisplayName = "Enable alpha channel support in post processing (experimental).",
-		ToolTip = "Whether alpha channel should be supported in post processing chain. Still experimental: works only with Temporal AA, Motion Blur, Circle Depth Of Field. This option also force disable the separate translucency.",
+		ToolTip = "Configures alpha channel support in renderer's post processing chain. Still experimental: works only with Temporal AA, Motion Blur, Circle Depth Of Field. This option also force disable the separate translucency.",
 		ConfigRestartRequired = true))
-	uint32 bEnableAlphaChannelInPostProcessing : 1;
+	TEnumAsByte<EAlphaChannelMode::Type> bEnableAlphaChannelInPostProcessing;
 
 	UPROPERTY(config, EditAnywhere, Category = Postprocessing, meta = (
-		ConsoleVariable = "r.UsePreExposure", DisplayName = "Apply Pre-exposure before writing to the scene color",
-		ToolTip = "Whether to use pre-exposure to remap the range of the scene color around the camera exposure. This limits the render target range required to support HDR lighting value.",
-		ConfigRestartRequired=true))
-	uint32 bUsePreExposure : 1;
+		ConsoleVariable = "r.DOF.Algorithm", DisplayName = "Use new DOF algorithm",
+		ToolTip = "Whether to use the new DOF implementation for Circle DOF method."))
+	uint32 bUseNewAlgorithm : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.Bloom", DisplayName = "Bloom",
@@ -312,6 +383,18 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	TEnumAsByte<EAutoExposureMethodUI::Type> DefaultFeatureAutoExposure; 
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
+		ConsoleVariable = "r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange", DisplayName = "Extend default luminance range in Auto Exposure settings",
+		ToolTip = "Whether the default values for AutoExposure should support an extended range of scene luminance. Also changes the exposure settings to be expressed in EV100.",
+		ConfigRestartRequired=true))
+	uint32 bExtendDefaultLuminanceRangeInAutoExposureSettings: 1;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
+		ConsoleVariable = "r.UsePreExposure", DisplayName = "Apply Pre-exposure before writing to the scene color",
+		ToolTip = "Whether to use pre-exposure to remap the range of the scene color around the camera exposure. This limits the render target range required to support HDR lighting value.",
+		ConfigRestartRequired=true))
+	uint32 bUsePreExposure : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.MotionBlur", DisplayName = "Motion Blur",
 		ToolTip = "Whether the default for MotionBlur is enabled or not (postprocess volume/camera/game setting can still override and enable or disable it independently)"))
 	uint32 bDefaultFeatureMotionBlur : 1;
@@ -333,14 +416,15 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	TEnumAsByte<EAntiAliasingMethod> DefaultFeatureAntiAliasing;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
-		ConsoleVariable = "r.DefaultFeature.PointLightUnits", DisplayName = "Point Light Units",
-		ToolTip = "Which units to use for point lights"))
-	ELightUnits DefaultPointLightUnits;
+		ConsoleVariable = "r.DefaultFeature.LightUnits", DisplayName = "Light Units",
+		ToolTip = "Which units to use for newly placed point, spot and rect lights"))
+	ELightUnits DefaultLightUnits;
 
-	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
-		ConsoleVariable = "r.DefaultFeature.SpotLightUnits", DisplayName = "Spot Light Units",
-		ToolTip = "Which units to use for spot lights"))
-	ELightUnits DefaultSpotLightUnits;
+	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = DefaultSettings, meta = (
+		ConsoleVariable = "r.DefaultBackBufferPixelFormat",DisplayName = "Frame Buffer Pixel Format",
+		ToolTip = "Pixel format used for back buffer, when not specified",
+		ConfigRestartRequired=true))
+	TEnumAsByte<EDefaultBackBufferPixelFormat::Type> DefaultBackBufferPixelFormat;
 
 	UPROPERTY(config, EditAnywhere, Category=Optimizations, meta=(
 		ConsoleVariable="r.Shadow.UnbuiltPreviewInGame",DisplayName="Render Unbuilt Preview Shadows in game",
@@ -398,6 +482,20 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "When enabled, after changing the material on a Required particle module a Particle Cutout texture will be chosen automatically from the Opacity Mask texture if it exists, if not the Opacity Texture will be used if it exists."))
 	uint32 bDefaultParticleCutouts : 1;
 
+	UPROPERTY(config, EditAnywhere, Category = Optimizations, meta = (
+		ConsoleVariable = "fx.GPUSimulationTextureSizeX",
+		DisplayName = "GPU Particle simulation texture size - X",
+		ToolTip = "The X size of the GPU simulation texture size. SizeX*SizeY determines the maximum number of GPU simulated particles in an emitter. Potentially overridden by CVar settings in BaseDeviceProfile.ini.",
+		ConfigRestartRequired = true))
+	int32 GPUSimulationTextureSizeX;
+	
+	UPROPERTY(config, EditAnywhere, Category = Optimizations, meta = (
+		ConsoleVariable = "fx.GPUSimulationTextureSizeY",
+		DisplayName = "GPU Particle simulation texture size - Y",
+		ToolTip = "The Y size of the GPU simulation texture size. SizeX*SizeY determines the maximum number of GPU simulated particles in an emitter. Potentially overridden by CVar settings in BaseDeviceProfile.ini.",
+		ConfigRestartRequired = true))
+	int32 GPUSimulationTextureSizeY;
+
 	UPROPERTY(config, EditAnywhere, Category = Lighting, meta = (
 		ConsoleVariable = "r.AllowGlobalClipPlane", DisplayName = "Support global clip plane for Planar Reflections",
 		ToolTip = "Whether to support the global clip plane needed for planar reflections.  Enabling this increases BasePass triangle cost by ~15% regardless of whether planar reflections are active. Changing this setting requires restarting the editor.",
@@ -413,10 +511,7 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConsoleVariable = "r.MorphTarget.Mode", DisplayName = "Use GPU for computing morph targets",
 		ToolTip = "Whether to use original CPU method (loop per morph then by vertex) or use a GPU-based method on Shader Model 5 hardware."))
 	uint32 bUseGPUMorphTargets : 1;
-
-	UPROPERTY(config, EditAnywhere, Category = "Optimizations", meta = (DisplayName = "GPU Particles Support Only Local Vector Field", Tooltip = "Limits Cascade GPU Particle simulations to applying local vector fields.  Global vector fields are not applied."))
-	bool bGPUParticlesLocalVFOnly;
-
+	
 	UPROPERTY(config, EditAnywhere, Category = Debugging, meta = (
 		ConsoleVariable = "r.GPUCrashDebugging", DisplayName = "Enable vendor specific GPU crash analysis tools",
 		ToolTip = "Enables vendor specific GPU crash analysis tools.  Currently only supports NVIDIA Aftermath on DX11.",
@@ -456,9 +551,16 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		uint32 bMonoscopicFarField : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
-		ConsoleVariable = "vr.DebugCanvasInLayer", DisplayName = "Debug Canvas in Layer",
-		ToolTip = "Enables debug canvases to be rendered in HMD layers"))
-		uint32 bDebugCanvasInLayer : 1;
+		ConsoleVariable = "vr.RoundRobinOcclusion", DisplayName = "Round Robin Occlusion Queries",
+		ToolTip = "Enable round-robin scheduling of occlusion queries for VR.",
+		ConfigRestartRequired = false))
+	uint32 bRoundRobinOcclusion : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = Experimental, meta = (
+		ConsoleVariable = "vr.ODSCapture", DisplayName = "Omni-directional Stereo Capture",
+		ToolTip = "Enable Omni-directional Stereo Capture.",
+		ConfigRestartRequired = true))
+		uint32 bODSCapture : 1;
 
 	UPROPERTY(config, EditAnywhere, Category=Editor, meta=(
 		ConsoleVariable="r.WireframeCullThreshold",DisplayName="Wireframe Cull Threshold",

@@ -25,13 +25,13 @@ class ENGINE_API UShapeComponent : public UPrimitiveComponent
 {
 	GENERATED_UCLASS_BODY()
 
-	/** Color used to draw the shape. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Shape)
-	FColor ShapeColor;
-
 	/** Description of collision */
 	UPROPERTY(transient, duplicatetransient)
 	class UBodySetup* ShapeBodySetup;
+
+	/** Color used to draw the shape. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Shape)
+	FColor ShapeColor;
 
 	/** Only show this component if the actor is selected */
 	UPROPERTY()
@@ -64,14 +64,14 @@ protected:
 	}
 
 	template <typename ShapeElemType> void AddShapeToGeomArray();
-	template <typename ShapeElemType> void SetShapeToNewGeom(physx::PxShape* PShape);
+	template <typename ShapeElemType> void SetShapeToNewGeom(const FPhysicsShapeHandle& Shape);
 	template <typename ShapeElemType> void CreateShapeBodySetupIfNeeded();
 
 public:
 
 	/** Navigation area type (empty = default obstacle) */
 	UPROPERTY(EditAnywhere, Category = Navigation)
-	TSubclassOf<class UNavArea> AreaClass;
+	TSubclassOf<class UNavAreaBase> AreaClass;
 
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;

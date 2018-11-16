@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "StructuredArchiveFormatter.h"
+#include "Serialization/StructuredArchiveFormatter.h"
 #include "Formatters/BinaryArchiveFormatter.h"
 #include "Misc/Optional.h"
 #include "Containers/Array.h"
@@ -69,7 +69,7 @@ public:
 	 * @param InFormatter Formatter for the archive data
 	 */
 	FStructuredArchive(FArchiveFormatterType& InFormatter);
-
+	
 	/**
 	 * Default destructor. Closes the archive.
 	 */
@@ -106,8 +106,10 @@ public:
 	{
 	public:
 		FRecord EnterRecord();
+		FRecord EnterRecord_TextOnly(TArray<FString>& OutFieldNames);
 		FArray EnterArray(int32& Num);
 		FStream EnterStream();
+		FStream EnterStream_TextOnly(int32& OutNumElements);
 		FMap EnterMap(int32& Num);
 
 		// We don't support chaining writes to a single slot, so these return void.
@@ -126,6 +128,11 @@ public:
 		void operator << (FString& Value);
 		void operator << (FName& Value);
 		void operator << (UObject*& Value);
+		void operator << (FText& Value);
+		void operator << (FWeakObjectPtr& Value);
+		void operator << (FSoftObjectPtr& Value);
+		void operator << (FSoftObjectPath& Value);
+		void operator << (FLazyObjectPtr& Value);
 
 		void Serialize(TArray<uint8>& Data);
 		void Serialize(void* Data, uint64 DataSize);
@@ -135,8 +142,18 @@ public:
 			return Ar.GetUnderlyingArchive();
 		}
 
+		FORCEINLINE bool IsFilled() const
+		{
+#if WITH_TEXT_ARCHIVE_SUPPORT
+			return Ar.CurrentSlotElementId != ElementId;
+#else
+			return true;
+#endif
+		}
+
 	private:
 		friend FStructuredArchive;
+		friend class FStructuredArchiveChildReader;
 
 		FStructuredArchive& Ar;
 #if WITH_TEXT_ARCHIVE_SUPPORT
@@ -165,9 +182,12 @@ public:
 	{
 	public:
 		FSlot EnterField(FArchiveFieldName Name);
+		FSlot EnterField_TextOnly(FArchiveFieldName Name, EArchiveValueType& OutType);
 		FRecord EnterRecord(FArchiveFieldName Name);
+		FRecord EnterRecord_TextOnly(FArchiveFieldName Name, TArray<FString>& OutFieldNames);
 		FArray EnterArray(FArchiveFieldName Name, int32& Num);
 		FStream EnterStream(FArchiveFieldName Name);
+		FStream EnterStream_TextOnly(FArchiveFieldName Name, int32& OutNumElements);
 		FMap EnterMap(FArchiveFieldName Name, int32& Num);
 
 		TOptional<FSlot> TryEnterField(FArchiveFieldName Name, bool bEnterForSaving);
@@ -213,6 +233,7 @@ public:
 	{
 	public:
 		FSlot EnterElement();
+		FSlot EnterElement_TextOnly(EArchiveValueType& OutType);
 
 		template<typename T> FORCEINLINE FArray& operator<<(T& Item)
 		{
@@ -254,6 +275,7 @@ public:
 	{
 	public:
 		FSlot EnterElement();
+		FSlot EnterElement_TextOnly(EArchiveValueType& OutType);
 
 		template<typename T> FORCEINLINE FStream& operator<<(T& Item)
 		{
@@ -296,6 +318,7 @@ public:
 	{
 	public:
 		FSlot EnterElement(FString& Name);
+		FSlot EnterElement_TextOnly(FString& Name, EArchiveValueType& OutType);
 
 		FORCEINLINE FArchive& GetUnderlyingArchive()
 		{
@@ -325,12 +348,20 @@ public:
 	};
 
 private:
+
+	friend class FStructuredArchiveChildReader;
+
 	/**
 	* Reference to the formatter that actually writes out the data to the underlying archive
 	*/
 	FArchiveFormatterType& Formatter;
 
 #if WITH_TEXT_ARCHIVE_SUPPORT
+	/**
+	 * Whether the formatter requires structural metadata. This allows optimizing the path for binary archives in editor builds.
+	 */
+	const bool bRequiresStructuralMetadata;
+
 	enum class EElementType : unsigned char
 	{
 		Root,
@@ -375,7 +406,7 @@ private:
 	 * Tracks the current stack of objects being written. Used by SetScope() to ensure that scopes are always closed correctly in the underlying formatter,
 	 * and to make sure that the archive is always written in a forwards-only way (ie. writing to an element id that is not in scope will assert)
 	 */
-	TArray<FElement> CurrentScope;
+	TArray<FElement, TNonRelocatableInlineAllocator<32>> CurrentScope;
 
 #if DO_GUARD_SLOW
 	/**
@@ -430,7 +461,43 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 	Slot.Serialize(InArray);
 }
 
+/**
+ * FStructuredArchiveChildReader
+ *
+ * Utility class for easily creating a structured archive that covers the data hierarchy underneath
+ * the given slot
+ *
+ * Allows serialization code to get an archive instance for the current location, so that it can return to it
+ * later on after the master archive has potentially moved on into a different location in the file.
+ */
+class CORE_API FStructuredArchiveChildReader
+{
+public:
+
+	FStructuredArchiveChildReader(FStructuredArchive::FSlot InSlot);
+	~FStructuredArchiveChildReader();
+
+	FORCEINLINE FStructuredArchive::FSlot GetRoot() { return Root.GetValue(); }
+
+private:
+
+	FStructuredArchiveFormatter* OwnedFormatter;
+	FStructuredArchive* Archive;
+	TOptional<FStructuredArchive::FSlot> Root;
+};
+
 #if !WITH_TEXT_ARCHIVE_SUPPORT
+	FORCEINLINE FStructuredArchiveChildReader::FStructuredArchiveChildReader(FStructuredArchive::FSlot InSlot)
+		: OwnedFormatter(nullptr)
+		, Archive(nullptr)
+	{
+		Archive = new FStructuredArchive(InSlot.Ar.Formatter);
+		Root.Emplace(Archive->Open());
+	}
+
+	FORCEINLINE FStructuredArchiveChildReader::~FStructuredArchiveChildReader()
+	{
+	}
 
 	//////////// FStructuredArchive ////////////
 
@@ -459,6 +526,12 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 		return FRecord(Ar);
 	}
 
+	FORCEINLINE FStructuredArchive::FRecord FStructuredArchive::FSlot::EnterRecord_TextOnly(TArray<FString>& OutFieldNames)
+	{
+		Ar.Formatter.EnterRecord_TextOnly(OutFieldNames);
+		return FRecord(Ar);
+	}
+
 	FORCEINLINE FStructuredArchive::FArray FStructuredArchive::FSlot::EnterArray(int32& Num)
 	{
 		Ar.Formatter.EnterArray(Num);
@@ -467,6 +540,12 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 
 	FORCEINLINE FStructuredArchive::FStream FStructuredArchive::FSlot::EnterStream()
 	{
+		return FStream(Ar);
+	}
+
+	FORCEINLINE FStructuredArchive::FStream FStructuredArchive::FSlot::EnterStream_TextOnly(int32& OutNumElements)
+	{
+		Ar.Formatter.EnterStream_TextOnly(OutNumElements);
 		return FStream(Ar);
 	}
 
@@ -553,6 +632,31 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 		Ar.Formatter.Serialize(Value);
 	}
 
+	FORCEINLINE void FStructuredArchive::FSlot::operator<< (FText& Value)
+	{
+		Ar.Formatter.Serialize(Value);
+	}
+
+	FORCEINLINE void FStructuredArchive::FSlot::operator<< (FWeakObjectPtr& Value)
+	{
+		Ar.Formatter.Serialize(Value);
+	}
+
+	FORCEINLINE void FStructuredArchive::FSlot::operator<< (FSoftObjectPath& Value)
+	{
+		Ar.Formatter.Serialize(Value);
+	}
+
+	FORCEINLINE void FStructuredArchive::FSlot::operator<< (FSoftObjectPtr& Value)
+	{
+		Ar.Formatter.Serialize(Value);
+	}
+
+	FORCEINLINE void FStructuredArchive::FSlot::operator<< (FLazyObjectPtr& Value)
+	{
+		Ar.Formatter.Serialize(Value);
+	}
+
 	FORCEINLINE void FStructuredArchive::FSlot::Serialize(TArray<uint8>& Data)
 	{
 		Ar.Formatter.Serialize(Data);
@@ -563,16 +667,27 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 		Ar.Formatter.Serialize(Data, DataSize);
 	}
 
-	//////////// FStructuredArchive::FObject ////////////
+	//////////// FStructuredArchive::FRecord ////////////
 
 	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FRecord::EnterField(FArchiveFieldName Name)
 	{
 		return FSlot(Ar);
 	}
 
+	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FRecord::EnterField_TextOnly(FArchiveFieldName Name, EArchiveValueType& OutType)
+	{
+		Ar.Formatter.EnterField_TextOnly(Name, OutType);
+		return FSlot(Ar);
+	}
+
 	FORCEINLINE FStructuredArchive::FRecord FStructuredArchive::FRecord::EnterRecord(FArchiveFieldName Name)
 	{
 		return EnterField(Name).EnterRecord();
+	}
+
+	FORCEINLINE FStructuredArchive::FRecord FStructuredArchive::FRecord::EnterRecord_TextOnly(FArchiveFieldName Name, TArray<FString>& OutFieldNames)
+	{
+		return EnterField(Name).EnterRecord_TextOnly(OutFieldNames);
 	}
 
 	FORCEINLINE FStructuredArchive::FArray FStructuredArchive::FRecord::EnterArray(FArchiveFieldName Name, int32& Num)
@@ -609,10 +724,22 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 		return FSlot(Ar);
 	}
 
+	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FArray::EnterElement_TextOnly(EArchiveValueType& OutType)
+	{
+		Ar.Formatter.EnterArrayElement_TextOnly(OutType);
+		return FSlot(Ar);
+	}
+
 	//////////// FStructuredArchive::FStream ////////////
 
 	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FStream::EnterElement()
 	{
+		return FSlot(Ar);
+	}
+
+	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FStream::EnterElement_TextOnly(EArchiveValueType& OutType)
+	{
+		Ar.Formatter.EnterStreamElement_TextOnly(OutType);
 		return FSlot(Ar);
 	}
 
@@ -621,6 +748,12 @@ FORCEINLINE_DEBUGGABLE void operator<<(FStructuredArchive::FSlot Slot, TArray<ui
 	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FMap::EnterElement(FString& Name)
 	{
 		Ar.Formatter.EnterMapElement(Name);
+		return FSlot(Ar);
+	}
+
+	FORCEINLINE FStructuredArchive::FSlot FStructuredArchive::FMap::EnterElement_TextOnly(FString& Name, EArchiveValueType& OutType)
+	{
+		Ar.Formatter.EnterMapElement_TextOnly(Name, OutType);
 		return FSlot(Ar);
 	}
 

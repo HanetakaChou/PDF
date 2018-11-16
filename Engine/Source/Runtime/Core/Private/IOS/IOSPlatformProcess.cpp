@@ -4,9 +4,10 @@
 IOSPlatformProcess.cpp: iOS implementations of Process functions
 =============================================================================*/
 
-#include "IOSPlatformProcess.h"
-#include "ApplePlatformRunnableThread.h"
-#include "IOSAppDelegate.h"
+#include "IOS/IOSPlatformProcess.h"
+#include "Apple/ApplePlatformRunnableThread.h"
+#include "IOS/IOSAppDelegate.h"
+#include "Misc/CoreDelegates.h"
 #include <mach-o/dyld.h>
 
 // numbers recommended by Apple
@@ -40,8 +41,20 @@ FRunnableThread* FIOSPlatformProcess::CreateRunnableThread()
 void FIOSPlatformProcess::LaunchURL( const TCHAR* URL, const TCHAR* Parms, FString* Error )
 {
 	UE_LOG(LogIOS, Log,  TEXT("LaunchURL %s %s"), URL, Parms?Parms:TEXT("") );
+
+	if (FCoreDelegates::ShouldLaunchUrl.IsBound() && !FCoreDelegates::ShouldLaunchUrl.Execute(URL))
+	{
+		if (Error)
+		{
+			*Error = TEXT("LaunchURL cancelled by delegate");
+		}
+		return;
+	}
+
 	NSString* CFUrl = (NSString*)FPlatformString::TCHARToCFString( URL );
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bool Result = [[UIApplication sharedApplication] openURL: [NSURL URLWithString: CFUrl]];
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (Error != nullptr)
 	{
 		*Error = Result ? TEXT("") : TEXT("unable to open url");

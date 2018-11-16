@@ -4,7 +4,7 @@
 
 #if __cplusplus_cli
 // there are compile issues with this file in managed mode, so use the FPU version
-#include "UnrealMathFPU.h"
+#include "Math/UnrealMathFPU.h"
 #else
 
 #include <DirectXMath.h>
@@ -64,14 +64,14 @@ FORCEINLINE VectorRegister MakeVectorRegister( float X, float Y, float Z, float 
  */
 FORCEINLINE VectorRegisterInt MakeVectorRegisterInt(int32 X, int32 Y, int32 Z, int32 W)
 {
-	return _mm_castps_si128(DirectX::XMVectorSet(X, Y, Z, W));
+	return _mm_castps_si128(DirectX::XMVectorSetInt(X, Y, Z, W));
 }
 
 /*=============================================================================
  *	Constants:
  *============================================================================*/
 
-#include "UnrealMathVectorConstants.h"
+#include "Math/UnrealMathVectorConstants.h"
 
 
 /*=============================================================================
@@ -141,6 +141,14 @@ FORCEINLINE VectorRegisterInt MakeVectorRegisterInt(int32 X, int32 Y, int32 Z, i
  * @return		VectorRegister(Ptr[0], Ptr[0], Ptr[0], Ptr[0])
  */
 #define VectorLoadFloat1( Ptr )			DirectX::XMVectorReplicatePtr( (const float*)(Ptr) )
+
+/**
+ * Loads 2 floats from unaligned memory into X and Y and duplicates them in Z and W.
+ *
+ * @param Ptr	Unaligned memory pointer to the floats
+ * @return		VectorRegister(Ptr[0], Ptr[1], Ptr[0], Ptr[1])
+ */
+#define VectorLoadFloat2( Ptr )			MakeVectorRegister( ((const float*)(Ptr))[0], ((const float*)(Ptr))[1], ((const float*)(Ptr))[0], ((const float*)(Ptr))[1] )
 
 /**
  * Creates a vector out of three FLOATs and leaves W undefined.
@@ -601,6 +609,30 @@ FORCEINLINE VectorRegister VectorTransformVector(const VectorRegister&  VecP,  c
 #define VectorShuffle( Vec1, Vec2, X, Y, Z, W )	DirectX::XMVectorPermute<X,Y,Z+4,W+4>( Vec1, Vec2 )
 
 /**
+* Creates a vector by combining two high components from each vector
+*
+* @param Vec1		Source vector1
+* @param Vec2		Source vector2
+* @return			The combined vector
+*/
+FORCEINLINE VectorRegister VectorCombineHigh(const VectorRegister& Vec1, const VectorRegister& Vec2 )
+{
+	return VectorShuffle(Vec1, Vec2, 2, 3, 2, 3);
+}
+
+/**
+* Creates a vector by combining two low components from each vector
+*
+* @param Vec1		Source vector1
+* @param Vec2		Source vector2
+* @return			The combined vector
+*/
+FORCEINLINE VectorRegister VectorCombineLow(const VectorRegister& Vec1, const VectorRegister& Vec2 )
+{
+	return VectorShuffle(Vec1, Vec2, 0, 1, 0, 1);
+}
+
+/**
  * Merges the XYZ components of one vector with the W component of another vector and returns the result.
  *
  * @param VecXYZ	Source vector for XYZ_
@@ -621,6 +653,15 @@ FORCEINLINE VectorRegister VectorMergeVecXYZ_VecW(const VectorRegister& VecXYZ, 
  * @return				VectorRegister( float(Ptr[0]), float(Ptr[1]), float(Ptr[2]), float(Ptr[3]) )
  */
 #define VectorLoadByte4( Ptr )		DirectX::PackedVector::XMLoadUByte4((const DirectX::PackedVector::XMUBYTE4*)(Ptr) )
+
+ /**
+ * Loads 4 signed BYTEs from unaligned memory and converts them into 4 FLOATs.
+ * IMPORTANT: You need to call VectorResetFloatRegisters() before using scalar FLOATs after you've used this intrinsic!
+ *
+ * @param Ptr			Unaligned memory pointer to the 4 BYTEs.
+ * @return				VectorRegister( float(Ptr[0]), float(Ptr[1]), float(Ptr[2]), float(Ptr[3]) )
+ */
+#define VectorLoadSignedByte4( Ptr )	DirectX::PackedVector::XMLoadByte4((const DirectX::PackedVector::XMBYTE4*)(Ptr) )
 
 /**
  * Loads 4 BYTEs from unaligned memory and converts them into 4 FLOATs in reversed order.
@@ -643,6 +684,15 @@ FORCEINLINE VectorRegister VectorLoadByte4Reverse( const uint8* Ptr )
  * @param Ptr			Unaligned memory pointer to store the 4 BYTEs.
  */
 #define VectorStoreByte4( Vec, Ptr )		DirectX::PackedVector::XMStoreUByte4( (DirectX::PackedVector::XMUBYTE4*)(Ptr), Vec )
+
+ /**
+ * Converts the 4 FLOATs in the vector to 4 BYTEs, clamped to [-127,127], and stores to unaligned memory.
+ * IMPORTANT: You need to call VectorResetFloatRegisters() before using scalar FLOATs after you've used this intrinsic!
+ *
+ * @param Vec			Vector containing 4 FLOATs
+ * @param Ptr			Unaligned memory pointer to store the 4 BYTEs.
+ */
+#define VectorStoreSignedByte4( Vec, Ptr )		DirectX::PackedVector::XMStoreByte4( (DirectX::PackedVector::XMBYTE4*)(Ptr), Vec )
 
 /**
 * Loads packed RGB10A2(4 bytes) from unaligned memory and converts them into 4 FLOATs.
@@ -670,6 +720,15 @@ FORCEINLINE VectorRegister VectorLoadByte4Reverse( const uint8* Ptr )
 * @return				VectorRegister with 4 FLOATs loaded from Ptr.
 */
 #define VectorLoadURGBA16N( Ptr )	DirectX::PackedVector::XMLoadUShortN4( (const DirectX::PackedVector::XMUSHORTN4*)(Ptr) )
+
+/**
+* Loads packed RGBA16(4 bytes) from unaligned memory and converts them into 4 FLOATs.
+* IMPORTANT: You need to call VectorResetFloatRegisters() before using scalar FLOATs after you've used this intrinsic!
+*
+* @param Ptr			Unaligned memory pointer to the RGBA16(8 bytes).
+* @return				VectorRegister with 4 FLOATs loaded from Ptr.
+*/
+#define VectorLoadSRGBA16N( Ptr )	DirectX::PackedVector::XMLoadShortN4( (const DirectX::PackedVector::XMSHORTN4*)(Ptr) )
 
 /**
 * Converts the 4 FLOATs in the vector RGBA16, clamped to [0, 65535], and stores to unaligned memory.
@@ -782,7 +841,7 @@ FORCEINLINE void VectorQuaternionMultiply( VectorRegister *VResult, const Vector
 
 FORCEINLINE void VectorQuaternionVector3Rotate( FVector *Result, const FVector* Vec, const FQuat* Quat)
 {	
-	VectorRegister XMVec = VectorLoad(Vec);
+	VectorRegister XMVec = VectorLoadFloat3_W0(Vec);
 	VectorRegister XMQuat = VectorLoadAligned(Quat);
 	VectorRegister XMResult = DirectX::XMVector3Rotate(XMVec, XMQuat);
 	VectorStoreFloat3(XMResult, Result);
@@ -790,7 +849,7 @@ FORCEINLINE void VectorQuaternionVector3Rotate( FVector *Result, const FVector* 
 
 FORCEINLINE void VectorQuaternionVector3InverseRotate( FVector *Result, const FVector* Vec, const FQuat* Quat)
 {	
-	VectorRegister XMVec = VectorLoad(Vec);
+	VectorRegister XMVec = VectorLoadFloat3_W0(Vec);
 	VectorRegister XMQuat = VectorLoadAligned(Quat);
 	VectorRegister XMResult = DirectX::XMVector3InverseRotate(XMVec, XMQuat);
 	VectorStoreFloat3(XMResult, Result);
@@ -878,7 +937,7 @@ FORCEINLINE void VectorSinCos(VectorRegister* RESTRICT VSinAngles, VectorRegiste
 
 
 // Returns true if the vector contains a component that is either NAN or +/-infinite.
-inline bool VectorContainsNaNOrInfinite(const VectorRegister& Vec)
+FORCEINLINE bool VectorContainsNaNOrInfinite(const VectorRegister& Vec)
 {
 	// https://en.wikipedia.org/wiki/IEEE_754-1985
 	// Infinity is represented with all exponent bits set, with the correct sign bit.
@@ -886,7 +945,7 @@ inline bool VectorContainsNaNOrInfinite(const VectorRegister& Vec)
 	// This means finite values will not have all exponent bits set, so check against those bits.
 
 	// Mask off Exponent
-	VectorRegister ExpTest = VectorBitwiseAnd(Vec, GlobalVectorConstants::FloatInfinity);
+	const VectorRegister ExpTest = VectorBitwiseAnd(Vec, GlobalVectorConstants::FloatInfinity);
 	// Compare to full exponent. If any are full exponent (not finite), the signs copied to the mask are non-zero, otherwise it's zero and finite.
 	bool IsFinite = VectorMaskBits(VectorCompareEQ(ExpTest, GlobalVectorConstants::FloatInfinity)) == 0;
 	return !IsFinite;

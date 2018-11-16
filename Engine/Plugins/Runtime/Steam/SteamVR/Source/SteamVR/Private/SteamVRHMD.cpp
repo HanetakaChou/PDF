@@ -8,9 +8,9 @@
 #include "Misc/EngineVersion.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
-#include "SceneViewport.h"
+#include "Slate/SceneViewport.h"
 #include "PostProcess/PostProcessHMD.h"
-#include "Classes/SteamVRFunctionLibrary.h"
+#include "SteamVRFunctionLibrary.h"
 #include "Engine/GameEngine.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
@@ -35,6 +35,8 @@
 #include "Containers/ResourceArray.h"
 #include <Metal/Metal.h>
 #endif
+
+DEFINE_LOG_CATEGORY(LogSteamVR);
 
 // Visibility mesh
 static TAutoConsoleVariable<int32> CUseSteamVRVisibleAreaMesh(TEXT("vr.SteamVR.UseVisibleAreaMesh"), 1, TEXT("If non-zero, SteamVR will use the visible area mesh in addition to the hidden area mesh optimization.  This may be problematic on beta versions of platforms."));
@@ -126,6 +128,7 @@ public:
 	}
 #else //STEAMVR_SUPPORTED_PLATFORMS
 		: VRSystem(nullptr)
+		, VRInput(nullptr)
 	{
 		LoadOpenVRModule();
 	}
@@ -149,17 +152,21 @@ public:
 		return VRSystem;
 	}
 	
+	virtual vr::IVRInput* GetVRInput() const override
+	{
+		return VRInput;
+	}
+
 	bool LoadOpenVRModule()
 	{
 #if PLATFORM_WINDOWS
 #if PLATFORM_64BITS
 		FString RootOpenVRPath;
-		TCHAR VROverridePath[MAX_PATH];
-		FPlatformMisc::GetEnvironmentVariable(TEXT("VR_OVERRIDE"), VROverridePath, MAX_PATH);
+		FString VROverridePath = FPlatformMisc::GetEnvironmentVariable(TEXT("VR_OVERRIDE"));
 		
-		if (FCString::Strlen(VROverridePath) > 0)
+		if (VROverridePath.Len() > 0)
 		{
-			RootOpenVRPath = FString::Printf(TEXT("%s\\bin\\win64\\"), VROverridePath);
+			RootOpenVRPath = FString::Printf(TEXT("%s\\bin\\win64\\"), *VROverridePath);
 		}
 		else
 		{
@@ -215,6 +222,7 @@ public:
 	{
 		if (OpenVRDLLHandle != nullptr)
 		{
+			UE_LOG(LogHMD, Log, TEXT("Freeing OpenVRDLLHandle."));
 			FPlatformProcess::FreeDllHandle(OpenVRDLLHandle);
 			OpenVRDLLHandle = nullptr;
 		}
@@ -228,18 +236,24 @@ public:
 	virtual void Reset() override
 	{
 		VRSystem = nullptr;
+		VRInput = nullptr;
 	}
 	
 	uint64 GetGraphicsAdapterLuid() override
 	{
-#if PLATFORM_MAC
-		
-		id<MTLDevice> SelectedDevice = nil;
-		
+#if PLATFORM_MAC	
 		// @TODO  currently, for mac, GetGraphicsAdapterLuid() is used to return a device index (how the function 
 		//        "GetGraphicsAdapter" used to work), not a ID... eventually we want the HMD module to return the 
 		//        MTLDevice's registryID, but we cannot fully handle that until we drop support for 10.12
 		//  NOTE: this is why we  use -1 as a sentinel value representing "no device" (instead of 0, which is used in the LUID case)
+
+		const uint32 NoDevice = (uint32)-1;
+		id<MTLDevice> SelectedDevice = nil;
+#else
+		const uint32 NoDevice = 0;
+		uint64 SelectedDevice = NoDevice;
+#endif
+		
 		{
 			// HACK:  Temporarily stand up the VRSystem to get a graphics adapter.  We're pretty sure we're going to use SteamVR if we get in here, but not guaranteed
 			vr::EVRInitError VRInitErr = vr::VRInitError_None;
@@ -248,24 +262,49 @@ public:
 			if ((TempVRSystem == nullptr) || (VRInitErr != vr::VRInitError_None))
 			{
 				UE_LOG(LogHMD, Log, TEXT("Failed to initialize OpenVR with code %d"), (int32)VRInitErr);
-				return (uint64)-1;
+				return NoDevice;
 			}
 			
 			// Make sure that the version of the HMD we're compiled against is correct.  This will fill out the proper vtable!
 			TempVRSystem = (vr::IVRSystem*)(*FSteamVRHMD::VRGetGenericInterfaceFn)(vr::IVRSystem_Version, &VRInitErr);
 			if ((TempVRSystem == nullptr) || (VRInitErr != vr::VRInitError_None))
 			{
-				return (uint64)-1;
+				return NoDevice;
 			}
 			
-			TempVRSystem->GetOutputDevice((uint64_t*)((void*)&SelectedDevice), vr::TextureType_IOSurface);
+			vr::ETextureType TextureType = vr::ETextureType::TextureType_OpenGL;
+#if PLATFORM_MAC
+            TextureType = vr::ETextureType::TextureType_IOSurface;
+#else
+			if (IsPCPlatform(GMaxRHIShaderPlatform))
+			{
+				if (IsVulkanPlatform(GMaxRHIShaderPlatform))
+				{
+					TextureType = vr::ETextureType::TextureType_Vulkan;
+				}
+				else if (IsOpenGLPlatform(GMaxRHIShaderPlatform))
+				{
+					TextureType = vr::ETextureType::TextureType_OpenGL;
+				}
+#if PLATFORM_WINDOWS
+				else
+				{
+					TextureType = vr::ETextureType::TextureType_DirectX;
+				}
+#endif
+			}
+#endif
+
+			TempVRSystem->GetOutputDevice((uint64_t*)((void*)&SelectedDevice), TextureType);
 			
 			vr::VR_Shutdown();
 		}
 
+
+#if PLATFORM_MAC
 		if(SelectedDevice == nil)
 		{
-			return (uint64)-1;
+			return NoDevice;
 		}
 
 		TArray<FMacPlatformMisc::FGPUDescriptor> const& GPUs = FPlatformMisc::GetGPUDescriptors();
@@ -301,24 +340,24 @@ public:
 		}
 		return (uint64)DeviceIndex;
 #else
-		return 0;
-#endif
+		return SelectedDevice;
+#endif //PLATFORM_MAC
 	}
 
 	virtual TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > GetVulkanExtensions() override
 	{
-		FSteamVRHMD* SteamVRHMD = new FSteamVRHMD(this);
+		TSharedPtr< FSteamVRHMD, ESPMode::ThreadSafe > SteamVRHMD = FSceneViewExtensions::NewExtension<FSteamVRHMD>(this);
 		if (!SteamVRHMD->IsInitialized())
 		{
-			delete SteamVRHMD;
 			return nullptr;
 		}
-		return TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe >(SteamVRHMD);
+		return SteamVRHMD;
 	}
 
 private:
 	vr::IVRSystem* VRSystem;
-	
+	vr::IVRInput* VRInput;
+
 	void* OpenVRDLLHandle;
 #endif // STEAMVR_SUPPORTED_PLATFORMS
 };
@@ -328,10 +367,11 @@ IMPLEMENT_MODULE( FSteamVRPlugin, SteamVR )
 TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FSteamVRPlugin::CreateTrackingSystem()
 {
 #if STEAMVR_SUPPORTED_PLATFORMS
-	TSharedPtr< FSteamVRHMD, ESPMode::ThreadSafe > SteamVRHMD( new FSteamVRHMD(this) );
+	TSharedPtr< FSteamVRHMD, ESPMode::ThreadSafe > SteamVRHMD = FSceneViewExtensions::NewExtension<FSteamVRHMD>(this);
 	if( SteamVRHMD->IsInitialized() )
 	{
 		VRSystem = SteamVRHMD->GetVRSystem();
+		VRInput = SteamVRHMD->GetVRInput();
 		return SteamVRHMD;
 	}
 #endif//STEAMVR_SUPPORTED_PLATFORMS
@@ -682,6 +722,8 @@ void FSteamVRHMD::SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin)
 		}
 
 		VRCompositor->SetTrackingSpace(NewSteamOrigin);
+
+		OnTrackingOriginChanged();
 	}
 }
 
@@ -703,6 +745,42 @@ EHMDTrackingOrigin::Type FSteamVRHMD::GetTrackingOrigin()
 
 	// By default, assume standing
 	return EHMDTrackingOrigin::Floor;
+}
+
+bool FSteamVRHMD::GetFloorToEyeTrackingTransform(FTransform& OutStandingToSeatedTransform) const
+{
+	bool bSuccess = false;
+	if (VRSystem && ensure(IsInGameThread()))
+	{
+		vr::TrackedDevicePose_t SeatedPoses[vr::k_unMaxTrackedDeviceCount];
+		VRSystem->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseOrigin::TrackingUniverseSeated, 0.0f, SeatedPoses, ARRAYSIZE(SeatedPoses));
+		vr::TrackedDevicePose_t StandingPoses[vr::k_unMaxTrackedDeviceCount];
+		VRSystem->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseOrigin::TrackingUniverseStanding, 0.0f, StandingPoses, ARRAYSIZE(StandingPoses));
+
+		const vr::TrackedDevicePose_t& SeatedHmdPose = SeatedPoses[vr::k_unTrackedDeviceIndex_Hmd];
+		const vr::TrackedDevicePose_t& StandingHmdPose = StandingPoses[vr::k_unTrackedDeviceIndex_Hmd];
+		if (SeatedHmdPose.bPoseIsValid && StandingHmdPose.bPoseIsValid)
+		{
+			const float WorldToMeters = GetWorldToMetersScale();
+
+			FVector SeatedHmdPosition = FVector::ZeroVector;
+			FQuat SeatedHmdOrientation = FQuat::Identity;
+			PoseToOrientationAndPosition(SeatedHmdPose.mDeviceToAbsoluteTracking, WorldToMeters, SeatedHmdOrientation, SeatedHmdPosition);
+
+			FVector StandingHmdPosition = FVector::ZeroVector;
+			FQuat StandingHmdOrientation = FQuat::Identity;
+			PoseToOrientationAndPosition(StandingHmdPose.mDeviceToAbsoluteTracking, WorldToMeters, StandingHmdOrientation, StandingHmdPosition);
+
+			const FVector SeatedHmdFwd   = SeatedHmdOrientation.GetForwardVector();
+			const FVector SeatedHmdRight = SeatedHmdOrientation.GetRightVector();
+			const FQuat StandingToSeatedRot = FRotationMatrix::MakeFromXY(SeatedHmdFwd, SeatedHmdRight).ToQuat() * StandingHmdOrientation.Inverse();
+
+			const FVector StandingToSeatedOffset = SeatedHmdPosition - StandingToSeatedRot.RotateVector(StandingHmdPosition);
+			OutStandingToSeatedTransform = FTransform(StandingToSeatedRot, StandingToSeatedOffset);
+			bSuccess = true;
+		}
+	}
+	return bSuccess;
 }
 
 
@@ -838,7 +916,7 @@ void FSteamVRHMD::PoseToOrientationAndPosition(const vr::HmdMatrix34_t& InPose, 
 	OutOrientation.Z = Orientation.Y;
 	OutOrientation.W = -Orientation.W;
 
-	FVector Position = ((FVector(-Pose.M[3][2], Pose.M[3][0], Pose.M[3][1]) - BaseOffset) * WorldToMetersScale);
+	FVector Position = ((FVector(-Pose.M[3][2], Pose.M[3][0], Pose.M[3][1])) * WorldToMetersScale - BaseOffset);
 	OutPosition = BaseOrientation.Inverse().RotateVector(Position);
 
 	OutOrientation = BaseOrientation.Inverse() * OutOrientation;
@@ -1138,7 +1216,7 @@ void FSteamVRHMD::ResetPosition()
 {
 	const FTrackingFrame& TrackingFrame = GetTrackingFrame();
 	FMatrix Pose = ToFMatrix(TrackingFrame.RawPoses[vr::k_unTrackedDeviceIndex_Hmd]);
-	BaseOffset = FVector(-Pose.M[3][2], Pose.M[3][0], Pose.M[3][1]);
+	BaseOffset = FVector(-Pose.M[3][2], Pose.M[3][0], Pose.M[3][1]) * TrackingFrame.WorldToMetersScale;
 }
 
 void FSteamVRHMD::SetBaseRotation(const FRotator& BaseRot)
@@ -1158,6 +1236,16 @@ void FSteamVRHMD::SetBaseOrientation(const FQuat& BaseOrient)
 FQuat FSteamVRHMD::GetBaseOrientation() const
 {
 	return BaseOrientation;
+}
+
+void FSteamVRHMD::SetBasePosition(const FVector& BasePosition)
+{
+	BaseOffset = BasePosition;
+}
+
+FVector FSteamVRHMD::GetBasePosition() const
+{
+	return BaseOffset;
 }
 
 bool FSteamVRHMD::IsStereoEnabled() const
@@ -1184,6 +1272,11 @@ bool FSteamVRHMD::EnableStereo(bool bStereo)
 	}
 
 	bStereoDesired = (IsHMDEnabled()) ? bStereo : false;
+	if (bStereoDesired && !bOcclusionMeshesBuilt)
+	{
+		SetupOcclusionMeshes();
+		bOcclusionMeshesBuilt = true;
+	}
 
 	// Set the viewport to match that of the HMD display
 	FSceneViewport* SceneVP = FindSceneViewport();
@@ -1192,17 +1285,6 @@ bool FSteamVRHMD::EnableStereo(bool bStereo)
 		TSharedPtr<SWindow> Window = SceneVP->FindWindow();
 		if (Window.IsValid() && SceneVP->GetViewportWidget().IsValid())
 		{
-			int32 ResX = 2160;
-			int32 ResY = 1200;
-
-			MonitorInfo MonitorDesc;
-			if (GetHMDMonitorInfo(MonitorDesc))
-			{
-				ResX = MonitorDesc.ResolutionX;
-				ResY = MonitorDesc.ResolutionY;
-			}
-			FSystemResolution::RequestResolutionChange(ResX, ResY, EWindowMode::WindowedFullscreen);
-
 			if( bStereo )
 			{
 				int32 PosX, PosY;
@@ -1320,20 +1402,6 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 
 }
 
-void FSteamVRHMD::GetOrthoProjection(int32 RTWidth, int32 RTHeight, float OrthoDistance, FMatrix OrthoProjection[2]) const
-{
-	const int32 RenderTargetWidth = FMath::CeilToInt(static_cast<float>(IdealRenderTargetSize.X) * PixelDensity);
-	const int32 RenderTargetHeight = FMath::CeilToInt(static_cast<float>(IdealRenderTargetSize.Y) * PixelDensity);
-
-	const float HudOffset = 50.0f;
-	OrthoProjection[0] = FTranslationMatrix(FVector(HudOffset, 0.0f, 0.0f));
-	OrthoProjection[1] = FTranslationMatrix(FVector(-HudOffset + RenderTargetWidth * 0.5, 0.0f, 0.0f));
-
-	const FScaleMatrix RTScale(FVector(static_cast<float>(RTWidth) / static_cast<float>(RenderTargetWidth), static_cast<float>(RTHeight) / static_cast<float>(RenderTargetHeight), 1.0f));
-	OrthoProjection[0] *= RTScale;
-	OrthoProjection[1] *= RTScale;
-}
-
 void FSteamVRHMD::GetEyeRenderParams_RenderThread(const FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const
 {
 	if (Context.View.StereoPass == eSSP_LEFT_EYE)
@@ -1365,13 +1433,14 @@ void FSteamVRHMD::OnBeginRendering_GameThread()
 	SpectatorScreenController->BeginRenderViewFamily();
 }
 
-void FSteamVRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& /* unused */, FSceneViewFamily& ViewFamily)
+void FSteamVRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily)
 {
 	check(IsInRenderingThread());
 	UpdatePoses();
 
-	GetActiveRHIBridgeImpl()->BeginRendering();
-
+	check(pBridge);
+	pBridge->BeginRendering_RenderThread(RHICmdList);
+	
 	check(SpectatorScreenController);
 	SpectatorScreenController->UpdateSpectatorScreenMode_RenderThread();
 
@@ -1381,15 +1450,10 @@ void FSteamVRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& /* unu
 	PlayerOrientation = ViewOrientation * MainView->BaseHmdOrientation.Inverse();
 }
 
-void FSteamVRHMD::UpdateViewportRHIBridge(bool /* bUseSeparateRenderTarget */, const class FViewport& Viewport, FRHIViewport* const ViewportRHI)
+FXRRenderBridge* FSteamVRHMD::GetActiveRenderBridge_GameThread(bool /* bUseSeparateRenderTarget */)
 {
 	check(IsInGameThread());
 
-	GetActiveRHIBridgeImpl()->UpdateViewport(Viewport, ViewportRHI);
-}
-
-FSteamVRHMD::BridgeBaseImpl* FSteamVRHMD::GetActiveRHIBridgeImpl()
-{
 	return pBridge;
 }
 
@@ -1428,11 +1492,13 @@ bool FSteamVRHMD::NeedReAllocateViewportRenderTarget(const FViewport& Viewport)
 	return false;
 }
 
-FSteamVRHMD::FSteamVRHMD(ISteamVRPlugin* InSteamVRPlugin) :
+FSteamVRHMD::FSteamVRHMD(const FAutoRegister& AutoRegister, ISteamVRPlugin* InSteamVRPlugin) :
+	FSceneViewExtensionBase(AutoRegister), 
 	bHmdEnabled(true),
 	HmdWornState(EHMDWornState::Unknown),
 	bStereoDesired(false),
 	bStereoEnabled(false),
+	bOcclusionMeshesBuilt(false),
 	WindowMirrorBoundsWidth(2160),
 	WindowMirrorBoundsHeight(1200),
 	PixelDensity(1.0f),
@@ -1450,10 +1516,7 @@ FSteamVRHMD::FSteamVRHMD(ISteamVRPlugin* InSteamVRPlugin) :
 	VROverlay(nullptr),
 	VRChaperone(nullptr)
 {
-	if (Startup())
-	{
-		SetupOcclusionMeshes();
-	}
+	Startup();
 }
 
 FSteamVRHMD::~FSteamVRHMD()
@@ -1489,6 +1552,7 @@ bool FSteamVRHMD::Startup()
 		return false;
 	}
 
+	
 	// attach to the compositor	
 	//VRCompositor = (vr::IVRCompositor*)vr::VR_GetGenericInterface(vr::IVRCompositor_Version, &HmdErr);
 	int CompositorConnectRetries = 10;
@@ -1562,6 +1626,14 @@ bool FSteamVRHMD::Startup()
 		vr::EVRInitError RenderModelsErr = vr::VRInitError_None;
 		VRRenderModels = (vr::IVRRenderModels*)(*VRGetGenericInterfaceFn)(vr::IVRRenderModels_Version, &RenderModelsErr);
 
+		vr::EVRInitError InputErr = vr::VRInitError_None;
+		VRInput = (vr::IVRInput*)(*VRGetGenericInterfaceFn)(vr::IVRInput_Version, &InputErr);
+		if ((VRInput == nullptr) || (InputErr != vr::VRInitError_None))
+		{
+			UE_LOG(LogHMD, Log, TEXT("Failed to initialize VRInput.  Error: %d"), (int32)InputErr);
+		}
+
+
 #if PLATFORM_MAC
 		if (IsMetalPlatform(GMaxRHIShaderPlatform))
 		{
@@ -1587,6 +1659,11 @@ bool FSteamVRHMD::Startup()
 			ensure( pBridge != nullptr );
 		}
 #endif
+
+		if(pBridge->IsUsingExplicitTimingMode())
+		{
+			VRCompositor->SetExplicitTimingMode(vr::EVRCompositorTimingMode::VRCompositorTimingMode_Explicit_ApplicationPerformsPostPresentHandoff);
+		}
 
 		LoadFromIni();
 
@@ -1633,6 +1710,8 @@ void FSteamVRHMD::Shutdown()
 {
 	if (VRSystem != nullptr)
 	{
+		UE_LOG(LogHMD, Log, TEXT("SteamVR Shutting down."));
+
 		SplashTicker->UnregisterForMapLoad();
 		SplashTicker = nullptr;
 
@@ -1695,13 +1774,17 @@ static void SetupHiddenAreaMeshes(vr::IVRSystem* const VRSystem, FHMDViewMesh Re
 
 
 void FSteamVRHMD::SetupOcclusionMeshes()
-{	
-	SetupHiddenAreaMeshes(VRSystem, HiddenAreaMeshes, vr::EHiddenAreaMeshType::k_eHiddenAreaMesh_Standard);
-	
-	if(CUseSteamVRVisibleAreaMesh.GetValueOnAnyThread() > 0)
+{
+	FSteamVRHMD* const Self = this;
+	ENQUEUE_RENDER_COMMAND(SetupOcclusionMeshesCmd)([Self](FRHICommandListImmediate& RHICmdList)
 	{
-		SetupHiddenAreaMeshes(VRSystem, VisibleAreaMeshes, vr::EHiddenAreaMeshType::k_eHiddenAreaMesh_Inverse);
-	}
+		SetupHiddenAreaMeshes(Self->VRSystem, Self->HiddenAreaMeshes, vr::EHiddenAreaMeshType::k_eHiddenAreaMesh_Standard);
+
+		if (CUseSteamVRVisibleAreaMesh.GetValueOnAnyThread() > 0)
+		{
+			SetupHiddenAreaMeshes(Self->VRSystem, Self->VisibleAreaMeshes, vr::EHiddenAreaMeshType::k_eHiddenAreaMesh_Inverse);
+		}
+	});
 }
 
 const FSteamVRHMD::FTrackingFrame& FSteamVRHMD::GetTrackingFrame() const
@@ -1717,3 +1800,4 @@ const FSteamVRHMD::FTrackingFrame& FSteamVRHMD::GetTrackingFrame() const
 }
 
 #endif //STEAMVR_SUPPORTED_PLATFORMS
+

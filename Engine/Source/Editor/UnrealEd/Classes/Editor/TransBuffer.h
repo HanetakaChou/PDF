@@ -74,39 +74,63 @@ protected:
 			Result = ActiveCount;
 			if (ActiveCount++ == 0)
 			{
-				// Cache the redo buffer in case the transaction is canceled so we can restore the state
-				int32 TransactionsToRemove = UndoBuffer.Num();
-				PreviousUndoCount = UndoCount;
-				UndoCount = 0;
-
-				// Determine if any additional entries need to be removed due to memory, avoid n^2 by unrolling GetUndoSize()
-				SIZE_T AccumulatedBufferDataSize = 0;
-				for (int32 i = 0; i < UndoBuffer.Num() - PreviousUndoCount; i++)
+				// Redo removal handling
+				if (UndoCount > 0)
 				{
-					AccumulatedBufferDataSize += UndoBuffer[i]->DataSize();
-					if (AccumulatedBufferDataSize <= MaxMemory)
-					{
-						--TransactionsToRemove;
-					}
-					else
-					{
-						break;
-					}
-				}
+					RemovedTransactions.Reserve(UndoCount);
 
-				if (TransactionsToRemove > 0)
-				{
-					RemovedTransactions.Reserve(TransactionsToRemove);
-					for (int32 i = UndoBuffer.Num() - TransactionsToRemove; i < UndoBuffer.Num(); ++i)
+					for (int32 i = UndoBuffer.Num() - UndoCount; i < UndoBuffer.Num(); ++i)
 					{
 						RemovedTransactions.Add(UndoBuffer[i]);
 					}
-					UndoBuffer.RemoveAt(UndoBuffer.Num() - TransactionsToRemove, TransactionsToRemove, false);
+
+					UndoBuffer.RemoveAt(UndoBuffer.Num() - UndoCount, UndoCount, false);
 				}
+				// Over memory budget handling
+ 				else 
+				{
+					int32 TransactionsToRemove = 0;
+
+					// Determine if any additional entries need to be removed due to memory, avoid n^2 by unrolling GetUndoSize()
+					SIZE_T AccumulatedBufferDataSize = GetUndoSize();
+
+					if (AccumulatedBufferDataSize >= MaxMemory)
+					{
+						// Then remove from the oldest one
+						for (int32 i = 0; i < UndoBuffer.Num() && AccumulatedBufferDataSize >= MaxMemory; i++)
+						{
+							if (AccumulatedBufferDataSize >= MaxMemory)
+							{
+								AccumulatedBufferDataSize -= UndoBuffer[i]->DataSize();
+								++TransactionsToRemove;
+							}
+						}
+					}
+
+					if (TransactionsToRemove > 0)
+					{
+						RemovedTransactions.Reserve(TransactionsToRemove);
+
+						for (int32 i = 0; i < TransactionsToRemove; ++i)
+						{
+							RemovedTransactions.Add(UndoBuffer[i]);
+						}
+
+						UndoBuffer.RemoveAt(0, TransactionsToRemove, false);
+					}
+				}
+
+				// Cache the redo buffer in case the transaction is canceled so we can restore the state
+				PreviousUndoCount = UndoCount;
+				UndoCount = 0;
 
 				// Begin a new transaction.
 				UndoBuffer.Emplace(MakeShareable(new TTransaction(SessionContext, Description, 1)));
-				GUndo = &UndoBuffer.Last().Get();
+				GUndo = &UndoBuffer.Last().Get();			
+
+				GUndo->BeginOperation();
+				TransactionStateChangedDelegate.Broadcast(GUndo->GetContext(), ETransactionStateEventType::TransactionStarted);
+				UndoBufferChangedDelegate.Broadcast();
 			}
 			const int32 PriorRecordsCount = (Result > 0 ? ActiveRecordCounts[Result - 1] : 0);
 			ActiveRecordCounts.Add(UndoBuffer.Last()->GetRecordCount() - PriorRecordsCount);
@@ -127,10 +151,10 @@ public:
 	virtual bool CanRedo( FText* Text=NULL ) override;
 	virtual int32 GetQueueLength( ) const override { return UndoBuffer.Num(); }
 	virtual const FTransaction* GetTransaction( int32 QueueIndex ) const override;
-	virtual FUndoSessionContext GetUndoContext( bool bCheckWhetherUndoPossible = true ) override;
+	virtual FTransactionContext GetUndoContext( bool bCheckWhetherUndoPossible = true ) override;
 	virtual SIZE_T GetUndoSize() const override;
 	virtual int32 GetUndoCount( ) const override { return UndoCount; }
-	virtual FUndoSessionContext GetRedoContext() override;
+	virtual FTransactionContext GetRedoContext() override;
 	virtual void SetUndoBarrier() override;
 	virtual void RemoveUndoBarrier() override;
 	virtual void ClearUndoBarriers() override;
@@ -142,7 +166,7 @@ public:
 	virtual void SetPrimaryUndoObject( UObject* Object ) override;
 	virtual bool IsObjectInTransationBuffer( const UObject* Object ) const override;
 	virtual bool IsObjectTransacting(const UObject* Object) const override;
-	virtual bool ContainsPieObject() const override;
+	virtual bool ContainsPieObjects() const override;
 	virtual bool IsActive() override
 	{
 		return ActiveCount > 0;
@@ -153,13 +177,24 @@ public:
 public:
 
 	/**
+	 * Gets an event delegate that is executed when a transaction state changes.
+	 *
+	 * @return The event delegate.
+	 */
+	DECLARE_EVENT_TwoParams(UTransBuffer, FOnTransactorTransactionStateChanged, const FTransactionContext& /*TransactionContext*/, ETransactionStateEventType /*TransactionState*/)
+	FOnTransactorTransactionStateChanged& OnTransactionStateChanged( )
+	{
+		return TransactionStateChangedDelegate;
+	}
+
+	/**
 	 * Gets an event delegate that is executed when a redo operation is being attempted.
 	 *
 	 * @return The event delegate.
 	 *
 	 * @see OnUndo
 	 */
-	DECLARE_EVENT_OneParam(UTransBuffer, FOnTransactorBeforeRedoUndo, FUndoSessionContext /*RedoContext*/)
+	DECLARE_EVENT_OneParam(UTransBuffer, FOnTransactorBeforeRedoUndo, const FTransactionContext& /*TransactionContext*/)
 	FOnTransactorBeforeRedoUndo& OnBeforeRedoUndo( )
 	{
 		return BeforeRedoUndoDelegate;
@@ -172,7 +207,7 @@ public:
 	 *
 	 * @see OnUndo
 	 */
-	DECLARE_EVENT_TwoParams(UTransBuffer, FOnTransactorRedo, FUndoSessionContext /*RedoContext*/, bool /*Succeeded*/)
+	DECLARE_EVENT_TwoParams(UTransBuffer, FOnTransactorRedo, const FTransactionContext& /*TransactionContext*/, bool /*Succeeded*/)
 	FOnTransactorRedo& OnRedo( )
 	{
 		return RedoDelegate;
@@ -185,10 +220,23 @@ public:
 	 *
 	 * @see OnRedo
 	 */
-	DECLARE_EVENT_TwoParams(UTransBuffer, FOnTransactorUndo, FUndoSessionContext /*RedoContext*/, bool /*Succeeded*/)
+	DECLARE_EVENT_TwoParams(UTransBuffer, FOnTransactorUndo, const FTransactionContext& /*TransactionContext*/, bool /*Succeeded*/)
 	FOnTransactorUndo& OnUndo( )
 	{
 		return UndoDelegate;
+	}
+
+	/**
+	* Gets an event delegate that is executed when the undo buffer changed.
+	*
+	* @return The event delegate.
+	*
+	* @see OnRedo
+	*/
+	DECLARE_EVENT(UTransBuffer, FOnTransactorUndoBufferChanged)
+	FOnTransactorUndoBufferChanged& OnUndoBufferChanged()
+	{
+		return UndoBufferChangedDelegate;
 	}
 
 private:
@@ -198,6 +246,9 @@ private:
 
 private:
 
+	// Holds an event delegate that is executed when a transaction state changes.
+	FOnTransactorTransactionStateChanged TransactionStateChangedDelegate;
+
 	// Holds an event delegate that is executed before a redo or undo operation is attempted.
 	FOnTransactorBeforeRedoUndo BeforeRedoUndoDelegate;
 
@@ -206,6 +257,9 @@ private:
 
 	// Holds an event delegate that is executed when a undo operation is being attempted.
 	FOnTransactorUndo UndoDelegate;
+
+	// Holds an event delegate that is executed when the undo buffer changed.
+	FOnTransactorUndoBufferChanged UndoBufferChangedDelegate;
 
 	// Reference to the current transaction, nullptr when not transacting:
 	FTransaction* CurrentTransaction;

@@ -1,10 +1,12 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Guid.h"
+#include "UObject/ObjectMacros.h"
+#include "Misc/Guid.h"
 #include "LiveLinkTypes.h"
+#include "ILiveLinkSource.generated.h"
 
 class ILiveLinkClient;
 class ULiveLinkSourceSettings;
@@ -30,4 +32,22 @@ public:
 
 	virtual UClass* GetCustomSettingsClass() const { return nullptr; }
 	virtual void OnSettingsChanged(ULiveLinkSourceSettings* Settings, const FPropertyChangedEvent& PropertyChangedEvent) {}
+};
+
+// A Blueprint handle to a specific LiveLink Source
+USTRUCT(BlueprintType)
+struct FLiveLinkSourceHandle
+{
+	GENERATED_USTRUCT_BODY()
+
+	FLiveLinkSourceHandle() = default;
+
+	virtual ~FLiveLinkSourceHandle() = default;
+
+	void SetSourcePointer(TSharedPtr<ILiveLinkSource> InSourcePointer)
+	{
+		SourcePointer = InSourcePointer;
+	};
+
+	TSharedPtr<ILiveLinkSource> SourcePointer;
 };

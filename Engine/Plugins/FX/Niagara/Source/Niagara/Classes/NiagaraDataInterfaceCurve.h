@@ -17,13 +17,8 @@ class NIAGARA_API UNiagaraDataInterfaceCurve : public UNiagaraDataInterfaceCurve
 	GENERATED_UCLASS_BODY()
 
 public:
-#if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere, Category = "Curve", meta = (AllowedClasses = CurveFloat))
-	FSoftObjectPath CurveToCopy;
-#endif
-
 	UPROPERTY(EditAnywhere, Category = "Curve")
-	FRichCurve Curve;
+	FRichCurve Curve; 
 
 	enum
 	{
@@ -36,32 +31,28 @@ public:
 	//UObject Interface
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
-
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
 	//UObject Interface End
 
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)override;
-	virtual FVMExternalFunction GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData)override;
+	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
 
-	template<typename UseLUT, typename XParamType>
+	template<typename UseLUT>
 	void SampleCurve(FVectorVMContext& Context);
-
+	
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 
 	//~ UNiagaraDataInterfaceCurveBase interface
 	virtual void GetCurveData(TArray<FCurveData>& OutCurveData) override;
 
-	virtual bool GetFunctionHLSL(const FName&  DefinitionFunctionName, FString InstanceFunctionName, TArray<FDIGPUBufferParamDescriptor> &Descriptors, FString &HLSLInterfaceID, FString &OutHLSL) override;
-	virtual void GetBufferDefinitionHLSL(FString DataInterfaceID, TArray<FDIGPUBufferParamDescriptor> &BufferDescriptors, FString &OutHLSL) override;
-	virtual TArray<FNiagaraDataInterfaceBufferData> &GetBufferDataArray() override;
-	virtual void SetupBuffers(FDIBufferDescriptorStore &BufferDescriptors) override;
+	virtual bool GetFunctionHLSL(const FName&  DefinitionFunctionName, FString InstanceFunctionName, FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 
+	virtual int32 GetCurveNumElems()const { return CurveLUTNumElems; }
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 
 private:
 	template<typename UseLUT>
-	float SampleCurveInternal(float X);
+	FORCEINLINE_DEBUGGABLE float SampleCurveInternal(float X);
+
+	static const FName SampleCurveName;
 };

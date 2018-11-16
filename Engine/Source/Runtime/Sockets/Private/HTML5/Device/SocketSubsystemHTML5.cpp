@@ -2,7 +2,7 @@
 
 #include "SocketSubsystemHTML5.h"
 #include "SocketSubsystemModule.h"
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 
 
 FSocketSubsystemHTML5* FSocketSubsystemHTML5::SocketSingleton = NULL;
@@ -79,4 +79,16 @@ void FSocketSubsystemHTML5::Shutdown(void)
 bool FSocketSubsystemHTML5::HasNetworkDevice()
 {
 	return true;
+}
+
+/**
+ * Translates an ESocketAddressInfoFlags into a value usable by getaddrinfo
+ */
+int32 FSocketSubsystemHTML5::GetAddressInfoHintFlag(EAddressInfoFlags InFlags) const
+{
+	// As of writing, emscripten does not support AI_ADDRCONFIG. It is marked as an usable flag,
+	// however if it is set, GAI will fail out with a bad name flag.
+	// As such, remove the flag from any potential queries.
+	EAddressInfoFlags ModifiedInFlags = (InFlags & ~EAddressInfoFlags::OnlyUsableAddresses);
+	return FSocketSubsystemBSD::GetAddressInfoHintFlag(ModifiedInFlags);
 }

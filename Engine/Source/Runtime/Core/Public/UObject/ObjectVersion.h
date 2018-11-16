@@ -629,7 +629,8 @@ enum EUnrealEngineObjectUE4Version
 	VER_UE4_POINTLIGHT_SOURCE_ORIENTATION,
 	// LocalizationId has been added to the package summary (editor-only)
 	VER_UE4_ADDED_PACKAGE_SUMMARY_LOCALIZATION_ID,
-
+	// Fixed case insensitive hashes of wide strings containing character values from 128-255
+	VER_UE4_FIX_WIDE_STRING_CRC,
 
 	// -----<new versions can be added before this line>-------------------------------------------------
 	// - this needs to be the last line (see note below)
@@ -637,7 +638,7 @@ enum EUnrealEngineObjectUE4Version
 	VER_UE4_AUTOMATIC_VERSION = VER_UE4_AUTOMATIC_VERSION_PLUS_ONE - 1
 };
 
-#include "PendingVersions.h"
+#include "UObject/PendingVersions.h"
 
 enum EUnrealEngineObjectLicenseeUE4Version
 {

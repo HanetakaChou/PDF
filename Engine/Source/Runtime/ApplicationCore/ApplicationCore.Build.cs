@@ -43,7 +43,7 @@ public class ApplicationCore : ModuleRules
 				PublicAdditionalLibraries.Add("/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport");
 			}
 		}
-		else if ((Target.Platform == UnrealTargetPlatform.Linux))
+		else if (Target.Platform == UnrealTargetPlatform.Linux)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, 
 				"SDL2"
@@ -70,8 +70,13 @@ public class ApplicationCore : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 		{
-			PublicIncludePaths.AddRange(new string[] {"Runtime/ApplicationCore/Public/Apple", "Runtime/ApplicationCore/Public/IOS"});
+			PublicIncludePaths.AddRange(new string[] {"Runtime/ApplicationCore/Public/IOS"});
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "SoundSwitch");
 		}
 
+		if (!Target.bCompileAgainstApplicationCore)
+        {
+			throw new System.Exception("ApplicationCore cannot be used when Target.bCompileAgainstApplicationCore = false.");
+        }
 	}
 }

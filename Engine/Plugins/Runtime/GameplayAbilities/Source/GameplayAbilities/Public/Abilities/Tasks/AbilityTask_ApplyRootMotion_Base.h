@@ -2,32 +2,30 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AbilityTask.h"
+#include "Abilities/Tasks/AbilityTask.h"
 #include "AbilityTask_ApplyRootMotion_Base.generated.h"
 
 class UCharacterMovementComponent;
 enum class ERootMotionFinishVelocityMode : uint8;
 
-//This delegate can be used to support target swapping on abilities.  e.g. If a decoy is created and you want root motion to switch the destination to the decoy.
+/** This delegate can be used to support target swapping on abilities.  e.g. If a decoy is created and you want root motion to switch the destination to the decoy */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnTargetActorSwapped, AActor*, AActor*);
 
-UCLASS(MinimalAPI)
-class UAbilityTask_ApplyRootMotion_Base : public UAbilityTask
+/** Base class for ability tasks that apply root motion */
+UCLASS()
+class GAMEPLAYABILITIES_API UAbilityTask_ApplyRootMotion_Base : public UAbilityTask
 {
 	GENERATED_UCLASS_BODY()
 
 	virtual void InitSimulatedTask(UGameplayTasksComponent& InGameplayTasksComponent) override;
 
 	//..See notes on delegate definition FOnTargetActorSwapped.
-	static GAMEPLAYABILITIES_API FOnTargetActorSwapped OnTargetActorSwapped;
+	static FOnTargetActorSwapped OnTargetActorSwapped;
 
 protected:
 
 	virtual void SharedInitAndApply() {};
-
-	bool HasTimedOut() const;
-
-protected:
+	virtual bool HasTimedOut() const;
 
 	UPROPERTY(Replicated)
 	FName ForceName;

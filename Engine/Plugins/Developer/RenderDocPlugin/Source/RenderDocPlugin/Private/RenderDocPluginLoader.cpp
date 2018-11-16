@@ -4,11 +4,11 @@
 #include "RenderDocPluginModule.h"
 #include "RenderDocPluginSettings.h"
 
-#include "Internationalization.h"
+#include "Internationalization/Internationalization.h"
 
 #include "Developer/DesktopPlatform/public/DesktopPlatformModule.h"
-#include "AllowWindowsPlatformTypes.h"
-#include "ConfigCacheIni.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Misc/ConfigCacheIni.h"
 #include "RHI.h"
 
 #define LOCTEXT_NAMESPACE "RenderDocPlugin" 
@@ -140,7 +140,7 @@ void FRenderDocPluginLoader::Initialize()
 	// 4) All bets are off; aborting...
 	if (RenderDocDLL == nullptr)
 	{
-		UE_LOG(RenderDocPlugin, Error, TEXT("unable to initialize the plugin because no RenderDoc libray has been located."));
+		UE_LOG(RenderDocPlugin, Warning, TEXT("unable to initialize the plugin because no RenderDoc libray has been located."));
 		return;
 	}
 
@@ -173,4 +173,4 @@ void* FRenderDocPluginLoader::GetRenderDocLibrary()
 }
 
 #undef LOCTEXT_NAMESPACE 
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"

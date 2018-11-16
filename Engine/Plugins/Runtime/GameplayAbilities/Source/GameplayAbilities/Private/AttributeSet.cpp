@@ -19,7 +19,7 @@
 #if WITH_EDITOR
 #include "EditorReimportHandler.h"
 #endif
-#include "UObjectThreadContext.h"
+#include "UObject/UObjectThreadContext.h"
 
 
 #if ENABLE_VISUAL_LOG
@@ -324,6 +324,11 @@ bool UAttributeSet::IsNameStableForNetworking() const
 	return bNetAddressable || Super::IsNameStableForNetworking();
 }
 
+bool UAttributeSet::IsSupportedForNetworking() const
+{
+	return true;
+}
+
 void UAttributeSet::SetNetAddressable()
 {
 	bNetAddressable = true;
@@ -403,8 +408,10 @@ void UAttributeSet::PostNetReceive()
 }
 
 FAttributeMetaData::FAttributeMetaData()
-	: MinValue(0.f)
+	: BaseValue(0.0f)
+	, MinValue(0.f)
 	, MaxValue(1.f)
+	, bCanStack(false)
 {
 
 }
@@ -455,12 +462,12 @@ void FScalableFloat::SetScalingValue(float InCoeffecient, FName InRowName, UCurv
 	LocalCachedCurveID = INDEX_NONE;
 }
 
-bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchive& Ar)
+bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot)
 {
 	if (Tag.Type == NAME_FloatProperty)
 	{
 		float OldValue;
-		Ar << OldValue;
+		Slot << OldValue;
 		*this = FScalableFloat(OldValue);
 
 		return true;
@@ -468,7 +475,7 @@ bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchiv
 	else if (Tag.Type == NAME_IntProperty)
 	{
 		int32 OldValue;
-		Ar << OldValue;
+		Slot << OldValue;
 		*this = FScalableFloat((float)OldValue);
 
 		return true;
@@ -476,7 +483,7 @@ bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchiv
 	else if (Tag.Type == NAME_Int8Property)
 	{
 		int8 OldValue;
-		Ar << OldValue;
+		Slot << OldValue;
 		*this = FScalableFloat((float)OldValue);
 
 		return true;
@@ -484,7 +491,7 @@ bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchiv
 	else if (Tag.Type == NAME_Int16Property)
 	{
 		int16 OldValue;
-		Ar << OldValue;
+		Slot << OldValue;
 		*this = FScalableFloat((float)OldValue);
 
 		return true;

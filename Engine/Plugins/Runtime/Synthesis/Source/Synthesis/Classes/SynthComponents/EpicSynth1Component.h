@@ -9,11 +9,12 @@
 #include "UObject/Class.h"
 #include "Engine/EngineTypes.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "Classes/Engine/DataTable.h"
+#include "Engine/DataTable.h"
 #include "Components/SynthComponent.h"
 #include "EpicSynth1.h"
 #include "EpicSynth1Types.h"
 #include "DSP/Osc.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "EpicSynth1Component.generated.h"
 
 USTRUCT(BlueprintType)
@@ -361,6 +362,16 @@ public:
  	TArray<FModularSynthPresetBankEntry> Presets;
 };
 
+UCLASS()
+class SYNTHESIS_API UModularSynthLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+	// Adds the modular synth preset to the bank asset in the content browser. Only call during editor.
+	UFUNCTION(BlueprintCallable, Category = "Synthesis")
+	static void AddModularSynthPresetToBankAsset(UModularSynthPresetBank* InBank, const FModularSynthPreset& Preset, const FString& PresetName);
+};
+
 
 /**
 * UModularSynthComponent
@@ -377,7 +388,7 @@ class SYNTHESIS_API UModularSynthComponent : public USynthComponent
 	virtual bool Init(int32& SampleRate) override;
 
 	// Called to generate more audio
-	virtual void OnGenerateAudio(float* OutAudio, int32 NumSamples) override;
+	virtual int32 OnGenerateAudio(float* OutAudio, int32 NumSamples) override;
 
 public:
 

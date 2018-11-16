@@ -58,7 +58,7 @@ static const FName CueTagColumnName("GameplayCueTags");
 static const FName CueHandlerColumnName("GameplayCueHandlers");
 
 // Whether to show the Hotreload button in the GC editor.
-#define GAMEPLAYCUEEDITOR_HOTRELOAD_BUTTON 1
+#define GAMEPLAYCUEEDITOR_HOTRELOAD_BUTTON 0
 
 // Whether to enable the "show only leaf tags option", if 0, the option is enabled by default. (This is probably not a useful thing to have, in case it ever is, this can be reenabled)
 #define GAMEPLAYCUEEDITOR_SHOW_ONLY_LEAFTAGS_OPTION 0
@@ -805,10 +805,10 @@ public:
 		FMenuBuilder MenuBuilder( true, NULL );
 
 		FUIAction YesAction( FExecuteAction::CreateSP( this, &SGameplayCueEditorImpl::HandleOverrideTypeChange, true ) );
-		MenuBuilder.AddMenuEntry( GetOverrideTypeDropDownText_Explicit(true), LOCTEXT("GameplayCueEditor", "Show ALL POSSIBLE tags for overrides: including Tags that could exist but currently dont"), FSlateIcon(), YesAction );
+		MenuBuilder.AddMenuEntry( GetOverrideTypeDropDownText_Explicit(true), LOCTEXT("GameplayCueEditor_ShowAllOverrides", "Show ALL POSSIBLE tags for overrides: including Tags that could exist but currently don't"), FSlateIcon(), YesAction );
 
 		FUIAction NoAction( FExecuteAction::CreateSP( this, &SGameplayCueEditorImpl::HandleOverrideTypeChange, false ) );
-		MenuBuilder.AddMenuEntry( GetOverrideTypeDropDownText_Explicit(false), LOCTEXT("GameplayCueEditor", "ONLY show tags for overrides that exist/have been setup."), FSlateIcon(), NoAction );
+		MenuBuilder.AddMenuEntry( GetOverrideTypeDropDownText_Explicit(false), LOCTEXT("GameplayCueEditor_ShowValidOverrides", "ONLY show tags for overrides that exist/have been setup."), FSlateIcon(), NoAction );
 
 		return MenuBuilder.MakeWidget();
 	}

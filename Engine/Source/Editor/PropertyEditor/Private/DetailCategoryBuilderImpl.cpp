@@ -4,8 +4,6 @@
 #include "ObjectPropertyNode.h"
 #include "Misc/ConfigCacheIni.h"
 
-
-
 #include "DetailCategoryGroupNode.h"
 #include "DetailItemNode.h"
 #include "DetailAdvancedDropdownNode.h"
@@ -13,6 +11,7 @@
 #include "DetailGroup.h"
 #include "StructurePropertyNode.h"
 #include "ItemPropertyNode.h"
+#include "IPropertyGenerationUtilities.h"
 
 namespace DetailLayoutConstants
 {
@@ -193,7 +192,14 @@ void FDetailCategoryImpl::SetCategoryVisibility(bool bIsVisible)
 	{
 		bIsCategoryVisible = bIsVisible;
 
-		GetDetailsView()->RerunCurrentFilter();
+		if (GetDetailsView())
+		{
+			GetDetailsView()->RerunCurrentFilter();
+		}
+		if (DetailLayoutBuilder.IsValid())
+		{
+			DetailLayoutBuilder.Pin()->NotifyNodeVisibilityChanged();
+		}
 	}
 }
 
@@ -455,15 +461,21 @@ void FDetailCategoryImpl::RequestItemExpanded(TSharedRef<FDetailTreeNode> TreeNo
 
 void FDetailCategoryImpl::RefreshTree(bool bRefilterCategory)
 {
-	TSharedPtr<FDetailLayoutBuilderImpl> DetailLayoutBuilderPtr = DetailLayoutBuilder.Pin();
-	if (DetailLayoutBuilderPtr.IsValid() && GetDetailsView())
+	if (bRefilterCategory)
 	{
-		if (bRefilterCategory)
+		TSharedPtr<FDetailLayoutBuilderImpl> DetailLayoutBuilderPtr = DetailLayoutBuilder.Pin();
+		if (DetailLayoutBuilderPtr.IsValid())
 		{
 			FilterNode(DetailLayoutBuilderPtr->GetCurrentFilter());
+			DetailLayoutBuilderPtr->GetPropertyGenerationUtilities().RebuildTreeNodes();
 		}
-
-		GetDetailsView()->RefreshTree();
+	}
+	else
+	{
+		if (GetDetailsView())
+		{
+			GetDetailsView()->RefreshTree();
+		}
 	}
 }
 
@@ -588,13 +600,20 @@ bool FDetailCategoryImpl::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) con
 
 	if(HeaderContentWidget.IsValid())
 	{
-		OutRow.ValueContent()
+		OutRow
+			.ValueContent()
+			.HAlign(HAlign_Fill)
 			[
 				HeaderContentWidget.ToSharedRef()
 			];
 	}
 
 	return true;
+}
+
+void FDetailCategoryImpl::GetFilterStrings(TArray<FString>& OutFilterStrings) const
+{
+	OutFilterStrings.Add(GetDisplayName().ToString());
 }
 
 void FDetailCategoryImpl::OnItemExpansionChanged(bool bIsExpanded, bool bShouldSaveState)
@@ -851,6 +870,16 @@ void FDetailCategoryImpl::FilterNode(const FDetailFilter& InFilter)
 			RequestItemExpanded(Child, Child->ShouldBeExpanded());
 		}
 	}
+}
+
+FCustomPropertyTypeLayoutMap FDetailCategoryImpl::GetCustomPropertyTypeLayoutMap() const
+{
+	if (DetailLayoutBuilder.IsValid())
+	{
+		return DetailLayoutBuilder.Pin()->GetPropertyGenerationUtilities().GetInstancedPropertyTypeLayoutMap();
+	}
+
+	return FCustomPropertyTypeLayoutMap();
 }
 
 void FDetailCategoryImpl::GenerateLayout()

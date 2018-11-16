@@ -24,27 +24,27 @@ class UNetConnection;
  *
  * An ActorChannel bunch looks like this:
  *
- *		|----------------------|---------------------------------------------------------------------------|
- *		| SpawnInfo		       | (Spawn Info) Initial bunch only                                           |
- *		|  -Actor Class        |	-Created by ActorChannel	                                           |
- *		|  -Spawn Loc/Rot      |                                                                           |
- *      | NetGUID assigns      |                                                                           |
- *		|  -Actor NetGUID      |                                                                           |
- *		|  -Component NetGUIDs |                                                                           |
- *		|----------------------|---------------------------------------------------------------------------|
- *		|                      |                                                                           |
- *		|----------------------|---------------------------------------------------------------------------|
- *		| NetGUID ObjRef       | (Content chunks) x number of replicating objects (Actor + any components) |
- * 		|                      |		-Each chunk created by its own FObjectReplicator instance.         |
- * 		|----------------------|---------------------------------------------------------------------------|
- *      |                      |		                                                                   |
- *		| Properties...        |                                                                           |
- *		|                      |	                                                                       |
- *		| RPCs...              |                                                                           |
- *      |                      |                                                                           |
- *      |----------------------|---------------------------------------------------------------------------|
- *		| </End Tag>           |                                                                           |
- *		|----------------------|---------------------------------------------------------------------------|
+ * +----------------------+---------------------------------------------------------------------------+
+ * | SpawnInfo            | (Spawn Info) Initial bunch only                                           |
+ * |  -Actor Class        |   -Created by ActorChannel                                                |
+ * |  -Spawn Loc/Rot      |                                                                           |
+ * | NetGUID assigns      |                                                                           |
+ * |  -Actor NetGUID      |                                                                           |
+ * |  -Component NetGUIDs |                                                                           |
+ * +----------------------+---------------------------------------------------------------------------+
+ * |                      |                                                                           |
+ * +----------------------+---------------------------------------------------------------------------+
+ * | NetGUID ObjRef       | (Content chunks) x number of replicating objects (Actor + any components) |
+ * |                      |   -Each chunk created by its own FObjectReplicator instance.              |
+ * +----------------------+---------------------------------------------------------------------------+
+ * |                      |                                                                           |
+ * | Properties...        |                                                                           |
+ * |                      |                                                                           |
+ * | RPCs...              |                                                                           |
+ * |                      |                                                                           |
+ * +----------------------+---------------------------------------------------------------------------+
+ * | </End Tag>           |                                                                           |
+ * +----------------------+---------------------------------------------------------------------------+
  */
 UCLASS(transient, customConstructor)
 class ENGINE_API UActorChannel
@@ -85,9 +85,9 @@ class ENGINE_API UActorChannel
 	UPROPERTY()
 	TArray< UObject* >					CreateSubObjects;		// Any sub-object we created on this channel
 
-	TArray< FNetworkGUID >				QueuedMustBeMappedGuidsInLastBunch;		// Array of guids that will async load on client. This list is used for queued RPC's.
-
-	TArray< class FOutBunch * >			QueuedExportBunches;			// Bunches that need to be appended to the export list on the next SendBunch call. This list is used for queued RPC's.
+	TArray< FNetworkGUID >				QueuedMustBeMappedGuidsInLastBunch;	// Array of guids that will async load on client. This list is used for queued RPC's.
+	TArray< class FOutBunch * >			QueuedExportBunches;				// Bunches that need to be appended to the export list on the next SendBunch call. This list is used for queued RPC's.
+	bool								bHoldQueuedExportBunchesAndGUIDs;	// Don't export QueuedExportBunches or QueuedMustBeMappedGuidsInLastBunch if this is true
 
 #if !UE_BUILD_SHIPPING
 	/** Whether or not to block sending of NMT_ActorChannelFailure (for NetcodeUnitTest) */
@@ -105,6 +105,7 @@ class ENGINE_API UActorChannel
 	{
 		ChType = CHTYPE_Actor;
 		bClearRecentActorRefs = true;
+		bHoldQueuedExportBunchesAndGUIDs = false;
 	}
 
 public:
@@ -121,7 +122,7 @@ public:
 	bool ProcessQueuedBunches();
 
 	virtual void ReceivedNak( int32 NakPacketId ) override;
-	virtual void Close() override;
+	virtual int64 Close() override;
 	virtual FString Describe() override;
 
 public:
@@ -129,15 +130,15 @@ public:
 	/** UActorChannel interface and accessors. */
 	AActor* GetActor() {return Actor;}
 
-	/** Replicate this channel's actor differences. */
-	bool ReplicateActor();
+	/** Replicate this channel's actor differences. Returns how many bits were replicated (does not include non-bunch packet overhead) */
+	int64 ReplicateActor();
 
 	/** Allocate replication tables for the actor channel. */
 	void SetChannelActor( AActor* InActor );
 
 	virtual void NotifyActorChannelOpen(AActor* InActor, FInBunch& InBunch);
 
-	void SetChannelActorForDestroy( struct FActorDestructionInfo *DestructInfo );
+	int64 SetChannelActorForDestroy( struct FActorDestructionInfo *DestructInfo );
 
 	/** Append any export bunches */
 	virtual void AppendExportBunches( TArray< FOutBunch* >& OutExportBunches ) override;
@@ -162,13 +163,13 @@ public:
 	void CleanupReplicators( const bool bKeepReplicators = false );
 
 	/** Writes the header for a content block of properties / RPCs for the given object (either the actor a subobject of the actor) */
-	void WriteContentBlockHeader( UObject* Obj, FOutBunch &Bunch, const bool bHasRepLayout );
+	void WriteContentBlockHeader( UObject* Obj, FNetBitWriter &Bunch, const bool bHasRepLayout );
 
 	/** Writes the header for a content block specifically for deleting sub-objects */
 	void WriteContentBlockForSubObjectDelete( FOutBunch & Bunch, FNetworkGUID & GuidToDelete );
 
 	/** Writes header and payload of content block */
-	int32 WriteContentBlockPayload( UObject* Obj, FOutBunch &Bunch, const bool bHasRepLayout, FNetBitWriter& Payload );
+	int32 WriteContentBlockPayload( UObject* Obj, FNetBitWriter &Bunch, const bool bHasRepLayout, FNetBitWriter& Payload );
 
 	/** Reads the header of the content block and instantiates the subobject if necessary */
 	UObject* ReadContentBlockHeader( FInBunch& Bunch, bool& bObjectDeleted, bool& bOutHasRepLayout );
@@ -177,13 +178,13 @@ public:
 	UObject* ReadContentBlockPayload( FInBunch &Bunch, FNetBitReader& OutPayload, bool& bOutHasRepLayout );
 
 	/** Writes property/function header and data blob to network stream */
-	int32 WriteFieldHeaderAndPayload( FNetBitWriter& Bunch, const FClassNetCache* ClassCache, const FFieldNetCache* FieldCache, FNetFieldExportGroup* NetFieldExportGroup, FNetBitWriter& Payload );
+	int32 WriteFieldHeaderAndPayload( FNetBitWriter& Bunch, const FClassNetCache* ClassCache, const FFieldNetCache* FieldCache, FNetFieldExportGroup* NetFieldExportGroup, FNetBitWriter& Payload, bool bIgnoreInternalAck=false );
 
 	/** Reads property/function header and data blob from network stream */
 	bool ReadFieldHeaderAndPayload( UObject* Object, const FClassNetCache* ClassCache, FNetFieldExportGroup* NetFieldExportGroup, FNetBitReader& Bunch, const FFieldNetCache** OutField, FNetBitReader& OutPayload ) const;
 
 	/** Finds the net field export group for a class net cache, if not found, creates one */
-	FNetFieldExportGroup* GetNetFieldExportGroupForClassNetCache( const UClass* ObjectClass );
+	FNetFieldExportGroup* GetNetFieldExportGroupForClassNetCache( UClass* ObjectClass );
 		
 	/** Finds (or creates) the net field export group for a class net cache, if not found, creates one */
 	FNetFieldExportGroup* GetOrCreateNetFieldExportGroupForClassNetCache( const UObject* Object );
@@ -279,6 +280,8 @@ public:
 	bool KeyNeedsToReplicate(int32 ObjID, int32 RepKey);
 	
 	// --------------------------------
+
+	virtual void AddedToChannelPool() override;
 
 protected:
 	

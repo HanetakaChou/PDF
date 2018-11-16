@@ -83,8 +83,8 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 	{
 		if (OutMsg)
 		{
-			 *OutMsg = FString::Printf(*LOCTEXT("StructureRecursion", "Recursion: Struct cannot have itself as a member variable. Struct '%s', recursive parent '%s'").ToString(), 
-				 *Struct->GetFullName(), *RecursionParent->GetFullName());
+			*OutMsg = FText::Format(LOCTEXT("StructureRecursionFmt", "Recursion: Struct cannot have itself as a member variable. Struct '{0}', recursive parent '{1}'"), 
+				 FText::FromString(Struct->GetFullName()), FText::FromString(RecursionParent->GetFullName())).ToString();
 		}
 		return EStructureError::Recursion;
 	}
@@ -103,7 +103,7 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 	{
 		if (OutMsg)
 		{
-			*OutMsg = FString::Printf(*LOCTEXT("StructureSizeIsZero", "Struct '%s' is empty").ToString(), *Struct->GetFullName());
+			*OutMsg = FText::Format(LOCTEXT("StructureSizeIsZeroFmt", "Struct '{0}' is empty"), FText::FromString(Struct->GetFullName())).ToString();
 		}
 		return EStructureError::EmptyStructure;
 	}
@@ -114,7 +114,7 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 		{
 			if (OutMsg)
 			{
-				*OutMsg = FString::Printf(*LOCTEXT("StructureNotCompiled", "Struct '%s' is not compiled").ToString(), *Struct->GetFullName());
+				*OutMsg = FText::Format(LOCTEXT("StructureNotCompiledFmt", "Struct '{0}' is not compiled"), FText::FromString(Struct->GetFullName())).ToString();
 			}
 			return EStructureError::NotCompiled;
 		}
@@ -136,8 +136,11 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 				{
 					if (OutMsg)
 					{
-						*OutMsg = FString::Printf(*LOCTEXT("StructureUnknownProperty", "Struct unknown (deleted?). Parent '%s' Property: '%s'").ToString(),
-							*Struct->GetFullName(), *StructProp->GetName());
+						*OutMsg = FText::Format(
+							LOCTEXT("StructureUnknownPropertyFmt", "Struct unknown (deleted?). Parent '{0}' Property: '{1}'"),
+							FText::FromString(Struct->GetFullName()),
+							FText::FromString(StructProp->GetName())
+						).ToString();
 					}
 					return EStructureError::FallbackStruct;
 				}
@@ -151,8 +154,12 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 				{
 					if (OutMsg)
 					{
-						*OutMsg = FString::Printf(*LOCTEXT("StructurePropertyErrorTemplate", "Struct '%s' Property '%s' Error ( %s )").ToString(),
-							*Struct->GetFullName(), *StructProp->GetName(), *OutMsgInner);
+						*OutMsg = FText::Format(
+							LOCTEXT("StructurePropertyErrorTemplateFmt", "Struct '{0}' Property '{1}' Error ( {2} )"),
+							FText::FromString(Struct->GetFullName()),
+							FText::FromString(StructProp->GetName()),
+							FText::FromString(OutMsgInner)
+						).ToString();
 					}
 					return Result;
 				}
@@ -163,8 +170,11 @@ FStructureEditorUtils::EStructureError FStructureEditorUtils::IsStructureValid(c
 			{
 				if (OutMsg)
 				{
-					*OutMsg = FString::Printf(*LOCTEXT("StructureUnknownObjectProperty", "Invalid object property. Structure '%s' Property: '%s'").ToString(),
-						*Struct->GetFullName(), *P->GetName());
+					*OutMsg = FText::Format(
+						LOCTEXT("StructureUnknownObjectPropertyFmt", "Invalid object property. Structure '{0}' Property: '{1}'"),
+						FText::FromString(Struct->GetFullName()),
+						FText::FromString(P->GetName())
+					).ToString();
 				}
 				return EStructureError::NotCompiled;
 			}
@@ -635,7 +645,7 @@ FString FStructureEditorUtils::GetTooltip(const UUserDefinedStruct* Struct)
 bool FStructureEditorUtils::ChangeTooltip(UUserDefinedStruct* Struct, const FString& InTooltip)
 {
 	UUserDefinedStructEditorData* StructEditorData = Struct ? Cast<UUserDefinedStructEditorData>(Struct->EditorData) : NULL;
-	if (StructEditorData && (InTooltip != StructEditorData->ToolTip))
+	if (StructEditorData && StructEditorData->ToolTip.Compare(InTooltip) != 0)
 	{
 		const FScopedTransaction Transaction(LOCTEXT("ChangeTooltip", "Change UDS Tooltip"));
 		StructEditorData->Modify();
@@ -658,7 +668,7 @@ FString FStructureEditorUtils::GetVariableTooltip(const UUserDefinedStruct* Stru
 bool FStructureEditorUtils::ChangeVariableTooltip(UUserDefinedStruct* Struct, FGuid VarGuid, const FString& InTooltip)
 {
 	FStructVariableDescription* VarDesc = GetVarDescByGuid(Struct, VarGuid);
-	if (VarDesc && (InTooltip != VarDesc->ToolTip))
+	if (VarDesc && VarDesc->ToolTip.Compare(InTooltip) != 0)
 	{
 		const FScopedTransaction Transaction(LOCTEXT("ChangeVariableTooltip", "Change UDS Variable Tooltip"));
 		ModifyStructData(Struct);

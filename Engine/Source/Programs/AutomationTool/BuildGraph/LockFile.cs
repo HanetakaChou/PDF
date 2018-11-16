@@ -14,7 +14,7 @@ namespace AutomationTool
     /// </summary>
     static class LockFile
     {
-        public static void TakeLock(DirectoryReference LockDirectory, TimeSpan Timeout, System.Action Callback)
+        private static void TakeLock(DirectoryReference LockDirectory, TimeSpan Timeout, System.Action Callback)
         {
             string LockFilePath = Path.Combine(LockDirectory.FullName, ".lock");
 
@@ -58,11 +58,11 @@ namespace AutomationTool
 
                     if (Iterations == 0)
                     {
-                        CommandUtils.Log("Waiting for lock file '{0}' to be removed...", LockFilePath);
+                        CommandUtils.LogInformation("Waiting for lock file '{0}' to be removed...", LockFilePath);
                     }
                     else if ((Iterations % 30) == 0)
                     {
-                        CommandUtils.Log("Still waiting for lock file '{0}' after {1} seconds.", LockFilePath, CurrentTime.Subtract(StartTime).TotalSeconds);
+                        CommandUtils.LogInformation("Still waiting for lock file '{0}' after {1} seconds.", LockFilePath, CurrentTime.Subtract(StartTime).TotalSeconds);
                     }
 
                     // Wait for a while before retrying.
@@ -83,5 +83,18 @@ namespace AutomationTool
                 }
             }
         }
-    }
+
+		public static void OptionallyTakeLock(bool Condition, DirectoryReference LockDirectory, TimeSpan Timeout, System.Action Callback)
+		{
+			if (Condition)
+			{
+				TakeLock(LockDirectory, Timeout, Callback);
+			}
+			else
+			{
+				// No lock required, invoke the callback directly.
+				Callback();
+			}
+		}
+	}
 }

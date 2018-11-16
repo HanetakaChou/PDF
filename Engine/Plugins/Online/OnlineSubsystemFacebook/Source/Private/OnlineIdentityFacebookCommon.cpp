@@ -1,7 +1,11 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineIdentityFacebookCommon.h"
+#if USES_RESTFUL_FACEBOOK
+#include "OnlineIdentityFacebookRest.h"
+#else // USES_RESTFUL_FACEBOOK
 #include "OnlineIdentityFacebook.h"
+#endif // USES_RESTFUL_FACEBOOK
 #include "OnlineSubsystemFacebookPrivate.h"
 #include "OnlineSubsystemFacebookTypes.h"
 #include "HttpModule.h"
@@ -14,8 +18,10 @@ FOnlineIdentityFacebookCommon::FOnlineIdentityFacebookCommon(FOnlineSubsystemFac
 {
 	if (!GConfig->GetString(TEXT("OnlineSubsystemFacebook.OnlineIdentityFacebook"), TEXT("MeURL"), MeURL, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing MeURL= in [OnlineSubsystemFacebook.OnlineIdentityFacebook] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing MeURL= in [OnlineSubsystemFacebook.OnlineIdentityFacebook] of DefaultEngine.ini"));
 	}
+
+	MeURL.ReplaceInline(TEXT("`ver"), *InSubsystem->GetAPIVer());
 
 	// Setup permission scope fields
 	GConfig->GetArray(TEXT("OnlineSubsystemFacebook.OnlineIdentityFacebook"), TEXT("ProfileFields"), ProfileFields, GEngineIni);
@@ -29,7 +35,7 @@ FOnlineIdentityFacebookCommon::FOnlineIdentityFacebookCommon(FOnlineSubsystemFac
 
 const FUniqueNetId& FOnlineIdentityFacebookCommon::GetEmptyUniqueId()
 {
-	static TSharedRef<const FUniqueNetIdString> EmptyUniqueId = MakeShared<const FUniqueNetIdString>(FString());
+	static TSharedRef<const FUniqueNetIdFacebook> EmptyUniqueId = MakeShared<const FUniqueNetIdFacebook>(FString());
 	return *EmptyUniqueId;
 }
 
@@ -137,7 +143,7 @@ void FOnlineIdentityFacebookCommon::MeUser_HttpRequestComplete(FHttpRequestPtr H
 #else
 			const FString URL = HttpRequest->GetURL();
 #endif
-			UE_LOG(LogOnline, Verbose, TEXT("RegisterUser request complete. url=%s code=%d response=%s"),
+			UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("RegisterUser request complete. url=%s code=%d response=%s"),
 				*URL, HttpResponse->GetResponseCode(), *ResponseStr);
 
 			TSharedRef<FUserOnlineAccountFacebook> User = MakeShared<FUserOnlineAccountFacebook>();
@@ -162,7 +168,7 @@ void FOnlineIdentityFacebookCommon::MeUser_HttpRequestComplete(FHttpRequestPtr H
 			Error.FromJson(ResponseStr);
 			if (Error.Error.Type == TEXT("OAuthException"))
 			{
-				UE_LOG_ONLINE(Warning, TEXT("OAuthError: %s"), *Error.ToDebugString());
+				UE_LOG_ONLINE_IDENTITY(Warning, TEXT("OAuthError: %s"), *Error.ToDebugString());
 				ErrorStr = FB_AUTH_EXPIRED_CREDS;
 			}
 			else
@@ -179,7 +185,7 @@ void FOnlineIdentityFacebookCommon::MeUser_HttpRequestComplete(FHttpRequestPtr H
 
 	if (!ErrorStr.IsEmpty())
 	{
-		UE_LOG_ONLINE(Warning, TEXT("RegisterUser request failed. %s"), *ErrorStr);
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("RegisterUser request failed. %s"), *ErrorStr);
 	}
 
 	InCompletionDelegate.ExecuteIfBound(PendingRegisterUser.LocalUserNum, bResult, ErrorStr);
@@ -205,14 +211,14 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityFacebookCommon::CreateUniquePlayer
 	if (Bytes != nullptr && Size > 0)
 	{
 		FString StrId(Size, (TCHAR*)Bytes);
-		return MakeShareable(new FUniqueNetIdString(StrId));
+		return MakeShareable(new FUniqueNetIdFacebook(StrId));
 	}
 	return nullptr;
 }
 
 TSharedPtr<const FUniqueNetId> FOnlineIdentityFacebookCommon::CreateUniquePlayerId(const FString& Str)
 {
-	return MakeShareable(new FUniqueNetIdString(Str));
+	return MakeShareable(new FUniqueNetIdFacebook(Str));
 }
 
 bool FOnlineIdentityFacebookCommon::AutoLogin(int32 LocalUserNum)
@@ -279,7 +285,7 @@ FString FOnlineIdentityFacebookCommon::GetAuthToken(int32 LocalUserNum) const
 
 void FOnlineIdentityFacebookCommon::RevokeAuthToken(const FUniqueNetId& UserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate)
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityFacebookCommon::RevokeAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityFacebookCommon::RevokeAuthToken not implemented"));
 	TSharedRef<const FUniqueNetId> UserIdRef(UserId.AsShared());
 	FacebookSubsystem->ExecuteNextTick([UserIdRef, Delegate]()
 	{
@@ -308,6 +314,6 @@ FPlatformUserId FOnlineIdentityFacebookCommon::GetPlatformUserIdFromUniqueNetId(
 
 FString FOnlineIdentityFacebookCommon::GetAuthType() const
 {
-	return TEXT("facebook");
+	return AUTH_TYPE_FACEBOOK;
 }
 

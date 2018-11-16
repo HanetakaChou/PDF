@@ -2,34 +2,51 @@
 
 #include "Rendering/SlateDrawBuffer.h"
 #include "Rendering/DrawElements.h"
+#include "Application/SlateApplicationBase.h"
 
 
 /* FSlateDrawBuffer interface
  *****************************************************************************/
 
+FSlateDrawBuffer::~FSlateDrawBuffer()
+{
+}
+
 FSlateWindowElementList& FSlateDrawBuffer::AddWindowElementList(TSharedRef<SWindow> ForWindow)
 {
-	TSharedPtr<FSlateWindowElementList> WindowElements;
-
 	for ( int32 WindowIndex = 0; WindowIndex < WindowElementListsPool.Num(); ++WindowIndex )
 	{
-		WindowElements = WindowElementListsPool[WindowIndex];
+		TSharedRef<FSlateWindowElementList> ExistingElementList = WindowElementListsPool[WindowIndex];
 
-		if ( WindowElements->GetWindow() == ForWindow )
+		if (ExistingElementList->GetPaintWindow() == &ForWindow.Get())
 		{
-			WindowElementLists.Add(WindowElements);
+			WindowElementLists.Add(ExistingElementList);
 			WindowElementListsPool.RemoveAtSwap(WindowIndex);
 
-			WindowElements->ResetBuffers();
+			ExistingElementList->ResetElementBuffers();
 
-			return *WindowElements;
+			return *ExistingElementList;
 		}
 	}
 
-	WindowElements = MakeShareable(new FSlateWindowElementList(ForWindow));
+	TSharedRef<FSlateWindowElementList> WindowElements = MakeShared<FSlateWindowElementList>(ForWindow);
 	WindowElementLists.Add(WindowElements);
 
 	return *WindowElements;
+}
+
+void FSlateDrawBuffer::RemoveUnusedWindowElement(const TArray<SWindow*>& AllWindows)
+{
+	// Remove any window elements that are no longer valid.
+	for (int32 WindowIndex = 0; WindowIndex < WindowElementLists.Num(); ++WindowIndex)
+	{
+		SWindow* CandidateWindow = WindowElementLists[WindowIndex]->GetPaintWindow();
+		if (!CandidateWindow || !AllWindows.Contains(CandidateWindow))
+		{
+			WindowElementLists.RemoveAtSwap(WindowIndex);
+			--WindowIndex;
+		}
+	}
 }
 
 bool FSlateDrawBuffer::Lock()
@@ -45,9 +62,9 @@ void FSlateDrawBuffer::Unlock()
 void FSlateDrawBuffer::ClearBuffer()
 {
 	// Remove any window elements that are no longer valid.
-	for ( int32 WindowIndex = 0; WindowIndex < WindowElementListsPool.Num(); ++WindowIndex )
+	for (int32 WindowIndex = 0; WindowIndex < WindowElementListsPool.Num(); ++WindowIndex)
 	{
-		if ( WindowElementListsPool[WindowIndex]->GetWindow().IsValid() == false )
+		if (WindowElementListsPool[WindowIndex]->GetPaintWindow() == nullptr)
 		{
 			WindowElementListsPool.RemoveAtSwap(WindowIndex);
 			--WindowIndex;
@@ -55,9 +72,9 @@ void FSlateDrawBuffer::ClearBuffer()
 	}
 
 	// Move all the window elements back into the pool.
-	for ( TSharedPtr<FSlateWindowElementList> ExistingList : WindowElementLists )
+	for (TSharedRef<FSlateWindowElementList> ExistingList : WindowElementLists)
 	{
-		if( ExistingList->GetWindow().IsValid() )
+		if (ExistingList->GetPaintWindow() != nullptr)
 		{
 			WindowElementListsPool.Add(ExistingList);
 		}
@@ -66,9 +83,10 @@ void FSlateDrawBuffer::ClearBuffer()
 	WindowElementLists.Reset();
 }
 
+
 void FSlateDrawBuffer::UpdateResourceVersion(uint32 NewResourceVersion)
 {
-	if (NewResourceVersion != ResourceVersion)
+	if (IsInGameThread() && NewResourceVersion != ResourceVersion)
 	{
 		WindowElementListsPool.Empty();
 		ResourceVersion = NewResourceVersion;

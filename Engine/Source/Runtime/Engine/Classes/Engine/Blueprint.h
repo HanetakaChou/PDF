@@ -12,6 +12,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "Engine/BlueprintCore.h"
 #include "UObject/SoftObjectPath.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "Blueprint.generated.h"
 
 class FCompilerResultsLog;
@@ -19,6 +20,7 @@ class ITargetPlatform;
 class UActorComponent;
 class UEdGraph;
 class UInheritableComponentHandler;
+class FBlueprintActionDatabaseRegistrar;
 
 /**
  * Enumerates states a blueprint can be in.
@@ -100,6 +102,9 @@ struct FCompilerNativizationOptions
 	bool ClientOnlyPlatform;
 
 	UPROPERTY()
+	bool bExcludeMonolithicHeaders;
+
+	UPROPERTY()
 	TArray<FName> ExcludedModules;
 
 	// Individually excluded assets
@@ -113,6 +118,7 @@ struct FCompilerNativizationOptions
 	FCompilerNativizationOptions()
 		: ServerOnlyPlatform(false)
 		, ClientOnlyPlatform(false)
+		, bExcludeMonolithicHeaders(false)
 	{}
 };
 
@@ -149,6 +155,12 @@ public:
 	/** Whether or not to reinstance and stub if the blueprint fails to compile */
 	bool bReinstanceAndStubOnFailure;
 
+	/** Whether or not to skip class default object validation */
+	bool bSkipDefaultObjectValidation;
+
+	/** Whether or not to update Find-in-Blueprint search metadata */
+	bool bSkipFiBSearchMetaUpdate;
+
 	TSharedPtr<FString> OutHeaderSourceCode;
 	TSharedPtr<FString> OutCppSourceCode;
 	FCompilerNativizationOptions NativizationOptions;
@@ -177,6 +189,8 @@ public:
 		, bRegenerateSkelton(true)
 		, bIsDuplicationInstigated(false)
 		, bReinstanceAndStubOnFailure(true)
+		, bSkipDefaultObjectValidation(false)
+		, bSkipFiBSearchMetaUpdate(false)
 	{
 	};
 };
@@ -253,6 +267,7 @@ struct FBPVariableDescription
 
 	FBPVariableDescription()
 		: PropertyFlags(CPF_Edit)
+		, ReplicationCondition(ELifetimeCondition::COND_None)
 	{
 	}
 
@@ -296,8 +311,9 @@ struct FEditedDocumentInfo
 {
 	GENERATED_USTRUCT_BODY()
 
+	/** Edited object */
 	UPROPERTY()
-	UObject* EditedObject;
+	FSoftObjectPath EditedObjectPath;
 
 	/** Saved view position */
 	UPROPERTY()
@@ -308,29 +324,78 @@ struct FEditedDocumentInfo
 	float SavedZoomAmount;
 
 	FEditedDocumentInfo()
-		: EditedObject(nullptr)
-		, SavedViewOffset(0.0f, 0.0f)
+		: SavedViewOffset(0.0f, 0.0f)
 		, SavedZoomAmount(-1.0f)
+		, EditedObject_DEPRECATED(nullptr)
 	{ }
 
 	FEditedDocumentInfo(UObject* InEditedObject)
-		: EditedObject(InEditedObject)
+		: EditedObjectPath(InEditedObject)
 		, SavedViewOffset(0.0f, 0.0f)
 		, SavedZoomAmount(-1.0f)
+		, EditedObject_DEPRECATED(nullptr)
 	{ }
 
 	FEditedDocumentInfo(UObject* InEditedObject, FVector2D& InSavedViewOffset, float InSavedZoomAmount)
-		: EditedObject(InEditedObject)
+		: EditedObjectPath(InEditedObject)
 		, SavedViewOffset(InSavedViewOffset)
 		, SavedZoomAmount(InSavedZoomAmount)
+		, EditedObject_DEPRECATED(nullptr)
 	{ }
 
-	friend bool operator==( const FEditedDocumentInfo& LHS, const FEditedDocumentInfo& RHS )
+	void PostSerialize(const FArchive& Ar)
 	{
-		return LHS.EditedObject == RHS.EditedObject && LHS.SavedViewOffset == RHS.SavedViewOffset && LHS.SavedZoomAmount == RHS.SavedZoomAmount;
+		if (Ar.IsLoading() && EditedObject_DEPRECATED)
+		{
+			// Convert hard to soft reference.
+			EditedObjectPath = EditedObject_DEPRECATED;
+			EditedObject_DEPRECATED = nullptr;
+		}
 	}
+
+	friend bool operator==(const FEditedDocumentInfo& LHS, const FEditedDocumentInfo& RHS)
+	{
+		return LHS.EditedObjectPath == RHS.EditedObjectPath && LHS.SavedViewOffset == RHS.SavedViewOffset && LHS.SavedZoomAmount == RHS.SavedZoomAmount;
+	}
+
+private:
+	// Legacy hard reference is now serialized as a soft reference (see above).
+	UPROPERTY()
+	UObject* EditedObject_DEPRECATED;
 };
 
+template<>
+struct TStructOpsTypeTraits<FEditedDocumentInfo> : public TStructOpsTypeTraitsBase2<FEditedDocumentInfo>
+{
+	enum
+	{
+		WithPostSerialize = true
+	};
+};
+
+/** Bookmark node info */
+USTRUCT()
+struct FBPEditorBookmarkNode
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Node ID */
+	UPROPERTY()
+	FGuid NodeGuid;
+
+	/** Parent ID */
+	UPROPERTY()
+	FGuid ParentGuid;
+
+	/** Display name */
+	UPROPERTY()
+	FText DisplayName;
+
+	friend bool operator==(const FBPEditorBookmarkNode& LHS, const FBPEditorBookmarkNode& RHS)
+	{
+		return LHS.NodeGuid == RHS.NodeGuid;
+	}
+};
 
 UENUM()
 enum class EBlueprintNativizationFlag : uint8
@@ -339,6 +404,7 @@ enum class EBlueprintNativizationFlag : uint8
 	Dependency, // conditionally enabled (set from sub-class as a dependency)
 	ExplicitlyEnabled
 };
+
 
 /**
  * Blueprints are special assets that provide an intuitive, node-based interface that can be used to create new types of Actors
@@ -355,11 +421,11 @@ class ENGINE_API UBlueprint : public UBlueprintCore
 	uint32 bRecompileOnLoad:1;
 
 	/** 
-		Pointer to the parent class that the generated class should derive from. This *can* be null under rare circumstances, 
-		one such case can be created by creating a blueprint (A) based on another blueprint (B), shutting down the editor, and
-		deleting the parent blueprint.
-	*/
-	UPROPERTY(AssetRegistrySearchable)
+	 * Pointer to the parent class that the generated class should derive from. This *can* be null under rare circumstances, 
+	 * one such case can be created by creating a blueprint (A) based on another blueprint (B), shutting down the editor, and
+	 * deleting the parent blueprint. Exported as Alphabetical in GetAssetRegistryTags
+	 */
+	UPROPERTY()
 	TSubclassOf<class UObject> ParentClass;
 
 	UPROPERTY(transient)
@@ -401,7 +467,7 @@ class ENGINE_API UBlueprint : public UBlueprintCore
 	UPROPERTY(EditAnywhere, Category = ClassOptions, AdvancedDisplay)
 	uint32 bGenerateAbstractClass : 1;
 
-	/**shows up in the content browser when the blueprint is hovered */
+	/** Shows up in the content browser when the blueprint is hovered, exported as Hidden in GetAssetRegistryTags */
 	UPROPERTY(EditAnywhere, Category=BlueprintOptions, meta=(MultiLine=true))
 	FString BlueprintDescription;
 
@@ -529,6 +595,14 @@ class ENGINE_API UBlueprint : public UBlueprintCore
 	UPROPERTY()
 	TArray<struct FEditedDocumentInfo> LastEditedDocuments;
 
+	/** Bookmark data */
+	UPROPERTY()
+	TMap<FGuid, struct FEditedDocumentInfo> Bookmarks;
+
+	/** Bookmark nodes (for display) */
+	UPROPERTY()
+	TArray<FBPEditorBookmarkNode> BookmarkNodes;
+
 	/** Persistent debugging options */
 	UPROPERTY()
 	TArray<class UBreakpoint*> Breakpoints;
@@ -640,9 +714,6 @@ public:
 	/** Find the object in the TemplateObjects array with the supplied name */
 	UActorComponent* FindTemplateByName(const FName& TemplateName) const;
 
-	/** Rename the component template in the TemplateObjects array with the supplied name */
-	bool RenameComponentTemplate(const FName& OldTemplateName, const FName& NewTemplateName);
-
 	/** Find a timeline by name */
 	class UTimelineTemplate* FindTimelineTemplateByVariableName(const FName& TimelineName);	
 
@@ -695,6 +766,11 @@ public:
 	/** Some Blueprints (and classes) can recompile while we are debugging a live session. This function controls whether this can occur. */
 	virtual bool CanRecompileWhilePlayingInEditor() const { return false; }
 
+	/**
+	 * Check whether this blueprint can be nativized or not
+	 */
+	virtual bool SupportsNativization(FText* OutReason = nullptr) const;
+
 private:
 
 	/** Sets the current object being debugged */
@@ -722,6 +798,7 @@ public:
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
 	virtual bool IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform) override;
 	virtual void ClearAllCachedCookedPlatformData() override;
+	virtual void BeginDestroy() override;
 	//~ End UObject Interface
 
 	/** Consigns the GeneratedClass and the SkeletonGeneratedClass to oblivion, and nulls their references */
@@ -778,6 +855,11 @@ public:
 	 * @return						true if there were no status errors in any of the parent blueprints, otherwise false
 	 */
 	static bool GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UBlueprint*>& OutBlueprintParents);
+	
+#if WITH_EDITOR
+	/** returns true if the class hierarchy is error free */
+	static bool IsBlueprintHierarchyErrorFree(const UClass* InClass);
+#endif
 
 #if WITH_EDITOR
 	template<class TFieldType>
@@ -850,6 +932,26 @@ public:
 
 	/** Get all graphs in this blueprint */
 	void GetAllGraphs(TArray<UEdGraph*>& Graphs) const;
+
+	/**
+	* Allow each blueprint type (AnimBlueprint or ControlRigBlueprint) to add specific
+	* UBlueprintNodeSpawners pertaining to the sub-class type. Serves as an
+	* extensible way for new nodes, and game module nodes to add themselves to
+	* context menus.
+	*
+	* @param  ActionRegistrar	BlueprintActionDataBaseRetistrar 
+	*/
+	virtual void GetTypeActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const {}
+
+	/**
+	* Allow each blueprint instance to add specific 
+	* UBlueprintNodeSpawners pertaining to the sub-class type. Serves as an
+	* extensible way for new nodes, and game module nodes to add themselves to
+	* context menus.
+	*
+	* @param  ActionRegistrar	BlueprintActionDataBaseRetistrar
+	*/
+	virtual void GetInstanceActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const {}
 
 private:
 

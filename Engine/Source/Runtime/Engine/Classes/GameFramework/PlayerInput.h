@@ -75,6 +75,15 @@ struct FKeyBind
 	uint8 bDisabled : 1;
 
 	FKeyBind()
+		: Control(false)
+		, Shift(false)
+		, Alt(false)
+		, Cmd(false)
+		, bIgnoreCtrl(false)
+		, bIgnoreShift(false)
+		, bIgnoreAlt(false)
+		, bIgnoreCmd(false)
+		, bDisabled(false)
 	{
 	}
 };
@@ -139,10 +148,6 @@ struct FInputActionKeyMapping
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
 	FName ActionName;
 
-	/** Key to bind it to. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
-	FKey Key;
-
 	/** true if one of the Shift keys must be down when the KeyEvent is received to be acknowledged */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
 	uint8 bShift:1;
@@ -158,6 +163,10 @@ struct FInputActionKeyMapping
 	/** true if one of the Cmd keys must be down when the KeyEvent is received to be acknowledged */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
 	uint8 bCmd:1;
+
+	/** Key to bind it to. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
+	FKey Key;
 
 	bool operator==(const FInputActionKeyMapping& Other) const
 	{
@@ -185,11 +194,11 @@ struct FInputActionKeyMapping
 
 	FInputActionKeyMapping(const FName InActionName = NAME_None, const FKey InKey = EKeys::Invalid, const bool bInShift = false, const bool bInCtrl = false, const bool bInAlt = false, const bool bInCmd = false)
 		: ActionName(InActionName)
-		, Key(InKey)
 		, bShift(bInShift)
 		, bCtrl(bInCtrl)
 		, bAlt(bInAlt)
 		, bCmd(bInCmd)
+		, Key(InKey)
 	{}
 };
 
@@ -207,13 +216,13 @@ struct FInputAxisKeyMapping
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
 	FName AxisName;
 
-	/** Key to bind it to. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
-	FKey Key;
-
 	/** Multiplier to use for the mapping when accumulating the axis value */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
 	float Scale;
+
+	/** Key to bind it to. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Input")
+	FKey Key;
 
 	bool operator==(const FInputAxisKeyMapping& Other) const
 	{
@@ -246,8 +255,8 @@ struct FInputAxisKeyMapping
 
 	FInputAxisKeyMapping(const FName InAxisName = NAME_None, const FKey InKey = EKeys::Invalid, const float InScale = 1.f)
 		: AxisName(InAxisName)
-		, Key(InKey)
 		, Scale(InScale)
+		, Key(InKey)
 	{}
 };
 
@@ -310,14 +319,23 @@ public:
 
 	/** Exec function to change the mouse sensitivity */
 	UFUNCTION(exec)
-	void SetMouseSensitivity(const float Sensitivity);
+	void SetMouseSensitivity(const float SensitivityX, const float SensitivityY);
+
+	/** Sets both X and Y axis sensitivity to the supplied value. */
+	void SetMouseSensitivity(const float Sensitivity) { SetMouseSensitivity(Sensitivity, Sensitivity); }
 
 	/** Exec function to add a debug exec command */
 	UFUNCTION(exec)
 	void SetBind(FName BindName, const FString& Command);
 
 	/** Returns the mouse sensitivity along the X-axis, or the Y-axis, or 1.0 if none are known. */
-	float GetMouseSensitivity();
+	float GetMouseSensitivityX();
+
+	/** Returns the mouse sensitivity along the Y-axis, or 1.0 if none are known. */
+	float GetMouseSensitivityY();
+
+	DEPRECATED(4.21, "Call axis specific GetMouseSensitivityX or GetMouseSensitivityY instead.")
+	float GetMouseSensitivity() { return GetMouseSensitivityX(); }
 
 	/** Returns whether an Axis Key is inverted */
 	bool GetInvertAxisKey(const FKey AxisKey);
@@ -389,15 +407,17 @@ private:
 	TMap<FKey,FInputAxisProperties> AxisProperties;
 
 	/** Map of Action Name to details about the keys mapped to that action */
-	TMap<FName,FActionKeyDetails> ActionKeyMap;
+	mutable TMap<FName,FActionKeyDetails> ActionKeyMap;
 
 	/** Map of Axis Name to details about the keys mapped to that axis */
-	TMap<FName,FAxisKeyDetails> AxisKeyMap;
+	mutable TMap<FName,FAxisKeyDetails> AxisKeyMap;
 
 	/** The current game view of each key */
 	TMap<FKey,FKeyState> KeyStateMap;
 
-	uint8 bKeyMapsBuilt:1;
+	mutable uint32 KeyMapBuildIndex;
+
+	mutable uint8 bKeyMapsBuilt:1;
 
 public:
 	
@@ -413,13 +433,19 @@ public:
 	void FlushPressedActionBindingKeys(FName ActionName);
 
 	/** Handles a key input event.  Returns true if there is an action that handles the specified key. */
-	bool InputKey(FKey Key, enum EInputEvent Event, float AmountDepressed, bool bGamepad);
+	virtual bool InputKey(FKey Key, enum EInputEvent Event, float AmountDepressed, bool bGamepad);
 
 	/** Handles an axis input event.  Returns true if a legacy key bind handled the input, otherwise false. */
 	bool InputAxis(FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad);
 
 	/** Handles a touch input event.  Returns true. */
-	bool InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex);
+	bool InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex);
+
+	DEPRECATED(4.20, "InputTouch now takes a Force")
+	bool InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
+	{
+		return InputTouch(Handle, Type, TouchLocation, 1.0f, DeviceTimestamp, TouchpadIndex);
+	}
 
 	/** Handles a motion input event.  Returns true. */
 	bool InputMotion(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration);
@@ -481,8 +507,17 @@ public:
 	/** @return current state of the InKey */
 	float GetRawKeyValue( FKey InKey ) const;
 
-	/** @return current state of the InKey */
-	FVector GetVectorKeyValue( FKey InKey ) const;
+	/** @return processed value of the InKey */
+	FVector GetProcessedVectorKeyValue(FKey InKey) const;
+
+	/** @return raw value of the InKey */
+	FVector GetRawVectorKeyValue(FKey InKey) const;
+
+	DEPRECATED(4.21, "Use GetProcessedVectorKeyValue or GetRawVectorKeyValue instead. GetRawVectorKeyValue will have the same result as GetVectorKeyValue previously.")
+	FVector GetVectorKeyValue(FKey InKey) const
+	{
+		return GetRawVectorKeyValue(InKey);
+	}
 
 	/** @return true if alt key is pressed */
 	bool IsAltPressed() const;
@@ -495,6 +530,8 @@ public:
 
 	/** @return true if cmd key is pressed */
 	bool IsCmdPressed() const;
+
+	uint32 GetKeyMapBuildIndex() const { return KeyMapBuildIndex; }
 
 #if !UE_BUILD_SHIPPING
 	/**
@@ -513,19 +550,26 @@ public:
 #endif
 
 	/** Returns the list of keys mapped to the specified Action Name */
-	const TArray<FInputActionKeyMapping>& GetKeysForAction(const FName ActionName);
+	const TArray<FInputActionKeyMapping>& GetKeysForAction(const FName ActionName) const;
 
 	/** Returns the list of keys mapped to the specified Axis Name */
-	const TArray<FInputAxisKeyMapping>& GetKeysForAxis(const FName AxisName);
+	const TArray<FInputAxisKeyMapping>& GetKeysForAxis(const FName AxisName) const;
 
 	static const TArray<FInputActionKeyMapping>& GetEngineDefinedActionMappings() { return EngineDefinedActionMappings; }
 	static const TArray<FInputAxisKeyMapping>& GetEngineDefinedAxisMappings() { return EngineDefinedAxisMappings; }
 
 private:
-	/** 
-	 * Given raw keystate value, returns the "massaged" value. Override for any custom behavior,
-	 * such as input changes dependent on a particular game state.
- 	 */
+
+	/**
+	* Given raw keystate value of a vector axis, returns the "massaged" value. Override for any custom behavior,
+	* such as input changes dependent on a particular game state.
+	*/
+	virtual FVector MassageVectorAxisInput(FKey Key, FVector RawValue);
+
+	/**
+	* Given raw keystate value, returns the "massaged" value. Override for any custom behavior,
+	* such as input changes dependent on a particular game state.
+	*/
 	virtual float MassageAxisInput(FKey Key, float RawValue);
 
 	/** Process non-axes keystates */
@@ -539,7 +583,7 @@ private:
 	 * @param Event - types of event, includes IE_Pressed
 	 * @return true if just pressed
 	 */
-	bool KeyEventOccurred(FKey Key, EInputEvent Event, TArray<uint32>& EventIndices) const;
+	bool KeyEventOccurred(FKey Key, EInputEvent Event, TArray<uint32>& EventIndices, const FKeyState* KeyState = nullptr) const;
 
 	/* Collects the chords and the delegates they invoke for an action binding
 	 * @param ActionBinding - the action to determine whether it occurred
@@ -556,7 +600,7 @@ private:
 	 * @param FoundChords - the list of chord/delegate pairs to add to
 	 * @param KeysToConsume - array to collect the keys associated with this binding that should be consumed
 	 */
-	void GetChordsForKeyMapping(const FInputActionKeyMapping& KeyMapping, const FInputActionBinding& ActionBinding, const bool bGamePaused, TArray<FDelegateDispatchDetails>& FoundChords, TArray<FKey>& KeysToConsume);
+	void GetChordsForKeyMapping(const FInputActionKeyMapping& KeyMapping, const FInputActionBinding& ActionBinding, const bool bGamePaused, TArray<FDelegateDispatchDetails>& FoundChords, TArray<FKey>& KeysToConsume, const FKeyState* KeyState = nullptr);
 
 	/* Collects the chords and the delegates they invoke for a key binding
 	 * @param KeyBinding - the key to determine whether it occurred
@@ -564,7 +608,7 @@ private:
 	 * @param FoundChords - the list of chord/delegate pairs to add to
 	 * @param KeysToConsume - array to collect the keys associated with this binding that should be consumed
 	 */
-	void GetChordForKey(const FInputKeyBinding& KeyBinding, const bool bGamePaused, TArray<struct FDelegateDispatchDetails>& FoundChords, TArray<FKey>& KeysToConsume);
+	void GetChordForKey(const FInputKeyBinding& KeyBinding, const bool bGamePaused, TArray<struct FDelegateDispatchDetails>& FoundChords, TArray<FKey>& KeysToConsume, const FKeyState* KeyState = nullptr);
 
 	/* Returns the summed values of all the components of this axis this frame
 	 * @param AxisBinding - the action to determine if it ocurred
@@ -573,7 +617,7 @@ private:
 	float DetermineAxisValue(const FInputAxisBinding& AxisBinding, const bool bGamePaused, TArray<FKey>& KeysToConsume);
 
 	/** Utility function to ensure the key mapping cache maps are built */
-	FORCEINLINE void ConditionalBuildKeyMappings()
+	FORCEINLINE void ConditionalBuildKeyMappings() const
 	{
 		if (!bKeyMapsBuilt)
 		{
@@ -581,13 +625,13 @@ private:
 		}
 	}
 
-	void ConditionalBuildKeyMappings_Internal();
+	void ConditionalBuildKeyMappings_Internal() const;
 
 	/** Set the Key consumed for the frame so that subsequent input components will not be notified they were pressed */
 	void ConsumeKey(FKey Key);
 
 	/** @return true if InKey is being consumed */
-	bool IsKeyConsumed(FKey Key) const;
+	bool IsKeyConsumed(FKey Key, const FKeyState* KeyState = nullptr) const;
 
 protected:
 

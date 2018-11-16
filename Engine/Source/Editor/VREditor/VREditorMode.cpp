@@ -4,7 +4,7 @@
 #include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UObject/ConstructorHelpers.h"
-#include "SDockTab.h"
+#include "Widgets/Docking/SDockTab.h"
 #include "Engine/EngineTypes.h"
 #include "Components/SceneComponent.h"
 #include "Misc/ConfigCacheIni.h"
@@ -36,6 +36,7 @@
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "Interfaces/IAnalyticsProvider.h"
+#include "Interfaces/IProjectManager.h"
 
 #include "IViewportInteractionModule.h"
 #include "VREditorMotionControllerInteractor.h"
@@ -77,7 +78,7 @@ namespace VREd
 	static FAutoConsoleCommand ToggleDebugMode(TEXT("VREd.ToggleDebugMode"), TEXT("Toggles debug mode of the VR Mode"), FConsoleCommandDelegate::CreateStatic(&UVREditorMode::ToggleDebugMode));
 }
 
-const FString UVREditorMode::AssetContainerPath = FString("/Engine/VREditor/VREditorAssetContainerData");
+const TCHAR* UVREditorMode::AssetContainerPath = TEXT("/Engine/VREditor/VREditorAssetContainerData");
 bool UVREditorMode::bDebugModeEnabled = false;
 
 UVREditorMode::UVREditorMode() :
@@ -116,7 +117,7 @@ void UVREditorMode::Init()
 	// Take note of VREditor activation
 	if( FEngineAnalytics::IsAvailable() )
 	{
-		FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.InitVREditorMode" ) );
+		FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.Usage.InitVREditorMode" ), FAnalyticsEventAttribute( TEXT("Enterprise"), IProjectManager::Get().IsEnterpriseProject() ) );
 	}
 
 	// Setting up colors
@@ -140,8 +141,11 @@ void UVREditorMode::Init()
 	}
 
 	// Setup the asset container.
-	AssetContainer = LoadObject<UVREditorAssetContainer>(nullptr, *UVREditorMode::AssetContainerPath);
+	AssetContainer = &LoadAssetContainer();
 	check(AssetContainer != nullptr);
+
+	// Setup slate style
+	FVREditorStyle::Get();
 
 	bIsFullyInitialized = true;
 }
@@ -151,7 +155,7 @@ void UVREditorMode::Init()
 *
 * @Trigger Entering VR editing mode
 *
-* @Type Static
+* @Type Client
 *
 * @EventParam HMDDevice (string) The name of the HMD Device type
 *
@@ -210,7 +214,8 @@ void UVREditorMode::Enter()
 			TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
 			if(ActiveLevelViewport.IsValid())
 			{
-				ExistingActiveLevelViewport = StaticCastSharedRef< SLevelViewport >(ActiveLevelViewport->AsWidget());
+				ExistingActiveLevelViewport = StaticCastSharedRef< SLevelViewport >(ActiveLevelViewport->AsWidget());				
+				ExistingActiveLevelViewport->RemoveAllPreviews(true);
 			}
 		}
 
@@ -324,7 +329,7 @@ void UVREditorMode::Enter()
 void UVREditorMode::Exit(const bool bShouldDisableStereo)
 {
 	{
-		GetLevelViewportPossessedForVR().RemoveAllPreviews();
+		GetLevelViewportPossessedForVR().RemoveAllPreviews(false);
 		GEditor->SelectNone(true, true, false);
 		GEditor->NoteSelectionChange();
 		FVREditorActionCallbacks::ChangeEditorModes(FBuiltinEditorModes::EM_Placement);
@@ -710,11 +715,27 @@ void UVREditorMode::RefreshVREditorSequencer(class ISequencer* InCurrentSequence
 	}
 }
 
-void UVREditorMode::RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget)
+void UVREditorMode::RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget, int32 Index)
 {
 	if (bActuallyUsingVR && UISystem != nullptr)
 	{
-		GetUISystem().UpdateActorPreviewUI(InWidget);
+		GetUISystem().UpdateActorPreviewUI(InWidget, Index);
+	}
+}
+
+void UVREditorMode::UpdateExternalUMGUI(TSubclassOf<UUserWidget> InUMGClass, FName Name)
+{
+	if (bActuallyUsingVR && UISystem != nullptr)
+	{
+		GetUISystem().UpdateExternalUMGUI(InUMGClass, Name);
+	}
+}
+
+void UVREditorMode::UpdateExternalSlateUI(TSharedRef<SWidget> InWidget, FName Name)
+{
+	if (bActuallyUsingVR && UISystem != nullptr)
+	{
+		GetUISystem().UpdateExternalSlateUI(InWidget, Name);
 	}
 }
 
@@ -787,7 +808,6 @@ bool UVREditorMode::IsHandAimingTowardsCapsule(UViewportInteractor* Interactor, 
 UVREditorInteractor* UVREditorMode::GetHandInteractor( const EControllerHand ControllerHand ) const 
 {
 	UVREditorInteractor* ResultInteractor = ControllerHand == EControllerHand::Left ? LeftHandInteractor : RightHandInteractor;
-	check( ResultInteractor != nullptr );
 	return ResultInteractor;
 }
 
@@ -883,11 +903,11 @@ void UVREditorMode::TogglePIEAndVREditor()
 	}
 }
 
-void UVREditorMode::TransitionWorld(UWorld* NewWorld)
+void UVREditorMode::TransitionWorld(UWorld* NewWorld, EEditorWorldExtensionTransitionState TransitionState)
 {
-	Super::TransitionWorld(NewWorld);
+	Super::TransitionWorld(NewWorld, TransitionState);
 
-	UISystem->TransitionWorld(NewWorld);
+	UISystem->TransitionWorld(NewWorld, TransitionState);
 }
 
 void UVREditorMode::StartViewport(TSharedPtr<SLevelViewport> Viewport)
@@ -986,16 +1006,12 @@ void UVREditorMode::StartViewport(TSharedPtr<SLevelViewport> Viewport)
 		}
 
 		// Set "game mode" to be enabled, to get better performance.  Also hit proxies won't work in VR, anyway
-		SavedEditorState.bGameView = VREditorViewportClient.IsInGameView();
-		VREditorViewportClient.SetGameView(true);
+		VREditorViewportClient.SetVREditView(true);
 
 		SavedEditorState.bRealTime = VREditorViewportClient.IsRealtime();
 		VREditorViewportClient.SetRealtime(true);
 
 		SavedEditorState.ShowFlags = VREditorViewportClient.EngineShowFlags;
-
-		// Never show the traditional Unreal transform widget.  It doesn't work in VR because we don't have hit proxies.
-		VREditorViewportClient.EngineShowFlags.SetModeWidgets(false);
 
 		// Make sure the mode widgets don't come back when users click on things
 		VRViewportClient.bAlwaysShowModeWidgetAfterSelectionChanges = false;
@@ -1024,13 +1040,9 @@ void UVREditorMode::StartViewport(TSharedPtr<SLevelViewport> Viewport)
 		// Make the new viewport the active level editing viewport right away
 		GCurrentLevelEditingViewportClient = &VRViewportClient;
 
-		// Enable selection outline right away
-		VREditorViewportClient.EngineShowFlags.SetSelection(true);
-		VREditorViewportClient.EngineShowFlags.SetSelectionOutline(true);
-
 		// Change viewport settings to more VR-friendly sequencer settings
-		SavedEditorState.bCinematicPreviewViewport = VRViewportClient.AllowsCinematicPreview();
-		VRViewportClient.SetAllowCinematicPreview(false);
+		SavedEditorState.bCinematicControlViewport = VRViewportClient.AllowsCinematicControl();
+		VRViewportClient.SetAllowCinematicControl(false);
 		// Need to force fading and color scaling off in case we enter VR editing mode with a sequence open
 		VRViewportClient.bEnableFading = false;
 		VRViewportClient.bEnableColorScaling = false;
@@ -1077,8 +1089,8 @@ void UVREditorMode::CloseViewport( const bool bShouldDisableStereo )
 			VRViewportClient.GetCameraController()->AccessConfig().bLockedPitch = SavedEditorState.bLockedPitch;
 			VRViewportClient.bAlwaysShowModeWidgetAfterSelectionChanges = SavedEditorState.bAlwaysShowModeWidgetAfterSelectionChanges;
 			VRViewportClient.EngineShowFlags = SavedEditorState.ShowFlags;
-			VRViewportClient.SetGameView(SavedEditorState.bGameView);
-			VRViewportClient.SetAllowCinematicPreview(SavedEditorState.bCinematicPreviewViewport);
+			VRViewportClient.SetVREditView(false);
+			VRViewportClient.SetAllowCinematicControl(SavedEditorState.bCinematicControlViewport);
 			VRViewportClient.bEnableFading = true;
 			VRViewportClient.bEnableColorScaling = true;
 			VRViewportClient.Invalidate(true);
@@ -1209,6 +1221,13 @@ bool UVREditorMode::GetStartedPlayFromVREditor() const
 
 const UVREditorAssetContainer& UVREditorMode::GetAssetContainer() const
 {
+	return *AssetContainer;
+}
+
+UVREditorAssetContainer& UVREditorMode::LoadAssetContainer()
+{
+	UVREditorAssetContainer* AssetContainer = LoadObject<UVREditorAssetContainer>(nullptr, UVREditorMode::AssetContainerPath);
+	checkf(AssetContainer, TEXT("Failed to load ViewportInteractionAssetContainer (%s). See log for reason."), UVREditorMode::AssetContainerPath);
 	return *AssetContainer;
 }
 

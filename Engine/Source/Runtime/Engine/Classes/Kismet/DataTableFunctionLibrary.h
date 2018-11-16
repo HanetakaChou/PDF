@@ -9,7 +9,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Engine/DataTable.h"
-#include "Class.h" // for FStructUtils
+#include "UObject/Class.h" // for FStructUtils
 #include "DataTableFunctionLibrary.generated.h"
 
 class UCurveTable;
@@ -35,6 +35,10 @@ class ENGINE_API UDataTableFunctionLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category = "DataTable", meta = (ExpandEnumAsExecs="OutResult", DataTablePin="CurveTable"))
 	static void EvaluateCurveTableRow(UCurveTable* CurveTable, FName RowName, float InXY, TEnumAsByte<EEvaluateCurveTableResult::Type>& OutResult, float& OutXY,const FString& ContextString);
     
+	// Returns whether or not Table contains a row named RowName
+  	UFUNCTION(BlueprintCallable, Category = "DataTable")
+ 	static bool DoesDataTableRowExist(UDataTable* Table, FName RowName);
+    
 	UFUNCTION(BlueprintCallable, Category = "DataTable")
 	static void GetDataTableRowNames(UDataTable* Table, TArray<FName>& OutRowNames);
 
@@ -46,7 +50,7 @@ class ENGINE_API UDataTableFunctionLibrary : public UBlueprintFunctionLibrary
     UFUNCTION(BlueprintCallable, CustomThunk, Category = "DataTable", meta=(CustomStructureParam = "OutRow", BlueprintInternalUseOnly="true"))
     static bool GetDataTableRowFromName(UDataTable* Table, FName RowName, FTableRowBase& OutRow);
     
-	static bool Generic_GetDataTableRowFromName(UDataTable* Table, FName RowName, void* OutRowPtr);
+	static bool Generic_GetDataTableRowFromName(const UDataTable* Table, FName RowName, void* OutRowPtr);
 
     /** Based on UDataTableFunctionLibrary::GetDataTableRow */
     DECLARE_FUNCTION(execGetDataTableRowFromName)
@@ -72,7 +76,7 @@ class ENGINE_API UDataTableFunctionLibrary : public UBlueprintFunctionLibrary
 		else if(StructProp && OutRowPtr)
 		{
 			UScriptStruct* OutputType = StructProp->Struct;
-			UScriptStruct* TableType  = Table->RowStruct;
+			const UScriptStruct* TableType  = Table->GetRowStruct();
 		
 			const bool bCompatible = (OutputType == TableType) || 
 				(OutputType->IsChildOf(TableType) && FStructUtils::TheSameLayout(OutputType, TableType));
@@ -101,4 +105,39 @@ class ENGINE_API UDataTableFunctionLibrary : public UBlueprintFunctionLibrary
 		}
 		*(bool*)RESULT_PARAM = bSuccess;
     }
+
+#if WITH_EDITOR
+	/** 
+	 * Empty and fill a Data Table from CSV string.
+	 * @param	CSVString	The Data that representing the contents of a CSV file.
+	 * @return	True if the operation succeeds, check the log for errors if it didn't succeed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | DataTable", DisplayName="Fill Data Table from CSV String")
+	static bool FillDataTableFromCSVString(UDataTable* DataTable, const FString& CSVString);
+
+	/** 
+	 * Empty and fill a Data Table from CSV file.
+	 * @param	CSVFilePath	The file path of the CSV file.
+	 * @return	True if the operation succeeds, check the log for errors if it didn't succeed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | DataTable", DisplayName = "Fill Data Table from CSV File")
+	static bool FillDataTableFromCSVFile(UDataTable* DataTable, const FString& CSVFilePath);
+
+	/** 
+	 * Empty and fill a Data Table from JSON string.
+	 * @param	JSONString	The Data that representing the contents of a JSON file.
+	 * @return	True if the operation succeeds, check the log for errors if it didn't succeed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | DataTable", DisplayName = "Fill Data Table from JSON String")
+	static bool FillDataTableFromJSONString(UDataTable* DataTable, const FString& JSONString);
+
+
+	/** 
+	 * Empty and fill a Data Table from JSON file.
+	 * @param	JSONFilePath	The file path of the JSON file.
+	 * @return	True if the operation succeeds, check the log for errors if it didn't succeed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | DataTable", DisplayName = "Fill Data Table from JSON File")
+	static bool FillDataTableFromJSONFile(UDataTable* DataTable, const FString& JSONFilePath);
+#endif //WITH_EDITOR
 };

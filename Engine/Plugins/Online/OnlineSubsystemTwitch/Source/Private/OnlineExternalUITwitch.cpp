@@ -8,11 +8,10 @@
 #define TWITCH_STATE_TOKEN TEXT("state")
 #define TWITCH_ACCESS_TOKEN TEXT("access_token")
 
-#define LOGIN_ERROR_UNKNOWN TEXT("com.epicgames.login.unknown")
-
 bool FOnlineExternalUITwitch::ShowLoginUI(const int ControllerIndex, bool bShowOnlineOnly, bool bShowSkipButton, const FOnLoginUIClosedDelegate& Delegate)
 {
 	bool bStarted = false;
+	FString ErrorStr;
 	if (ControllerIndex >= 0 && ControllerIndex < MAX_LOCAL_PLAYERS)
 	{
 		FOnlineIdentityTwitchPtr IdentityInt = TwitchSubsystem->GetTwitchIdentityService();
@@ -48,31 +47,35 @@ bool FOnlineExternalUITwitch::ShowLoginUI(const int ControllerIndex, bool bShowO
 						bStarted = PlatformExternalUI->ShowWebURL(RequestedURL, ShowParams, OnConsoleShowWebUrlCompleteDelegate);
 						if (!bStarted)
 						{
-							UE_LOG_ONLINE(Warning, TEXT("FOnlineExternalUITwitch::ShowLoginUI: Console ShowWebURL failed"));
+							ErrorStr = TEXT("FOnlineExternalUITwitch::ShowLoginUI: Console ShowWebURL failed");
 						}
 					}
 				}
 			}
 			else
 			{
-				UE_LOG_ONLINE(Error, TEXT("ShowLoginUI: Url Details not properly configured"));
+				ErrorStr = TEXT("ShowLoginUI: Url Details not properly configured");
 			}
 		}
 		else
 		{
-			UE_LOG_ONLINE(Error, TEXT("ShowLoginUI: Missing identity interface"));
+			ErrorStr = TEXT("ShowLoginUI: Missing identity interface");
 		}
 	}
 	else
 	{
-		UE_LOG_ONLINE(Error, TEXT("ShowLoginUI: Invalid controller index (%d)"), ControllerIndex);
+		ErrorStr = FString::Printf(TEXT("ShowLoginUI: Invalid controller index (%d)"), ControllerIndex);
 	}
 
 	if (!bStarted)
 	{
-		TwitchSubsystem->ExecuteNextTick([ControllerIndex, Delegate]()
+		UE_LOG_ONLINE_EXTERNALUI(Warning, TEXT("%s"), *ErrorStr);
+
+		FOnlineError Error;
+		Error.SetFromErrorCode(MoveTemp(ErrorStr));
+		TwitchSubsystem->ExecuteNextTick([ControllerIndex, Delegate, Error = MoveTemp(Error)]()
 		{
-			Delegate.ExecuteIfBound(nullptr, ControllerIndex);
+			Delegate.ExecuteIfBound(nullptr, ControllerIndex, Error);
 		});
 	}
 
@@ -125,7 +128,7 @@ FLoginFlowResult FOnlineExternalUITwitch::ParseRedirectResult(const FTwitchLogin
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("FOnlineExternalUITwitch::ParseRedirectResult: State does not match (received=%s, expected=%s)"), **State, *CurrentLoginNonce);
+			UE_LOG_ONLINE_EXTERNALUI(Warning, TEXT("FOnlineExternalUITwitch::ParseRedirectResult: State does not match (received=%s, expected=%s)"), **State, *CurrentLoginNonce);
 		}
 	}
 
@@ -175,16 +178,17 @@ void FOnlineExternalUITwitch::OnLoginUIComplete(const FLoginFlowResult& Result, 
 
 	if (!bStarted)
 	{
-		TwitchSubsystem->ExecuteNextTick([ControllerIndex, Delegate]()
+		FOnlineError LoginFlowError = Result.Error;
+		TwitchSubsystem->ExecuteNextTick([ControllerIndex, LoginFlowError, Delegate]()
 		{
-			Delegate.ExecuteIfBound(nullptr, ControllerIndex);
+			Delegate.ExecuteIfBound(nullptr, ControllerIndex, LoginFlowError);
 		});
 	}
 }
 
 void FOnlineExternalUITwitch::OnExternalLoginFlowComplete(const FLoginFlowResult& Result, int ControllerIndex, const FOnLoginUIClosedDelegate Delegate)
 {
-	UE_LOG_ONLINE(Log, TEXT("OnExternalLoginFlowComplete %s"), *Result.ToDebugString());
+	UE_LOG_ONLINE_EXTERNALUI(Log, TEXT("OnExternalLoginFlowComplete %s"), *Result.ToDebugString());
 	OnLoginUIComplete(Result, ControllerIndex, Delegate);
 }
 
@@ -192,16 +196,22 @@ void FOnlineExternalUITwitch::OnConsoleShowWebUrlComplete(const FString& FinalUr
 {
 	FLoginFlowResult Result = OnLoginRedirectURL(FinalUrl);
 
-	UE_LOG_ONLINE(Log, TEXT("OnConsoleShowWebUrlComplete %s"), *Result.ToDebugString());
+	UE_LOG_ONLINE_EXTERNALUI(Log, TEXT("OnConsoleShowWebUrlComplete %s"), *Result.ToDebugString());
 	OnLoginUIComplete(Result, ControllerIndex, Delegate);
 }
 
-void FOnlineExternalUITwitch::OnAccessTokenLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error, FOnLoginUIClosedDelegate Delegate)
+void FOnlineExternalUITwitch::OnAccessTokenLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& ErrorStr, FOnLoginUIClosedDelegate Delegate)
 {
 	TSharedPtr<const FUniqueNetId> StrongUserId = UserId.AsShared();
-	TwitchSubsystem->ExecuteNextTick([StrongUserId, LocalUserNum, Delegate]()
+	FOnlineError Error(bWasSuccessful);
+	if (!bWasSuccessful)
 	{
-		Delegate.ExecuteIfBound(StrongUserId, LocalUserNum);
+		Error.SetFromErrorCode(ErrorStr);
+	}
+
+	TwitchSubsystem->ExecuteNextTick([StrongUserId, LocalUserNum, Error, Delegate]()
+	{
+		Delegate.ExecuteIfBound(StrongUserId, LocalUserNum, Error);
 	});
 }
 

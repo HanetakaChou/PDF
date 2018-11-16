@@ -16,6 +16,7 @@ struct FRawMesh;
 struct FRawMeshExt;
 struct FStaticMeshLODResources;
 struct FKAggregateGeom;
+class UInstancedStaticMeshComponent;
 
 class MESHMERGEUTILITIES_API FMeshMergeHelpers
 {
@@ -24,6 +25,9 @@ public:
 	static void ExtractSections(const UStaticMeshComponent* Component, int32 LODIndex, TArray<FSectionInfo>& OutSections);
 	static void ExtractSections(const USkeletalMeshComponent* Component, int32 LODIndex, TArray<FSectionInfo>& OutSections);
 	static void ExtractSections(const UStaticMesh* StaticMesh, int32 LODIndex, TArray<FSectionInfo>& OutSections);
+
+	/** Expanding instance data from instanced static mesh components */
+	static void ExpandInstances(const UInstancedStaticMeshComponent* InInstancedStaticMeshComponent, FRawMesh& InOutRawMesh, TArray<FSectionInfo>& InOutSections);
 
 	/** Extracting mesh data in FRawMesh form from static, skeletal mesh (components) */
 	static void RetrieveMesh(const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex, FRawMesh& RawMesh, bool bPropagateVertexColours);
@@ -52,10 +56,10 @@ public:
 	static void RetrieveCullingLandscapeAndVolumes(UWorld* InWorld, const FBoxSphereBounds& EstimatedMeshProxyBounds, const TEnumAsByte<ELandscapeCullingPrecision::Type> PrecisionType, TArray<FRawMesh*>& CullingRawMeshes);
 
 	/** Transforms physics geometry data using InTransform */
-	static void TransformPhysicsGeometry(const FTransform& InTransform, struct FKAggregateGeom& AggGeom);
+	static void TransformPhysicsGeometry(const FTransform& InTransform, const bool bBakeConvexTransform, struct FKAggregateGeom& AggGeom);
 	
 	/** Extract physics geometry data from a body setup */
-	static void ExtractPhysicsGeometry(UBodySetup* InBodySetup, const FTransform& ComponentToWorld, struct FKAggregateGeom& OutAggGeom);
+	static void ExtractPhysicsGeometry(UBodySetup* InBodySetup, const FTransform& ComponentToWorld, const bool bBakeConvexTransform, struct FKAggregateGeom& OutAggGeom);
 
 	/** Ensure that UV is in valid 0-1 UV ranges */
 	static FVector2D GetValidUV(const FVector2D& UV);
@@ -68,4 +72,10 @@ public:
 
 	/** Checks whether or not the landscape proxy is hit given a ray start and end */
 	static bool IsLandscapeHit(const FVector& RayOrigin, const FVector& RayEndPoint, const UWorld* World, const TArray<ALandscapeProxy*>& LandscapeProxies, FVector& OutHitLocation);
+	
+	/** Appends a FRawMesh to another instance */
+	static void AppendRawMesh(FRawMesh& InTarget, const FRawMesh& InSource);
+
+	/** Merges imposter meshes into a raw mesh. */
+	static void MergeImpostersToRawMesh(TArray<const UStaticMeshComponent*> ImposterComponents, FRawMesh& InRawMesh, const FVector& InPivot, int32 BaseMaterialIndex, TArray<UMaterialInterface*>& OutImposterMaterials);
 };

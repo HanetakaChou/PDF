@@ -9,6 +9,7 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/NetworkDelegates.h"
+#include "RHIDefinitions.h"
 #include "GameInstance.generated.h"
 
 class AGameModeBase;
@@ -96,6 +97,9 @@ struct FGameInstancePIEParameters
 
 	// Is this a dedicated server instance for PIE?
 	bool bRunAsDedicated;
+
+	// The feature level that PIE world should use
+	ERHIFeatureLevel::Type WorldFeatureLevel = ERHIFeatureLevel::Num;
 };
 
 #endif
@@ -125,12 +129,17 @@ protected:
 	/** Delegate for handling external console commands */
 	void OnConsoleInput(const FString& Command);
 
+	/** List of locally participating players in this game instance */
 	UPROPERTY()
-	TArray<ULocalPlayer*> LocalPlayers;		// List of locally participating players in this game instance
+	TArray<ULocalPlayer*> LocalPlayers;
 	
 	/** Class to manage online services */
 	UPROPERTY()
 	class UOnlineSession* OnlineSession;
+
+	/** List of objects that are being kept alive by this game instance. Stored as array for fast iteration, should not be modified every frame */
+	UPROPERTY()
+	TArray<UObject*> ReferencedObjects;
 
 	/** Listeners to PreClientTravel call */
 	FOnPreClientTravel NotifyPreClientTravelDelegates;
@@ -147,7 +156,7 @@ public:
 	//~ End FExec Interface
 
 	//~ Begin UObject Interface
-	virtual class UWorld* GetWorld() const override;
+	virtual class UWorld* GetWorld() const final;
 	virtual void FinishDestroy() override;
 	//~ End UObject Interface
 
@@ -176,12 +185,21 @@ public:
 	/* Called to initialize the game instance for standalone instances of the game */
 	void InitializeStandalone();
 
+	/* Called to initialize the game instance with a minimal world suitable for basic network RPC */
+	void InitializeForMinimalNetRPC(const FName InPackageName);
+
+	/** Static util function used by InitializeForMinimalNetRPC and LoadMap to create the minimal world suitable for basic network RPC */
+	static void CreateMinimalNetRPCWorld(const FName InPackageName, UPackage*& OutWorldPackage, UWorld*& OutWorld);
+
 #if WITH_EDITOR
 	/* Called to initialize the game instance for PIE instances of the game */
 	virtual FGameInstancePIEResult InitializeForPlayInEditor(int32 PIEInstanceIndex, const FGameInstancePIEParameters& Params);
 
 	/* Called to actually start the game when doing Play/Simulate In Editor */
 	virtual FGameInstancePIEResult StartPlayInEditorGameInstance(ULocalPlayer* LocalPlayer, const FGameInstancePIEParameters& Params);
+
+	/** Called as soon as the game mode is spawned, to allow additional PIE setting validation prior to creating the local players / etc... (called on pure clients too, in which case the game mode is nullptr) */
+	virtual FGameInstancePIEResult PostCreateGameModeForPIE(const FGameInstancePIEParameters& Params, AGameModeBase* GameMode);
 
 	DEPRECATED(4.15, "Please override InitializeForPIE instead")
 	virtual bool InitializePIE(bool bAnyBlueprintErrors, int32 PIEInstance, bool bRunAsDedicated);
@@ -378,6 +396,12 @@ public:
 	 * Calls HandleDisconnect on either the OnlineSession if it exists or the engine, to cause a travel back to the default map. The instance must have a world.
 	 */
 	virtual void ReturnToMainMenu();
+
+	/** Registers an object to keep alive as long as this game instance is alive */
+	virtual void RegisterReferencedObject(UObject* ObjectToReference);
+
+	/** Remove a referenced object, this will allow it to GC out */
+	virtual void UnregisterReferencedObject(UObject* ObjectToReference);
 
 protected:
 	/** Called when the game instance is started either normally or through PIE. */

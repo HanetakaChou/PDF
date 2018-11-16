@@ -1862,7 +1862,7 @@ void FXmppMultiUserChatJingle::ChatroomEnteredStatus(
 				UE_LOG(LogXmpp, Log, TEXT("ChatroomEnteredStatus - queueing ChatRoomJoinPublicOpResult for %s"), *RoomId);
 				ResultOpQueue.Enqueue(new FXmppChatRoomJoinPublicOpResult(RoomId, bWasSuccessful, ErrorStr));
 			}
-			else if (LastStatus == FXmppRoomJingle::JoinPrivatePending)
+			else if (LastStatus == FXmppRoomJingle::JoinPrivatePending) //-V547
 			{
 				UE_LOG(LogXmpp, Log, TEXT("ChatroomEnteredStatus - queueing ChatRoomJoinPrivateOpResult result for %s"), *RoomId);
 				ResultOpQueue.Enqueue(new FXmppChatRoomJoinPrivateOpResult(RoomId, bWasSuccessful, ErrorStr));
@@ -2031,7 +2031,7 @@ void FXmppMultiUserChatJingle::MessageReceived(
 
 void FXmppMultiUserChatJingle::HandleMucPresence(const FXmppMucPresence& MemberPresence)
 {
-	UE_LOG(LogXmpp, VeryVerbose, TEXT("MUC: HandleMucPresence: jid=%s nick=%s roomid=%s role=%s affiliation=%s"), *MemberPresence.UserJid.GetFullPath(), *MemberPresence.GetNickName(), *MemberPresence.GetRoomId(), *MemberPresence.Role, *MemberPresence.Affiliation);
+	UE_LOG(LogXmpp, VeryVerbose, TEXT("MUC: HandleMucPresence: jid=%s nick=%s roomid=%s role=%s affiliation=%s"), *MemberPresence.UserJid.ToDebugString(), *MemberPresence.GetNickName(), *MemberPresence.GetRoomId(), *MemberPresence.Role, *MemberPresence.Affiliation);
 
 	FScopeLock Lock(&ChatroomsLock);
 	FXmppRoomJingle* XmppRoom = Chatrooms.Find(MemberPresence.GetRoomId());

@@ -13,10 +13,12 @@
 #include "Misc/Guid.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/CommandLine.h"
+#include "Misc/Timecode.h"
+#include "Misc/FrameRate.h"
 #include "HAL/PlatformProcess.h"
 
 // platforms which can have runtime threading switches
-#define HAVE_RUNTIME_THREADING_SWITCHES			(PLATFORM_DESKTOP || PLATFORM_ANDROID || PLATFORM_IOS)
+#define HAVE_RUNTIME_THREADING_SWITCHES			(PLATFORM_DESKTOP || PLATFORM_ANDROID || PLATFORM_IOS || PLATFORM_HTML5)
 
 
 /**
@@ -40,10 +42,14 @@ public:
 	 */
 	static EBuildConfigurations::Type GetBuildConfiguration();
 
+#if UE_BUILD_DEVELOPMENT
 	/**
-	 * Gets whether the application is running with Debug game libraries (set from commandline)
+	 * For development configurations, sets whether the application should load DebugGame game modules.
+	 *
+	 * @param Whether we're running in debug game or not.
 	 */
-	static bool IsRunningDebug();
+	static void SetDebugGame(bool bIsDebugGame);
+#endif
 
 	/*
 	* Gets the unique version string for this build. This string is not assumed to have any particular format other being a unique identifier for the build.
@@ -51,15 +57,6 @@ public:
 	* @return The build version
 	*/
 	static const TCHAR* GetBuildVersion();
-
-	/**
-	 * Gets the deployment name (also known as "EpicApp" in the launcher), e.g. DevPlaytest, PublicTest, Live etc.
-	 *
-	 * Does not return FString because it can be used during crash handling, so it should avoid memory allocation.
-	 *
-	 * @return The branch name (guaranteed not to be nullptr).
-	 */
-	static const TCHAR * GetDeploymentName();
 
 	/**
 	 * Gets the date at which this application was built.
@@ -388,6 +385,13 @@ public:
 	static bool IsEngineInstalled();
 
 	/**
+	 * Checks whether the enterprise components of this application have been installed.
+	 *
+	 * @return true if the enterprise components are installed, false otherwise.
+	 */
+	static bool IsEnterpriseInstalled();
+
+	/**
 	 * Checks whether this application runs unattended.
 	 *
 	 * Unattended applications are not monitored by anyone or are unable to receive user input.
@@ -420,11 +424,7 @@ public:
 #else
 	FORCEINLINE static bool ShouldUseThreadingForPerformance()
 	{
-	#if PLATFORM_HTML5
-		return false;
-	#else
 		return true;
-	#endif // PLATFORM_HTML5
 	}
 #endif // HAVE_RUNTIME_THREADING_SWITCHES
 
@@ -565,23 +565,62 @@ public:
 	}
 
 	/**
-	* Gets idle time overshoot in seconds (the time beyond the wait time we requested for the frame). Only valid when IdleTime is > 0.
-	*
-	* @return Idle time in seconds.
-	*/
+	 * Gets idle time overshoot in seconds (the time beyond the wait time we requested for the frame). Only valid when IdleTime is > 0.
+	 *
+	 * @return Idle time in seconds.
+	 */
 	FORCEINLINE static double GetIdleTimeOvershoot()
 	{
 		return IdleTimeOvershoot;
 	}
 
 	/**
-	* Sets idle time overshoot in seconds (the time beyond the wait time we requested for the frame). Only valid when IdleTime is > 0.
-	*
-	* @param seconds - Idle time in seconds.
-	*/
+	 * Sets idle time overshoot in seconds (the time beyond the wait time we requested for the frame). Only valid when IdleTime is > 0.
+	 *
+	 * @param seconds - Idle time in seconds.
+	 */
 	static void SetIdleTimeOvershoot(double Seconds)
 	{
 		IdleTimeOvershoot = Seconds;
+	}
+
+	/**
+	 * Gets the current timecode.
+	 *
+	 * @return the current timecode.
+	 */
+	FORCEINLINE static FTimecode GetTimecode()
+	{
+		return Timecode;
+	}
+
+	/**
+	 * Gets the current timecode frame rate.
+	 *
+	 * @return the current timecode frame rate.
+	 */
+	FORCEINLINE static FFrameRate GetTimecodeFrameRate()
+	{
+		return TimecodeFrameRate;
+	}
+	
+	DEPRECATED(4.21, "Please use the version of SetTimecodeAndFrameRate")
+	static void SetTimecode(FTimecode InTimecode)
+	{
+		Timecode = InTimecode;
+		TimecodeFrameRate = FFrameRate(60, 1);
+	}
+
+	/**
+	 * Sets the current timecode, and the frame rate to which it's relative.
+	 *
+	 * @param InTimecode - current timecode.
+	 * @param InTimecodeFrameRate - current timecode framerate.
+	 */
+	static void SetTimecodeAndFrameRate(FTimecode InTimecode, FFrameRate InTimecodeFrameRate)
+	{
+		Timecode = InTimecode;
+		TimecodeFrameRate = InTimecodeFrameRate;
 	}
 
 	/**
@@ -650,7 +689,15 @@ public:
 	/* If the random seed started with a constant or on time, can be affected by -FIXEDSEED or -BENCHMARK */
 	static bool bUseFixedSeed;
 
+	/* Print all initial startup logging */
+	static void PrintStartupLogMessages();
+
 private:
+
+#if UE_BUILD_DEVELOPMENT
+	/** The current build configuration */
+	static bool bIsDebugGame;
+#endif
 
 	/** Holds the instance identifier. */
 	static FGuid InstanceId;
@@ -693,6 +740,12 @@ private:
 
 	/** Holds the amount of IdleTime that was LONGER than we tried to sleep. The OS can't sleep the exact amount of time, so this measures that overshoot. */
 	static double IdleTimeOvershoot;
+
+	/** Holds the current timecode. */
+	static FTimecode Timecode;
+
+	/** Holds the current timecode frame rate. */
+	static FFrameRate TimecodeFrameRate;
 
 	/** Use to affect the app volume when it loses focus */
 	static float VolumeMultiplier;

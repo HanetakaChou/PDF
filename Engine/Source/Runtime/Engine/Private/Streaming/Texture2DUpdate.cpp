@@ -27,7 +27,7 @@ FTexture2DUpdate::FTexture2DUpdate(UTexture2D* InTexture, int32 InRequestedMips)
 	, TaskState(TS_Locked) // The object is created in the locked state to follow the Tick path
 	, PendingTaskState(TS_None)
 	, TaskThread(TT_None)
-	, CancelationThread(TT_None)
+	, CancelationThread(TT_None)	
 {
 	check(InTexture);
 
@@ -49,14 +49,9 @@ FTexture2DUpdate::FTexture2DUpdate(UTexture2D* InTexture, int32 InRequestedMips)
 FTexture2DUpdate::~FTexture2DUpdate()
 {
 	// Work must be done here because derived destructors have been called now and so derived members are invalid.
-
 	ensure(ScheduledTaskCount <= 0);
 	ensure(!IntermediateTextureRHI);
 
-	if (AsyncMipUpdateTask)
-	{
-		AsyncMipUpdateTask->EnsureCompletion();
-	}
 }
 
 void FTexture2DUpdate::Tick(UTexture2D* InTexture, EThreadType InCurrentThread)
@@ -72,7 +67,6 @@ void FTexture2DUpdate::Tick(UTexture2D* InTexture, EThreadType InCurrentThread)
 	// Acquire the lock if there is work to do and if it is allowed to wait for the lock
 	if (DoConditionalLock(InCurrentThread))
 	{
-		// Once locked, there shouldn't be anything pending now.
 		ensure(PendingTaskState == TS_Scheduled || PendingTaskState == TS_Pending);
 
 		// If the task is ready to execute. 
@@ -136,6 +130,7 @@ void FTexture2DUpdate::PushTask(const FContext& Context, EThreadType InTaskThrea
 	const EThreadType RelevantThread = !bCachedIsCancelled ? InTaskThread : InCancelationThread;
 
 	// TaskSynchronization is expected to be set before call this.
+	// If the rendering thread is suspended, delay the scheduling until not suspended anymore.
 	const bool bCanExecuteNow = TaskSynchronization.GetValue() <= 0 && !(GSuspendRenderThreadTasks > 0 && RelevantThread == TT_Render);
 
 	if (RelevantThread == TT_None)
@@ -172,8 +167,13 @@ void FTexture2DUpdate::ScheduleTick(const FContext& Context, EThreadType InThrea
 	check(TaskSynchronization.GetValue() <= 0);
 
 	// The pending update needs to be cached because the scheduling can happen in the constructor, before the assignment.
-
-	if (InThread == TT_Render)
+	
+	// When not having many threads, async task should never schedule tasks since they would wake threads with higher priority while still holding the lock.
+	if (Context.CurrentThread == TT_Async && !FApp::ShouldUseThreadingForPerformance())
+	{
+		PendingTaskState = TS_Pending;
+	}
+	else if (InThread == TT_Render)
 	{
 		FPlatformAtomics::InterlockedIncrement(&ScheduledTaskCount);
 		PendingTaskState = TS_Scheduled;
@@ -199,13 +199,7 @@ void FTexture2DUpdate::ScheduleTick(const FContext& Context, EThreadType InThrea
 		FPlatformAtomics::InterlockedIncrement(&ScheduledTaskCount);
 		PendingTaskState = TS_Scheduled;
 
-		// Shouldn't be pushing tasks if another one is pending.
-		if (AsyncMipUpdateTask)
-		{
-			AsyncMipUpdateTask->EnsureCompletion();
-		}
-		AsyncMipUpdateTask = MakeUnique<FAsyncMipUpdateTask>(Context.Texture, this);
-		AsyncMipUpdateTask->StartBackgroundTask();
+		(new FAsyncMipUpdateTask(Context.Texture, this))->StartBackgroundTask();
 	}
 }
 
@@ -345,8 +339,9 @@ bool FTexture2DUpdate::DoConditionalLock(EThreadType InCurrentThread)
 		// Cache the task state.
 		CachedTaskState = TaskState;
 
-		//  Return immediately if there is no work to do or if it is locked and we are not on an executing thread.
-		if (CachedTaskState == TS_None || (CachedTaskState == TS_Locked && InCurrentThread == TT_None))
+		// Return immediately if there is no work to do or if it is locked and we are not on an executing thread.
+		// When the renderthread is the gamethread, don't lock if this is the renderthread to prevent stalling on low priority async tasks.
+		if (CachedTaskState == TS_None || (CachedTaskState == TS_Locked && (InCurrentThread == TT_None || (InCurrentThread == TT_Render && !GIsThreadedRendering))))
 		{
 			return false;
 		}

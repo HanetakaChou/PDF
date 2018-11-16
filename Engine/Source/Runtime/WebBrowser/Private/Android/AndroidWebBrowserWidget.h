@@ -3,11 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
+#if USE_ANDROID_JNI
+
 #include "Widgets/SLeafWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "AndroidWebBrowserWindow.h"
 #include "AndroidWebBrowserDialog.h"
-#include "AndroidJava.h"
+#include "Android/AndroidJava.h"
 #include "RHI.h"
 #include "RHIResources.h"
 #include "UObject/Class.h"
@@ -81,9 +84,11 @@ public:
 	// Jobj can either be a WebViewControl, a WebViewControl.ViewClient or WebViewControl.ChromeClient instance
 	static TSharedPtr<SAndroidWebBrowserWidget> GetWidgetPtr(JNIEnv* JEnv, jobject Jobj);
 
+	//set the native control's visibility
+	void SetWebBrowserVisibility(bool InIsVisible);
 protected:
 	static FCriticalSection WebControlsCS;
-	static TMap<jlong, TWeakPtr<SAndroidWebBrowserWidget>> AllWebControls;
+	static TMap<int64, TWeakPtr<SAndroidWebBrowserWidget>> AllWebControls;
 
 	bool HandleJsDialog(TSharedPtr<IWebBrowserDialog>& Dialog);
 	int HistorySize;
@@ -113,3 +118,5 @@ private:
 	/** Texture sample object pool. */
 	FWebBrowserTextureSamplePool* TextureSamplePool;
 };
+
+#endif // USE_ANDROID_JNI

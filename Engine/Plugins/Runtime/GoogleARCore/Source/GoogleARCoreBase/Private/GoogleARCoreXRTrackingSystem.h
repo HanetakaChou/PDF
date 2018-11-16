@@ -5,7 +5,7 @@
 #include "HeadMountedDisplay.h"
 #include "IHeadMountedDisplay.h"
 #include "SceneViewExtension.h"
-#include "SceneViewport.h"
+#include "Slate/SceneViewport.h"
 #include "SceneView.h"
 #include "GoogleARCoreDevice.h"
 #include "ARSystem.h"
@@ -38,6 +38,11 @@ public:
 	// @todo move this to some interface
 	virtual float GetWorldToMetersScale() const override;
 
+	void* GetARSessionRawPointer() override;
+	void* GetGameThreadARFrameRawPointer() override;
+
+	UGoogleARCoreEventManager* GetEventManager();
+
 protected:
 	// IARSystemSupport
 	virtual void OnARSystemInitialized() override;
@@ -55,6 +60,16 @@ protected:
 
 	virtual UARPin* OnPinComponent(USceneComponent* ComponentToPin, const FTransform& PinToWorldTransform, UARTrackedGeometry* TrackedGeometry = nullptr, const FName DebugName = NAME_None) override;
 	virtual void OnRemovePin(UARPin* PinToRemove) override;
+	virtual UARTextureCameraImage* OnGetCameraImage() override { return nullptr; }
+	virtual UARTextureCameraDepth* OnGetCameraDepth() override { return nullptr; }
+	virtual bool OnAddManualEnvironmentCaptureProbe(FVector Location, FVector Extent) override { return false; }
+	virtual TSharedPtr<FARGetCandidateObjectAsyncTask, ESPMode::ThreadSafe> OnGetCandidateObject(FVector Location, FVector Extent) const override { return TSharedPtr<FARGetCandidateObjectAsyncTask, ESPMode::ThreadSafe>(); }
+	virtual TSharedPtr<FARSaveWorldAsyncTask, ESPMode::ThreadSafe> OnSaveWorld() const override { return TSharedPtr<FARSaveWorldAsyncTask, ESPMode::ThreadSafe>(); }
+// @todo -- support these properly
+	virtual EARWorldMappingState OnGetWorldMappingStatus() const override { return EARWorldMappingState::StillMappingNotRelocalizable; }
+	virtual TArray<FARVideoFormat> OnGetSupportedVideoFormats(EARSessionType SessionType) const override { return TArray<FARVideoFormat>(); }
+	virtual TArray<FVector> OnGetPointCloud() const override { return TArray<FVector>(); }
+	//~IARSystemSupport
 
 private:
 	//~ FGCObject
@@ -76,6 +91,7 @@ private:
 	TSharedPtr<class ISceneViewExtension, ESPMode::ThreadSafe> ViewExtension;
 
 	UARBasicLightEstimate* LightEstimate;
+	UGoogleARCoreEventManager* EventManager;
 };
 
 DEFINE_LOG_CATEGORY_STATIC(LogGoogleARCoreTrackingSystem, Log, All);

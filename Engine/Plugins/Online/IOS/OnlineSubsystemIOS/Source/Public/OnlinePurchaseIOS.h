@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "OnlinePurchaseInterface.h"
+#include "Interfaces/OnlinePurchaseInterface.h"
 
 struct FStoreKitTransactionData;
 @class FStoreKitHelperV2;
@@ -53,7 +53,7 @@ public:
 	/** Mirror array of purchase state for the various offers to purchase */
 	TArray<EPurchaseTransactionState> OfferPurchaseStates;
 	/** User for the pending order */
-	const FUniqueNetIdString UserId;
+	const FUniqueNetIdIOS UserId;
 	/** Delegate to call on completion */
 	const FOnPurchaseCheckoutComplete CheckoutCompleteDelegate;
 	/** Tracks the current state of the order */
@@ -78,7 +78,8 @@ public:
 	virtual void RedeemCode(const FUniqueNetId& UserId, const FRedeemCodeRequest& RedeemCodeRequest, const FOnPurchaseRedeemCodeComplete& Delegate) override;
 	virtual void QueryReceipts(const FUniqueNetId& UserId, bool bRestoreReceipts, const FOnQueryReceiptsComplete& Delegate) override;
 	virtual void GetReceipts(const FUniqueNetId& UserId, TArray<FPurchaseReceipt>& OutReceipts) const override;
-	
+	virtual void FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, FString& InReceiptValidationInfo, const FOnFinalizeReceiptValidationInfoComplete& Delegate) override;
+
 	// FOnlinePurchaseIOS
 
 	/**

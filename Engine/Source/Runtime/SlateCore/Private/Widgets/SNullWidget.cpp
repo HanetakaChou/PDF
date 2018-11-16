@@ -27,7 +27,7 @@ public:
 
 	SNullWidgetContent()
 	{
-		bCanTick = false;
+		SetCanTick(false);
 		bCanSupportFocus = false;
 		bCanHaveChildren = false;
 	}
@@ -60,6 +60,11 @@ protected:
 	virtual FVector2D ComputeDesiredSize(float) const override final
 	{
 		return FVector2D(0.0f, 0.0f);
+	}
+
+	virtual bool ComputeVolatility() const override final
+	{
+		return false;
 	}
 
 	// End of SWidget interface

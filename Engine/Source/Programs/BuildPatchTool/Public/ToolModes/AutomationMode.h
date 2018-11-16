@@ -2,10 +2,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Interfaces/ToolMode.h"
 
 #if !UE_BUILD_SHIPPING
-
-#include "ToolMode.h"
 
 namespace BuildPatchTool
 {

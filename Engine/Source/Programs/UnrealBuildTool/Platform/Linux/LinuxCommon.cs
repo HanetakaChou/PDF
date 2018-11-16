@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Microsoft.Win32;
+using Tools.DotNETCommon;
 
 namespace UnrealBuildTool
 {
@@ -37,9 +38,9 @@ namespace UnrealBuildTool
 
 		public static string WhichClang()
 		{
-			string[] ClangNames = { "clang++", "clang++-5.0", "clang++-4.0", "clang++-3.9", "clang++-3.8", "clang++-3.7", "clang++-3.6", "clang++-3.5" };
+			string[] ClangNames = { "clang++", "clang++-6.0", "clang++-5.0", "clang++-4.0", "clang++-3.9", "clang++-3.8" };
 			string ClangPath;
-			foreach (var ClangName in ClangNames)
+			foreach (string ClangName in ClangNames)
 			{
 				ClangPath = Which(ClangName);
 				if (!String.IsNullOrEmpty(ClangPath))

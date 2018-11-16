@@ -18,7 +18,7 @@ UMovieScene2DTransformTrack::UMovieScene2DTransformTrack(const FObjectInitialize
 
 UMovieSceneSection* UMovieScene2DTransformTrack::CreateNewSection()
 {
-	return NewObject<UMovieSceneSection>(this, UMovieScene2DTransformSection::StaticClass(), NAME_None, RF_Transactional);
+	return NewObject<UMovieScene2DTransformSection>(this, NAME_None, RF_Transactional);
 }
 
 
@@ -26,24 +26,3 @@ FMovieSceneEvalTemplatePtr UMovieScene2DTransformTrack::CreateTemplateForSection
 {
 	return FMovieScene2DTransformSectionTemplate(*CastChecked<const UMovieScene2DTransformSection>(&InSection), *this);
 }
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-bool UMovieScene2DTransformTrack::Eval(float Position, float LastPosition, FWidgetTransform& InOutTransform) const
-{
-	const UMovieSceneSection* Section = MovieSceneHelpers::FindNearestSectionAtTime(Sections, Position);
-
-	if(Section)
-	{
-		const UMovieScene2DTransformSection* TransformSection = CastChecked<UMovieScene2DTransformSection>(Section);
-
-		if (!Section->IsInfinite())
-		{
-			Position = FMath::Clamp(Position, Section->GetStartTime(), Section->GetEndTime());
-		}
-
-		InOutTransform = TransformSection->Eval(Position, InOutTransform);
-	}
-
-	return (Section != nullptr);
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS

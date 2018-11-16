@@ -17,7 +17,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/Docking/SDockingTabStack.h"
 #include "Framework/Docking/SDockingTabWell.h"
-#include "LayoutExtender.h"
+#include "Framework/Docking/LayoutExtender.h"
 #include "HAL/PlatformApplicationMisc.h"
 #if PLATFORM_MAC
 #include "../MultiBox/Mac/MacMenu.h"
@@ -1318,7 +1318,7 @@ TSharedRef<SDockingNode> FTabManager::RestoreArea_Helper( const TSharedRef<FLayo
 				: SNew(SWindow)
 					.AutoCenter( EAutoCenter::None )
 					.ScreenPosition( NodeAsArea->UnscaledWindowPosition )
-					.ClientSize( NodeAsArea->UnscaledWindowSize)
+					.ClientSize( NodeAsArea->UnscaledWindowSize )
 					.CreateTitleBar( false )
 					.IsInitiallyMaximized( NodeAsArea->bIsMaximized );
 

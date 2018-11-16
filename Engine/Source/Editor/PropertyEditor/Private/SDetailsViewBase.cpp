@@ -21,7 +21,7 @@
 #include "Widgets/Colors/SColorPicker.h"
 #include "DetailPropertyRow.h"
 #include "Widgets/Input/SSearchBox.h"
-#include "EditorStyleSettings.h"
+#include "Classes/EditorStyleSettings.h"
 #include "DetailLayoutHelpers.h"
 
 SDetailsViewBase::~SDetailsViewBase()
@@ -347,7 +347,7 @@ void SDetailsViewBase::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> 
 	// Reset everything
 	LayoutData.ClassToPropertyMap.Empty();
 
-	TSharedPtr<FDetailLayoutBuilderImpl> DetailLayout = MakeShareable(new FDetailLayoutBuilderImpl(InRootPropertyNode, LayoutData.ClassToPropertyMap, PropertyUtilities.ToSharedRef(), SharedThis(this), bIsExternal));
+	TSharedPtr<FDetailLayoutBuilderImpl> DetailLayout = MakeShareable(new FDetailLayoutBuilderImpl(InRootPropertyNode, LayoutData.ClassToPropertyMap, PropertyUtilities.ToSharedRef(), PropertyGenerationUtilities.ToSharedRef(), SharedThis(this), bIsExternal));
 	LayoutData.DetailLayout = DetailLayout;
 
 	TSharedPtr<FComplexPropertyNode> RootPropertyNode = InRootPropertyNode;
@@ -548,6 +548,19 @@ void SDetailsViewBase::OnShowAllChildrenIfCategoryMatchesClicked()
 	UpdateFilteredDetails();
 }
 
+void SDetailsViewBase::OnShowKeyableClicked()
+{
+	CurrentFilter.bShowKeyable = !CurrentFilter.bShowKeyable;
+
+	UpdateFilteredDetails();
+}
+
+void SDetailsViewBase::OnShowAnimatedClicked()
+{
+	CurrentFilter.bShowAnimated = !CurrentFilter.bShowAnimated;
+
+	UpdateFilteredDetails();
+}
 /** Called when the filter text changes.  This filters specific property nodes out of view */
 void SDetailsViewBase::OnFilterTextChanged(const FText& InFilterText)
 {
@@ -611,8 +624,17 @@ void SDetailsViewBase::FilterView(const FString& InFilterText)
 
 EVisibility SDetailsViewBase::GetFilterBoxVisibility() const
 {
-	// Visible if we allow search and we have anything to search otherwise collapsed so it doesn't take up room
-	return (DetailsViewArgs.bAllowSearch && IsConnected() && RootTreeNodes.Num() > 0) || HasActiveSearch() || CurrentFilter.bShowOnlyModifiedProperties || CurrentFilter.bShowOnlyDiffering ? EVisibility::Visible : EVisibility::Collapsed;
+	EVisibility Result = EVisibility::Collapsed;
+	// Visible if we allow search and we have anything to search otherwise collapsed so it doesn't take up room	
+	if (DetailsViewArgs.bAllowSearch && IsConnected())
+	{
+		if (RootTreeNodes.Num() > 0 || HasActiveSearch() || CurrentFilter.bShowOnlyModifiedProperties || CurrentFilter.bShowOnlyDiffering)
+		{
+			Result = EVisibility::Visible;
+		}
+	}
+
+	return Result;
 }
 
 bool SDetailsViewBase::SupportsKeyboardFocus() const
@@ -693,6 +715,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	bool bValidateExternalNodes = true;
 
 	int32 FoundIndex = RootPropertyNodes.Find(LastRootPendingKill);
+	bool bUpdateFilteredDetails = false;
 	if (FoundIndex != INDEX_NONE)
 	{ 
 		// Reaquire the root property nodes.  It may have been changed by the deferred actions if something like a blueprint editor forcefully resets a details panel during a posteditchange
@@ -707,20 +730,19 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 		{
 			if(RootPropertyNode == LastRootPendingKill)
 			{
+				ExpandedDetailNodes.Empty();
 				RestoreExpandedItems(RootPropertyNode.ToSharedRef());
 			}
 
 			EPropertyDataValidationResult Result = RootPropertyNode->EnsureDataIsValid();
 			if(Result == EPropertyDataValidationResult::PropertiesChanged || Result == EPropertyDataValidationResult::EditInlineNewValueChanged)
 			{
-				RestoreExpandedItems(RootPropertyNode.ToSharedRef());
 				UpdatePropertyMaps();
-				UpdateFilteredDetails();
+				bUpdateFilteredDetails = true;
 			}
 			else if(Result == EPropertyDataValidationResult::ArraySizeChanged || Result == EPropertyDataValidationResult::ChildrenRebuilt)
 			{
-				RestoreExpandedItems(RootPropertyNode.ToSharedRef());
-				UpdateFilteredDetails();
+				bUpdateFilteredDetails = true;
 			}
 			else if(Result == EPropertyDataValidationResult::ObjectInvalid)
 			{
@@ -746,24 +768,26 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 					EPropertyDataValidationResult Result = PropertyNode->EnsureDataIsValid();
 					if (Result == EPropertyDataValidationResult::PropertiesChanged || Result == EPropertyDataValidationResult::EditInlineNewValueChanged)
 					{
-						RestoreExpandedItems(PropertyNode.ToSharedRef());
-
 						// Note this will invalidate all the external root nodes so there is no need to continue
 						ExternalRootPropertyNodes.Empty();
 
 						UpdatePropertyMaps();
-						UpdateFilteredDetails();
+						bUpdateFilteredDetails = true;
 
 						break;
 					}
 					else if (Result == EPropertyDataValidationResult::ArraySizeChanged || Result == EPropertyDataValidationResult::ChildrenRebuilt)
 					{
-						RestoreExpandedItems(PropertyNode.ToSharedRef());
-						UpdateFilteredDetails();
+						bUpdateFilteredDetails = true;
 					}
 				}
 			}
 		}
+	}
+
+	if (bUpdateFilteredDetails)
+	{
+		UpdateFilteredDetails();
 	}
 
 	for(FDetailLayoutData& LayoutData : DetailLayouts)
@@ -911,8 +935,6 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> InitialSta
 {
 	TSharedPtr<FPropertyNode> StartNode = InitialStartNode;
 
-	ExpandedDetailNodes.Empty();
-
 	FString ExpandedCustomItems;
 
 	UStruct* BestBaseStruct = StartNode->FindComplexParent()->GetBaseStructure();
@@ -970,8 +992,6 @@ void SDetailsViewBase::UpdateFilteredDetails()
 					{
 						ExternalRootNode->FilterNodes(CurrentFilter.FilterStrings);
 						ExternalRootNode->ProcessSeenFlags(true);
-					
-						RestoreExpandedItems(ExternalRootNode.ToSharedRef());
 					}
 				}
 

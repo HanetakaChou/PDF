@@ -140,6 +140,7 @@ void FAutomationWorkerModule::Initialize()
 			.Handling<FAutomationWorkerRunTests>(this, &FAutomationWorkerModule::HandleRunTestsMessage)
 			.Handling<FAutomationWorkerImageComparisonResults>(this, &FAutomationWorkerModule::HandleScreenShotCompared)
 			.Handling<FAutomationWorkerTestDataResponse>(this, &FAutomationWorkerModule::HandleTestDataRetrieved)
+			.Handling<FAutomationWorkerStopTests>(this, &FAutomationWorkerModule::HandleStopTestsMessage)
 			.WithInbox();
 
 		if (MessageEndpoint.IsValid())
@@ -232,7 +233,7 @@ void FAutomationWorkerModule::ReportTestComplete()
 			Message->ExecutionCount = ExecutionCount;
 			Message->Success = bSuccess;
 			Message->Duration = ExecutionInfo.Duration;
-			Message->Events = ExecutionInfo.GetEvents();
+			Message->Entries = ExecutionInfo.GetEntries();
 			Message->WarningTotal = ExecutionInfo.GetWarningTotal();
 			Message->ErrorTotal = ExecutionInfo.GetErrorTotal();
 
@@ -385,7 +386,15 @@ void FAutomationWorkerModule::HandlePostTestingEvent()
 void FAutomationWorkerModule::HandleScreenShotCompared(const FAutomationWorkerImageComparisonResults& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
 	// Image comparison finished.
-	FAutomationTestFramework::Get().NotifyScreenshotComparisonComplete(Message.bNew, Message.bSimilar, Message.MaxLocalDifference, Message.GlobalDifference, Message.ErrorMessage);
+	FAutomationScreenshotCompareResults CompareResults;
+	CompareResults.UniqueId = Message.UniqueId;
+	CompareResults.bWasNew = Message.bNew;
+	CompareResults.bWasSimilar = Message.bSimilar;
+	CompareResults.MaxLocalDifference = Message.MaxLocalDifference;
+	CompareResults.GlobalDifference = Message.GlobalDifference;
+	CompareResults.ErrorMessage = Message.ErrorMessage;
+
+	FAutomationTestFramework::Get().NotifyScreenshotComparisonComplete(CompareResults);
 }
 
 void FAutomationWorkerModule::HandleTestDataRetrieved(const FAutomationWorkerTestDataResponse& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
@@ -453,6 +462,16 @@ void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunT
 	bExecutingNetworkCommandResults = false;
 
 	FAutomationTestFramework::Get().StartTestByName(Message.TestName, Message.RoleIndex);
+}
+
+
+void FAutomationWorkerModule::HandleStopTestsMessage(const FAutomationWorkerStopTests& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
+{
+	if (GIsAutomationTesting)
+	{
+		FAutomationTestFramework::Get().DequeueAllCommands();
+	}
+	ReportTestComplete();
 }
 
 

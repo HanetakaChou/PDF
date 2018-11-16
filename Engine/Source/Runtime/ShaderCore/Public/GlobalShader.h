@@ -9,7 +9,7 @@
 #include "CoreMinimal.h"
 #include "Templates/ScopedPointer.h"
 #include "Shader.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 #include "RHIResources.h"
 
 class FShaderCommonCompileJob;
@@ -27,11 +27,13 @@ public:
 	SHADERCORE_API FGlobalShaderMapId(EShaderPlatform Platform);
 
 	/** Append to a string that will be used as a DDC key. */
-	SHADERCORE_API void AppendKeyString(FString& KeyString) const;
+	SHADERCORE_API void AppendKeyString(FString& KeyString, const TArray<FShaderTypeDependency>& Dependencies) const;
+
+	SHADERCORE_API const TMap<FString, TArray<FShaderTypeDependency>>& GetShaderFilenameToDependeciesMap() const { return ShaderFilenameToDependenciesMap; }
 
 private:
-	/** Shader types that this shader map is dependent on and their stored state. */
-	TArray<FShaderTypeDependency> ShaderTypeDependencies;
+	/** Shader types that this shader map is dependent on and their stored state. Mapped by shader filename, so every filename can have it's own DDC key. */
+	TMap<FString, TArray<FShaderTypeDependency>> ShaderFilenameToDependenciesMap;
 
 	/** Shader pipeline types that this shader map is dependent on and their stored state. */
 	TArray<FShaderPipelineTypeDependency> ShaderPipelineTypeDependencies;
@@ -63,6 +65,7 @@ public:
 	typedef FShader::CompiledShaderInitializerType CompiledShaderInitializerType;
 	typedef FShader* (*ConstructCompiledType)(const CompiledShaderInitializerType&);
 	typedef bool (*ShouldCompilePermutationType)(const FGlobalShaderPermutationParameters&);
+	typedef bool(*ValidateCompiledResultType)(EShaderPlatform, const FShaderParameterMap&, TArray<FString>&);
 	typedef void (*ModifyCompilationEnvironmentType)(const FGlobalShaderPermutationParameters&, FShaderCompilerEnvironment&);
 
 	FGlobalShaderType(
@@ -75,11 +78,13 @@ public:
 		ConstructCompiledType InConstructCompiledRef,
 		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCompilePermutationType InShouldCompilePermutationRef,
+		ValidateCompiledResultType InValidateCompiledResultRef,
 		GetStreamOutElementsType InGetStreamOutElementsRef
 		):
 		FShaderType(EShaderTypeForDynamicCast::Global, InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount, InConstructSerializedRef, InGetStreamOutElementsRef),
 		ConstructCompiledRef(InConstructCompiledRef),
 		ShouldCompilePermutationRef(InShouldCompilePermutationRef),
+		ValidateCompiledResultRef(InValidateCompiledResultRef),
 		ModifyCompilationEnvironmentRef(InModifyCompilationEnvironmentRef)
 	{
 		checkf(FPaths::GetExtension(InSourceFilename) == TEXT("usf"),
@@ -109,9 +114,21 @@ public:
 		(*ModifyCompilationEnvironmentRef)(FGlobalShaderPermutationParameters(Platform, PermutationId), Environment);
 	}
 
+	/**
+	* Checks if the shader type should pass compilation for a particular set of parameters.
+	* @param Platform - Platform to validate.
+	* @param ParameterMap - Shader parameters to validate.
+	* @param OutError - List for appending validation errors.
+	*/
+	bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError) const
+	{
+		return (*ValidateCompiledResultRef)(Platform, ParameterMap, OutError);
+	}
+
 private:
 	ConstructCompiledType ConstructCompiledRef;
 	ShouldCompilePermutationType ShouldCompilePermutationRef;
+	ValidateCompiledResultType ValidateCompiledResultRef;
 	ModifyCompilationEnvironmentType ModifyCompilationEnvironmentRef;
 };
 
@@ -135,7 +152,6 @@ public:
 	inline void SetParameters(TRHICmdList& RHICmdList, const ShaderRHIParamRef ShaderRHI, const FUniformBufferRHIParamRef ViewUniformBuffer)
 	{
 		const auto& ViewUniformBufferParameter = static_cast<const FShaderUniformBufferParameter&>(GetUniformBufferParameter<TViewUniformShaderParameters>());
-		CheckShaderIsValid();
 		SetUniformBufferParameter(RHICmdList, ShaderRHI, ViewUniformBufferParameter, ViewUniformBuffer);
 	}
 
@@ -143,6 +159,7 @@ public:
 
 	// FShader interface.
 	SHADERCORE_API static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment) {}
+	SHADERCORE_API static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors) { return true; }
 };
 
 /**
@@ -238,6 +255,10 @@ inline TShaderMap<FGlobalShaderType>* GetGlobalShaderMap(ERHIFeatureLevel::Type 
 		return ShaderClass::ShouldCompilePermutation(Parameters); \
 	} \
 	\
+	static bool ValidateCompiledResultImpl(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors) \
+	{ \
+		return ShaderClass::ValidateCompiledResult(Platform, ParameterMap, OutErrors); \
+	} \
 	static void ModifyCompilationEnvironmentImpl( \
 		const FGlobalShaderPermutationParameters& Parameters, \
 		FShaderCompilerEnvironment& OutEnvironment) \
@@ -258,5 +279,6 @@ inline TShaderMap<FGlobalShaderType>* GetGlobalShaderMap(ERHIFeatureLevel::Type 
 		ShaderClass::ConstructCompiledInstance, \
 		ShaderClass::ModifyCompilationEnvironmentImpl, \
 		ShaderClass::ShouldCompilePermutationImpl, \
+		ShaderClass::ValidateCompiledResultImpl, \
 		ShaderClass::GetStreamOutElements \
 		)

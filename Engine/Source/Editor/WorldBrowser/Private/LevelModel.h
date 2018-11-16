@@ -27,7 +27,7 @@ struct FLevelModelVisitor
 /**
  * Interface for non-UI presentation logic for a level in a world
  */
-class FLevelModel
+class WORLDBROWSER_API FLevelModel
 	: public TSharedFromThis<FLevelModel>	
 {
 public:
@@ -125,7 +125,10 @@ public:
 
 	/** @return Whether level package file is read only */
 	bool IsFileReadOnly() const;
-		
+
+	/** @return Whether the streaming level object is transient */
+	virtual bool IsTransient() const { return false; }
+
 	/** Loads level into editor */
 	virtual void LoadLevel();
 

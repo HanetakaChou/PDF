@@ -1,8 +1,9 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "AndroidApplication.h"
-#include "AndroidInputInterface.h"
-#include "AndroidWindow.h"
+#include "Android/AndroidApplication.h"
+#include "Android/AndroidInputInterface.h"
+#include "Android/AndroidWindow.h"
+#include "Android/AndroidCursor.h"
 #include "IInputDeviceModule.h"
 #include "HAL/OutputDevices.h"
 #include "Misc/AssertionMacros.h"
@@ -19,8 +20,16 @@ FAndroidApplication* FAndroidApplication::CreateAndroidApplication()
 }
 
 FAndroidApplication::FAndroidApplication()
-	: GenericApplication( NULL )
-	, InputInterface( FAndroidInputInterface::Create( MessageHandler ) )
+	: GenericApplication(MakeShareable(new FAndroidCursor()))
+	, InputInterface( FAndroidInputInterface::Create( MessageHandler, Cursor ) )
+	, bHasLoadedInputPlugins(false)
+{
+	_application = this;
+}
+
+FAndroidApplication::FAndroidApplication(TSharedPtr<class FAndroidInputInterface> InInputInterface)
+	: GenericApplication((InInputInterface.IsValid() && InInputInterface->GetCursor()) ? InInputInterface->GetCursor() : MakeShareable(new FAndroidCursor()))
+	, InputInterface(InInputInterface)
 	, bHasLoadedInputPlugins(false)
 {
 	_application = this;
@@ -70,8 +79,16 @@ void FAndroidApplication::PollGameDeviceState( const float TimeDelta )
 		GenericApplication::GetMessageHandler()->OnResizingWindow(Windows[0]);
 		
 		FDisplayMetrics DisplayMetrics;
-		FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+		FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 		BroadcastDisplayMetricsChanged(DisplayMetrics);
+
+		// the cursor needs to compute the proper slate scaling factor each time the display metrics change
+		TSharedPtr<FAndroidCursor> AndroidCursor = StaticCastSharedPtr<FAndroidCursor>(Cursor);
+		if (AndroidCursor.IsValid())
+		{
+			AndroidCursor->ComputeUIScaleFactor();
+		}
+
 		bWindowSizeChanged = false;
 	}
 }
@@ -87,6 +104,12 @@ IInputInterface* FAndroidApplication::GetInputInterface()
 	return InputInterface.Get();
 }
 
+void FAndroidApplication::Tick(const float TimeDelta)
+{
+	//generate event that will end up calling 'QueryCursor' in slate to support proper reporting of the cursor's type.
+	MessageHandler->OnCursorSet();
+}
+
 bool FAndroidApplication::IsGamepadAttached() const
 {
 	FAndroidInputInterface* AndroidInputInterface = (FAndroidInputInterface*)InputInterface.Get();
@@ -99,7 +122,7 @@ bool FAndroidApplication::IsGamepadAttached() const
 	return false;
 }
 
-void FDisplayMetrics::GetDisplayMetrics( FDisplayMetrics& OutDisplayMetrics )
+void FDisplayMetrics::RebuildDisplayMetrics( FDisplayMetrics& OutDisplayMetrics )
 {
 	// Get screen rect
 	OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FAndroidWindow::GetScreenRect();
@@ -111,6 +134,29 @@ void FDisplayMetrics::GetDisplayMetrics( FDisplayMetrics& OutDisplayMetrics )
 
 	// Apply the debug safe zones
 	OutDisplayMetrics.ApplyDefaultSafeZones();
+
+	float Inset_Left = -1.0f;
+	float Inset_Top = -1.0f;
+	float Inset_Right = -1.0f;
+	float Inset_Bottom = -1.0f;
+
+	if (FString* SafeZoneLandscape = FAndroidMisc::GetConfigRulesVariable(TEXT("SafeZone_Landscape")))
+	{
+		TArray<FString> ZoneVector;
+		if (SafeZoneLandscape->ParseIntoArray(ZoneVector, TEXT(","), true) == 4)
+		{
+			Inset_Left = FCString::Atof(*ZoneVector[0]);
+			Inset_Top = FCString::Atof(*ZoneVector[1]);
+			Inset_Right = FCString::Atof(*ZoneVector[2]);
+			Inset_Bottom = FCString::Atof(*ZoneVector[3]);
+		}
+	}
+
+	OutDisplayMetrics.TitleSafePaddingSize.X = (Inset_Left >= 0.0f) ? Inset_Left : OutDisplayMetrics.TitleSafePaddingSize.X;
+	OutDisplayMetrics.TitleSafePaddingSize.Y = (Inset_Top >= 0.0f) ? Inset_Top : OutDisplayMetrics.TitleSafePaddingSize.Y;
+	OutDisplayMetrics.TitleSafePaddingSize.Z = (Inset_Right >= 0.0f) ? Inset_Right : OutDisplayMetrics.TitleSafePaddingSize.Z;
+	OutDisplayMetrics.TitleSafePaddingSize.W = (Inset_Bottom >= 0.0f) ? Inset_Bottom : OutDisplayMetrics.TitleSafePaddingSize.W;
+	OutDisplayMetrics.ActionSafePaddingSize = OutDisplayMetrics.TitleSafePaddingSize;
 }
 
 TSharedRef< FGenericWindow > FAndroidApplication::MakeWindow()

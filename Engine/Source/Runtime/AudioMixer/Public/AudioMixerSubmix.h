@@ -4,6 +4,8 @@
 
 #include "AudioMixer.h"
 #include "Sound/SoundSubmix.h"
+#include "Sound/SampleBuffer.h"
+#include "DSP/EnvelopeFollower.h"
 
 class USoundEffectSubmix;
 
@@ -12,8 +14,6 @@ namespace Audio
 	class IAudioMixerEffect;
 	class FMixerSourceVoice;
 	class FMixerDevice;
-
-	typedef TSharedPtr<FSoundEffectSubmix, ESPMode::ThreadSafe> FSoundEffectSubmixPtr;
 
 	struct FSubmixVoiceData
 	{
@@ -32,7 +32,7 @@ namespace Audio
 
 	struct FChildSubmixInfo
 	{
-		TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> SubmixPtr;
+		TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> SubmixPtr;
 		bool bNeedsAmbisonicsEncoding;
 
 		FChildSubmixInfo()
@@ -45,7 +45,7 @@ namespace Audio
 	{
 	public:
 		FMixerSubmix(FMixerDevice* InMixerDevice);
-		~FMixerSubmix();
+		virtual ~FMixerSubmix();
 
 		// Initialize the submix object with the USoundSubmix ptr. Sets up child and parent connects.
 		void Init(USoundSubmix* InSoundSubmix);
@@ -54,16 +54,16 @@ namespace Audio
 		uint32 GetId() const { return Id; }
 
 		// Sets the parent submix to the given submix
-		void SetParentSubmix(TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> Submix);
+		void SetParentSubmix(TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> Submix);
 
 		// Adds the given submix to this submix's children
-		void AddChildSubmix(TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> Submix);
+		void AddChildSubmix(TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> Submix);
 
 		// Gets the submix channels channels
 		ESubmixChannelFormat GetSubmixChannels() const;
 
 		// Gets this submix's parent submix
-		TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> GetParentSubmix();
+		TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> GetParentSubmix();
 
 		// Returns the number of source voices currently a part of this submix.
 		int32 GetNumSourceVoices() const;
@@ -78,7 +78,7 @@ namespace Audio
 		void RemoveSourceVoice(FMixerSourceVoice* InSourceVoice);
 
 		/** Appends the effect submix to the effect submix chain. */
-		void AddSoundEffectSubmix(uint32 SubmixPresetId, FSoundEffectSubmixPtr InSoundEffectSubmix);
+		void AddSoundEffectSubmix(uint32 SubmixPresetId, FSoundEffectSubmix* InSoundEffectSubmix);
 
 		/** Removes the submix effect from the effect submix chain. */
 		void RemoveSoundEffectSubmix(uint32 SubmixPresetId);
@@ -102,10 +102,40 @@ namespace Audio
 		int32 GetNumChainEffects() const;
 
 		// Returns the submix effect at the given effect chain index
-		FSoundEffectSubmixPtr GetSubmixEffect(const int32 InIndex);
+		FSoundEffectSubmix* GetSubmixEffect(const int32 InIndex);
 
 		// updates settings, potentially creating or removing ambisonics streams based on
 		void OnAmbisonicsSettingsChanged(UAmbisonicsSubmixSettingsBase* AmbisonicsSettings);
+
+		// This is called by the corresponding USoundSubmix when StartRecordingOutput is called.
+		void OnStartRecordingOutput(float ExpectedDuration);
+
+		// This is called by the corresponding USoundSubmix when StopRecordingOutput is called.
+		AlignedFloatBuffer& OnStopRecordingOutput(float& OutNumChannels, float& OutSampleRate);
+
+		// This is called by the corresponding USoundSubmix when PauseRecording is called.
+		void PauseRecordingOutput();
+
+		// This is called by the corresponding USoundSubmix when ResumeRecording is called.
+		void ResumeRecordingOutput();
+
+		// Register buffer listener with this submix
+		void RegisterBufferListener(ISubmixBufferListener* BufferListener);
+		
+		// Unregister buffer listener with this submix
+		void UnregisterBufferListener(ISubmixBufferListener* BufferListener);
+
+		// Starts envelope following with the given attack time and release time
+		void StartEnvelopeFollowing(int32 AttackTime, int32 ReleaseTime);
+
+		// Stops envelope following the submix
+		void StopEnvelopeFollowing();
+
+		// Adds an envelope follower delegate
+		void AddEnvelopeFollowerDelegate(const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP);
+
+		// Broadcast the envelope value on the game thread
+		void BroadcastEnvelope();
 
 	protected:
 		// Down mix the given buffer to the desired down mix channel count
@@ -154,7 +184,7 @@ namespace Audio
 		uint32 Id;
 
 		// Parent submix. 
-		TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> ParentSubmix;
+		TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> ParentSubmix;
 
 		// Child submixes
 		TMap<uint32, FChildSubmixInfo> ChildSubmixes;
@@ -166,10 +196,11 @@ namespace Audio
 			uint32 PresetId;
 
 			// The effect instance ptr
-			FSoundEffectSubmixPtr EffectInstance;
+			FSoundEffectSubmix* EffectInstance;
 
 			FSubmixEffectInfo()
 				: PresetId(INDEX_NONE)
+				, EffectInstance(nullptr)
 			{
 			}
 		};
@@ -201,6 +232,12 @@ namespace Audio
 		// Decoder ID set up with Ambisonics Mixer. Set to INDEX_NONE if there is no decoder stream open.
 		uint32 SubmixAmbisonicsDecoderID;
 
+		// Envelope following data
+		float EnvelopeValues[AUDIO_MIXER_MAX_OUTPUT_CHANNELS];
+		Audio::FEnvelopeFollower EnvelopeFollowers[AUDIO_MIXER_MAX_OUTPUT_CHANNELS];
+		int32 EnvelopeNumChannels;
+		FCriticalSection EnvelopeCriticalSection;
+
 		// This buffer is encoded into for each source, then summed into the ambisonics buffer.
 		AlignedFloatBuffer InputAmbisonicsBuffer;
 
@@ -209,6 +246,30 @@ namespace Audio
 
 		// Submix command queue to shuffle commands from audio thread to audio render thread.
 		TQueue<TFunction<void()>> CommandQueue;
+
+		// List of submix buffer listeners
+		TArray<ISubmixBufferListener*> BufferListeners;
+
+		// Critical section used for modifying and interacting with buffer listeners
+		FCriticalSection BufferListenerCriticalSection;
+
+		// This buffer is used for recorded output of the submix.
+		AlignedFloatBuffer RecordingData;
+
+		// Bool set to true when this submix is recording data.
+		uint8 bIsRecording : 1;
+
+		// Bool set to true when envelope following is enabled
+		FThreadSafeBool bIsEnvelopeFollowing;
+
+		// Multi-cast delegate to broadcast envelope data from this submix instance
+		FOnSubmixEnvelope OnSubmixEnvelope;
+
+		// Critical section used for when we are appending recorded data.
+		FCriticalSection RecordingCriticalSection;
+
+		// Handle back to the owning USoundSubmix. Used when the device is shutdown to prematurely end a recording.
+		USoundSubmix* OwningSubmixObject;
 
 		friend class FMixerDevice;
 	};

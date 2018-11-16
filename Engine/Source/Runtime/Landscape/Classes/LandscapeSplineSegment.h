@@ -46,6 +46,12 @@ struct FLandscapeSplineInterpPoint
 	float StartEndFalloff;
 
 	FLandscapeSplineInterpPoint()
+		: Center(ForceInitToZero)
+		, Left(ForceInitToZero)
+		, Right(ForceInitToZero)
+		, FalloffLeft(ForceInitToZero)
+		, FalloffRight(ForceInitToZero)
+		, StartEndFalloff(0.0f)
 	{
 	}
 
@@ -181,9 +187,17 @@ class ULandscapeSplineSegment : public UObject
 	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes)
 	TArray<FLandscapeSplineMeshEntry> SplineMeshes;
 
-	/** Whether to generate collision for the Spline Meshes. */
+	UPROPERTY()
+	uint32 bEnableCollision_DEPRECATED:1;
+
+	/** Name of the collision profile to use for this spline */
+	//
+	// TODO: This field does not have proper Slate customization.
+	// Instead of a text field, this should be a dropdown with the
+	// default option.
+	//
 	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes)
-	uint32 bEnableCollision:1;
+	FName CollisionProfileName;
 
 	/** Whether the Spline Meshes should cast a shadow. */
 	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes)
@@ -207,9 +221,17 @@ class ULandscapeSplineSegment : public UObject
 	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes, AdvancedDisplay)
 	int32 TranslucencySortPriority;
 
+	/** Whether to hide the mesh in game */
+	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes, AdvancedDisplay)
+	uint32 bHiddenInGame:1;
+
 	/** Whether spline meshes should be placed in landscape proxy streaming levels (true) or the spline's level (false) */
 	UPROPERTY(EditAnywhere, Category=LandscapeSplineMeshes, AdvancedDisplay)
 	uint32 bPlaceSplineMeshesInStreamingLevels : 1;
+	
+	/** Mesh Collision Settings */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Collision, meta = (ShowOnlyInnerProperties))
+	FBodyInstance BodyInstance;
 
 protected:
 	UPROPERTY(Transient)
@@ -258,7 +280,8 @@ public:
 	virtual void AutoFlipTangents();
 
 	TMap<ULandscapeSplinesComponent*, TArray<USplineMeshComponent*>> GetForeignMeshComponents();
-
+	TArray<USplineMeshComponent*> GetLocalMeshComponents() const;
+	
 	virtual void UpdateSplinePoints(bool bUpdateCollision = true);
 
 	void UpdateSplineEditorMesh();
@@ -282,6 +305,8 @@ public:
 #endif // WITH_EDITOR
 protected:
 	virtual void PostInitProperties() override;
+private:
+	void UpdateMeshCollisionProfile(USplineMeshComponent* MeshComponent);
 public:
 	//~ End UObject Interface
 

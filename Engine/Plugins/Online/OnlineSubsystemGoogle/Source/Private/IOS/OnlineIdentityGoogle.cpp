@@ -2,6 +2,7 @@
 
 #include "OnlineIdentityGoogle.h"
 #include "OnlineSubsystemGooglePrivate.h"
+#include "Interfaces/OnlineExternalUIInterface.h"
 #include "GoogleHelper.h"
 
 #include "Misc/ConfigCacheIni.h"
@@ -11,7 +12,7 @@ FOnlineIdentityGoogle::FOnlineIdentityGoogle(FOnlineSubsystemGoogle* InSubsystem
 {
 	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle.OnlineIdentityGoogle"), TEXT("ReversedClientId"), ReversedClientId, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ReversedClientId= in [OnlineSubsystemGoogle.OnlineIdentityGoogle] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing ReversedClientId= in [OnlineSubsystemGoogle.OnlineIdentityGoogle] of DefaultEngine.ini"));
 	}
 
 	// Setup permission scope fields
@@ -38,7 +39,7 @@ bool FOnlineIdentityGoogle::Init()
 
 void FOnlineIdentityGoogle::OnSignInComplete(const FGoogleSignInData& InSignInData)
 {
-	UE_LOG_ONLINE(Verbose, TEXT("OnSignInComplete %s"), ToString(InSignInData.Response));
+	UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("OnSignInComplete %s"), ToString(InSignInData.Response));
 
 	// @todo verify that SignInSilently is working right
 	//if (InSignInData.Response != EGoogleLoginResponse::RESPONSE_NOAUTH)
@@ -52,7 +53,7 @@ void FOnlineIdentityGoogle::OnSignInComplete(const FGoogleSignInData& InSignInDa
 
 void FOnlineIdentityGoogle::OnSignOutComplete(const FGoogleSignOutData& InSignOutData)
 {
-	UE_LOG_ONLINE(Verbose, TEXT("OnSignOutComplete %s"), ToString(InSignOutData.Response));
+	UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("OnSignOutComplete %s"), ToString(InSignOutData.Response));
 	ensure(LogoutCompletionDelegate.IsBound());
 	LogoutCompletionDelegate.ExecuteIfBound(InSignOutData.Response);
 	LogoutCompletionDelegate.Unbind();
@@ -60,7 +61,7 @@ void FOnlineIdentityGoogle::OnSignOutComplete(const FGoogleSignOutData& InSignOu
 
 bool FOnlineIdentityGoogle::Login(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials)
 {
-	UE_LOG_ONLINE(Verbose, TEXT("FOnlineIdentityGoogle::Login"));
+	UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("FOnlineIdentityGoogle::Login"));
 
 	bool bTriggeredLogin = false;
 	bool bPendingOp = LoginCompletionDelegate.IsBound() || LogoutCompletionDelegate.IsBound();
@@ -91,7 +92,7 @@ bool FOnlineIdentityGoogle::Login(int32 LocalUserNum, const FOnlineAccountCreden
 							FString ErrorStr;
 							if (InResponseCode == EGoogleLoginResponse::RESPONSE_CANCELED)
 							{
-								ErrorStr = GOOGLE_AUTH_CANCELED;
+								ErrorStr = LOGIN_CANCELLED;
 							}
 							else
 							{
@@ -112,6 +113,7 @@ bool FOnlineIdentityGoogle::Login(int32 LocalUserNum, const FOnlineAccountCreden
 				}
 			};
 
+			bTriggeredLogin = true;
 			RetrieveDiscoveryDocument(MoveTemp(PendingLoginFn));
 		}
 		else
@@ -121,7 +123,7 @@ bool FOnlineIdentityGoogle::Login(int32 LocalUserNum, const FOnlineAccountCreden
 	}
 	else
 	{
-		UE_LOG_ONLINE(Verbose, TEXT("FOnlineIdentityGoogle::Login Operation already in progress!"));
+		UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("FOnlineIdentityGoogle::Login Operation already in progress!"));
 		FString ErrorStr = FString::Printf(TEXT("Operation already in progress"));
 		TriggerOnLoginCompleteDelegates(LocalUserNum, false, GetEmptyUniqueId(), ErrorStr);
 	}
@@ -156,7 +158,7 @@ void FOnlineIdentityGoogle::OnLoginAttemptComplete(int32 LocalUserNum, const FSt
 	const FString ErrorStrCopy(ErrorStr);
 	if (GetLoginStatus(LocalUserNum) == ELoginStatus::LoggedIn)
 	{
-		UE_LOG(LogOnline, Display, TEXT("Google login was successful"));
+		UE_LOG_ONLINE_IDENTITY(Display, TEXT("Google login was successful"));
 		TSharedPtr<const FUniqueNetId> UserId = GetUniquePlayerId(LocalUserNum);
 		check(UserId.IsValid());
 
@@ -187,7 +189,7 @@ bool FOnlineIdentityGoogle::Logout(int32 LocalUserNum)
 		{
 			LogoutCompletionDelegate = FOnInternalLogoutComplete::CreateLambda([this, LocalUserNum](EGoogleLoginResponse InResponseCode)
 	        {
-				UE_LOG_ONLINE(Verbose, TEXT("FOnInternalLogoutComplete %s"), ToString(InResponseCode));
+				UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("FOnInternalLogoutComplete %s"), ToString(InResponseCode));
 				TSharedPtr<const FUniqueNetId> UserId = GetUniquePlayerId(LocalUserNum);
 				if (UserId.IsValid())
 				{
@@ -213,17 +215,17 @@ bool FOnlineIdentityGoogle::Logout(int32 LocalUserNum)
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("No logged in user found for LocalUserNum=%d."), LocalUserNum);
+			UE_LOG_ONLINE_IDENTITY(Warning, TEXT("No logged in user found for LocalUserNum=%d."), LocalUserNum);
 		}
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("FOnlineIdentityGoogle::Logout - Operation already in progress"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("FOnlineIdentityGoogle::Logout - Operation already in progress"));
 	}
 
 	if (!bTriggeredLogout)
 	{
-		UE_LOG_ONLINE(Verbose, TEXT("FOnlineIdentityGoogle::Logout didn't trigger logout"));
+		UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("FOnlineIdentityGoogle::Logout didn't trigger logout"));
 		GoogleSubsystem->ExecuteNextTick([this, LocalUserNum]()
 	    {
 			TriggerOnLogoutCompleteDelegates(LocalUserNum, false);

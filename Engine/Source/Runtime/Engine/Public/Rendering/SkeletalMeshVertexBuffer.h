@@ -6,7 +6,7 @@
 #include "PackedNormal.h"
 #include "Components.h"
 #include "Containers/DynamicRHIResourceArray.h"
-#include "StaticMeshVertexBuffer.h"
+#include "Rendering/StaticMeshVertexBuffer.h"
 
 struct FSoftSkinVertex;
 
@@ -23,10 +23,7 @@ struct TGPUSkinVertexBase
 
 	FORCEINLINE FVector GetTangentY() const
 	{
-		FVector  TanX = TangentX;
-		FVector4 TanZ = TangentZ;
-
-		return (FVector(TanZ) ^ TanX) * TanZ.W;
+		return GenerateYAxis(TangentX, TangentZ);
 	}
 
 	/** Serializer */
@@ -162,6 +159,7 @@ public:
 		if ((uint32)ArrayType::Num() < NumVertices)
 		{
 			// Enlarge the array.
+			ArrayType::Reserve(NumVertices);
 			ArrayType::AddUninitialized(NumVertices - ArrayType::Num());
 		}
 		else if ((uint32)ArrayType::Num() > NumVertices)

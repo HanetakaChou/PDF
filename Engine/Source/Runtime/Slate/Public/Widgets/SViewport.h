@@ -13,7 +13,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Rendering/RenderingCommon.h"
 #include "Widgets/SWindow.h"
-#include "HittestGrid.h"
+#include "Input/HittestGrid.h"
 
 class FActiveTimerHandle;
 class FPaintArgs;
@@ -36,6 +36,7 @@ public:
 		, _IgnoreTextureAlpha(true)
 		, _ViewportSize(FVector2D(320.0f, 240.0f))
 	{
+		_Clipping = EWidgetClipping::ClipToBoundsAlways;
 	}
 
 		SLATE_DEFAULT_SLOT( FArguments, Content )
@@ -171,6 +172,23 @@ public:
 	}
 
 	/**
+	 * If true, the viewport's texture alpha is ignored when performing blending.  In this case only the viewport tint opacity is used
+	 * If false, the texture alpha is used during blending
+	 * 
+	 * @param bIgnoreTextureAlpha If texture alpha should be ignored when blending.
+	 */
+	void SetIgnoreTextureAlpha(const bool bInIgnoreTextureAlpha)
+	{
+		bIgnoreTextureAlpha = bInIgnoreTextureAlpha;
+	}
+
+	/** @return Whether or not to ignore texture alpha when blending */
+	bool GetIgnoreTextureAlpha(void) const
+	{
+		return bIgnoreTextureAlpha;
+	}
+
+	/**
 	 * Sets whether stereo rendering is allowed for this viewport.  Advanced use only
 	 * 
 	 * @param	bInEnableStereoRendering	Whether stereo rendering should be allowed for this viewport
@@ -199,6 +217,8 @@ public:
 	virtual FReply OnTouchStarted( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchMoved( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchEnded( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
+	virtual FReply OnTouchForceChanged(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent) override;
+	virtual FReply OnTouchFirstMove(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent) override;
 	virtual FReply OnTouchGesture( const FGeometry& MyGeometry, const FPointerEvent& GestureEvent ) override;
 	virtual FCursorReply OnCursorQuery( const FGeometry& MyGeometry, const FPointerEvent& CursorEvent ) const override;
 	virtual TOptional<TSharedRef<SWidget>> OnMapCursor(const FCursorReply& CursorReply) const override;

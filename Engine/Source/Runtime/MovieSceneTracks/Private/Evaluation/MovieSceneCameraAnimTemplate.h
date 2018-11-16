@@ -50,7 +50,7 @@ private:
 
 	/** Cached section start time */
 	UPROPERTY()
-	float SectionStartTime;
+	FFrameNumber SectionStartTime;
 };
 
 /** Section template for a camera anim */
@@ -58,8 +58,8 @@ USTRUCT()
 struct FMovieSceneCameraShakeSectionTemplate : public FMovieSceneAdditiveCameraAnimationTemplate
 {
 	GENERATED_BODY()
-	
-	FMovieSceneCameraShakeSectionTemplate() {}
+
+	FMovieSceneCameraShakeSectionTemplate();
 	FMovieSceneCameraShakeSectionTemplate(const UMovieSceneCameraShakeSection& Section);
 
 private:
@@ -75,5 +75,5 @@ private:
 
 	/** Cached section start time */
 	UPROPERTY()
-	float SectionStartTime;
+	FFrameNumber SectionStartTime;
 };

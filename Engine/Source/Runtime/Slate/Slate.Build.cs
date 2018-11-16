@@ -30,21 +30,15 @@ public class Slate : ModuleRules
 				"Runtime/Slate/Private/Framework/MultiBox",
 				"Runtime/Slate/Private/Framework/Notifications",
 				"Runtime/Slate/Private/Framework/Styling",
-				"Runtime/Slate/Private/Framework/Testing",
 				"Runtime/Slate/Private/Framework/Text",
 				"Runtime/Slate/Private/Framework/Text/IOS",
-				"Runtime/Slate/Private/Framework/Text/Tests",
-				"Runtime/Slate/Private/Framework/Widgets",
 				"Runtime/Slate/Private/Widgets/Colors",
 				"Runtime/Slate/Private/Widgets/Docking",
 				"Runtime/Slate/Private/Widgets/Images",
 				"Runtime/Slate/Private/Widgets/Input",
 				"Runtime/Slate/Private/Widgets/Layout",
-				"Runtime/Slate/Private/Widgets/Navigation",
 				"Runtime/Slate/Private/Widgets/Notifications",
-				"Runtime/Slate/Private/Widgets/Testing",
 				"Runtime/Slate/Private/Widgets/Text",
-				"Runtime/Slate/Private/Widgets/Tutorials",
 				"Runtime/Slate/Private/Widgets/Views",
 
 				"Runtime/Toolbox/Public/"
@@ -58,6 +52,19 @@ public class Slate : ModuleRules
 		else if (Target.Platform == UnrealTargetPlatform.Linux)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
+		}
+
+		// Add slate runtime dependencies
+		if (Target.bUsesSlate)
+		{
+			RuntimeDependencies.Add("$(EngineDir)/Content/Slate/...", StagedFileType.UFS);
+			RuntimeDependencies.Add("$(EngineDir)/Content/SlateDebug/...", StagedFileType.UFS);
+
+			if (Target.ProjectFile != null)
+			{
+				RuntimeDependencies.Add("$(ProjectDir)/Content/Slate/...", StagedFileType.UFS);
+				RuntimeDependencies.Add("$(ProjectDir)/Content/SlateDebug/...", StagedFileType.UFS);
+			}
 		}
 	}
 }

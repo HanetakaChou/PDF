@@ -35,10 +35,6 @@ UPartyGameState::UPartyGameState(const FObjectInitializer& ObjectInitializer) :
 {
 	PartyMemberStateClass = UPartyMemberState::StaticClass();
 	ReservationBeaconClientClass = APartyBeaconClient::StaticClass();
-
-	if (!HasAnyFlags(RF_ClassDefaultObject))
-	{
-	}
 }
 
 void UPartyGameState::BeginDestroy()
@@ -257,7 +253,7 @@ bool UPartyGameState::ResetForFrontend()
 							TSharedPtr<FOnlinePartyMember> CheckPartyMember = PartyInt->GetPartyMember(*OwningUserId, *OssParty->PartyId, *MemberId);
 							if (!CheckPartyMember.IsValid())
 							{
-								UE_LOG(LogParty, Verbose, TEXT("[%s] Player %s left during fixup"), *OssParty->PartyId->ToString(), *MemberId.ToString());
+								UE_LOG(LogParty, Verbose, TEXT("[%s] Player %s left during fixup"), *OssParty->PartyId->ToString(), *MemberId.ToDebugString());
 								HandlePartyMemberLeft(*MemberId, EMemberExitedReason::Left);
 							}
 						}
@@ -278,7 +274,7 @@ bool UPartyGameState::ResetForFrontend()
 							TSharedPtr<FOnlinePartyData> PartyMemberData = PartyInt->GetPartyMemberData(*OwningUserId, *OssParty->PartyId, *MemberId);
 							if (PartyMemberData.IsValid())
 							{
-								UE_LOG(LogParty, Verbose, TEXT("[%s] Player %s data received during fixup"), *OssParty->PartyId->ToString(), *UniqueId.ToString());
+								UE_LOG(LogParty, Verbose, TEXT("[%s] Player %s data received during fixup"), *OssParty->PartyId->ToString(), *UniqueId.ToDebugString());
 								HandlePartyMemberDataReceived(*MemberId, PartyMemberData.ToSharedRef());
 							}
 						}
@@ -305,9 +301,8 @@ bool UPartyGameState::ResetForFrontend()
 
 						while (ExistingPendingApprovals.Dequeue(PendingApproval))
 						{
-							HandlePartyJoinRequestReceived(*PendingApproval.RecipientId, *PendingApproval.SenderId);
+							HandlePartyJoinRequestReceived(*PendingApproval.RecipientId, *PendingApproval.SenderId, PendingApproval.Platform, *PendingApproval.JoinData);
 						}
-
 					}
 				}
 				else
@@ -366,7 +361,7 @@ UPartyMemberState* UPartyGameState::CreateNewPartyMember(const FUniqueNetId& InM
 			}
 			else
 			{
-				UE_LOG(LogParty, Warning, TEXT("CreateNewPartyMember: Invalid party member %s"), *InMemberId.ToString());
+				UE_LOG(LogParty, Warning, TEXT("CreateNewPartyMember: Invalid party member %s"), *InMemberId.ToDebugString());
 			}
 		}
 		else
@@ -394,7 +389,7 @@ void UPartyGameState::HandlePartyConfigChanged( const TSharedRef<FPartyConfigura
 
 void UPartyGameState::HandlePartyMemberJoined(const FUniqueNetId& InMemberId)
 {
-	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberJoined %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToString());
+	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberJoined %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToDebugString());
 
 	TSharedRef<const FUniqueNetId> IdRef = InMemberId.AsShared();
 	FUniqueNetIdRepl MemberId(IdRef);
@@ -437,7 +432,7 @@ void UPartyGameState::HandlePartyMemberJoined(const FUniqueNetId& InMemberId)
 
 void UPartyGameState::HandlePartyMemberLeft(const FUniqueNetId& InMemberId, EMemberExitedReason Reason)
 {
-	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberLeft %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToString());
+	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberLeft %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToDebugString());
 
 	if (ensure(InMemberId.IsValid()))
 	{
@@ -481,7 +476,7 @@ void UPartyGameState::HandlePartyMemberLeft(const FUniqueNetId& InMemberId, EMem
 void UPartyGameState::HandlePartyMemberPromoted(const FUniqueNetId& InMemberId)
 {
 	ensure(OssParty.IsValid());
-	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberPromoted %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToString());
+	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberPromoted %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToDebugString());
 
 	if (ensure(InMemberId.IsValid()))
 	{
@@ -546,7 +541,7 @@ void UPartyGameState::HandlePartyDataReceived(const TSharedRef<FOnlinePartyData>
 
 void UPartyGameState::HandlePartyMemberDataReceived(const FUniqueNetId& InMemberId, const TSharedRef<FOnlinePartyData>& InPartyMemberData)
 {
-	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberDataReceived %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToString());
+	UE_LOG(LogParty, VeryVerbose, TEXT("[%s] HandlePartyMemberDataReceived %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *InMemberId.ToDebugString());
 
 	UWorld* World = GetWorld();
 	check(World);
@@ -588,7 +583,7 @@ void UPartyGameState::HandlePartyMemberDataReceived(const FUniqueNetId& InMember
 			}
 			else
 			{
-				UE_LOG(LogParty, Warning, TEXT("[%s] Failed to serialize party member data!"), *InMemberId.ToString());
+				UE_LOG(LogParty, Warning, TEXT("[%s] Failed to serialize party member data!"), *InMemberId.ToDebugString());
 				ensure(CurrentPartyMember->MemberStateRefDef->GetCppStructOps()->Copy(CurrentPartyMember->MemberStateRef, CurrentPartyMember->MemberStateRefScratch, 1));
 			}
 		}
@@ -619,9 +614,9 @@ void UPartyGameState::HandleLockoutPromotionStateChange(bool bNewLockoutState)
 	bPromotionLockoutState = bNewLockoutState;
 }
 
-EApprovalAction UPartyGameState::ProcessJoinRequest(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId, EJoinPartyDenialReason& DenialReason) const
+EApprovalAction UPartyGameState::ProcessJoinRequest(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId, const FString& Platform, const FOnlinePartyData& JoinData, EJoinPartyDenialReason& DenialReason) const
 {
-	if (IsInJoinableGameState())
+	if (IsGameSessionJoinable())
 	{
 		return EApprovalAction::Approve;
 	}
@@ -632,7 +627,7 @@ EApprovalAction UPartyGameState::ProcessJoinRequest(const FUniqueNetId& Recipien
 	}
 }
 
-void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId)
+void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId, const FString& Platform, const FOnlinePartyData& JoinData)
 {
 #if 0 // auto approve requests for debugging error case
 	UWorld* World = GetWorld();
@@ -654,7 +649,7 @@ void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& Recipie
 		if (NumPartyMembers < MaxPartyMembers)
 		{
 			// Give the game a chance to accept or deny this player
-			ApprovalAction = ProcessJoinRequest(RecipientId, SenderId, DenialReason);
+			ApprovalAction = ProcessJoinRequest(RecipientId, SenderId, Platform, JoinData, DenialReason);
 		}
 		else
 		{
@@ -671,11 +666,13 @@ void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& Recipie
 		ApprovalAction == EApprovalAction::EnqueueAndStartBeacon)
 	{
 		// Enqueue for a more opportune time
-		UE_LOG(LogParty, Verbose, TEXT("[%s] Enqueuing approval request for %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *SenderId.ToString());
+		UE_LOG(LogParty, Verbose, TEXT("[%s] Enqueuing approval request for %s"), OssParty.IsValid() ? *OssParty->PartyId->ToDebugString() : TEXT("INVALID"), *SenderId.ToDebugString());
 		
 		FPendingMemberApproval PendingApproval;
 		PendingApproval.RecipientId.SetUniqueNetId(RecipientId.AsShared());
 		PendingApproval.SenderId.SetUniqueNetId(SenderId.AsShared());
+		PendingApproval.Platform = Platform;
+		PendingApproval.JoinData = JoinData.AsShared();
 		PendingApprovals.Enqueue(PendingApproval);
 
 		if (ReservationBeaconClient == nullptr &&
@@ -693,7 +690,7 @@ void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& Recipie
 		}
 
 		// Respond now
-		UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with %s"), OssParty.IsValid() ? *OssParty->PartyId->ToString() : TEXT("INVALID"), *SenderId.ToString(), bApproveRequest ? TEXT("approved") : TEXT("denied"));
+		UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with %s"), OssParty.IsValid() ? *OssParty->PartyId->ToDebugString() : TEXT("INVALID"), *SenderId.ToDebugString(), bApproveRequest ? TEXT("approved") : TEXT("denied"));
 		
 		UWorld* World = GetWorld();
 		IOnlinePartyPtr PartyInt = Online::GetPartyInterface(World);
@@ -704,7 +701,7 @@ void UPartyGameState::HandlePartyJoinRequestReceived(const FUniqueNetId& Recipie
 	}
 }
 
-void UPartyGameState::HandlePartyQueryJoinabilityRequestReceived(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId)
+void UPartyGameState::HandlePartyQueryJoinabilityRequestReceived(const FUniqueNetId& RecipientId, const FUniqueNetId& SenderId, const FString& Platform, const FOnlinePartyData& JoinData)
 {
 	EApprovalAction ApprovalAction = EApprovalAction::Deny;
 	EJoinPartyDenialReason DenialReason = EJoinPartyDenialReason::Busy;
@@ -716,7 +713,7 @@ void UPartyGameState::HandlePartyQueryJoinabilityRequestReceived(const FUniqueNe
 		if (NumPartyMembers < MaxPartyMembers)
 		{
 			// Give the game a chance to accept or deny this player
-			ApprovalAction = ProcessJoinRequest(RecipientId, SenderId, DenialReason);
+			ApprovalAction = ProcessJoinRequest(RecipientId, SenderId, Platform, JoinData, DenialReason);
 		}
 		else
 		{
@@ -781,38 +778,31 @@ void UPartyGameState::SetPartyType(EPartyType InPartyType, bool bLeaderFriendsOn
 		{
 			bool bIsPrivate = (InPartyType == EPartyType::Private);
 
-			PartySystemPermissions::EPresencePermissions PresencePermissions;
-			if (bLeaderFriendsOnly)
+			PartySystemPermissions::EPermissionType PresencePermissions;
+			if (bIsPrivate)
 			{
-				if (bIsPrivate)
-				{
-					PresencePermissions = PartySystemPermissions::FriendsInviteOnly;
-				}
-				else
-				{
-					PresencePermissions = PartySystemPermissions::FriendsOnly;
-				}
+				PresencePermissions = PartySystemPermissions::EPermissionType::Noone;
 			}
 			else
 			{
-				if (bIsPrivate)
+				if (bLeaderFriendsOnly)
 				{
-					PresencePermissions = PartySystemPermissions::PublicInviteOnly;
+					PresencePermissions = PartySystemPermissions::EPermissionType::Leader;
 				}
 				else
 				{
-					PresencePermissions = PartySystemPermissions::Public;
+					PresencePermissions = PartySystemPermissions::EPermissionType::Anyone;
 				}
 			}
 
 			CurrentConfig.PresencePermissions = PresencePermissions;
 			if (PartyStateRef->bInvitesDisabled)
 			{
-				CurrentConfig.InvitePermissions = PartySystemPermissions::EInvitePermissions::Noone;
+				CurrentConfig.InvitePermissions = PartySystemPermissions::EPermissionType::Noone;
 			}
 			else
 			{
-				CurrentConfig.InvitePermissions = bLeaderInvitesOnly ? PartySystemPermissions::EInvitePermissions::Leader : PartySystemPermissions::EInvitePermissions::Anyone;
+				CurrentConfig.InvitePermissions = bLeaderInvitesOnly ? PartySystemPermissions::EPermissionType::Leader : PartySystemPermissions::EPermissionType::Anyone;
 			}
 
 			UpdatePartyConfig(bIsPrivate);
@@ -862,11 +852,11 @@ void UPartyGameState::SetInvitesDisabled(bool bInvitesDisabled)
 		{
 			if (bInvitesDisabled)
 			{
-				CurrentConfig.InvitePermissions = PartySystemPermissions::EInvitePermissions::Noone;
+				CurrentConfig.InvitePermissions = PartySystemPermissions::EPermissionType::Noone;
 			}
 			else
 			{
-				CurrentConfig.InvitePermissions = PartyStateRef->bLeaderInvitesOnly ? PartySystemPermissions::EInvitePermissions::Leader : PartySystemPermissions::EInvitePermissions::Anyone;
+				CurrentConfig.InvitePermissions = PartyStateRef->bLeaderInvitesOnly ? PartySystemPermissions::EPermissionType::Leader : PartySystemPermissions::EPermissionType::Anyone;
 			}
 
 			UpdatePartyConfig();
@@ -954,7 +944,7 @@ void UPartyGameState::UpdateAcceptingMembers()
 		bool bCurrentlyAcceptingMembers = false;
 
 		// Look at game joinability (in game with permission or no game at all)
-		if (IsInJoinableGameState())
+		if (IsGameSessionJoinable())
 		{
 			// Make sure the party isn't full
 			int32 NumPartyMembers = GetPartySize();
@@ -1043,7 +1033,7 @@ bool UPartyGameState::IsAcceptingMembers(EJoinPartyDenialReason* const DenialRea
 	}
 }
 
-bool UPartyGameState::IsInJoinableGameState() const
+bool UPartyGameState::IsGameSessionJoinable() const
 {
 	bool bInGame = false;
 	bool bGameJoinable = false;
@@ -1127,7 +1117,7 @@ void UPartyGameState::OnUpdatePartyConfigComplete(const FUniqueNetId& LocalUserI
 	}
 }
 
-bool UPartyGameState::IsLocalPartyLeader()
+bool UPartyGameState::IsLocalPartyLeader() const
 {
 	if (ensure(OwningUserId.IsValid()))
 	{
@@ -1183,6 +1173,12 @@ FChatRoomId UPartyGameState::GetChatRoomID() const
 {
 	ensure(OssParty.IsValid());
 	return OssParty->RoomId;
+}
+
+bool UPartyGameState::IsNetDriverFromReservationBeacon(const UNetDriver* const InNetDriver) const
+{
+	const FName NetDriverName = InNetDriver->NetDriverName;
+	return (ReservationBeaconClient && NetDriverName == ReservationBeaconClient->GetNetDriverName()) || (NetDriverName == LastReservationBeaconClientNetDriverName);
 }
 
 void UPartyGameState::OnPartyMemberPromoted(const FUniqueNetId& LocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& InMemberId, const EPromoteMemberCompletionResult Result)
@@ -1280,7 +1276,7 @@ void UPartyGameState::KickMember(const FUniqueNetIdRepl& PartyMemberToKick)
 UPartyMemberState* UPartyGameState::InitPartyMemberStateFromLocalPlayer(const ULocalPlayer* LocalPlayer)
 {
 	UPartyMemberState* LocalPartyMemberState = nullptr;
-	TSharedPtr<const FUniqueNetId> UniqueNetId = LocalPlayer->GetPreferredUniqueNetId();
+	FUniqueNetIdRepl UniqueNetId = LocalPlayer->GetPreferredUniqueNetId();
 	if (UniqueNetId.IsValid())
 	{
 		UPartyMemberState** LocalPartyMemberStatePtr = PartyMembersState.Find(UniqueNetId);
@@ -1423,6 +1419,20 @@ void UPartyGameState::GetSessionInfo(FName SessionName, FString& URL, FString& S
 	}
 }
 
+bool GetCrossplayPreferenceFromJoinData(const FOnlinePartyData& JoinData, ECrossplayPreference& OutPreference)
+{
+	FVariantData CrossplayPreferenceVariant;
+	if (JoinData.GetAttribute(TEXT("CrossplayPreference"), CrossplayPreferenceVariant))
+	{
+		int32 CrossplayPreferenceInt;
+		CrossplayPreferenceVariant.GetValue(CrossplayPreferenceInt);
+		OutPreference = (ECrossplayPreference)CrossplayPreferenceInt;
+		return true;
+	}
+
+	return false;
+}
+
 void UPartyGameState::ConnectToReservationBeacon()
 {
 	if (IsLocalPartyLeader())
@@ -1435,6 +1445,8 @@ void UPartyGameState::ConnectToReservationBeacon()
 			UWorld* World = GetWorld();
 			check(World);
 
+			// Clear out our cached net driver name, we're going to create a new one here
+			LastReservationBeaconClientNetDriverName = NAME_None;
 			// Reconnect to the reservation beacon to maintain our place in the game (just until actual joined, holds place for all party members)
 			ReservationBeaconClient = World->SpawnActor<APartyBeaconClient>(ReservationBeaconClientClass);
 			if (ReservationBeaconClient)
@@ -1445,8 +1457,13 @@ void UPartyGameState::ConnectToReservationBeacon()
 				ReservationBeaconClient->OnReservationRequestComplete().BindUObject(this, &ThisClass::OnReservationBeaconUpdateResponseReceived);
 				ReservationBeaconClient->OnReservationCountUpdate().BindUObject(this, &ThisClass::OnReservationCountUpdate);
 
+				ECrossplayPreference CrossplayPreference = ECrossplayPreference::NoSelection;
+				const bool bFoundResult = GetCrossplayPreferenceFromJoinData(*NextApproval.JoinData, CrossplayPreference);
+
 				FPlayerReservation NewPlayerRes;
 				NewPlayerRes.UniqueId = NextApproval.SenderId;
+				NewPlayerRes.Platform = NextApproval.Platform;
+				NewPlayerRes.bAllowCrossplay = (CrossplayPreference == ECrossplayPreference::OptedIn);
 
 				TArray<FPlayerReservation> PlayersToAdd;
 				PlayersToAdd.Add(NewPlayerRes);
@@ -1503,7 +1520,7 @@ void UPartyGameState::RejectAllPendingJoinRequests()
 		bEmpty = !PendingApprovals.Dequeue(PendingApproval);
 		if (!bEmpty && bValidInterface)
 		{
-			UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with denied"), *PartyId->ToString(), *PendingApproval.SenderId.ToString());
+			UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with denied"), *PartyId->ToDebugString(), *PendingApproval.SenderId.ToDebugString());
 			PartyInt->ApproveJoinRequest(*PendingApproval.RecipientId, *PartyId, *PendingApproval.SenderId, false, (int32)EJoinPartyDenialReason::Busy);
 		}
 	} while (!bEmpty);
@@ -1516,6 +1533,41 @@ void UPartyGameState::OnReservationBeaconUpdateConnectionFailure()
 	// empty the queue, denying all requests
 	RejectAllPendingJoinRequests();
 	CleanupReservationBeacon();
+}
+
+void UPartyGameState::PumpApprovalQueue()
+{
+	// Check if there are any more while we are connected
+	FPendingMemberApproval NextApproval;
+	if (PendingApprovals.Peek(NextApproval))
+	{
+		if (ensure(ReservationBeaconClient))
+		{
+			FUniqueNetIdRepl PartyLeader(GetPartyLeader());
+
+			ECrossplayPreference CrossplayPreference = ECrossplayPreference::NoSelection;
+			const bool bFoundResult = GetCrossplayPreferenceFromJoinData(*NextApproval.JoinData, CrossplayPreference);
+
+			FPlayerReservation NewPlayerRes;
+			NewPlayerRes.UniqueId = NextApproval.SenderId;
+			NewPlayerRes.Platform = NextApproval.Platform;
+			NewPlayerRes.bAllowCrossplay = (CrossplayPreference == ECrossplayPreference::OptedIn);
+
+			TArray<FPlayerReservation> PlayersToAdd;
+			PlayersToAdd.Add(NewPlayerRes);
+
+			ReservationBeaconClient->RequestReservationUpdate(PartyLeader, PlayersToAdd);
+		}
+		else
+		{
+			UE_LOG(LogParty, Warning, TEXT("UPartyGameState::OnReservationBeaconUpdateResponseReceived: ReservationBeaconClient is null while trying to process more requests"));
+			RejectAllPendingJoinRequests();
+		}
+	}
+	else
+	{
+		CleanupReservationBeacon();
+	}
 }
 
 void UPartyGameState::OnReservationBeaconUpdateResponseReceived(EPartyReservationResult::Type ReservationResponse)
@@ -1539,37 +1591,12 @@ void UPartyGameState::OnReservationBeaconUpdateResponseReceived(EPartyReservatio
 		{
 			if (bValidInterface)
 			{
-				UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with approved"), *PartyId->ToString(), *PendingApproval.SenderId.ToString());
+				UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with approved"), *PartyId->ToDebugString(), *PendingApproval.SenderId.ToDebugString());
 				PartyInt->ApproveJoinRequest(*PendingApproval.RecipientId, *PartyId, *PendingApproval.SenderId, true);
 			}
 		}
 
-		// Check if there are any more while we are connected
-		FPendingMemberApproval NextApproval;
-		if (PendingApprovals.Peek(NextApproval))
-		{
-			if (ensure(ReservationBeaconClient))
-			{
-				FUniqueNetIdRepl PartyLeader(GetPartyLeader());
-
-				FPlayerReservation NewPlayerRes;
-				NewPlayerRes.UniqueId = NextApproval.SenderId;
-
-				TArray<FPlayerReservation> PlayersToAdd;
-				PlayersToAdd.Add(NewPlayerRes);
-
-				ReservationBeaconClient->RequestReservationUpdate(PartyLeader, PlayersToAdd);
-			}
-			else
-			{
-				UE_LOG(LogParty, Warning, TEXT("UPartyGameState::OnReservationBeaconUpdateResponseReceived: ReservationBeaconClient is null while trying to process more requests"));
-				RejectAllPendingJoinRequests();
-			}
-		}
-		else
-		{
-			CleanupReservationBeacon();
-		}
+		PumpApprovalQueue();
 	}
 	else
 	{
@@ -1589,6 +1616,7 @@ void UPartyGameState::CleanupReservationBeacon()
 	{
 		UE_LOG(LogParty, Verbose, TEXT("Party reservation beacon cleanup while in state %s, pending approvals: %s"), ToString(ReservationBeaconClient->GetConnectionState()), !PendingApprovals.IsEmpty() ? TEXT("true") : TEXT("false"));
 
+		LastReservationBeaconClientNetDriverName = ReservationBeaconClient->GetNetDriverName();
 		ReservationBeaconClient->OnHostConnectionFailure().Unbind();
 		ReservationBeaconClient->OnReservationRequestComplete().Unbind();
 		ReservationBeaconClient->OnReservationCountUpdate().Unbind();

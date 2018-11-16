@@ -1,13 +1,18 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "AndroidJava.h"
-#include "AndroidJavaEnv.h"
+#include "Android/AndroidJava.h"
+#include "Android/AndroidJavaEnv.h"
+
+#if USE_ANDROID_JNI
 
 FJavaClassObject::FJavaClassObject(FName ClassName, const char* CtorSig, ...)
 {
 	JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
 
-	Class = AndroidJavaEnv::FindJavaClass(ClassName.GetPlainANSIString());
+	ANSICHAR AnsiClassName[NAME_SIZE];
+	ClassName.GetPlainANSIString(AnsiClassName);
+
+	Class = AndroidJavaEnv::FindJavaClass(AnsiClassName);
 	check(Class);
 	jmethodID Constructor = JEnv->GetMethodID(Class, "<init>", CtorSig);
 	check(Constructor);
@@ -151,3 +156,5 @@ void FJavaClassObject::VerifyException()
 		verify(false && "Java JNI call failed with an exception.");
 	}
 }
+
+#endif

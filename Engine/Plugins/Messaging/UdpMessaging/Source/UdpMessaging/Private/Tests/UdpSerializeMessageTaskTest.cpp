@@ -4,11 +4,12 @@
 #include "HAL/Event.h"
 #include "Misc/AutomationTest.h"
 #include "Async/TaskGraphInterfaces.h"
+
+#include "UdpMessagingPrivate.h"
 #include "Transport/UdpSerializedMessage.h"
 #include "IMessageContext.h"
 #include "Transport/UdpSerializeMessageTask.h"
 #include "Tests/UdpMessagingTestTypes.h"
-
 
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUdpSerializeMessageTaskTest, "System.Core.Messaging.Transports.Udp.UdpSerializedMessage", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter)
@@ -24,10 +25,11 @@ bool FUdpSerializeMessageTaskTest::RunTest(const FString& Parameters)
 {
 	using namespace UdpSerializeMessageTaskTest;
 
-	const auto Context = MakeShared<FUdpMockMessageContext, ESPMode::ThreadSafe>(new FUdpMockMessage);
+	const auto TimeSent = FDateTime(2015, 9, 17, 10, 59, 23, 666);
+	const auto Context = MakeShared<FUdpMockMessageContext, ESPMode::ThreadSafe>(new FUdpMockMessage, TimeSent);
 
 	// synchronous reference serialization
-	const auto Message1 = MakeShared<FUdpSerializedMessage, ESPMode::ThreadSafe>();
+	const auto Message1 = MakeShared<FUdpSerializedMessage, ESPMode::ThreadSafe>(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION, Context->GetFlags());
 
 	FUdpSerializeMessageTask Task1(Context, Message1, nullptr);
 	{
@@ -40,7 +42,7 @@ bool FUdpSerializeMessageTaskTest::RunTest(const FString& Parameters)
 		FPlatformProcess::ReturnSynchEventToPool(EventToDelete);
 	});
 
-	TSharedRef<FUdpSerializedMessage, ESPMode::ThreadSafe> Message2 = MakeShareable(new FUdpSerializedMessage);
+	TSharedRef<FUdpSerializedMessage, ESPMode::ThreadSafe> Message2 = MakeShared<FUdpSerializedMessage, ESPMode::ThreadSafe>(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION, Context->GetFlags());
 	TGraphTask<FUdpSerializeMessageTask>::CreateTask().ConstructAndDispatchWhenReady(Context, Message2, CompletionEvent);
 
 	const bool Completed = CompletionEvent->Wait(MaxWaitTime);

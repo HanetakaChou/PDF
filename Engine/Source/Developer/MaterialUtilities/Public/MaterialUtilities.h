@@ -172,6 +172,7 @@ struct FMaterialMergeData
 		, MaterialIndex(InMaterialIndex)
 		, TexcoordBounds(InTexcoordBounds)
 		, TexCoords(InTexCoords)
+		, LightMapIndex(1)
 		, EmissiveScale(0.0f)
 	{
 		ProxyCache = new FExportMaterialProxyCache();
@@ -349,7 +350,7 @@ public:
 	* @return						Returns a pointer to the constructed UMaterialInstanceConstant object.
 	*/
 
-	static UMaterialInstanceConstant* CreateInstancedMaterial(UMaterial* BaseMaterial, UPackage* InOuter, const FString& BaseName, EObjectFlags Flags);
+	static UMaterialInstanceConstant* CreateInstancedMaterial(UMaterialInterface* BaseMaterial, UPackage* InOuter, const FString& BaseName, EObjectFlags Flags);
 
 	/**
 	* Creates bakes textures for a ULandscapeComponent

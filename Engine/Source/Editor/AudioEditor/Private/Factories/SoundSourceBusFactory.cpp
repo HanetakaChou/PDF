@@ -4,7 +4,7 @@
 #include "Sound/SoundSourceBus.h"
 #include "AudioDeviceManager.h"
 #include "Engine/Engine.h"
-#include "Classes/Sound/AudioSettings.h"
+#include "Sound/AudioSettings.h"
 
 USoundSourceBusFactory::USoundSourceBusFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -18,12 +18,6 @@ USoundSourceBusFactory::USoundSourceBusFactory(const FObjectInitializer& ObjectI
 UObject* USoundSourceBusFactory::FactoryCreateNew(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
 	USoundSourceBus* SoundSourceBus = NewObject<USoundSourceBus>(InParent, InName, Flags);
-
-	FAudioDeviceManager* AudioDeviceManager = GEngine ? GEngine->GetAudioDeviceManager() : nullptr;
-	if (AudioDeviceManager)
-	{
-		AudioDeviceManager->InitSoundSubmixes();
-	}
 
 	return SoundSourceBus;
 }

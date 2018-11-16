@@ -30,6 +30,7 @@ private:
 	 */
 	bool HandleFriendExecCommands(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleSessionExecCommands(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandlePresenceExecCommands(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandlePurchaseExecCommands(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
 	
 	/** Delegate fired when exec cheat related to receipts completes */
@@ -37,11 +38,13 @@ private:
 	
 	/** Dump purchase receipts for a given user id */
 	void DumpReceipts(const FUniqueNetId& UserId);
+	/** Finalize purchases known to the client, will wipe real money purchases without fulfillment */
+	void FinalizeReceipts(const FUniqueNetId& UserId);
 
 protected:
 
 	/** Hidden on purpose */
-	FOnlineSubsystemImpl();
+	FOnlineSubsystemImpl() = delete;
 	FOnlineSubsystemImpl(FName InSubsystemName, FName InInstanceName);
 
 	/** Name of the subsystem @see OnlineSubsystemNames.h */
@@ -91,11 +94,13 @@ public:
 	virtual bool IsLocalPlayer(const FUniqueNetId& UniqueId) const override;
 	virtual void SetUsingMultiplayerFeatures(const FUniqueNetId& UniqueId, bool bUsingMP) override {};
 	virtual EOnlineEnvironment::Type GetOnlineEnvironment() const override { return EOnlineEnvironment::Unknown; }
+	virtual FString GetOnlineEnvironmentName() const override { return EOnlineEnvironment::ToString(GetOnlineEnvironment()); }
 	virtual IMessageSanitizerPtr GetMessageSanitizer(int32 LocalUserNum, FString& OutAuthTypeToExclude) const override;
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 	virtual FName GetSubsystemName() const override { return SubsystemName; }
 	virtual FName GetInstanceName() const override { return InstanceName; }
 	virtual bool IsEnabled() const override;
+	virtual void ReloadConfigs(const TSet<FString>& /*ConfigSections*/) override {};
 
 	/**
 	 * Tick function
@@ -112,7 +117,7 @@ public:
 	 * @param RedactFields - The fields we want to specifically omit (optional, only supports EJson::String), if nothing specified everything is redacted
 	 * @return the modified version of the response string
 	 */
-	FString FilterResponseStr(const FString& ResponseStr, const TArray<FString>& RedactFields = TArray<FString>());
+	static FString FilterResponseStr(const FString& ResponseStr, const TArray<FString>& RedactFields = TArray<FString>());
 
 	/**
 	 * Queue a delegate to be executed on the next tick

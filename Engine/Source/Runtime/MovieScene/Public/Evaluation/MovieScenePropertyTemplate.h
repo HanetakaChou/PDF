@@ -12,11 +12,11 @@
 #include "MovieSceneExecutionToken.h"
 #include "Evaluation/PersistentEvaluationData.h"
 #include "Evaluation/MovieSceneEvalTemplate.h"
-#include "MessageLog.h"
+#include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "MovieSceneSequence.h"
-#include "MovieSceneBlendingActuator.h"
+#include "Evaluation/Blending/MovieSceneBlendingActuator.h"
 #include "MovieScenePropertyTemplate.generated.h"
 
 class UMovieScenePropertyTrack;
@@ -245,7 +245,7 @@ struct TPropertyActuator : TMovieSceneBlendingActuator<PropertyType>
 
 	virtual void Actuate(UObject* InObject, typename TCallTraits<PropertyType>::ParamType InFinalValue, const TBlendableTokenStack<PropertyType>& OriginalStack, const FMovieSceneContext& Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) override
 	{
-		ensureMsgf(InObject, TEXT("Attempting to evaluate a Property track with a null object."));
+		ensureMsgf(InObject, TEXT("Attempting to evaluate a Property track '%s' with a null object."), *PropertyData.PropertyBindings->GetPropertyName().ToString());
 
 		if (InObject)
 		{

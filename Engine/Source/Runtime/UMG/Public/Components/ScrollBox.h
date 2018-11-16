@@ -44,7 +44,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	ESlateVisibility ScrollBarVisibility;
 
-	/**  Enable to always consume mouse wheel event, even when scrolling is not possible */
+	/** When mouse wheel events should be consumed. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	EConsumeMouseWheel ConsumeMouseWheel;
 
@@ -107,6 +107,9 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	float GetScrollOffset() const;
+
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	float GetViewOffsetFraction() const;
 
 	/** Scrolls the ScrollBox to the top instantly */
 	UFUNCTION(BlueprintCallable, Category="Widget")

@@ -37,9 +37,8 @@ typedef FMacPlatformTypes FPlatformTypes;
 #define PLATFORM_COMPILER_DISTINGUISHES_INT_AND_LONG			1
 #define PLATFORM_TCHAR_IS_4_BYTES					1
 #define PLATFORM_HAS_BSD_TIME						1
-#define PLATFORM_HAS_BSD_IPV6_SOCKETS				1
 //#define PLATFORM_USE_PTHREADS						1
-#define PLATFORM_MAX_FILEPATH_LENGTH				MAX_PATH
+#define PLATFORM_MAX_FILEPATH_LENGTH_DEPRECATED		MAC_MAX_PATH
 #define PLATFORM_SUPPORTS_TBB						1
 #define PLATFORM_SUPPORTS_STACK_SYMBOLS				1
 #define PLATFORM_HAS_BSD_SOCKET_FEATURE_MSG_DONTWAIT	1
@@ -47,6 +46,12 @@ typedef FMacPlatformTypes FPlatformTypes;
 #define PLATFORM_RHITHREAD_DEFAULT_BYPASS			WITH_EDITOR
 
 #define PLATFORM_ENABLE_POPCNT_INTRINSIC 1
+
+#if __has_feature(cxx_decltype_auto)
+	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 1
+#else
+	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 0
+#endif
 
 // Function type macros.
 #define VARARGS															/* Functions with variable arguments */
@@ -83,4 +88,4 @@ typedef FMacPlatformTypes FPlatformTypes;
 #define DLLEXPORT
 #define DLLIMPORT
 
-#define MAX_PATH 1024
+#define MAC_MAX_PATH 1024

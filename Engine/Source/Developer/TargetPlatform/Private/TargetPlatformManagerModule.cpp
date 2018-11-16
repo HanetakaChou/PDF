@@ -23,8 +23,8 @@
 #include "DesktopPlatformModule.h"
 
 #if WITH_PHYSX
-#include "IPhysXCooking.h"
-#include "IPhysXCookingModule.h"
+#include "Physics/IPhysXCooking.h"
+#include "Physics/IPhysXCookingModule.h"
 #endif // WITH_PHYSX
 
 DEFINE_LOG_CATEGORY_STATIC(LogTargetPlatformManager, Log, All);
@@ -36,6 +36,36 @@ DEFINE_LOG_CATEGORY_STATIC(LogTargetPlatformManager, Log, All);
 #else
 	#define AUTOSDKS_ENABLED 0
 #endif
+
+static const size_t MaxPlatformCount = 64;		// In the unlikely event that someone bumps this please note that there's
+												// an implicit assumption that there won't be more than 64 unique target
+												// platforms in the FTargetPlatformSet code since it uses one bit of an
+												// uint64 per platform.
+
+static const ITargetPlatform* TargetPlatformArray[MaxPlatformCount];
+
+static int32 PlatformCounter = 0;
+
+int32 
+ITargetPlatform::AssignPlatformOrdinal(const ITargetPlatform& Platform)
+{
+	check(PlatformCounter < MaxPlatformCount);
+
+	const int32 Ordinal = PlatformCounter++;
+
+	check(TargetPlatformArray[Ordinal] == nullptr);
+	TargetPlatformArray[Ordinal] = &Platform;
+
+	return Ordinal;
+}
+
+const ITargetPlatform* 
+ITargetPlatform::GetPlatformFromOrdinal(int32 Ordinal)
+{
+	check(Ordinal < PlatformCounter);
+
+	return TargetPlatformArray[Ordinal];
+}
 
 
 /**
@@ -144,7 +174,7 @@ public:
 		return nullptr;
 	}
 
-	virtual ITargetPlatform* FindTargetPlatform(FString Name) override
+	virtual ITargetPlatform* FindTargetPlatform(const FString& Name) override
 	{
 		const TArray<ITargetPlatform*>& TargetPlatforms = GetTargetPlatforms();	
 		
@@ -572,12 +602,11 @@ protected:
 	bool IsAutoSDKsEnabled()
 	{
 		static const FString SDKRootEnvFar(TEXT("UE_SDKS_ROOT"));
-		const int32 MaxPathSize = 16384;
-		TCHAR SDKPath[MaxPathSize] = { 0 };
-		FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar, SDKPath, MaxPathSize);
+
+		FString SDKPath = FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar);
 
 		// AutoSDKs only enabled if UE_SDKS_ROOT is set.
-		if (SDKPath[0] != 0)
+		if (SDKPath.Len() != 0)
 		{
 			return true;
 		}
@@ -607,6 +636,16 @@ protected:
 #endif
 		FModuleManager::Get().FindModules(*ModuleWildCard, Modules);
 
+#if !IS_MONOLITHIC
+		// Find all module subdirectories and add them so we can load dependent modules for target platform modules
+		TArray<FString> ModuleSubdirs;
+		IFileManager::Get().FindFilesRecursive(ModuleSubdirs, *FPlatformProcess::GetModulesDirectory(), TEXT("*"), false, true);
+		for (const FString& ModuleSubdir : ModuleSubdirs)
+		{
+			FModuleManager::Get().AddBinariesDirectory(*ModuleSubdir, false);
+		}
+#endif
+
 		// remove this module from the list
 		Modules.Remove(FName(TEXT("TargetPlatform")));
 
@@ -622,8 +661,8 @@ protected:
 			ITargetPlatformModule* Module = FModuleManager::LoadModulePtr<ITargetPlatformModule>(Modules[Index]);
 			if (Module)
 			{
-				ITargetPlatform* Platform = Module->GetTargetPlatform();
-				if (Platform != nullptr)
+				TArray<ITargetPlatform*> TargetPlatforms = Module->GetTargetPlatforms();
+				for (ITargetPlatform* Platform : TargetPlatforms) 
 				{
 					// would like to move this check to GetActiveTargetPlatforms, but too many things cache this result
 					// this setup will become faster after TTP 341897 is complete.
@@ -649,15 +688,11 @@ RETRY_SETUPANDVALIDATE:
 						UE_LOG(LogTemp, Display, TEXT("Failed to SetupAndValidateAutoSDK for platform %s"), *Modules[Index].ToString());
 					}
 				}
-				else
-				{
-					UE_LOG(LogTemp, Display, TEXT("Failed to get target platform %s"), *Modules[Index].ToString());
-				}
 			}
 		}
 	}
 
-	bool UpdatePlatformEnvironment(FString PlatformName, TArray<FString> &Keys, TArray<FString> &Values) override
+	bool UpdatePlatformEnvironment(const FString& PlatformName, TArray<FString> &Keys, TArray<FString> &Values) override
 	{
 		SetupEnvironmentVariables(Keys, Values);
 		return SetupSDKStatus(PlatformName);	
@@ -711,9 +746,7 @@ RETRY_SETUPANDVALIDATE:
 #endif		
 
 		static const FString SDKRootEnvFar(TEXT("UE_SDKS_ROOT"));
-		const int32 MaxPathSize = 16384;
-		FString SDKPath = FString::ChrN(16384, TEXT('\0'));
-		FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar, SDKPath.GetCharArray().GetData(), MaxPathSize);
+		FString SDKPath = FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar);
 
 		FString TargetSDKRoot = FPaths::Combine(*SDKPath, *HostPlatform, *AutoSDKPath);
 		static const FString SDKInstallManifestFileName(TEXT("CurrentlyInstalled.txt"));
@@ -816,9 +849,7 @@ RETRY_SETUPANDVALIDATE:
 			SetupEnvironmentVariables(EnvVarNames, EnvVarValues);
 
 
-			const int32 MaxPathVarLen = 32768;
-			FString OrigPathVar = FString::ChrN(MaxPathVarLen, TEXT('\0'));
-			FPlatformMisc::GetEnvironmentVariable(TEXT("PATH"), OrigPathVar.GetCharArray().GetData(), MaxPathVarLen);
+			FString OrigPathVar = FPlatformMisc::GetEnvironmentVariable(TEXT("PATH"));
 
 			// actually perform the PATH stripping / adding.
 			const TCHAR* PathDelimiter = FPlatformMisc::GetPathVarDelimiter();
@@ -891,7 +922,7 @@ RETRY_SETUPANDVALIDATE:
 		return SetupSDKStatus(TEXT(""));
 	}
 
-	bool SetupSDKStatus(FString TargetPlatforms)
+	bool SetupSDKStatus(const FString& TargetPlatforms)
 	{
 		DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FTargetPlatformManagerModule::SetupSDKStatus" ), STAT_FTargetPlatformManagerModule_SetupSDKStatus, STATGROUP_TargetPlatform );
 

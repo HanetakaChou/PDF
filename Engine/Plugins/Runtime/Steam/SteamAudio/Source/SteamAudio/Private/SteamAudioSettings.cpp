@@ -5,11 +5,24 @@
 #include "SteamAudioSettings.h"
 
 USteamAudioSettings::USteamAudioSettings()
-	: StaticMeshMaterialPreset(EPhononMaterial::GENERIC)
-	, BSPMaterialPreset(EPhononMaterial::GENERIC)
-	, LandscapeMaterialPreset(EPhononMaterial::GENERIC)
+	: AudioEngine(EIplAudioEngine::UNREAL)
+	, ConvolutionType(EIplConvolutionType::PHONON)
+	, MinComputeUnits(4)
+	, MaxComputeUnits(8)
 	, ExportBSPGeometry(true)
 	, ExportLandscapeGeometry(true)
+	, StaticMeshMaterialPreset(EPhononMaterial::GENERIC)
+	, BSPMaterialPreset(EPhononMaterial::GENERIC)
+	, LandscapeMaterialPreset(EPhononMaterial::GENERIC)
+	, IndirectImpulseResponseOrder(1)
+	, IndirectImpulseResponseDuration(1.0f)
+	, IndirectSpatializationMethod(EIplSpatializationMethod::PANNING)
+	, ReverbSimulationType(EIplSimulationType::DISABLED)
+	, IndirectContribution(1.0f)
+	, MaxSources(32)
+	, TANIndirectImpulseResponseOrder(1)
+	, TANIndirectImpulseResponseDuration(1.0f)
+	, TANMaxSources(32)
 	, RealtimeQualityPreset(EQualitySettings::LOW)
 	, RealtimeBounces(2)
 	, RealtimeRays(8192)
@@ -18,12 +31,6 @@ USteamAudioSettings::USteamAudioSettings()
 	, BakedBounces(128)
 	, BakedRays(16384)
 	, BakedSecondaryRays(2048)
-	, IndirectImpulseResponseOrder(1)
-	, IndirectImpulseResponseDuration(1.0f)
-	, IndirectSpatializationMethod(EIplSpatializationMethod::PANNING)
-	, ReverbSimulationType(EIplSimulationType::DISABLED)
-	, IndirectContribution(1.0f)
-	, MaxSources(32)
 {
 	auto MaterialPreset = SteamAudio::MaterialPresets[StaticMeshMaterialPreset];
 	StaticMeshLowFreqAbsorption = MaterialPreset.lowFreqAbsorption;
@@ -221,13 +228,21 @@ bool USteamAudioSettings::CanEditChange(const UProperty* InProperty) const
 {
 	const bool ParentVal = Super::CanEditChange(InProperty);
 
-	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqAbsorption) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqAbsorption) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshHighFreqAbsorption) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqTransmission) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqTransmission) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshHighFreqTransmission) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshScattering))
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, MinComputeUnits) ||
+		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, MaxComputeUnits) ||
+		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANIndirectImpulseResponseOrder) ||
+		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANIndirectImpulseResponseDuration) ||
+		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANMaxSources))
+	{
+		return ParentVal && ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT;
+	}
+	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqAbsorption) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqAbsorption) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshHighFreqAbsorption) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqTransmission) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqTransmission) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshHighFreqTransmission) ||
+			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshScattering))
 	{
 		return ParentVal && (StaticMeshMaterialPreset == EPhononMaterial::CUSTOM);
 	}

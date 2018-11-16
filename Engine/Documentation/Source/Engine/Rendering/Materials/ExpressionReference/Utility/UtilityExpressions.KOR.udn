@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3782314
+INTSourceChangelist:3782314
 Availability: Public
 Crumbs: %ROOT%
 Title: Utility 표현식
@@ -25,7 +25,7 @@ Topic-image:Utility_topic.png
 [EXCERPT:AntialiasedTextureMask]
 ### AntialiasedTextureMask
 
-AntialiasedTextureMask 로는 부드러운 (안티 앨리어싱이 적용된) 트랜지션 마스크를 사용하는 머티리얼을 만들 수 있습니다. 이 마스크는 두 개의 복잡한 머티리얼 프로퍼티를 블렌딩하거나, (SoftMasked 와 잘 작동하는) 알파 블렌딩된 머티리얼을 페이드 아웃 시키는 데 사용할 수 있습니다. 그저 마스크가 지정된 텍스처를 (R G B A 중) 한 채널에 지정하고, 표현식에 사용된 채널을 설정한 다음 비교값을 지정합니다. 채널에 0=검정 에서 1=하양 의 회색조 값이 저장되어 있다 가정한다면, 비교 함수를 통해 마스크 결과 0 이 될지 1 이 될지를 결정합니다. 이 표현식은 파라미터로, 자손 Material Instance 에서 **Texture** 프로퍼티를 덮어쓸 수 있습니다.
+AntialiasedTextureMask 로는 부드러운 (안티 에일리어싱이 적용된) 트랜지션 마스크를 사용하는 머티리얼을 만들 수 있습니다. 이 마스크는 두 개의 복잡한 머티리얼 프로퍼티를 블렌딩하거나, (SoftMasked 와 잘 작동하는) 알파 블렌딩된 머티리얼을 페이드 아웃 시키는 데 사용할 수 있습니다. 그저 마스크가 지정된 텍스처를 (R G B A 중) 한 채널에 지정하고, 표현식에 사용된 채널을 설정한 다음 비교값을 지정합니다. 채널에 0=검정 에서 1=하양 의 회색조 값이 저장되어 있다 가정한다면, 비교 함수를 통해 마스크 결과 0 이 될지 1 이 될지를 결정합니다. 이 표현식은 파라미터로, 자손 Material Instance 에서 **Texture** 프로퍼티를 덮어쓸 수 있습니다.
 
 | 항목 | 설명 |
 | ---- | ---- |
@@ -471,14 +471,14 @@ LinearInterpolate 는 세 번째 값을 마스크로 사용하여 두 입력 값
 
 ### Noise
 
-Noise 표현식은 제어할 수 있는 방식으로 프로시저럴 노이즈 필드를 생성합니다.
+**Noise** 표현식은 제어할 수 있는 방식으로 프로시저럴 노이즈 필드를 생성합니다.
 
 | 항목 | 설명 |
 | ---- | ---- |
 | [REGION:tablesection]프로퍼티[/REGION] ||
 | **Scale** | 노이즈 셀의 전체적인 크기를 변경합니다. 수치가 작을 수록 노이즈가 커집니다. |
 | **Quality** | 외양/퍼포먼스 세팅입니다. 0 이 빠릅니다. 값이 높을 수록 느려지나 더 나아 보입니다. |
-| **Function** | 계산되는 노이즈 유형을 제어합니다. 옵션은 Simplex, Perlin, Gradient 입니다. |
+| **Function** | [INCLUDE:#NoiseFunctions] |
 | **Turbulence** | 이 옵션을 켜면, 노이즈 옥타브마다 결과에 절대값만 더합니다. 비주얼 특성에 변화를 주고 날카로운 능선과 같은 모양을 만들 수 있습니다. |
 | **Levels** | 노이즈를 몇 개까지 합칠 것인지 입니다. Turbulence 가 켜져있을 때만 효과가 있습니다. |
 | **Output Min** | 노이즈 계산에 의한 최소값입니다. |

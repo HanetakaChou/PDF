@@ -72,7 +72,7 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityGameCircle::CreateUniquePlayerId(u
 		if (StrLen > 0)
 		{
 			FString StrId((TCHAR*)Bytes);
-			return MakeShareable(new FUniqueNetIdString(StrId));
+			return MakeShareable(new FUniqueNetIdGameCircle(StrId));
 		}
 	}
 	return NULL;
@@ -81,13 +81,13 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityGameCircle::CreateUniquePlayerId(u
 
 TSharedPtr<const FUniqueNetId> FOnlineIdentityGameCircle::CreateUniquePlayerId(const FString& Str)
 {
-	return MakeShareable(new FUniqueNetIdString(Str));
+	return MakeShareable(new FUniqueNetIdGameCircle(Str));
 }
 
 
 FString FOnlineIdentityGameCircle::GetPlayerNickname(int32 LocalUserNum) const
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityGameCircle::GetPlayerNickname returning \"%s\""), *LocalPlayerInfo.Alias);
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityGameCircle::GetPlayerNickname returning \"%s\""), *LocalPlayerInfo.Alias);
 	return LocalPlayerInfo.Alias;
 }
 
@@ -98,14 +98,14 @@ FString FOnlineIdentityGameCircle::GetPlayerNickname(const FUniqueNetId& UserId)
 
 FString FOnlineIdentityGameCircle::GetAuthToken(int32 LocalUserNum) const
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityGameCircle::GetAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityGameCircle::GetAuthToken not implemented"));
 	FString ResultToken;
 	return ResultToken;
 }
 
 void FOnlineIdentityGameCircle::RevokeAuthToken(const FUniqueNetId& UserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate)
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityGameCircle::RevokeAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityGameCircle::RevokeAuthToken not implemented"));
 	TSharedRef<const FUniqueNetId> UserIdRef(UserId.AsShared());
 	MainSubsystem->ExecuteNextTick([UserIdRef, Delegate]()
 	{
@@ -153,7 +153,7 @@ void FOnlineIdentityGameCircle::OnGetLocalPlayerPlayerCallback(AmazonGames::Erro
 			LocalPlayerInfo.AvatarURL = InPlayerInfo->avatarUrl;
 
 			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Received player info for local player with playerId \"%s\""), *LocalPlayerInfo.PlayerId);
-			UniqueNetId = MakeShareable(new FUniqueNetIdString(LocalPlayerInfo.PlayerId));
+			UniqueNetId = MakeShareable(new FUniqueNetIdGameCircle(LocalPlayerInfo.PlayerId));
 
 			AmazonGames::PlayerClientInterface::setSignedInStateChangedListener(&SignedInStateChangeListener);
 			bIsLoggedIn = AmazonGames::PlayerClientInterface::isSignedIn();
@@ -163,13 +163,13 @@ void FOnlineIdentityGameCircle::OnGetLocalPlayerPlayerCallback(AmazonGames::Erro
 		RequestLocalPlayerInfo();
 		break;
 	default:
-		UE_LOG(LogOnline, Error, TEXT("GetLocalPlayer Callback recieved error code - %d"), InErrorCode);
+		UE_LOG_ONLINE_IDENTITY(Error, TEXT("GetLocalPlayer Callback recieved error code - %d"), InErrorCode);
 		break;
 	}
 }
 
 void FOnlineIdentityGameCircle::RequestLocalPlayerInfo()
 {
-	UE_LOG(LogOnline, Display, TEXT("Requesting local player info from Amazon"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("Requesting local player info from Amazon"));
 	AmazonGames::PlayerClientInterface::getLocalPlayer(new FOnlineGetLocalPlayerCallback(MainSubsystem));
 }

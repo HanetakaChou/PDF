@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3782314
+﻿INTSourceChangelist:3810557
 Availability:Public
 Title:앰비언트 오클루전
 Crumbs: %ROOT%, Engine, Engine/Rendering/LightingAndShadows
@@ -17,8 +17,8 @@ topic-image:ao.png
 | 앰비언트 오클루전이 없는 씬 | 앰비언트 오클루전만 | 앰비언트 오클루전이 있는 씬 |
 [/REGION]
 
-이 이펙트는 SSAO 메소드를 사용하여 이뤄내는데, 즉 AO 양은 스크린 스페이스의 디퍼드 패스에서 계산된다는 뜻입니다.
-저희 메소드는 뎁스 버퍼를 활용하며, 노멀은 GBuffer 를 이룹니다 (디퍼드 셰이딩 참고). 이는 노멀맵 디테일이 결과에 영향을 끼친다는 뜻입니다. UE4 에서 이펙트는 AmbientCubemap 과 Voxel Lighting 에 적용됩니다. 직사광에는 영향을 끼치지 않는데, 여기서는 섀도 매핑을 사용하기 때문입니다.
+이 이펙트는 SSAO 메서드를 사용하여 이뤄내는데, 즉 AO 양은 스크린 스페이스의 디퍼드 패스에서 계산된다는 뜻입니다.
+저희 메서드는 뎁스 버퍼를 활용하며, 노멀은 GBuffer 를 이룹니다 (디퍼드 셰이딩 참고). 이는 노멀맵 디테일이 결과에 영향을 끼친다는 뜻입니다. UE4 에서 이펙트는 AmbientCubemap 과 Voxel Lighting 에 적용됩니다. 직사광에는 영향을 끼치지 않는데, 여기서는 섀도 매핑을 사용하기 때문입니다.
 
 "Visualize GBuffer" 뷰모드를 사용하거나 (뷰모드 참고) 표시 플래그 "Visualize Ambient Occlusion" 를 사용하면 AO 값을 직접 확인할 수 있습니다.
 
@@ -31,9 +31,7 @@ AO 는 GBuffer 의 일부이기에 머티리얼이 출력하는 것도 가능합
 | **Radius in WorldSpace** | 반경 월드스페이스에 - 켜면 **AO Radius** 프로퍼티 값은 월드 스페이스에, 끄면 뷰 스페이스에 있다고 가정합니다. |
 | **Distance** | 거리 - SSAO 기법은 zbuffer 만 있어서 오브젝트의 두께를 알 길이 없기 때문에 그 주변에 발생하는 검은 테두리를 피하기 위해 사용하는 트윅 파라미터입니다. [INCLUDE:Engine/Rendering/LightingAndShadows/AmbientOcclusion#Distance] |
 | **Power** | 세기 - 계산을 통한 어둡게 하는 효과의 세기를 조절합니다. [INCLUDE:Engine/Rendering/LightingAndShadows/AmbientOcclusion#Power] |
-| **Bias** | 편향 - AO 디테일 트윅이 가능합니다. 약간의 편향치는 원거리의 부작용을 방지하기 위해 필요합니다. 언리얼 유닛으로 0 초과이며, 기본값 (3.0) 으로 평평한 표면에는 잘 돌아가나 디테일이 떨어질 수 있습니다. [COMMENT:none]
-TODO: images
-[/COMMENT] |
+| **Bias** | 편향 - AO 디테일 트윅이 가능합니다. 약간의 편향치는 원거리의 부작용을 방지하기 위해 필요합니다. 언리얼 유닛으로 0 초과이며, 기본값 (3.0) 으로 평평한 표면에는 잘 돌아가나 디테일이 떨어질 수 있습니다. |
 
 [COMMENT:none]
 

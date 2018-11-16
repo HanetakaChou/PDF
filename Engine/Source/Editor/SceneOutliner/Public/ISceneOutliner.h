@@ -30,4 +30,10 @@ public:
 
 	/** Set the keyboard focus to the outliner */
 	virtual void SetKeyboardFocus() = 0;
+
+	/** Gets the cached icon for this class name */
+	virtual const FSlateBrush* GetCachedIconForClass(FName InClassName) const = 0;
+
+	/** Sets the cached icon for this class name */
+	virtual void CacheIconForClass(FName InClassName, const FSlateBrush* InSlateBrush) = 0;
 };

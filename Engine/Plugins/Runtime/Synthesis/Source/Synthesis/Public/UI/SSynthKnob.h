@@ -12,7 +12,7 @@
 #include "Styling/CoreStyle.h"
 #include "Framework/SlateDelegates.h"
 #include "Widgets/SLeafWidget.h"
-#include "SynthKnobStyle.h"
+#include "UI/SynthKnobStyle.h"
 #include "UI/SSynthTooltip.h"
 
 class FPaintArgs;
@@ -25,7 +25,7 @@ public:
 	
 	SLATE_BEGIN_ARGS(SSynthKnob)
 		: _Locked(false)
-		, _Style(&FCoreStyle::Get().GetWidgetStyle<FSynthKnobStyle>("SynthKnobStyle"))
+		, _Style(&FSynthSlateStyleSet::Get()->GetWidgetStyle<FSynthKnobStyle>("SynthKnobStyle"))
 		, _StepSize(0.01f)
 		, _MouseSpeed(1.0f)
 		, _MouseFineTuneSpeed(0.2f)

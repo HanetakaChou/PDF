@@ -6,10 +6,14 @@
 #include "CollisionQueryParams.h"
 #include "Engine/World.h"
 #include "Components/PrimitiveComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Components/LineBatchComponent.h"
 #include "Logging/MessageLog.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "DrawDebugHelpers.h"
+#include "PhysicsReplication.h"
+#include "Physics/PhysicsInterfaceCore.h"
+#include "UObject/UObjectThreadContext.h"
 
 //////////////// PRIMITIVECOMPONENT ///////////////
 
@@ -26,140 +30,30 @@ DECLARE_CYCLE_STAT(TEXT("PrimComp SetCollisionProfileName"), STAT_PrimComp_SetCo
 	#define WarnInvalidPhysicsOperations(Text, BodyInstance, BoneName)
 #endif
 
-
-bool UPrimitiveComponent::ApplyRigidBodyState(const FRigidBodyState& NewState, const FRigidBodyErrorCorrection& ErrorCorrection, FVector& OutDeltaPos, FName BoneName)
+void UPrimitiveComponent::SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, FName BoneName)
 {
-	bool bRestoredState = true;
-
-	FBodyInstance* BI = GetBodyInstance(BoneName);
-	if (BI && BI->IsInstanceSimulatingPhysics())
+	if (UWorld* World = GetWorld())
 	{
-		// failure cases
-		const float QuatSizeSqr = NewState.Quaternion.SizeSquared();
-		if (QuatSizeSqr < KINDA_SMALL_NUMBER)
+		if (FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
-			UE_LOG(LogPhysics, Warning, TEXT("Invalid zero quaternion set for body. (%s:%s)"), *GetName(), *BoneName.ToString());
-			return bRestoredState;
-		}
-		else if (FMath::Abs(QuatSizeSqr - 1.f) > KINDA_SMALL_NUMBER)
-		{
-			UE_LOG(LogPhysics, Warning, TEXT("Quaternion (%f %f %f %f) with non-unit magnitude detected. (%s:%s)"), 
-				NewState.Quaternion.X, NewState.Quaternion.Y, NewState.Quaternion.Z, NewState.Quaternion.W, *GetName(), *BoneName.ToString() );
-			return bRestoredState;
-		}
-
-		FRigidBodyState CurrentState;
-		GetRigidBodyState(CurrentState, BoneName);
-
-		const bool bShouldSleep = (NewState.Flags & ERigidBodyFlags::Sleeping) != 0;
-
-		/////// POSITION CORRECTION ///////
-
-		// Find out how much of a correction we are making
-		const FVector DeltaPos = NewState.Position - CurrentState.Position;
-		const float DeltaMagSq = DeltaPos.SizeSquared();
-		const float BodyLinearSpeedSq = CurrentState.LinVel.SizeSquared();
-
-		// Snap position by default (big correction, or we are moving too slowly)
-		FVector UpdatedPos = NewState.Position;
-		FVector FixLinVel = FVector::ZeroVector;
-
-		// If its a small correction and velocity is above threshold, only make a partial correction, 
-		// and calculate a velocity that would fix it over 'fixTime'.
-		if (DeltaMagSq < ErrorCorrection.LinearDeltaThresholdSq  &&
-			BodyLinearSpeedSq >= ErrorCorrection.BodySpeedThresholdSq)
-		{
-			UpdatedPos = FMath::Lerp(CurrentState.Position, NewState.Position, ErrorCorrection.LinearInterpAlpha);
-			FixLinVel = (NewState.Position - UpdatedPos) * ErrorCorrection.LinearRecipFixTime;
-		}
-
-		// Get the linear correction
-		OutDeltaPos = UpdatedPos - CurrentState.Position;
-
-		/////// ORIENTATION CORRECTION ///////
-		// Get quaternion that takes us from old to new
-		const FQuat InvCurrentQuat = CurrentState.Quaternion.Inverse();
-		const FQuat DeltaQuat = NewState.Quaternion * InvCurrentQuat;
-
-		FVector DeltaAxis;
-		float DeltaAng;	// radians
-		DeltaQuat.ToAxisAndAngle(DeltaAxis, DeltaAng);
-		DeltaAng = FMath::UnwindRadians(DeltaAng);
-
-		// Snap rotation by default (big correction, or we are moving too slowly)
-		FQuat UpdatedQuat = NewState.Quaternion;
-		FVector FixAngVel = FVector::ZeroVector; // degrees per second
-		
-		// If the error is small, and we are moving, try to move smoothly to it
-		if (FMath::Abs(DeltaAng) < ErrorCorrection.AngularDeltaThreshold )
-		{
-			UpdatedQuat = FMath::Lerp(CurrentState.Quaternion, NewState.Quaternion, ErrorCorrection.AngularInterpAlpha);
-			FixAngVel = DeltaAxis.GetSafeNormal() * FMath::RadiansToDegrees(DeltaAng) * (1.f - ErrorCorrection.AngularInterpAlpha) * ErrorCorrection.AngularRecipFixTime;
-		}
-
-		/////// BODY UPDATE ///////
-		BI->SetBodyTransform(FTransform(UpdatedQuat, UpdatedPos), ETeleportType::TeleportPhysics);
-		BI->SetLinearVelocity(NewState.LinVel + FixLinVel, false);
-		BI->SetAngularVelocityInRadians(FMath::DegreesToRadians(NewState.AngVel + FixAngVel), false);
-
-		// state is restored when no velocity corrections are required
-		bRestoredState = (FixLinVel.SizeSquared() < KINDA_SMALL_NUMBER) && (FixAngVel.SizeSquared() < KINDA_SMALL_NUMBER);
-	
-		/////// SLEEP UPDATE ///////
-		const bool bIsAwake = BI->IsInstanceAwake();
-		if (bIsAwake && (bShouldSleep && bRestoredState))
-		{
-			BI->PutInstanceToSleep();
-		}
-		else if (!bIsAwake)
-		{
-			BI->WakeInstance();
+			if (FPhysicsReplication* PhysicsReplication = PhysScene->GetPhysicsReplication())
+			{
+				FBodyInstance* BI = GetBodyInstance(BoneName);
+				if (BI && BI->IsValidBodyInstance())
+				{
+					PhysicsReplication->SetReplicatedTarget(this, BoneName, UpdatedState);
+				}
+			}
 		}
 	}
-
-	return bRestoredState;
-}
-
-bool UPrimitiveComponent::ConditionalApplyRigidBodyState(FRigidBodyState& UpdatedState, const FRigidBodyErrorCorrection& ErrorCorrection, FVector& OutDeltaPos, FName BoneName)
-{
-	bool bUpdated = false;
-
-	// force update if simulation is sleeping on server
-	if ((UpdatedState.Flags & ERigidBodyFlags::Sleeping) && RigidBodyIsAwake(BoneName))
-	{
-		UpdatedState.Flags |= ERigidBodyFlags::NeedsUpdate;	
-	}
-
-	if (UpdatedState.Flags & ERigidBodyFlags::NeedsUpdate)
-	{
-		const bool bRestoredState = ApplyRigidBodyState(UpdatedState, ErrorCorrection, OutDeltaPos, BoneName);
-		if (bRestoredState)
-		{
-			UpdatedState.Flags &= ~ERigidBodyFlags::NeedsUpdate;
-		}
-
-		bUpdated = true;
-
-		// Need to update the component to match new position.
-		// TODO: Only call this if OutDeltaPos is non-zero? May not capture rotations.
-		SyncComponentToRBPhysics();
-	}
-
-	return bUpdated;
 }
 
 bool UPrimitiveComponent::GetRigidBodyState(FRigidBodyState& OutState, FName BoneName)
 {
 	FBodyInstance* BI = GetBodyInstance(BoneName);
-	if (BI && BI->IsInstanceSimulatingPhysics())
+	if (BI)
 	{
-		FTransform BodyTM = BI->GetUnrealWorldTransform();
-		OutState.Position = BodyTM.GetTranslation();
-		OutState.Quaternion = BodyTM.GetRotation();
-		OutState.LinVel = BI->GetUnrealWorldVelocity();
-		OutState.AngVel = FMath::RadiansToDegrees(BI->GetUnrealWorldAngularVelocityInRadians());
-		OutState.Flags = (BI->IsInstanceAwake() ? ERigidBodyFlags::None : ERigidBodyFlags::Sleeping);
-		return true;
+		return BI->GetRigidBodyState(OutState);
 	}
 
 	return false;
@@ -369,7 +263,7 @@ void UPrimitiveComponent::SetPhysicsMaxAngularVelocityInRadians(float NewMaxAngV
 	}
 }
 
-FVector UPrimitiveComponent::GetPhysicsAngularVelocityInRadians(FName BoneName)
+FVector UPrimitiveComponent::GetPhysicsAngularVelocityInRadians(FName BoneName) const
 {
 	FBodyInstance* const BI = GetBodyInstance(BoneName);
 	if(BI != NULL)
@@ -669,7 +563,7 @@ void UPrimitiveComponent::SyncComponentToRBPhysics()
 		}
 	}
 
-	if (IsPendingKill() || !IsSimulatingPhysics())
+	if (IsPendingKill() || !IsSimulatingPhysics() || !RigidBodyIsAwake())
 	{
 		return;
 	}
@@ -831,7 +725,7 @@ void UPrimitiveComponent::UnWeldFromParent()
 
 	FBodyInstance* NewRootBI = GetBodyInstance(NAME_None, false);
 	UWorld* CurrentWorld = GetWorld();
-	if (NewRootBI == NULL || NewRootBI->WeldParent == nullptr || CurrentWorld == nullptr || CurrentWorld->GetPhysicsScene() == nullptr || IsPendingKill())
+	if (NewRootBI == NULL || NewRootBI->WeldParent == nullptr || CurrentWorld == nullptr || CurrentWorld->GetPhysicsScene() == nullptr || IsPendingKillOrUnreachable())
 	{
 		return;
 	}
@@ -1017,15 +911,25 @@ void UPrimitiveComponent::SetCollisionProfileName(FName InCollisionProfileName)
 {
 	SCOPE_CYCLE_COUNTER(STAT_PrimComp_SetCollisionProfileName);
 
-	ECollisionEnabled::Type OldCollisionEnabled = BodyInstance.GetCollisionEnabled();
-	BodyInstance.SetCollisionProfileName(InCollisionProfileName);
-	OnComponentCollisionSettingsChanged();
-
-	ECollisionEnabled::Type NewCollisionEnabled = BodyInstance.GetCollisionEnabled();
-
-	if (OldCollisionEnabled != NewCollisionEnabled)
+	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
+	if (ThreadContext.ConstructedObject == this)
 	{
-		EnsurePhysicsStateCreated();
+		// If we are in our constructor, defer setup until PostInitProperties as derived classes
+		// may call SetCollisionProfileName more than once.
+		BodyInstance.SetCollisionProfileNameDeferred(InCollisionProfileName);
+	}
+	else
+	{
+		ECollisionEnabled::Type OldCollisionEnabled = BodyInstance.GetCollisionEnabled();
+		BodyInstance.SetCollisionProfileName(InCollisionProfileName);
+
+		ECollisionEnabled::Type NewCollisionEnabled = BodyInstance.GetCollisionEnabled();
+
+		if (OldCollisionEnabled != NewCollisionEnabled)
+		{
+			EnsurePhysicsStateCreated();
+		}
+		OnComponentCollisionSettingsChanged();
 	}
 }
 
@@ -1042,9 +946,14 @@ void UPrimitiveComponent::OnActorEnableCollisionChanged()
 
 void UPrimitiveComponent::OnComponentCollisionSettingsChanged()
 {
-	if (!IsTemplate() && IsRegistered())			// not for CDOs
+	if (IsRegistered() && !IsTemplate())			// not for CDOs
 	{
 		// changing collision settings could affect touching status, need to update
+		if (IsQueryCollisionEnabled())	//if we have query collision we may now care about overlaps so clear cache
+		{
+			ClearSkipUpdateOverlaps();
+		}
+
 		UpdateOverlaps();
 
 		// update navigation data if needed
@@ -1052,14 +961,14 @@ void UPrimitiveComponent::OnComponentCollisionSettingsChanged()
 		if (bNavigationRelevant != bNewNavRelevant)
 		{
 			bNavigationRelevant = bNewNavRelevant;
-			UNavigationSystem::UpdateComponentInNavOctree(*this);
+			FNavigationSystem::UpdateComponentData(*this);
 		}
 
 		OnComponentCollisionSettingsChangedEvent.Broadcast(this);
 	}
 }
 
-bool UPrimitiveComponent::K2_LineTraceComponent(FVector TraceStart, FVector TraceEnd, bool bTraceComplex, bool bShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit)
+bool UPrimitiveComponent::K2_LineTraceComponent(FVector TraceStart, FVector TraceEnd, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit)
 {
 	FCollisionQueryParams LineParams(SCENE_QUERY_STAT(KismetTraceComponent), bTraceComplex);
 	const bool bDidHit = LineTraceComponent(OutHit, TraceStart, TraceEnd, LineParams);
@@ -1081,16 +990,81 @@ bool UPrimitiveComponent::K2_LineTraceComponent(FVector TraceStart, FVector Trac
 
 	if( bShowTrace )
 	{
-		GetWorld()->LineBatcher->DrawLine(TraceStart, bDidHit ? HitLocation : TraceEnd, FLinearColor(1.f,0.5f,0.f), SDPG_World, 2.f);
-		if( bDidHit )
+		DrawDebugLine(GetWorld(), TraceStart, bDidHit ? HitLocation : TraceEnd, FColor(255, 128, 0), bPersistentShowTrace, -1.0f, 0, 2.0f);
+		if(bDidHit)
 		{
-			GetWorld()->LineBatcher->DrawLine(HitLocation, TraceEnd, FLinearColor(0.f,0.5f,1.f), SDPG_World, 2.f);
+			DrawDebugLine(GetWorld(), HitLocation, TraceEnd, FColor(0, 128, 255), bPersistentShowTrace, -1.0f, 0, 2.0f);
 		}
 	}
 
 	return bDidHit;
 }
 
+bool UPrimitiveComponent::K2_SphereTraceComponent(FVector TraceStart, FVector TraceEnd, float SphereRadius, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit)
+{
+	FCollisionShape SphereShape;
+	SphereShape.SetSphere(SphereRadius);
+	bool bDidHit = SweepComponent(OutHit, TraceStart, TraceEnd, FQuat::Identity, SphereShape, bTraceComplex);
+
+	if(bDidHit)
+	{
+		// Fill in the results if we hit
+		HitLocation = OutHit.Location;
+		HitNormal = OutHit.Normal;
+		BoneName = OutHit.BoneName;
+	}
+	else
+	{
+		// Blank these out to avoid confusion!
+		HitLocation = FVector::ZeroVector;
+		HitNormal = FVector::ZeroVector;
+		BoneName = NAME_None;
+	}
+
+	if(bShowTrace)
+	{
+		DrawDebugLine(GetWorld(), TraceStart, bDidHit ? HitLocation : TraceEnd, FColor(255, 128, 0), bPersistentShowTrace, -1.0f, 0, 2.0f);
+		if(bDidHit)
+		{
+			DrawDebugLine(GetWorld(), HitLocation, TraceEnd, FColor(0, 128, 255), bPersistentShowTrace, -1.0f, 0, 2.0f);
+			DrawDebugSphere(GetWorld(), HitLocation, SphereRadius, 16, FColor(255, 0, 0), bPersistentShowTrace, -1.0f, 0, 0.25f);
+		}
+	}
+
+	return bDidHit;
+}
+
+bool UPrimitiveComponent::K2_BoxOverlapComponent(FVector InBoxCentre, const FBox InBox, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit)
+{
+	FCollisionShape QueryBox = FCollisionShape::MakeBox(InBox.GetExtent());
+
+	bool bHit = OverlapComponent(InBoxCentre, FQuat::Identity, QueryBox);
+
+	if(bShowTrace)
+	{
+		FColor BoxColor = bHit ? FColor::Red : FColor::Green;
+
+		DrawDebugBox(GetWorld(), InBoxCentre, QueryBox.GetExtent(), FQuat::Identity, BoxColor, bPersistentShowTrace, -1.0f, 0, 0.4f);
+	}
+
+	return bHit;
+}
+
+bool UPrimitiveComponent::K2_SphereOverlapComponent(FVector InSphereCentre, float InSphereRadius, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit)
+{
+	FCollisionShape QuerySphere = FCollisionShape::MakeSphere(InSphereRadius);
+
+	bool bHit = OverlapComponent(InSphereCentre, FQuat::Identity, QuerySphere);
+
+	if(bShowTrace)
+	{
+		FColor SphereColor = bHit ? FColor::Red : FColor::Green;
+
+		DrawDebugSphere(GetWorld(), InSphereCentre, QuerySphere.GetSphereRadius(), 16, SphereColor, bPersistentShowTrace, -1.0f, 0, 0.4f);
+	}
+
+	return bHit;
+}
 
 ECollisionEnabled::Type UPrimitiveComponent::GetCollisionEnabled() const
 {
@@ -1100,7 +1074,7 @@ ECollisionEnabled::Type UPrimitiveComponent::GetCollisionEnabled() const
 		return ECollisionEnabled::NoCollision;
 	}
 
-	return BodyInstance.GetCollisionEnabled();
+	return BodyInstance.GetCollisionEnabled(false);
 }
 
 ECollisionResponse UPrimitiveComponent::GetCollisionResponseToChannel(ECollisionChannel Channel) const

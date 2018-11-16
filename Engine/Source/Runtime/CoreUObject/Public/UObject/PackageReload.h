@@ -3,9 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ArrayView.h"
+#include "Containers/ArrayView.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class IAssetRegistryInterface;
 
@@ -121,6 +123,11 @@ public:
 	FORCEINLINE void AddObjectReferencer(UObject* InObject)
 	{
 		ObjectReferencers.AddUnique(InObject);
+	}
+
+	void AddReferencedObjects(FReferenceCollector& Collector)
+	{
+		Collector.AddReferencedObjects(RepointedObjects);
 	}
 
 private:

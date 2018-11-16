@@ -37,6 +37,8 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Load Time"),STAT_AI_BehaviorTree_LoadTime,STATGR
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Search Time"),STAT_AI_BehaviorTree_SearchTime,STATGROUP_AIBehaviorTree, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Execution Time"),STAT_AI_BehaviorTree_ExecutionTime,STATGROUP_AIBehaviorTree, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Auxiliary Update Time"),STAT_AI_BehaviorTree_AuxUpdateTime,STATGROUP_AIBehaviorTree, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Cleanup Time"), STAT_AI_BehaviorTree_Cleanup, STATGROUP_AIBehaviorTree, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Stop Tree Time"), STAT_AI_BehaviorTree_StopTree, STATGROUP_AIBehaviorTree, );
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Num Templates"),STAT_AI_BehaviorTree_NumTemplates,STATGROUP_AIBehaviorTree, );
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Num Instances"),STAT_AI_BehaviorTree_NumInstances,STATGROUP_AIBehaviorTree, );
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Instance memory"),STAT_AI_BehaviorTree_InstanceMemory,STATGROUP_AIBehaviorTree, AIMODULE_API);
@@ -287,6 +289,7 @@ struct FBehaviorTreeInstanceId
 };
 
 struct FBehaviorTreeSearchData;
+DECLARE_DELEGATE_TwoParams(FBTInstanceDeactivation, UBehaviorTreeComponent&, EBTNodeResult::Type);
 
 /** data required for instance of single subtree */
 struct FBehaviorTreeInstance
@@ -311,6 +314,9 @@ struct FBehaviorTreeInstance
 
 	/** active node type */
 	TEnumAsByte<EBTActiveNode::Type> ActiveNodeType;
+
+	/** delegate sending a notify when tree instance is removed from active stack */
+	FBTInstanceDeactivation DeactivationNotify;
 
 	FBehaviorTreeInstance() { IncMemoryStats(); }
 	FBehaviorTreeInstance(const FBehaviorTreeInstance& Other) { *this = Other; IncMemoryStats(); }
@@ -390,6 +396,16 @@ struct FBehaviorTreeSearchUpdate
 	{}
 };
 
+/** instance notify data */
+struct FBehaviorTreeSearchUpdateNotify
+{
+	uint16 InstanceIndex;
+	TEnumAsByte<EBTNodeResult::Type> NodeResult;
+
+	FBehaviorTreeSearchUpdateNotify() : InstanceIndex(0), NodeResult(EBTNodeResult::Succeeded) {}
+	FBehaviorTreeSearchUpdateNotify(uint16 InInstanceIndex, EBTNodeResult::Type InNodeResult) : InstanceIndex(InInstanceIndex), NodeResult(InNodeResult) {}
+};
+
 /** node search data */
 struct FBehaviorTreeSearchData
 {
@@ -399,6 +415,9 @@ struct FBehaviorTreeSearchData
 	/** requested updates of additional nodes (preconditions, services, parallels)
 	 *  buffered during search to prevent instant add & remove pairs */
 	TArray<FBehaviorTreeSearchUpdate> PendingUpdates;
+
+	/** notifies for tree instances */
+	TArray<FBehaviorTreeSearchUpdateNotify> PendingNotifies;
 
 	/** first node allowed in search */
 	FBTNodeIndex SearchStart;
@@ -458,7 +477,7 @@ struct AIMODULE_API FBlackboardKeySelector
 {
 	GENERATED_USTRUCT_BODY()
 
-	FBlackboardKeySelector() : SelectedKeyID(FBlackboard::InvalidKey)
+	FBlackboardKeySelector() : SelectedKeyID(FBlackboard::InvalidKey), bNoneIsAllowedValue(false)
 	{}
 
 	/** array of allowed types with additional properties (e.g. uobject's base class) 

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -49,8 +49,8 @@ namespace AutomationTool.Tasks
 		/// <summary>
 		/// Root directory for the stream. If not specified, defaults to the current root directory.
 		/// </summary>
-		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.DirectoryName)]
-		public string RootDir;
+		[TaskParameter(Optional = true)]
+		public DirectoryReference RootDir;
 
 		/// <summary>
 		/// Whether to revert unchanged files before attempting to submit
@@ -88,7 +88,15 @@ namespace AutomationTool.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			HashSet<FileReference> Files = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
-			if (CommandUtils.AllowSubmit && Files.Count > 0)
+			if (Files.Count == 0)
+			{
+				Log.TraceInformation("No files to submit.");
+			}
+			else if (!CommandUtils.AllowSubmit)
+			{
+				Log.TraceWarning("Submitting to Perforce is disabled by default. Run with the -submit argument to allow.");
+			}
+			else
 			{
 				// Get the connection that we're going to submit with
 				P4Connection SubmitP4 = CommandUtils.P4;
@@ -99,7 +107,7 @@ namespace AutomationTool.Tasks
 					Client.Owner = CommandUtils.P4Env.User;
 					Client.Host = Environment.MachineName;
 					Client.Stream = Parameters.Stream ?? CommandUtils.P4Env.Branch;
-					Client.RootPath = Parameters.RootDir ?? CommandUtils.RootDirectory.FullName;
+					Client.RootPath = Parameters.RootDir.FullName ?? CommandUtils.RootDirectory.FullName;
 					Client.Name = Parameters.Workspace;
 					Client.Options = P4ClientOption.NoAllWrite | P4ClientOption.Clobber | P4ClientOption.NoCompress | P4ClientOption.Unlocked | P4ClientOption.NoModTime | P4ClientOption.RmDir;
 					Client.LineEnd = P4LineEnd.Local;
@@ -110,7 +118,7 @@ namespace AutomationTool.Tasks
 				}
 
 				// Get the latest version of it
-				int NewCL = SubmitP4.CreateChange(Description: Parameters.Description);
+				int NewCL = SubmitP4.CreateChange(Description: Parameters.Description.Replace("\\n", "\n"));
 				foreach(FileReference File in Files)
 				{
 					SubmitP4.Revert(String.Format("-k \"{0}\"", File.FullName));
@@ -129,7 +137,7 @@ namespace AutomationTool.Tasks
 					SubmitP4.RevertUnchanged(NewCL);
 					if(SubmitP4.TryDeleteEmptyChange(NewCL))
 					{
-						CommandUtils.Log("No files to submit; ignored.");
+						CommandUtils.LogInformation("No files to submit; ignored.");
 						return;
 					}
 				}
@@ -141,7 +149,7 @@ namespace AutomationTool.Tasks
 				{
 					throw new AutomationException("Submit failed.");
 				}
-				CommandUtils.Log("Submitted in changelist {0}", SubmittedCL);
+				CommandUtils.LogInformation("Submitted in changelist {0}", SubmittedCL);
 			}
 		}
 

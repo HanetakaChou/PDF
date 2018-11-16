@@ -13,6 +13,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "LevelEditorViewport.h"
 #include "Sections/CameraCutSection.h"
+#include "Sections/MovieSceneCameraCutSection.h"
 #include "SequencerUtilities.h"
 #include "Editor.h"
 #include "ActorEditorUtils.h"
@@ -184,11 +185,11 @@ void FCameraCutTrackEditor::Tick(float DeltaTime)
 	{
 		SequencerPin->EnterSilentMode();
 
-		float SavedTime = SequencerPin->GetLocalTime();
+		FQualifiedFrameTime SavedTime = SequencerPin->GetLocalTime();
 
 		if (DeltaTime > 0.f && ThumbnailPool->DrawThumbnails())
 		{
-			SequencerPin->SetLocalTimeDirectly(SavedTime);
+			SequencerPin->SetLocalTimeDirectly(SavedTime.Time);
 		}
 
 		SequencerPin->ExitSilentMode();
@@ -202,7 +203,7 @@ const FSlateBrush* FCameraCutTrackEditor::GetIconBrush() const
 }
 
 
-bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track)
+bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid)
 {
 	if (!Track->IsA(UMovieSceneCameraCutTrack::StaticClass()))
 	{
@@ -236,7 +237,7 @@ bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, UMo
 }
 
 
-FReply FCameraCutTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track)
+FReply FCameraCutTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovieSceneTrack* Track, int32 RowIndex, const FGuid& TargetObjectGuid)
 {
 	if (!Track->IsA(UMovieSceneCameraCutTrack::StaticClass()))
 	{
@@ -276,15 +277,19 @@ FReply FCameraCutTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovie
 /* FCameraCutTrackEditor implementation
  *****************************************************************************/
 
-FKeyPropertyResult FCameraCutTrackEditor::AddKeyInternal( float KeyTime, const FGuid ObjectGuid )
+FKeyPropertyResult FCameraCutTrackEditor::AddKeyInternal( FFrameNumber KeyTime, const FGuid ObjectGuid )
 {
 	FKeyPropertyResult KeyPropertyResult;
 
 	UMovieSceneCameraCutTrack* CameraCutTrack = FindOrCreateCameraCutTrack();
 	const TArray<UMovieSceneSection*>& AllSections = CameraCutTrack->GetAllSections();
 
-	CameraCutTrack->AddNewCameraCut(FMovieSceneObjectBindingID(ObjectGuid, MovieSceneSequenceID::Root), KeyTime);
+	UMovieSceneCameraCutSection* NewSection = CameraCutTrack->AddNewCameraCut(FMovieSceneObjectBindingID(ObjectGuid, MovieSceneSequenceID::Root), KeyTime);
 	KeyPropertyResult.bTrackModified = true;
+
+	GetSequencer()->EmptySelection();
+	GetSequencer()->SelectSection(NewSection);
+	GetSequencer()->ThrobSectionSelection();
 
 	return KeyPropertyResult;
 }
@@ -293,6 +298,11 @@ FKeyPropertyResult FCameraCutTrackEditor::AddKeyInternal( float KeyTime, const F
 UMovieSceneCameraCutTrack* FCameraCutTrackEditor::FindOrCreateCameraCutTrack()
 {
 	UMovieScene* FocusedMovieScene = GetFocusedMovieScene();
+	if (FocusedMovieScene->IsReadOnly())
+	{
+		return nullptr;
+	}
+
 	UMovieSceneTrack* CameraCutTrack = FocusedMovieScene->GetCameraCutTrack();
 
 	if (CameraCutTrack == nullptr)
@@ -320,8 +330,16 @@ bool FCameraCutTrackEditor::HandleAddCameraCutTrackMenuEntryCanExecute() const
 
 void FCameraCutTrackEditor::HandleAddCameraCutTrackMenuEntryExecute()
 {
-	FindOrCreateCameraCutTrack();
-	GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
+	UMovieSceneCameraCutTrack* CameraCutTrack = FindOrCreateCameraCutTrack();
+
+	if (CameraCutTrack)
+	{
+		if (GetSequencer().IsValid())
+		{
+			GetSequencer()->OnAddTrack(CameraCutTrack);
+		}
+		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+	}
 }
 
 bool FCameraCutTrackEditor::IsCameraPickable(const AActor* const PickableActor)
@@ -424,13 +442,17 @@ TSharedRef<SWidget> FCameraCutTrackEditor::HandleAddCameraCutComboButtonGetMenuC
 
 void FCameraCutTrackEditor::CreateNewSectionFromBinding(FMovieSceneObjectBindingID InBindingID)
 {
-	auto CreateNewSection = [this, InBindingID](float KeyTime)
+	auto CreateNewSection = [this, InBindingID](FFrameNumber KeyTime)
 	{
 		FKeyPropertyResult KeyPropertyResult;
 
-		FindOrCreateCameraCutTrack()->AddNewCameraCut(InBindingID, KeyTime);
+		UMovieSceneCameraCutSection* NewSection = FindOrCreateCameraCutTrack()->AddNewCameraCut(InBindingID, KeyTime);
 		KeyPropertyResult.bTrackModified = true;
 
+		GetSequencer()->EmptySelection();
+		GetSequencer()->SelectSection(NewSection);
+		GetSequencer()->ThrobSectionSelection();
+		
 		return KeyPropertyResult;
 	};
 
@@ -468,7 +490,7 @@ void FCameraCutTrackEditor::OnLockCameraClicked(ECheckBoxState CheckBoxState)
 		for (int32 i = 0; i < GEditor->LevelViewportClients.Num(); ++i)
 		{		
 			FLevelEditorViewportClient* LevelVC = GEditor->LevelViewportClients[i];
-			if (LevelVC && LevelVC->IsPerspective() && LevelVC->AllowsCinematicPreview() && LevelVC->GetViewMode() != VMI_Unknown)
+			if (LevelVC && LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() && LevelVC->GetViewMode() != VMI_Unknown)
 			{
 				LevelVC->SetActorLock(nullptr);
 				LevelVC->bLockedCameraView = false;

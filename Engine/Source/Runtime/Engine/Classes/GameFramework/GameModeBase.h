@@ -240,6 +240,13 @@ public:
 	virtual void SwapPlayerControllers(APlayerController* OldPC, APlayerController* NewPC);
 
 	/**
+	 * Gets the class that should be used for spawning a player controller during seamless travel
+	 * @param PreviousPlayerController The player controller from the prior level
+	 * @return The class that should be used for spawning the player controller
+	 */
+	virtual TSubclassOf<APlayerController> GetPlayerControllerClassToSpawnForSeamlessTravel(APlayerController* PreviousPlayerController);
+
+	/**
 	 * Handles reinitializing players that remained through a seamless level transition
 	 * called from C++ for players that finished loading after the server
 	 * @param C the Controller to handle
@@ -277,9 +284,6 @@ public:
 	 */
 	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage);
 
-	DEPRECATED(4.14, "PreLogin with shared pointer is deprecated, switch to FUniqueNetIdRepl version instead")
-	virtual void PreLogin(const FString& Options, const FString& Address, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& ErrorMessage);
-
 	/**
 	 * Called to login new players by creating a player controller, overridable by the game
 	 *
@@ -300,9 +304,6 @@ public:
 	 */
 	virtual APlayerController* Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage);
 
-	DEPRECATED(4.14, "Login with shared pointer is deprecated, switch to FUniqueNetIdRepl version instead")
-	virtual APlayerController* Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& ErrorMessage);
-
 	/** Called after a successful login.  This is the first place it is safe to call replicated functions on the PlayerController. */
 	virtual void PostLogin(APlayerController* NewPlayer);
 
@@ -318,16 +319,21 @@ public:
 	void K2_OnLogout(AController* ExitingController);
 
 	/**
-	 * Spawns a PlayerController at the specified location; split out from Login()/HandleSeamlessTravelPlayer() for easier overriding
+	 * Spawns the appropriate PlayerController for the given options; split out from Login() for easier overriding.
+	 * Override this to conditionally spawn specialized PlayerControllers, for instance.
 	 *
 	 * @param RemoteRole the role this controller will play remotely
-	 * @param SpawnLocation location in the world to spawn
-	 * @param SpawnRotation rotation to set relative to the world
+	 * @param Options the options string from the new player's URL
 	 *
 	 * @return PlayerController for the player, NULL if there is any reason this player shouldn't exist or due to some error
 	 */
+	virtual APlayerController* SpawnPlayerController(ENetRole InRemoteRole, const FString& Options);
+
+	DEPRECATED(4.20, "SpawnPlayerController with Location and Rotation is deprecated, call or override the version that takes an Option string instead")
 	virtual APlayerController* SpawnPlayerController(ENetRole InRemoteRole, FVector const& SpawnLocation, FRotator const& SpawnRotation);
+	DEPRECATED(4.20, "SpawnReplayPlayerController is deprecated, replay controller spawning is handled inside the new version of the SpawnPlayerController function")
 	virtual APlayerController* SpawnReplayPlayerController(ENetRole InRemoteRole, FVector const& SpawnLocation, FRotator const& SpawnRotation);
+
 
 	/** Signals that a player is ready to enter the game, which may start it up */
 	UFUNCTION(BlueprintNativeEvent, Category=Game)
@@ -400,7 +406,7 @@ public:
 	AActor* K2_FindPlayerStart(AController* Player, const FString& IncomingName = TEXT(""));
 
 	/** Returns true if it's valid to call RestartPlayer. By default will call Player->CanRestartPlayer */
-	UFUNCTION(BlueprintNativeEvent, Category=Game)
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category=Game)
 	bool PlayerCanRestart(APlayerController* Player);
 
 	/** Tries to spawn the player's pawn, at the location returned by FindPlayerStart */
@@ -495,9 +501,6 @@ protected:
 	 */
 	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal = TEXT(""));
 
-	DEPRECATED(4.14, "InitNewPlayer with shared pointer is deprecated, switch to FUniqueNetIdRepl version instead")
-	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const TSharedPtr<const FUniqueNetId>& UniqueId, const FString& Options, const FString& Portal = TEXT(""));
-
 	/** Initialize the AHUD object for a player. Games can override this to do something different */
 	UFUNCTION(BlueprintNativeEvent, Category=Game)
 	void InitializeHUDForPlayer(APlayerController* NewPlayer);
@@ -511,7 +514,7 @@ protected:
 	/** Replicates the current level streaming status to the given PlayerController */
 	virtual void ReplicateStreamingStatus(APlayerController* PC);
 
-	/** Return true of FindPlayerStart should use the StartSpot stored on Player instead of calling ChoosePlayerStart */
+	/** Return true if FindPlayerStart should use the StartSpot stored on Player instead of calling ChoosePlayerStart */
 	virtual bool ShouldSpawnAtStartSpot(AController* Player);
 
 	/** Handles second half of RestartPlayer */
@@ -534,6 +537,7 @@ protected:
 	UFUNCTION(BlueprintImplementableEvent, Category=Game, meta=(DisplayName="OnSwapPlayerControllers", ScriptName="OnSwapPlayerControllers"))
 	void K2_OnSwapPlayerControllers(APlayerController* OldPC, APlayerController* NewPC);
 
+	/** Does the work of spawning a player controller of the given class at the given transform. */
 	virtual APlayerController* SpawnPlayerControllerCommon(ENetRole InRemoteRole, FVector const& SpawnLocation, FRotator const& SpawnRotation, TSubclassOf<APlayerController> InPlayerControllerClass);
 
 public:
@@ -562,6 +566,26 @@ private:
 class ENGINE_API FGameModeEvents
 {
 public:
+
+	/**
+	 * GameMode initialization has occurred
+	 * - Called at the end of AGameModeBase::InitGame 
+	 * - AGameSession has also been initialized
+	 * - Possible some child level initialization hasn't finished
+	 *
+	 * @param GameMode the game mode actor that has been initialized
+	 */
+	DECLARE_EVENT_OneParam(AGameModeBase, FGameModeInitializedEvent, AGameModeBase* /*GameMode*/);
+
+	/**
+	 * Client pre login event, triggered when a client first contacts a server
+	 *
+	 * @param GameMode the game mode actor that has been initialized
+	 * @param NewPlayer the unique id of the player attempting to join
+	 * @param ErrorMessage current state of any error messages, setting this value non empty will reject the player
+	 */
+	DECLARE_EVENT_ThreeParams(AGameModeBase, FGameModePreLoginEvent, AGameModeBase* /*GameMode*/, const FUniqueNetIdRepl& /*NewPlayer*/, FString& /*ErrorMessage*/);
+
 	/** 
 	 * Post login event, triggered when a player joins the game as well as after non-seamless ServerTravel
 	 *
@@ -576,7 +600,26 @@ public:
 	 */
 	DECLARE_EVENT_TwoParams(AGameModeBase, FGameModeLogoutEvent, AGameModeBase* /*GameMode*/, AController* /*Exiting*/);
 
+	/**
+	 * Match state has changed via SetMatchState()
+	 *
+	 * @param MatchState new match state
+	 */
+	DECLARE_EVENT_OneParam(AGameModeBase, FGameModeMatchStateSetEvent, FName /*MatchState*/);
+
+public: 
+	
+	static FGameModeInitializedEvent& OnGameModeInitializedEvent() { return GameModeInitializedEvent; } 
+	static FGameModePreLoginEvent& OnGameModePreLoginEvent() { return GameModePreLoginEvent; }
+	static FGameModePostLoginEvent& OnGameModePostLoginEvent() { return GameModePostLoginEvent; }
+	static FGameModeLogoutEvent& OnGameModeLogoutEvent() { return GameModeLogoutEvent; }
+	static FGameModeMatchStateSetEvent& OnGameModeMatchStateSetEvent() { return GameModeMatchStateSetEvent; }
+
+	static FGameModeInitializedEvent GameModeInitializedEvent;
+	static FGameModePreLoginEvent GameModePreLoginEvent;
 	static FGameModePostLoginEvent GameModePostLoginEvent;
 	static FGameModeLogoutEvent GameModeLogoutEvent;
+	static FGameModeMatchStateSetEvent GameModeMatchStateSetEvent;
 };
+
 

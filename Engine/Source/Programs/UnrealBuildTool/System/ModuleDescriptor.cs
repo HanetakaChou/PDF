@@ -96,6 +96,11 @@ namespace UnrealBuildTool
 		PostConfigInit,
 
 		/// <summary>
+		/// After PostConfigInit and before coreUobject initialized. used for early boot loading screens before the uobjects are initialized
+		/// </summary>
+		PreEarlyLoadingScreen,
+
+		/// <summary>
 		/// Loaded before the engine is fully initialized for modules that need to hook into the loading screen before it triggers
 		/// </summary>
 		PreLoadingScreen,
@@ -153,6 +158,26 @@ namespace UnrealBuildTool
 		public TargetType[] BlacklistTargets;
 
 		/// <summary>
+		/// List of allowed target configurations
+		/// </summary>
+		public UnrealTargetConfiguration[] WhitelistTargetConfigurations;
+
+		/// <summary>
+		/// List of disallowed target configurations
+		/// </summary>
+		public UnrealTargetConfiguration[] BlacklistTargetConfigurations;
+
+		/// <summary>
+		/// List of allowed programs
+		/// </summary>
+		public string[] WhitelistPrograms;
+
+		/// <summary>
+		/// List of disallowed programs
+		/// </summary>
+		public string[] BlacklistPrograms;
+
+		/// <summary>
 		/// List of additional dependencies for building this module.
 		/// </summary>
 		public string[] AdditionalDependencies;
@@ -205,6 +230,30 @@ namespace UnrealBuildTool
 			if (InObject.TryGetEnumArrayField<TargetType>("BlacklistTargets", out BlacklistTargets))
 			{
 				Module.BlacklistTargets = BlacklistTargets;
+			}
+
+			UnrealTargetConfiguration[] WhitelistTargetConfigurations;
+			if (InObject.TryGetEnumArrayField<UnrealTargetConfiguration>("WhitelistTargetConfigurations", out WhitelistTargetConfigurations))
+			{
+				Module.WhitelistTargetConfigurations = WhitelistTargetConfigurations;
+			}
+
+			UnrealTargetConfiguration[] BlacklistTargetConfigurations;
+			if (InObject.TryGetEnumArrayField<UnrealTargetConfiguration>("BlacklistTargetConfigurations", out BlacklistTargetConfigurations))
+			{
+				Module.BlacklistTargetConfigurations = BlacklistTargetConfigurations;
+			}
+
+			string[] WhitelistPrograms;
+			if (InObject.TryGetStringArrayField("WhitelistPrograms", out WhitelistPrograms))
+			{
+				Module.WhitelistPrograms = WhitelistPrograms;
+			}
+
+			string[] BlacklistPrograms;
+			if (InObject.TryGetStringArrayField("BlacklistPrograms", out BlacklistPrograms))
+			{
+				Module.BlacklistPrograms = BlacklistPrograms;
 			}
 
 			string[] AdditionalDependencies;
@@ -262,6 +311,32 @@ namespace UnrealBuildTool
 				}
 				Writer.WriteArrayEnd();
 			}
+			if (WhitelistTargetConfigurations != null && WhitelistTargetConfigurations.Length > 0)
+			{
+				Writer.WriteArrayStart("WhitelistTargetConfigurations");
+				foreach (UnrealTargetConfiguration WhitelistTargetConfiguration in WhitelistTargetConfigurations)
+				{
+					Writer.WriteValue(WhitelistTargetConfiguration.ToString());
+				}
+				Writer.WriteArrayEnd();
+			}
+			if (BlacklistTargetConfigurations != null && BlacklistTargetConfigurations.Length > 0)
+			{
+				Writer.WriteArrayStart("BlacklistTargetConfigurations");
+				foreach (UnrealTargetConfiguration BlacklistTargetConfiguration in BlacklistTargetConfigurations)
+				{
+					Writer.WriteValue(BlacklistTargetConfiguration.ToString());
+				}
+				Writer.WriteArrayEnd();
+			}
+			if(WhitelistPrograms != null && WhitelistPrograms.Length > 0)
+			{
+				Writer.WriteStringArrayField("WhitelistPrograms", WhitelistPrograms);
+			}
+			if(BlacklistPrograms != null && BlacklistPrograms.Length > 0)
+			{
+				Writer.WriteStringArrayField("BlacklistPrograms", BlacklistPrograms);
+			}
 			if (AdditionalDependencies != null && AdditionalDependencies.Length > 0)
 			{
 				Writer.WriteArrayStart("AdditionalDependencies");
@@ -293,15 +368,17 @@ namespace UnrealBuildTool
 			}
 		}
 
-        /// <summary>
-        /// Determines whether the given plugin module is part of the current build.
-        /// </summary>
-        /// <param name="Platform">The platform being compiled for</param>
-        /// <param name="TargetType">The type of the target being compiled</param>
-        /// <param name="bBuildDeveloperTools">Whether the configuration includes developer tools (typically UEBuildConfiguration.bBuildDeveloperTools for UBT callers)</param>
-        /// <param name="bBuildEditor">Whether the configuration includes the editor (typically UEBuildConfiguration.bBuildEditor for UBT callers)</param>
-        /// <param name="bBuildRequiresCookedData">Whether the configuration requires cooked content (typically UEBuildConfiguration.bBuildRequiresCookedData for UBT callers)</param>
-        public bool IsCompiledInConfiguration(UnrealTargetPlatform Platform, TargetType TargetType, bool bBuildDeveloperTools, bool bBuildEditor, bool bBuildRequiresCookedData)
+		/// <summary>
+		/// Determines whether the given plugin module is part of the current build.
+		/// </summary>
+		/// <param name="Platform">The platform being compiled for</param>
+		/// <param name="TargetConfiguration">The target configuration being compiled for</param>
+		/// <param name="TargetName">Name of the target being built</param>
+		/// <param name="TargetType">The type of the target being compiled</param>
+		/// <param name="bBuildDeveloperTools">Whether the configuration includes developer tools (typically UEBuildConfiguration.bBuildDeveloperTools for UBT callers)</param>
+		/// <param name="bBuildEditor">Whether the configuration includes the editor (typically UEBuildConfiguration.bBuildEditor for UBT callers)</param>
+		/// <param name="bBuildRequiresCookedData">Whether the configuration requires cooked content (typically UEBuildConfiguration.bBuildRequiresCookedData for UBT callers)</param>
+		public bool IsCompiledInConfiguration(UnrealTargetPlatform Platform, UnrealTargetConfiguration TargetConfiguration, string TargetName, TargetType TargetType, bool bBuildDeveloperTools, bool bBuildEditor, bool bBuildRequiresCookedData)
 		{
 			// Check the platform is whitelisted
 			if (WhitelistPlatforms != null && WhitelistPlatforms.Length > 0 && !WhitelistPlatforms.Contains(Platform))
@@ -325,6 +402,34 @@ namespace UnrealBuildTool
 			if (BlacklistTargets != null && BlacklistTargets.Contains(TargetType))
 			{
 				return false;
+			}
+
+			// Check the target configuration is whitelisted
+			if (WhitelistTargetConfigurations != null && WhitelistTargetConfigurations.Length > 0 && !WhitelistTargetConfigurations.Contains(TargetConfiguration))
+			{
+				return false;
+			}
+
+			// Check the target configuration is not blacklisted
+			if (BlacklistTargetConfigurations != null && BlacklistTargetConfigurations.Contains(TargetConfiguration))
+			{
+				return false;
+			}
+
+			// Special checks just for programs
+			if(TargetType == TargetType.Program)
+			{
+				// Check the program name is whitelisted. Note that this behavior is slightly different to other whitelist/blacklist checks; we will whitelist a module of any type if it's explicitly allowed for this program.
+				if(WhitelistPrograms != null && WhitelistPrograms.Length > 0)
+				{
+					return WhitelistPrograms.Contains(TargetName);
+				}
+				
+				// Check the program name is not blacklisted
+				if(BlacklistPrograms != null && BlacklistPrograms.Contains(TargetName))
+				{
+					return false;
+				}
 			}
 
 			// Check the module is compatible with this target.

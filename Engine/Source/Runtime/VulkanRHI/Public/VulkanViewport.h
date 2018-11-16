@@ -7,11 +7,16 @@
 #pragma once
 
 #include "VulkanResources.h"
+#include "HAL/CriticalSection.h"
 
 class FVulkanDynamicRHI;
 class FVulkanSwapChain;
 class FVulkanQueue;
-struct FVulkanSemaphore;
+
+namespace VulkanRHI
+{
+	class FSemaphore;
+}
 
 class FVulkanViewport : public FRHIViewport, public VulkanRHI::FDeviceChild
 {
@@ -25,17 +30,11 @@ public:
 
 	void WaitForFrameEventCompletion();
 
-	//#todo-rco
-	void IssueFrameEvent() {}
+	void IssueFrameEvent();
 
 	inline FIntPoint GetSizeXY() const
 	{
 		return FIntPoint(SizeX, SizeY);
-	}
-
-	inline FVulkanSwapChain* GetSwapChain()
-	{
-		return SwapChain;
 	}
 
 	virtual void SetCustomPresent(FRHICustomPresent* InCustomPresent) override final
@@ -48,9 +47,11 @@ public:
 		return CustomPresent;
 	}
 
+	virtual void Tick(float DeltaTime) override final;
+
 	void AdvanceBackBufferFrame();
 
-	bool Present(FVulkanCmdBuffer* CmdBuffer, FVulkanQueue* Queue, FVulkanQueue* PresentQueue, bool bLockToVsync);
+	bool Present(FVulkanCommandListContext* Context, FVulkanCmdBuffer* CmdBuffer, FVulkanQueue* Queue, FVulkanQueue* PresentQueue, bool bLockToVsync);
 
 	inline uint32 GetPresentCount() const
 	{
@@ -59,12 +60,15 @@ public:
 
 protected:
 	VkImage BackBufferImages[NUM_BUFFERS];
-	FVulkanSemaphore* RenderingDoneSemaphores[NUM_BUFFERS];
+	VulkanRHI::FSemaphore* RenderingDoneSemaphores[NUM_BUFFERS];
 	FVulkanTextureView TextureViews[NUM_BUFFERS];
 
 	// 'Dummy' back buffer
 	TRefCountPtr<FVulkanBackBuffer> RenderingBackBuffer;
 	TRefCountPtr<FVulkanBackBuffer> RHIBackBuffer;
+
+	/** narrow-scoped section that locks access to back buffer during its recreation*/
+	FCriticalSection RecreatingSwapchain;
 
 	FVulkanDynamicRHI* RHI;
 	uint32 SizeX;
@@ -76,16 +80,22 @@ protected:
 	void* WindowHandle;
 	uint32 PresentCount;
 
+	int8 LockToVsync;
+
 	// Just a pointer, not owned by this class
-	FVulkanSemaphore* AcquiredSemaphore;
+	VulkanRHI::FSemaphore* AcquiredSemaphore;
 
 	FCustomPresentRHIRef CustomPresent;
+
+	FVulkanCmdBuffer* LastFrameCommandBuffer = nullptr;
+	uint64 LastFrameFenceCounter = 0;
 
 	void CreateSwapchain();
 	void AcquireBackBuffer(FRHICommandListBase& CmdList, FVulkanBackBuffer* NewBackBuffer);
 
 	void RecreateSwapchain(void* NewNativeWindow, bool bForce = false);
-	void Resize(uint32 InSizeX, uint32 InSizeY, bool bIsFullscreen);
+	void RecreateSwapchainFromRT(EPixelFormat PreferredPixelFormat);
+	void Resize(uint32 InSizeX, uint32 InSizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat);
 
 	static int32 DoAcquireImageIndex(FVulkanViewport* Viewport);
 	bool DoCheckedSwapChainJob(TFunction<int32(FVulkanViewport*)> SwapChainJob);
@@ -100,10 +110,3 @@ struct TVulkanResourceTraits<FRHIViewport>
 {
 	typedef FVulkanViewport TConcreteType;
 };
-
-
-inline bool DelayAcquireBackBuffer()
-{
-	extern FAutoConsoleVariable GCVarDelayAcquireBackBuffer;
-	return GCVarDelayAcquireBackBuffer->GetInt() != 0;
-}

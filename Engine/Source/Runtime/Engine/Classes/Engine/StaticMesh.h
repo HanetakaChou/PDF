@@ -16,13 +16,16 @@
 #include "Components.h"
 #include "Interfaces/Interface_CollisionDataProvider.h"
 #include "Engine/MeshMerging.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 #include "StaticMeshResources.h"
+#include "PerPlatformProperties.h"
 #include "StaticMesh.generated.h"
 
 class FSpeedTreeWind;
 class UAssetUserData;
 class UMaterialInterface;
+class UNavCollisionBase;
+struct FMeshDescription;
 struct FStaticMeshLODResources;
 
 /*-----------------------------------------------------------------------------
@@ -153,7 +156,28 @@ struct FStaticMeshSourceModel
 #if WITH_EDITOR
 	/** Imported raw mesh data. Optional for all but the first LOD. */
 	class FRawMeshBulkData* RawMeshBulkData;
+	
+	/*
+	 * The staticmesh owner of this source model. We need the SM to be able to convert between MeshDesription and RawMesh.
+	 * RawMesh use int32 material index and MeshDescription use FName material slot name.
+	 * This memeber is fill in the PostLoad of the static mesh.
+	 * TODO: Remove this member when FRawMesh will be remove.
+	 */
+	class UStaticMesh* StaticMeshOwner;
+	/*
+	 * Accessor to Load and save the raw mesh or the mesh description depending on the editor settings.
+	 * Temporary until we deprecate the RawMesh.
+	 */
+	ENGINE_API bool IsRawMeshEmpty() const;
+	ENGINE_API void LoadRawMesh(struct FRawMesh& OutRawMesh) const;
+	ENGINE_API void SaveRawMesh(struct FRawMesh& InRawMesh, bool bConvertToMeshdescription = true);
+
 #endif // #if WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	/* Original Imported mesh description data. Optional for all but the first LOD. Autogenerate LOD do not have original mesh description*/
+	FMeshDescription* OriginalMeshDescription;
+#endif
 
 	/** Settings applied when building the mesh. */
 	UPROPERTY(EditAnywhere, Category=BuildSettings)
@@ -172,7 +196,17 @@ struct FStaticMeshSourceModel
 	 * sphere of the model. i.e. 0.5 means half the screen's maximum dimension.
 	 */
 	UPROPERTY(EditAnywhere, Category=ReductionSettings)
-	float ScreenSize;
+	FPerPlatformFloat ScreenSize;
+
+	/** The file path that was used to import this LOD. */
+	UPROPERTY(VisibleAnywhere, Category = StaticMeshSourceModel, AdvancedDisplay)
+	FString SourceImportFilename;
+
+#if WITH_EDITORONLY_DATA
+	/** Weather this LOD was imported in the same file as the base mesh. */
+	UPROPERTY()
+	bool bImportWithBaseMesh;
+#endif
 
 	/** Default constructor. */
 	ENGINE_API FStaticMeshSourceModel();
@@ -263,8 +297,8 @@ struct FMeshSectionInfoMap
 	/** Copies per-section settings from the specified section info map. */
 	ENGINE_API void CopyFrom(const FMeshSectionInfoMap& Other);
 
-	/** Returns true if any section has collision enabled. */
-	bool AnySectionHasCollision() const;
+	/** Returns true if any section of the specified LOD has collision enabled. */
+	bool AnySectionHasCollision(int32 LodIndex) const;
 };
 
 USTRUCT()
@@ -274,6 +308,9 @@ struct FAssetEditorOrbitCameraPosition
 
 	FAssetEditorOrbitCameraPosition()
 		: bIsSet(false)
+		, CamOrbitPoint(ForceInitToZero)
+		, CamOrbitZoom(ForceInitToZero)
+		, CamOrbitRotation(ForceInitToZero)
 	{
 	}
 
@@ -338,7 +375,17 @@ struct FStaticMaterial
 		, ImportedMaterialSlotName(InImportedMaterialSlotName)
 #endif //WITH_EDITORONLY_DATA
 	{
-
+		//If not specified add some valid material slot name
+		if (MaterialInterface && MaterialSlotName == NAME_None)
+		{
+			MaterialSlotName = MaterialInterface->GetFName();
+		}
+#if WITH_EDITORONLY_DATA
+		if (ImportedMaterialSlotName == NAME_None)
+		{
+			ImportedMaterialSlotName = MaterialSlotName;
+		}
+#endif
 	}
 
 	friend FArchive& operator<<(FArchive& Ar, FStaticMaterial& Elem);
@@ -354,11 +401,9 @@ struct FStaticMaterial
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = StaticMesh)
 	FName MaterialSlotName;
 
-#if WITH_EDITORONLY_DATA
 	/*This name should be use when we re-import a skeletal mesh so we can order the Materials array like it should be*/
 	UPROPERTY(VisibleAnywhere, Category = StaticMesh)
 	FName ImportedMaterialSlotName;
-#endif //WITH_EDITORONLY_DATA
 
 	/** Data used for texture streaming relative to each UV channels. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = StaticMesh)
@@ -399,6 +444,52 @@ struct FMaterialRemapIndex
 	TArray<int32> MaterialRemap;
 };
 
+/**
+ * Container UObject which holds a MeshDescription for every SourceModel LOD.
+ * Eventually this will be outered to the static mesh's package, so the data is saved along with the static mesh, but will not be referenced by it.
+ * The static mesh can later load the mesh description container on demand.
+ */
+UCLASS()
+class ENGINE_API UStaticMeshDescriptions : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	// Define these in a concrete compilation unit so the TUniquePtr deleter works
+	UStaticMeshDescriptions(const FObjectInitializer&);
+	UStaticMeshDescriptions(FVTableHelper&);
+	~UStaticMeshDescriptions();
+
+	// UObject interface
+	virtual void Serialize(FArchive& Ar);
+
+	/** Empties the mesh description container */
+	void Empty();
+
+	/** Returns the number of mesh descriptions in the container. This should always equal the number of LODs */
+	int32 Num() const;
+
+	/** Set the number of mesh descriptions in the container */
+	void SetNum(const int32 Num);
+
+	/** Gets mesh description for the given LOD */
+	FMeshDescription* Get(int32 Index) const;
+
+	/** Creates an empty mesh description for the given LOD */
+	FMeshDescription* Create(int32 Index);
+
+	/** Clears the mesh description for the given LOD */
+	void Reset(int32 Index);
+
+	/** Inserts new LODs at the given index */
+	void InsertAt(int32 Index, int32 Count = 1);
+
+	/** Deletes LODs at the given index */
+	void RemoveAt(int32 Index, int32 Count = 1);
+
+private:
+	TArray<TUniquePtr<FMeshDescription>> MeshDescriptions;
+};
 
 /**
  * A StaticMesh is a piece of geometry that consists of a static set of polygons.
@@ -424,12 +515,19 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	/** Pointer to the data used to render this static mesh. */
 	TUniquePtr<class FStaticMeshRenderData> RenderData;
 
+	/** Pointer to the occluder data used to rasterize this static mesh for software occlusion. */
+	TUniquePtr<class FStaticMeshOccluderData> OccluderData;
+
 #if WITH_EDITORONLY_DATA
 	static const float MinimumAutoLODPixelError;
 
 	/** Imported raw mesh bulk data. */
 	UPROPERTY()
 	TArray<FStaticMeshSourceModel> SourceModels;
+
+	/** Container holding mesh descriptions for each LOD */
+	UPROPERTY(transient, duplicatetransient)
+	UStaticMeshDescriptions* MeshDescriptions;
 
 	/** Map of LOD+Section index to per-section info. */
 	UPROPERTY()
@@ -450,10 +548,6 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=LodSettings)
 	FName LODGroup;
 
-	/** If true, the screen sizees at which LODs swap are computed automatically. */
-	UPROPERTY()
-	uint32 bAutoComputeLODScreenSize:1;
-
 	/* The last import version */
 	UPROPERTY()
 	int32 ImportVersion;
@@ -465,27 +559,35 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	UPROPERTY()
 	int32 LightmapUVVersion;
 
+	/** If true, the screen sizees at which LODs swap are computed automatically. */
+	UPROPERTY()
+	uint8 bAutoComputeLODScreenSize : 1;
+
 	/**
 	* If true on post load we need to calculate Display Factors from the
 	* loaded LOD distances.
 	*/
-	bool bRequiresLODDistanceConversion : 1;
+	uint8 bRequiresLODDistanceConversion : 1;
 
 	/**
 	 * If true on post load we need to calculate resolution independent Display Factors from the
 	 * loaded LOD screen sizes.
 	 */
-	bool bRequiresLODScreenSizeConversion : 1;
+	uint8 bRequiresLODScreenSizeConversion : 1;
+
+	/** Materials used by this static mesh. Individual sections index in to this array. */
+	UPROPERTY()
+	TArray<UMaterialInterface*> Materials_DEPRECATED;
 
 #endif // #if WITH_EDITORONLY_DATA
 
 	/** Minimum LOD to use for rendering.  This is the default setting for the mesh and can be overridden by component settings. */
 	UPROPERTY()
-	int32 MinLOD;
+	FPerPlatformInt MinLOD;
 
-	/** Materials used by this static mesh. Individual sections index in to this array. */
-	UPROPERTY()
-	TArray<UMaterialInterface*> Materials_DEPRECATED;
+	/** Bias multiplier for Light Propagation Volume lighting */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=StaticMesh, meta=(UIMin = "0.0", UIMax = "3.0"))
+	float LpvBiasMultiplier;
 
 	UPROPERTY()
 	TArray<FStaticMaterial> StaticMaterials;
@@ -504,13 +606,6 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = StaticMesh)
 	float DistanceFieldSelfShadowBias;
 
-	/** 
-	 * Whether to generate a distance field for this mesh, which can be used by DistanceField Indirect Shadows.
-	 * This is ignored if the project's 'Generate Mesh Distance Fields' setting is enabled.
-	 */
-	UPROPERTY(EditAnywhere, Category=StaticMesh)
-	uint32 bGenerateMeshDistanceField : 1;
-
 	// Physics data.
 	UPROPERTY(EditAnywhere, transient, duplicatetransient, Instanced, Category = StaticMesh)
 	class UBodySetup* BodySetup;
@@ -520,18 +615,25 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	 *	Sometimes it can be desirable to use a lower poly representation for collision to reduce memory usage, improve performance and behaviour.
 	 *	Collision representation does not change based on distance to camera.
 	 */
-	UPROPERTY(EditAnywhere, Category = StaticMesh, meta=(DisplayName="LOD For Collision"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = StaticMesh, meta=(DisplayName="LOD For Collision"))
 	int32 LODForCollision;
+
+	/** 
+	 * Whether to generate a distance field for this mesh, which can be used by DistanceField Indirect Shadows.
+	 * This is ignored if the project's 'Generate Mesh Distance Fields' setting is enabled.
+	 */
+	UPROPERTY(EditAnywhere, Category=StaticMesh)
+	uint8 bGenerateMeshDistanceField : 1;
 
 	/** If true, strips unwanted complex collision data aka kDOP tree when cooking for consoles.
 		On the Playstation 3 data of this mesh will be stored in video memory. */
 	UPROPERTY()
-	uint32 bStripComplexCollisionForConsole_DEPRECATED:1;
+	uint8 bStripComplexCollisionForConsole_DEPRECATED:1;
 
 	/** If true, mesh will have NavCollision property with additional data for navmesh generation and usage.
 	    Set to false for distant meshes (always outside navigation bounds) to save memory on collision data. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Navigation)
-	uint32 bHasNavigationData:1;
+	uint8 bHasNavigationData:1;
 
 	/**	
 		Mesh supports uniformly distributed sampling in constant time.
@@ -539,27 +641,22 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 		Example usage is uniform spawning of particles.
 	*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = StaticMesh)
-	uint32 bSupportUniformlyDistributedSampling : 1;
+	uint8 bSupportUniformlyDistributedSampling : 1;
 
-	/** Bias multiplier for Light Propagation Volume lighting */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=StaticMesh, meta=(UIMin = "0.0", UIMax = "3.0"))
-	float LpvBiasMultiplier;
+protected:
+	/** Tracks whether InitResources has been called, and rendering resources are initialized. */
+	uint8 bRenderingResourcesInitialized:1;
 
+public:
 	/** 
 	 *	If true, will keep geometry data CPU-accessible in cooked builds, rather than uploading to GPU memory and releasing it from CPU memory.
 	 *	This is required if you wish to access StaticMesh geometry data on the CPU at runtime in cooked builds (e.g. to convert StaticMesh to ProceduralMeshComponent)
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = StaticMesh)
-	bool bAllowCPUAccess;
+	uint8 bAllowCPUAccess:1;
 
 	/** A fence which is used to keep track of the rendering thread releasing the static mesh resources. */
 	FRenderCommandFence ReleaseResourcesFence;
-
-	/**
-	 * For simplified meshes, this is the fully qualified path and name of the static mesh object we were
-	 * originally duplicated from.  This is serialized to disk, but is discarded when cooking for consoles.
-	 */
-	FString HighResSourceMeshName;
 
 #if WITH_EDITORONLY_DATA
 	/** Importing data and options used for this mesh */
@@ -586,10 +683,14 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 	UPROPERTY(EditAnywhere, Category = Collision)
 	bool bCustomizedCollision;
 
-#endif // WITH_EDITORONLY_DATA
+	/** 
+	 *	Specifies which mesh LOD to use as occluder geometry for software occlusion
+	 *  Set to -1 to not use this mesh as occluder 
+	 */
+	UPROPERTY(EditAnywhere, Category=StaticMesh, AdvancedDisplay, meta=(DisplayName="LOD For Occluder Mesh"))
+	int32 LODForOccluderMesh;
 
-	/** For simplified meshes, this is the CRC of the high res mesh we were originally duplicated from. */
-	uint32 HighResSourceMeshCRC;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Unique ID for tracking/caching this mesh during distributed lighting */
 	FGuid LightingGuid;
@@ -617,6 +718,9 @@ class UStaticMesh : public UObject, public IInterface_CollisionDataProvider, pub
 #if WITH_EDITOR
 	FOnExtendedBoundsChanged OnExtendedBoundsChanged;
 	FOnMeshChanged OnMeshChanged;
+
+	/** This transient guid is use by the automation framework to modify the DDC key to force a build. */
+	FGuid BuildCacheAutomationTestGuid;
 #endif
 
 protected:
@@ -632,9 +736,78 @@ protected:
 	TArray<UAssetUserData*> AssetUserData;
 
 public:
+	/** The editable mesh representation of this static mesh */
+	// @todo: Maybe we don't want this visible in the details panel in the end; for now, this might aid debugging.
+	UPROPERTY(Instanced, VisibleAnywhere, Category = EditableMesh)
+	class UObject* EditableMesh;
+
+	/**
+	 * Registers the mesh attributes required by the mesh description for a static mesh.
+	 */
+	ENGINE_API static void RegisterMeshAttributes( FMeshDescription& MeshDescription );
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Accessors for the original mesh description imported data
+	 * The original import data is necessary to start from the full data when applying build options.
+	 */
+	ENGINE_API void LoadMeshDescriptions();
+	ENGINE_API void UnloadMeshDescriptions();
+
+	ENGINE_API FMeshDescription* GetOriginalMeshDescription(int32 LodIndex);
+	ENGINE_API FMeshDescription* CreateOriginalMeshDescription(int32 LodIndex);
+	ENGINE_API void CommitOriginalMeshDescription(int32 LodIndex);
+	ENGINE_API void ClearOriginalMeshDescription(int32 LodIndex);
+
+	/**
+	 * Internal function use to make sure all imported material slot name are unique and non empty.
+	 */
+	void FixupMaterialSlotName();
+
+	/**
+	 * Adds an empty UV channel at the end of the existing channels on the given LOD of a StaticMesh.
+	 * @param	LODIndex			Index of the StaticMesh LOD.
+	 * @return true if a UV channel was added.
+	 */
+	ENGINE_API bool AddUVChannel(int32 LODIndex);
+
+	/**
+	 * Inserts an empty UV channel at the specified channel index on the given LOD of a StaticMesh.
+	 * @param	LODIndex			Index of the StaticMesh LOD.
+	 * @param	UVChannelIndex		Index where to insert the UV channel.
+	 * @return true if a UV channel was added.
+	 */
+	ENGINE_API bool InsertUVChannel(int32 LODIndex, int32 UVChannelIndex);
+
+	/**
+	 * Removes the UV channel at the specified channel index on the given LOD of a StaticMesh.
+	 * @param	LODIndex			Index of the StaticMesh LOD.
+	 * @param	UVChannelIndex		Index where to remove the UV channel.
+	 * @return true if the UV channel was removed.
+	 */
+	ENGINE_API bool RemoveUVChannel(int32 LODIndex, int32 UVChannelIndex);
+
+	/**
+	 * Sets the texture coordinates at the specified UV channel index on the given LOD of a StaticMesh.
+	 * @param	LODIndex			Index of the StaticMesh LOD.
+	 * @param	UVChannelIndex		Index where to remove the UV channel.
+	 * @param	TexCoords			The texture coordinates to set on the UV channel.
+	 * @return true if the UV channel could be set.
+	 */
+	ENGINE_API bool SetUVChannel(int32 LODIndex, int32 UVChannelIndex, const TArray<FVector2D>& TexCoords);
+
+#endif
+
+	/**
+	 * Returns the number of UV channels for the given LOD of a StaticMesh.
+	 * @param	LODIndex			Index of the StaticMesh LOD.
+	 * @return the number of UV channels.
+	 */
+	ENGINE_API int32 GetNumUVChannels(int32 LODIndex);
+
 	/** Pre-build navigation collision */
 	UPROPERTY(VisibleAnywhere, transient, duplicatetransient, Instanced, Category = Navigation)
-	class UNavCollision* NavCollision;
+	UNavCollisionBase* NavCollision;
 public:
 	/**
 	 * Default constructor
@@ -645,17 +818,25 @@ public:
 #if WITH_EDITOR
 	ENGINE_API virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditUndo() override;
 	ENGINE_API virtual void GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMetadata>& OutMetadata) const override;
 	ENGINE_API void SetLODGroup(FName NewGroup, bool bRebuildImmediately = true);
 	ENGINE_API void BroadcastNavCollisionChange();
 
 	FOnExtendedBoundsChanged& GetOnExtendedBoundsChanged() { return OnExtendedBoundsChanged; }
 	FOnMeshChanged& GetOnMeshChanged() { return OnMeshChanged; }
+
+	//SourceModels API
+	ENGINE_API FStaticMeshSourceModel& AddSourceModel();
+	ENGINE_API void SetNumSourceModels(int32 Num);
+	ENGINE_API void RemoveSourceModel(int32 Index);
+
 #endif // WITH_EDITOR
 
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 	ENGINE_API virtual void PostInitProperties() override;
 	ENGINE_API virtual void PostLoad() override;
+	virtual bool IsPostLoadThreadSafe() const override;
 	ENGINE_API virtual void BeginDestroy() override;
 	ENGINE_API virtual bool IsReadyForFinishDestroy() override;
 	ENGINE_API virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
@@ -720,7 +901,7 @@ public:
 	/**
 	 * Returns true if the mesh has data that can be rendered.
 	 */
-	ENGINE_API bool HasValidRenderData() const;
+	ENGINE_API bool HasValidRenderData(bool bCheckLODForVerts = true, int32 LODIndex = INDEX_NONE) const;
 
 	/**
 	 * Returns the number of bounds of the mesh.
@@ -753,6 +934,8 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "StaticMesh")
 	ENGINE_API int32 GetMaterialIndex(FName MaterialSlotName) const;
+
+	ENGINE_API int32 GetMaterialIndexFromImportedMaterialSlotName(FName ImportedMaterialSlotName) const;
 
 	/**
 	 * Returns the render data to use for exporting the specified LOD. This method should always
@@ -802,9 +985,9 @@ public:
 	 */
 	ENGINE_API void CreateNavCollision(const bool bIsUpdate = false);
 
-	FORCEINLINE const UNavCollision* GetNavCollision() const { return NavCollision; }
+	FORCEINLINE const UNavCollisionBase* GetNavCollision() const { return NavCollision; }
 
-	/** Configures this SM as bHasNavigationData = false and clears stored UNavCollision */
+	/** Configures this SM as bHasNavigationData = false and clears stored NavCollision */
 	ENGINE_API void MarkAsNotHavingNavigationData();
 
 	const FGuid& GetLightingGuid() const
@@ -849,12 +1032,21 @@ public:
 	/** Removes all vertex colors from this mesh and rebuilds it (Editor only */
 	ENGINE_API void RemoveVertexColors();
 
-	void EnforceLightmapRestrictions();
+	/** Make sure the Lightmap UV point on a valid UVChannel */
+	ENGINE_API void EnforceLightmapRestrictions();
 
 	/** Calculates the extended bounds */
 	ENGINE_API void CalculateExtendedBounds();
 
+	inline bool AreRenderingResourcesInitialized() const { return bRenderingResourcesInitialized; }
+
 #if WITH_EDITOR
+
+	/**
+	 * Sets a Material given a Material Index
+	 */
+	UFUNCTION(BlueprintCallable, Category = "StaticMesh")
+	ENGINE_API void SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMaterial);
 
 	/**
 	 * Returns true if LODs of this static mesh may share texture lightmaps.
@@ -872,6 +1064,8 @@ public:
 	ENGINE_API static void GetLODGroupsDisplayNames(TArray<FText>& OutLODGroupsDisplayNames);
 
 	ENGINE_API void GenerateLodsInPackage();
+
+	ENGINE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
 
 	/** Get multicast delegate broadcast prior to mesh building */
 	FOnPreMeshBuild& OnPreMeshBuild() { return PreMeshBuild; }
@@ -896,10 +1090,22 @@ private:
 	void FixupZeroTriangleSections();
 
 	/**
+	* Return mesh data key. The key is the ddc filename for the mesh data
+	*/
+	bool GetMeshDataKey(FString& OutKey);
+
+	/**
+	* Caches mesh data.
+	*/
+	void CacheMeshData();
+
+public:
+	/**
 	 * Caches derived renderable data.
 	 */
-	void CacheDerivedData();
+	ENGINE_API void CacheDerivedData();
 
+private:
 
 	FOnPreMeshBuild PreMeshBuild;
 	FOnPostMeshBuild PostMeshBuild;
@@ -907,7 +1113,6 @@ private:
 	/**
 	 * Fixes up the material when it was converted to the new staticmesh build process
 	 */
-	bool CleanUpRedondantMaterialPostLoad;
-
+	bool bCleanUpRedundantMaterialPostLoad;
 #endif // #if WITH_EDITOR
 };

@@ -38,6 +38,7 @@ ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogActor, Log, Warning);
 // Delegate signatures
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams( FTakeAnyDamageSignature, AActor*, DamagedActor, float, Damage, const class UDamageType*, DamageType, class AController*, InstigatedBy, AActor*, DamageCauser );
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_NineParams( FTakePointDamageSignature, AActor*, DamagedActor, float, Damage, class AController*, InstigatedBy, FVector, HitLocation, class UPrimitiveComponent*, FHitComponent, FName, BoneName, FVector, ShotFromDirection, const class UDamageType*, DamageType, AActor*, DamageCauser );
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_SevenParams( FTakeRadialDamageSignature, AActor*, DamagedActor, float, Damage, const class UDamageType*, DamageType, FVector, Origin, FHitResult, HitInfo, class AController*, InstigatedBy, AActor*, DamageCauser );
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams( FActorBeginOverlapSignature, AActor*, OverlappedActor, AActor*, OtherActor );
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams( FActorEndOverlapSignature, AActor*, OverlappedActor, AActor*, OtherActor );
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams( FActorHitSignature, AActor*, SelfActor, AActor*, OtherActor, FVector, NormalImpulse, const FHitResult&, Hit );
@@ -154,8 +155,14 @@ public:
 	 * If true, this actor is no longer replicated to new clients, and is "torn off" (becomes a ROLE_Authority) on clients to which it was being replicated.
 	 * @see TornOff()
 	 */
+	DEPRECATED(4.20, "Use GetTearOff() or TearOff() functions. This property will become private.")
 	UPROPERTY(Replicated)
-	uint8 bTearOff:1;    
+	uint8 bTearOff:1; 
+
+	/** returns TearOff status */
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	bool GetTearOff() const { return bTearOff; }
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Networking - Server - TearOff this actor to stop replication to clients. Will set bTearOff to true. */
 	UFUNCTION(BlueprintCallable, Category=Replication)
@@ -169,7 +176,7 @@ public:
 	uint8 bExchangedRoles:1;
 
 	/** This actor will be loaded on network clients during map load */
-	UPROPERTY(Category=Replication, EditDefaultsOnly)
+	UPROPERTY(Category=Replication, EditAnywhere)
 	uint8 bNetLoadOnClient:1;
 
 	/** If actor has valid Owner, call Owner's IsNetRelevantFor and GetNetPriority */
@@ -179,6 +186,14 @@ public:
 	/** If true, this actor will be replicated to network replays (default is true) */
 	UPROPERTY()
 	uint8 bRelevantForNetworkReplays:1;
+
+	/**
+	 * If true, this actor will only be destroyed during scrubbing if the replay is set to a time before the actor existed.
+	 * Otherwise, RewindForReplay will be called if we detect the actor needs to be reset.
+	 * Note, this Actor must not be destroyed by gamecode, and RollbackViaDeletion may not be used. 
+	 */
+	UPROPERTY()
+	uint8 bReplayRewindable:1;
 
 	/**
 	 * Whether we allow this Actor to tick before it receives the BeginPlay event.
@@ -222,8 +237,12 @@ public:
 	uint8 bIgnoresOriginShifting:1;
 
 	/** If true, and if World setting has bEnableHierarchicalLOD equal to true, then it will generate LODActor from groups of clustered Actor */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=LOD, meta=(DisplayName="Include Actor for HLOD Mesh generation"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=LOD, meta=(DisplayName="Include Actor for HLOD Mesh generation"))
 	uint8 bEnableAutoLODGeneration:1;
+
+	/** Whether this actor is editor-only. Use with care, as if this actor is referenced by anything else that reference will be NULL in cooked builds */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Cooking)
+	uint8 bIsEditorOnlyActor:1;
 
 	/** Indicates the actor was pulled through a seamless travel.  */
 	UPROPERTY()
@@ -262,6 +281,9 @@ protected:
 	UPROPERTY()
 	uint8 bAllowReceiveTickEventOnDedicatedServer:1;
 
+	/** Flag indicating we have checked initial simulating physics state to sync networked proxies to the server. */
+	uint8 bNetCheckedInitialPhysicsState : 1;
+
 private:
 	/** Whether FinishSpawning has been called for this Actor.  If it has not, the Actor is in a malformed state */
 	uint8 bHasFinishedSpawning:1;
@@ -292,6 +314,9 @@ private:
 	UPROPERTY(Transient, DuplicateTransient)
 	uint8 bActorIsBeingDestroyed:1;
 
+	/** Set if an Actor tries to be destroyed while it is beginning play so that once BeginPlay ends we can issue the destroy call. */
+	uint8 bActorWantsDestroyDuringBeginPlay : 1;
+
 	enum class EActorBeginPlayState : uint8
 	{
 		HasNotBegunPlay,
@@ -312,10 +337,6 @@ private:
 	TEnumAsByte<enum ENetRole> RemoteRole;
 
 public:
-
-	// ORION TODO - was moved to private. Add accessor?
-	/** Flag indicating we have checked initial simulating physics state to sync networked proxies to the server. */
-	uint8 bNetCheckedInitialPhysicsState : 1;
 
 	/**
 	 * Set whether this actor replicates to network clients. When this actor is spawned on the server it will be sent to clients as well.
@@ -339,6 +360,10 @@ public:
 	
 	/** Copies RemoteRole from another Actor and adds this actor to the list of network actors if necessary. */
 	void CopyRemoteRoleFrom(const AActor* CopyFromActor);
+
+	/** Returns how much control the local machine has over this actor. */
+	UFUNCTION(BlueprintCallable, Category=Replication)
+	ENetRole GetLocalRole() const;
 
 	/** Returns how much control the remote machine has over this actor. */
 	UFUNCTION(BlueprintCallable, Category=Replication)
@@ -445,6 +470,12 @@ public:
 	UPROPERTY(Category=Replication, EditDefaultsOnly, BlueprintReadWrite)
 	float NetPriority;
 
+private:
+
+	/** Caches the most recent last render time we've looked at for this actor */
+	mutable float CachedLastRenderTime;
+
+public:
 	/**
 	 * Set the name of the net driver associated with this actor.  Will move the actor out of the list of network actors from the old net driver and add it to the new list
 	 * @param NewNetDriverName name of the new net driver association
@@ -474,6 +505,12 @@ public:
 	 * Called for everyone when recording a Client Replay, including Simulated Proxies.
 	 */
 	virtual void PreReplicationForReplay(IRepChangedPropertyTracker & ChangedPropertyTracker);
+
+	/**
+	 * Called on the actor before checkpoint data is applied during a replay.
+	 * Only called if bReplayRewindable is set.
+	 */
+	virtual void RewindForReplay();
 
 	/** Called by the networking system to call PreReplication on this actor and its components using the given NetDriver to find or create RepChangedPropertyTrackers. */
 	void CallPreReplication(UNetDriver* NetDriver);	
@@ -567,7 +604,7 @@ public:
 	uint8 bIsEditorPreviewActor:1;
 
 	/** Whether this actor is hidden by the layer browser. */
-	UPROPERTY()
+	UPROPERTY(Transient)
 	uint8 bHiddenEdLayer:1;
 
 	/** Whether this actor is hidden by the level browser. */
@@ -617,6 +654,10 @@ public:
 	/** Called when the actor is damaged by point damage. */
 	UPROPERTY(BlueprintAssignable, Category="Game|Damage")
 	FTakePointDamageSignature OnTakePointDamage;
+
+	/** Called when the actor is damaged by radial damage. */
+	UPROPERTY(BlueprintAssignable, Category="Game|Damage")
+	FTakeRadialDamageSignature OnTakeRadialDamage;
 	
 	/** 
 	 * Called when another actor begins to overlap this actor, for example a player walking into a trigger.
@@ -1464,13 +1505,18 @@ public:
 	virtual void PostRename( UObject* OldOuter, const FName OldName ) override;
 	virtual bool CanBeInCluster() const override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	virtual bool IsEditorOnly() const override;
 #if WITH_EDITOR
+	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const;
 	virtual void PreEditChange(UProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
 	virtual void PostEditImport() override;
 	virtual bool IsSelectedInEditor() const override;
+
+	/** When selected can this actor be deleted? */
+	virtual bool CanDeleteSelectedActor(FText& OutReason) const { return true; }
 
 	struct FActorRootComponentReconstructionData
 	{
@@ -1482,6 +1528,8 @@ public:
 			FName AttachParentName;
 			FName SocketName;
 			FTransform RelativeTransform;
+
+			friend FArchive& operator<<(FArchive& Ar, FAttachedActorInfo& ActorInfo);
 		};
 
 		// The RootComponent's transform
@@ -1495,28 +1543,45 @@ public:
 
 		// Actors that are attached to this RootComponent
 		TArray<FAttachedActorInfo> AttachedToInfo;
+
+		friend FArchive& operator<<(FArchive& Ar, FActorRootComponentReconstructionData& RootComponentData);
 	};
 
 	class FActorTransactionAnnotation : public ITransactionObjectAnnotation
 	{
 	public:
-		FActorTransactionAnnotation(const AActor* Actor, const bool bCacheRootComponentData = true);
+		/** Create an empty instance */
+		static TSharedRef<FActorTransactionAnnotation> Create();
 
+		/** Create an instance from the given actor, optionally caching root component data */
+		static TSharedRef<FActorTransactionAnnotation> Create(const AActor* InActor, const bool InCacheRootComponentData = true);
+
+		/** Create an instance from the given actor if required (UActorTransactionAnnotation::HasInstanceData would return true), optionally caching root component data */
+		static TSharedPtr<FActorTransactionAnnotation> CreateIfRequired(const AActor* InActor, const bool InCacheRootComponentData = true);
+
+		//~ ITransactionObjectAnnotation interface
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+		virtual void Serialize(FArchive& Ar) override;
 
 		bool HasInstanceData() const;
 
+		// Actor and component data
+		TWeakObjectPtr<const AActor> Actor;
 		FComponentInstanceDataCache ComponentInstanceData;
 
 		// Root component reconstruction data
 		bool bRootComponentDataCached;
 		FActorRootComponentReconstructionData RootComponentData;
+
+	private:
+		FActorTransactionAnnotation();
+		FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData = true);
 	};
 
 	/** Cached pointer to the transaction annotation data from PostEditUndo to be used in the next RerunConstructionScript */
 	TSharedPtr<FActorTransactionAnnotation> CurrentTransactionAnnotation;
 
-	virtual TSharedPtr<ITransactionObjectAnnotation> GetTransactionAnnotation() const override;
+	virtual TSharedPtr<ITransactionObjectAnnotation> FactoryTransactionAnnotation(const ETransactionAnnotationCreationMode InCreationMode) const override;
 	virtual void PostEditUndo(TSharedPtr<ITransactionObjectAnnotation> TransactionAnnotation) override;
 
 	/** @return true if the component is allowed to re-register its components when modified.  False for CDOs or PIE instances. */
@@ -1621,6 +1686,9 @@ public:
 	 */
 	virtual bool IsLevelBoundsRelevant() const { return true; }
 
+	/** Set LOD Parent Primitive*/
+	void SetLODParent(class UPrimitiveComponent* InLODParent, float InParentDrawDistance);
+
 #if WITH_EDITOR
 	// Editor specific
 
@@ -1646,10 +1714,7 @@ public:
 	virtual void EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown);
 
 	/** Called by MirrorActors to perform a mirroring operation on the actor */
-	virtual void EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotLocation);
-
-	/** Set LOD Parent Primitive*/
-	void SetLODParent(class UPrimitiveComponent* InLODParent, float InParentDrawDistance);
+	virtual void EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotLocation);	
 
 	/**
 	 * Simple accessor to check if the actor is hidden upon editor startup
@@ -1689,7 +1754,7 @@ public:
 	virtual bool IsSelectable() const { return true; }
 
 	/** @return	Returns true if this actor should be shown in the scene outliner */
-	bool IsListedInSceneOutliner() const;
+	virtual bool IsListedInSceneOutliner() const;
 
 	/** @return	Returns true if this actor is allowed to be attached to the given actor */
 	virtual bool EditorCanAttachTo(const AActor* InParent, FText& OutReason) const;
@@ -1772,6 +1837,8 @@ public:
 	/** Returns NumUncachedStaticLightingInteractions for this actor */
 	const int32 GetNumUncachedStaticLightingInteractions() const;
 
+	/** Returns a custom brush icon name to use in place of the automatic class icon where actors are represented via 2d icons in the editor (e.g scene outliner and menus) */
+	virtual FName GetCustomIconName() const { return NAME_None; }
 #endif		// WITH_EDITOR
 
 	/**
@@ -1887,6 +1954,9 @@ public:
 	
 	/** Always called immediately after properties are received from the remote. */
 	virtual void PostNetReceive() override;
+
+	/** Always called immediately after a new Role is received from the remote. */
+	virtual void PostNetReceiveRole();
 
 	/** IsNameStableForNetworking means an object can be referred to its path name (relative to outer) over the network */
 	virtual bool IsNameStableForNetworking() const override;
@@ -2139,6 +2209,9 @@ public:
 	/** Ensure that all the components in the Components array are registered */
 	virtual void RegisterAllComponents();
 
+	/** Called before all the components in the Components array are registered */
+	virtual void PreRegisterAllComponents();
+
 	/** Called after all the components in the Components array are registered */
 	virtual void PostRegisterAllComponents();
 
@@ -2196,7 +2269,10 @@ public:
 	/** Invalidate lighting cache with default options. */
 	void InvalidateLightingCache()
 	{
-		InvalidateLightingCacheDetailed(false);
+		if (GIsEditor && !GIsDemoMode)
+		{
+			InvalidateLightingCacheDetailed(false);
+		}
 	}
 
 	/** Invalidates anything produced by the last lighting build. */
@@ -2559,8 +2635,8 @@ public:
 		return const_cast<AActor*>(this)->FindOrAddNetworkObjectInfo();
 	}
 
-	/** Force actor to be updated to clients */
-	UFUNCTION(BlueprintAuthorityOnly, BlueprintCallable, Category="Networking")
+	/** Force actor to be updated to clients/demo net drivers */
+	UFUNCTION( BlueprintCallable, Category="Networking")
 	virtual void ForceNetUpdate();
 
 	/**
@@ -2611,6 +2687,16 @@ public:
 
 	/** Gets the GameInstance that ultimately contains this actor. */
 	class UGameInstance* GetGameInstance() const;
+	
+	/** 
+	 * Gets the GameInstance that ultimately contains this actor cast to the template type.
+	 * May return NULL if the cast fails. 
+	 */
+	template< class T >
+	T* GetGameInstance() const 
+	{ 
+		return Cast<T>(GetGameInstance()); 
+	}
 
 	/** Returns true if this is a replicated actor that was placed in the map */
 	bool IsNetStartupActor() const;
@@ -2669,7 +2755,7 @@ public:
 			{
 				OutComponents.Add(Component);
 			}
-			else if (bIncludeFromChildActors)
+			if (bIncludeFromChildActors)
 			{
 				if (UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(OwnedComponent))
 				{
@@ -2717,12 +2803,13 @@ public:
 			if (Component)
 			{
 				OutComponents.Add(Component);
-			}
-			else if (bIncludeFromChildActors)
-			{
-				if (UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(Component))
+
+				if (bIncludeFromChildActors)
 				{
-					ChildActorComponents.Add(ChildActorComponent);
+					if (UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(Component))
+					{
+						ChildActorComponents.Add(ChildActorComponent);
+					}
 				}
 			}
 		}
@@ -2794,6 +2881,11 @@ public:
 		return ReplicatedComponents; 
 	}
 
+protected:
+
+	/** Set of replicated components, stored as an array to save space as this is generally not very large */
+	TArray<UActorComponent*> ReplicatedComponents;
+
 private:
 	/**
 	 * All ActorComponents owned by this Actor. Stored as a Set as actors may have a large number of components
@@ -2805,9 +2897,6 @@ private:
 	/** Maps natively-constructed components to properties that reference them. */
 	TMultiMap<FName, UObjectProperty*> NativeConstructedComponentToPropertyMap;
 #endif
-
-	/** Set of replicated components, stored as an array to save space as this is generally not very large */
-	TArray<UActorComponent*> ReplicatedComponents;
 
 	/** Array of ActorComponents that have been added by the user on a per-instance basis. */
 	UPROPERTY(Instanced)
@@ -2908,6 +2997,7 @@ private:
 
 	friend struct FMarkActorIsBeingDestroyed;
 	friend struct FActorParentComponentSetter;
+	friend struct FSetActorWantsDestroyDuringBeginPlay;
 
 	// Static helpers for accessing functions on SceneComponent.
 	// These are templates for no other reason than to delay compilation until USceneComponent is defined.
@@ -2997,6 +3087,20 @@ private:
 	friend UWorld;
 };
 
+/** This should only be used by UWorld::DestroyActor when the actor is in the process of beginning play so it can't be destroyed yet */
+struct FSetActorWantsDestroyDuringBeginPlay
+{
+private:
+	FSetActorWantsDestroyDuringBeginPlay(AActor* InActor)
+	{
+		ensure(InActor->IsActorBeginningPlay()); // Doesn't make sense to call this under any other circumstances
+		InActor->bActorWantsDestroyDuringBeginPlay = true;
+	}
+
+	friend UWorld;
+};
+
+
 /**
  * TInlineComponentArray is simply a TArray that reserves a fixed amount of space on the stack
  * to try to avoid heap allocation when there are fewer than a specified number of elements expected in the result.
@@ -3008,11 +3112,11 @@ class TInlineComponentArray : public TArray<T, TInlineAllocator<NumElements>>
 
 public:
 	TInlineComponentArray() : Super() { }
-	TInlineComponentArray(const class AActor* Actor) : Super()
+	TInlineComponentArray(const class AActor* Actor, bool bIncludeFromChildActors = false) : Super()
 	{
 		if (Actor)
 		{
-			Actor->GetComponents(*this);
+			Actor->GetComponents(*this, bIncludeFromChildActors);
 		}
 	};
 };
@@ -3118,6 +3222,11 @@ FORCEINLINE_DEBUGGABLE const AActor* AActor::GetNetOwner() const
 	// NetOwner is the Actor Owner unless otherwise overridden (see PlayerController/Pawn/Beacon)
 	// Used in ServerReplicateActors
 	return Owner;
+}
+
+FORCEINLINE_DEBUGGABLE ENetRole AActor::GetLocalRole() const
+{
+	return Role;
 }
 
 FORCEINLINE_DEBUGGABLE ENetRole AActor::GetRemoteRole() const

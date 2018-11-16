@@ -9,16 +9,18 @@
 #include "Components/ActorComponent.h"
 #include "EngineDefines.h"
 #include "AI/Navigation/NavigationTypes.h"
+#include "NavigationData.h"
 #include "AITypes.h"
 #include "AIResourceInterface.h"
-#include "AI/Navigation/NavigationData.h"
 #include "GameFramework/NavMovementComponent.h"
+#include "AI/Navigation/PathFollowingAgentInterface.h"
 #include "PathFollowingComponent.generated.h"
 
 class Error;
 class FDebugDisplayInfo;
 class INavLinkCustomInterface;
 class UCanvas;
+class ANavigationData;
 
 AIMODULE_API DECLARE_LOG_CATEGORY_EXTERN(LogPathFollowing, Warning, All);
 
@@ -211,7 +213,7 @@ enum class EPathFollowingReachMode : uint8
 };
 
 UCLASS(config=Engine)
-class AIMODULE_API UPathFollowingComponent : public UActorComponent, public IAIResourceInterface
+class AIMODULE_API UPathFollowingComponent : public UActorComponent, public IAIResourceInterface, public IPathFollowingAgentInterface
 {
 	GENERATED_UCLASS_BODY()
 
@@ -227,6 +229,7 @@ class AIMODULE_API UPathFollowingComponent : public UActorComponent, public IAIR
 	FMoveComplete OnRequestFinished;
 
 	//~ Begin UActorComponent Interface
+	virtual void OnRegister() override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	//~ End UActorComponent Interface
 
@@ -377,14 +380,12 @@ class AIMODULE_API UPathFollowingComponent : public UActorComponent, public IAIR
 	UFUNCTION()
 	virtual void OnActorBump(AActor* SelfActor, AActor* OtherActor, FVector NormalImpulse, const FHitResult& Hit);
 
-	/** Called when movement is blocked by a collision with another actor.  */
-	virtual void OnMoveBlockedBy(const FHitResult& BlockingImpact) {}
-
-	/** Called when falling movement starts. */
-	virtual void OnStartedFalling();
-
-	/** Called when falling movement ends. */
-	virtual void OnLanded() {}
+	// IPathFollowingAgentInterface begin
+	virtual void OnUnableToMove(const UObject& Instigator) override;		
+	//virtual void OnMoveBlockedBy(const FHitResult& BlockingImpact) {}
+	virtual void OnStartedFalling() override;
+	virtual void OnLanded() override {}
+	// IPathFollowingAgentInterface end
 
 	/** Check if path following can be activated */
 	virtual bool IsPathFollowingAllowed() const;
@@ -442,8 +443,10 @@ class AIMODULE_API UPathFollowingComponent : public UActorComponent, public IAIR
 	DEPRECATED(4.13, "This function is now deprecated, please use version with EPathFollowingReachMode parameter instead.")
 	bool HasReached(const AActor& TestGoal, float AcceptanceRadius = UPathFollowingComponent::DefaultAcceptanceRadius, bool bExactSpot = false, bool bUseNavAgentGoalLocation = true) const;
 
+#if WITH_EDITORONLY_DATA
 	// This delegate is now deprecated, please use OnRequestFinished instead
 	FMoveCompletedSignature OnMoveFinished_DEPRECATED;
+#endif
 
 protected:
 
@@ -457,9 +460,6 @@ protected:
 	/** navigation data for agent described in movement component */
 	UPROPERTY(transient)
 	ANavigationData* MyNavData;
-
-	/** current status */
-	EPathFollowingStatus::Type Status;
 
 	/** requested path */
 	FNavPathSharedPtr Path;
@@ -482,6 +482,9 @@ protected:
 
 	/** part of agent height used as min acceptable height difference */
 	float MinAgentHalfHeightPct;
+
+	/** timeout for Waiting state, negative value = infinite */
+	float WaitingTimeout;
 
 	/** game specific data */
 	FCustomMoveSharedPtr GameData;
@@ -518,38 +521,38 @@ protected:
 	 *	to acceptance radius */
 	int32 PreciseAcceptanceRadiusCheckStartNodeIndex;
 
+	/** current status */
+	TEnumAsByte<EPathFollowingStatus::Type> Status;
+
 	/** increase acceptance radius with agent's radius */
-	uint32 bReachTestIncludesAgentRadius : 1;
+	uint8 bReachTestIncludesAgentRadius : 1;
 
 	/** increase acceptance radius with goal's radius */
-	uint32 bReachTestIncludesGoalRadius : 1;
+	uint8 bReachTestIncludesGoalRadius : 1;
 
 	/** if set, target location will be constantly updated to match goal actor while following last segment of full path */
-	uint32 bMoveToGoalOnLastSegment : 1;
+	uint8 bMoveToGoalOnLastSegment : 1;
 
 	/** if set, movement block detection will be used */
-	uint32 bUseBlockDetection : 1;
+	uint8 bUseBlockDetection : 1;
 
 	/** set when agent collides with goal actor */
-	uint32 bCollidedWithGoal : 1;
+	uint8 bCollidedWithGoal : 1;
 
 	/** set when last move request was finished at goal */
-	uint32 bLastMoveReachedGoal : 1;
+	uint8 bLastMoveReachedGoal : 1;
 
 	/** if set, movement will be stopped on finishing path */
-	uint32 bStopMovementOnFinish : 1;
+	uint8 bStopMovementOnFinish : 1;
 
 	/** if set, path following is using FMetaNavMeshPath */
-	uint32 bIsUsingMetaPath : 1;
+	uint8 bIsUsingMetaPath : 1;
 
 	/** gets set when agent starts following a navigation link. Cleared after agent starts falling or changes segment to a non-link one */
-	uint32 bWalkingNavLinkStart : 1;
+	uint8 bWalkingNavLinkStart : 1;
 
 	/** True if pathfollowing is doing deceleration at the end of the path. @see FollowPathSegment(). */
-	uint32 bIsDecelerating : 1;
-
-	/** timeout for Waiting state, negative value = infinite */
-	float WaitingTimeout;
+	uint8 bIsDecelerating : 1;
 
 	/** detect blocked movement when distance between center of location samples and furthest one (centroid radius) is below threshold */
 	float BlockDetectionDistance;
@@ -595,6 +598,10 @@ protected:
 
 	/** reset path following data */
 	virtual void Reset();
+
+	/** Called if owning Controller possesses new pawn or ends up pawn-less. 
+	 *	Doesn't get called if owner is not an AContoller */
+	virtual void OnNewPawn(APawn* NewPawn);
 
 	/** should verify if agent if still on path ater movement has been resumed? */
 	virtual bool ShouldCheckPathOnResume() const;
@@ -710,9 +717,6 @@ private:
 	 *	Since it makes conceptual sense for GetCurrentNavLocation() to be const but we may 
 	 *	need to update the cached value, CurrentNavLocation is mutable. */
 	mutable FNavLocation CurrentNavLocation;
-
-	/** DEPRECATED, use bReachTestIncludesAgentRadius instead */
-	uint32 bStopOnOverlap : 1;
 
 public:
 	/** special float constant to symbolize "use default value". This does not contain 

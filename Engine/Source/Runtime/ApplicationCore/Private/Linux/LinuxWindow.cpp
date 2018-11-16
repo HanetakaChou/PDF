@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Linux/LinuxWindow.h"
+
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Text.h"
@@ -9,7 +10,7 @@
 #include "Misc/App.h"
 #include "Linux/LinuxApplication.h"
 #include "Linux/LinuxPlatformApplicationMisc.h"
-#include "Internationalization.h" // LOCTEXT
+#include "Internationalization/Internationalization.h" // LOCTEXT
 
 #define LOCTEXT_NAMESPACE "LinuxWindow"
 
@@ -121,11 +122,11 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 		{
 			WindowStyle |= SDL_WINDOW_SKIP_TASKBAR;
 		}
+	}
 
-		if (Definition->IsRegularWindow && Definition->HasSizingFrame)
-		{
-			WindowStyle |= SDL_WINDOW_RESIZABLE;
-		}
+	if (Definition->IsRegularWindow && Definition->HasSizingFrame)
+	{
+		WindowStyle |= SDL_WINDOW_RESIZABLE;
 	}
 
 	const bool bShouldActivate = Definition->ActivationPolicy != EWindowActivationPolicy::Never;
@@ -170,7 +171,8 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 		!Definition->IsModalWindow && !Definition->IsRegularWindow &&
 		bShouldActivate && !Definition->SizeWillChangeOften)
 	{
-		WindowStyle |= SDL_WINDOW_POPUP_MENU;
+		// Popup menus grab the mouse/keyboard which is undesired behaviour. Slate will give the window events.
+		WindowStyle |= SDL_WINDOW_BORDERLESS;
 		bIsPopupWindow = true;
 		UE_LOG(LogLinuxWindowType, Verbose, TEXT("*** New Window is a Popup Menu Window ***"));
 	}
@@ -181,7 +183,7 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 		!Definition->IsModalWindow && !Definition->IsRegularWindow &&
 		!bShouldActivate && !Definition->SizeWillChangeOften)
 	{
-		WindowStyle |= SDL_WINDOW_POPUP_MENU;
+		WindowStyle |= SDL_WINDOW_BORDERLESS;
 		bIsConsoleWindow = true;
 		bIsPopupWindow = true;
 		UE_LOG(LogLinuxWindowType, Verbose, TEXT("*** New Window is a Console Window ***"));
@@ -248,7 +250,7 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 		}
 		else
 		{
-			ErrorMessage = FString::Printf(*LOCTEXT("SDLWindowCreationFailedLinux", "Window creation failed (SDL error: '%s'')").ToString(), UTF8_TO_TCHAR(SDL_GetError()));
+			ErrorMessage = FText::Format(LOCTEXT("SDLWindowCreationFailedLinuxFmt", "Window creation failed (SDL error: '{0}'')"), FText::FromString(UTF8_TO_TCHAR(SDL_GetError()))).ToString();
 			FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ErrorMessage,
 										 *LOCTEXT("SDLWindowCreationFailedLinuxTitle", "Unable to create an SDL window.").ToString());
 		}
@@ -412,7 +414,7 @@ void FLinuxWindow::BringToFront( bool bForce )
 	}
 	else
 	{
-		SDL_ShowWindow(HWnd);
+		Show();
 	}
 }
 
@@ -423,9 +425,10 @@ void FLinuxWindow::Destroy()
 	OwningApplication->RemoveEventWindow( HWnd );
 	OwningApplication->RemoveNotificationWindow( HWnd );
 
-	// We cannot destroy the window right now as it may be accessed by render thread, since Slate queued it for drawing earlier.
-	// To make sure no window gets destroyed while we're blitting into it, defer destroying the window to the app.
-	OwningApplication->DestroyNativeWindow(HWnd);
+	UE_LOG(LogLinuxWindow, Verbose, TEXT("Destroying SDL Window '%p'\n"), HWnd);
+
+	SDL_DestroyWindow( HWnd );
+	HWnd = nullptr;
 }
 
 /** Native window should implement this function by performing the equivalent of the Win32 minimize-to-taskbar operation */
@@ -500,6 +503,38 @@ static void _GetBestFullscreenResolution( SDL_HWindow hWnd, int32 *pWidth, int32
 
 void FLinuxWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int32 NewHeight )
 {
+	// Some vulkan video drivers have issues with specific height ranges causing them to corrupt the texture rendered
+	// Moving these nearest values removes this corruption.
+	if (NewHeight >= 9 && NewHeight <= 10)
+	{
+		NewHeight = 11;
+	}
+	else if (NewHeight >= 17 && NewHeight <= 21)
+	{
+		NewHeight = 22;
+	}
+	else if (NewHeight >= 33 && NewHeight <= 43)
+	{
+		NewHeight = 44;
+	}
+	else if (NewHeight >= 65 && NewHeight <= 85)
+	{
+		NewHeight = 86;
+	}
+
+	// X11 will take until the next frame to send a SizeChanged event. This means the X11 window
+	// will most likely have resized already by the time we render but the slate renderer will
+	// not have been updated leading to an incorrect frame.
+	//
+	// For now tell the owning application we are going to be this size. When the SizeChanged
+	// event comes through for X11 it'll confirm our size is the request one or resize to what
+	// the WM has forced as the size.
+	TSharedPtr< FLinuxWindow > LinuxWindow = OwningApplication->FindWindowBySDLWindow(HWnd);
+	if ( LinuxWindow )
+	{
+		OwningApplication->GetMessageHandler()->OnResizingWindow( LinuxWindow.ToSharedRef() );
+	}
+
 	switch( WindowMode )
 	{
 		// Fullscreen and WindowedFullscreen both use SDL_WINDOW_FULLSCREEN_DESKTOP now
@@ -510,7 +545,6 @@ void FLinuxWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int32 
 		case EWindowMode::WindowedFullscreen:
 		{
 			SDL_SetWindowFullscreen( HWnd, 0 );
-			SDL_SetWindowSize( HWnd, NewWidth, NewHeight );
 			SDL_SetWindowFullscreen( HWnd, SDL_WINDOW_FULLSCREEN_DESKTOP );
 			bWasFullscreen = true;
 		}
@@ -538,6 +572,17 @@ void FLinuxWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int32 
 	RegionHeight  = NewHeight;
 	VirtualWidth  = NewWidth;
 	VirtualHeight = NewHeight;
+
+	if ( LinuxWindow )
+	{
+		OwningApplication->GetMessageHandler()->OnSizeChanged(
+			LinuxWindow.ToSharedRef(),
+			VirtualWidth,
+			VirtualHeight,
+			//  bWasMinimized
+			false
+		);
+	}
 }
 
 /** Toggle native window between fullscreen and normal mode */
@@ -556,9 +601,25 @@ void FLinuxWindow::SetWindowMode( EWindowMode::Type NewWindowMode )
 			{
 				if ( bWasFullscreen != true )
 				{
-					SDL_SetWindowSize( HWnd, VirtualWidth, VirtualHeight );
+					TSharedPtr< FLinuxWindow > LinuxWindow = OwningApplication->FindWindowBySDLWindow(HWnd);
+					if ( LinuxWindow )
+					{
+						OwningApplication->GetMessageHandler()->OnResizingWindow( LinuxWindow.ToSharedRef() );
+					}
+
 					SDL_SetWindowFullscreen( HWnd, SDL_WINDOW_FULLSCREEN_DESKTOP );
 					bWasFullscreen = true;
+
+					if ( LinuxWindow )
+					{
+						OwningApplication->GetMessageHandler()->OnSizeChanged(
+							LinuxWindow.ToSharedRef(),
+							VirtualWidth,
+							VirtualHeight,
+							//  bWasMinimized
+							false
+						);
+					}
 				}
 			}
 			break;
@@ -596,11 +657,16 @@ void FLinuxWindow::AdjustCachedSize( FVector2D& Size ) const
 	{
 		Size = FVector2D( VirtualWidth, VirtualHeight );
 	}
-	else
-	if	( HWnd )
+	else if	( HWnd )
 	{
 		int SizeW, SizeH;
 
+		SDL_GetWindowSize( HWnd, &SizeW, &SizeH );
+
+		/*
+		 * Currently we are not correctly supporting up-scaling on all RHIs. For now disable this
+		 * until all RHIs are working with up-scaling
+		 *
 		if ( WindowMode == EWindowMode::Windowed )
 		{
 			SDL_GetWindowSize( HWnd, &SizeW, &SizeH );
@@ -612,6 +678,7 @@ void FLinuxWindow::AdjustCachedSize( FVector2D& Size ) const
 
 			_GetBestFullscreenResolution( HWnd, &SizeW, &SizeH );
 		}
+		*/
 
 		Size = FVector2D( SizeW, SizeH );
 	}
@@ -638,16 +705,13 @@ bool FLinuxWindow::GetFullScreenInfo( int32& X, int32& Y, int32& Width, int32& H
 /** @return true if the native window is maximized, false otherwise */
 bool FLinuxWindow::IsMaximized() const
 {
-	uint32 flag = SDL_GetWindowFlags( HWnd );
+	return SDL_GetWindowFlags(HWnd) & SDL_WINDOW_MAXIMIZED;
+}
 
-	if ( flag & SDL_WINDOW_MAXIMIZED )
-	{
-		return true;
-	}
-	else
-	{
-		return false;
-	}
+/** @return true if the native window is minimized, false otherwise */
+bool FLinuxWindow::IsMinimized() const
+{
+	return SDL_GetWindowFlags(HWnd) & SDL_WINDOW_MINIMIZED;
 }
 
 /** @return true if the native window is visible, false otherwise */
@@ -830,3 +894,4 @@ void FLinuxWindow::CacheNativeProperties()
 }
 
 #undef LOCTEXT_NAMESPACE
+

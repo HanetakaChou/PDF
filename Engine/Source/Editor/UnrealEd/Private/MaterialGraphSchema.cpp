@@ -92,6 +92,12 @@ void FMaterialGraphSchemaAction_NewNode::SetFunctionInputType(UMaterialExpressio
 	case MCT_TextureCube:
 		FunctionInput->InputType = FunctionInput_TextureCube;
 		break;
+	case MCT_TextureExternal:
+		FunctionInput->InputType = FunctionInput_TextureExternal;
+		break;
+	case MCT_VolumeTexture:
+		FunctionInput->InputType = FunctionInput_VolumeTexture;
+		break;
 	case MCT_StaticBool:
 		FunctionInput->InputType = FunctionInput_StaticBool;
 		break;
@@ -301,7 +307,7 @@ bool UMaterialGraphSchema::ConnectionCausesLoop(const UEdGraphPin* InputPin, con
 	return false;
 }
 
-bool UMaterialGraphSchema::ArePinsCompatible(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin, FText& ResponseMessage) const
+bool UMaterialGraphSchema::ArePinsCompatible_Internal(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin, FText& ResponseMessage) const
 {
 	uint32 InputType = GetMaterialValueType(InputPin);
 	uint32 OutputType = GetMaterialValueType(OutputPin);
@@ -520,7 +526,7 @@ const FPinConnectionResponse UMaterialGraphSchema::CanCreateConnection(const UEd
 	}
 
 	// Check for incompatible pins and get description if they cannot connect
-	if (!ArePinsCompatible(InputPin, OutputPin, ResponseMessage) && bPreventInvalidConnections)
+	if (!ArePinsCompatible_Internal(InputPin, OutputPin, ResponseMessage) && bPreventInvalidConnections)
 	{
 		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, ResponseMessage);
 	}
@@ -942,6 +948,37 @@ bool UMaterialGraphSchema::SafeDeleteNodeFromGraph(UEdGraph* Graph, UEdGraphNode
 	NodesToDelete.Add(NodeToDelete);
 	FMaterialEditorUtilities::DeleteNodes(Graph, NodesToDelete);
 	return true;
+}
+
+void UMaterialGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>& Assets, const UEdGraph* HoverGraph, FString& OutTooltipText, bool& OutOkIcon) const
+{
+	OutOkIcon = false;
+
+	for (int32 AssetIdx = 0; AssetIdx < Assets.Num(); ++AssetIdx)
+	{
+		UObject* Asset = Assets[AssetIdx].GetAsset();
+		UClass* MaterialExpressionClass = Cast<UClass>(Asset);
+		UMaterialFunctionInterface* Func = Cast<UMaterialFunctionInterface>(Asset);
+		UTexture* Tex = Cast<UTexture>(Asset);
+		UMaterialParameterCollection* ParameterCollection = Cast<UMaterialParameterCollection>(Asset);
+
+		if (MaterialExpressionClass && MaterialExpressionClass->IsChildOf(UMaterialExpression::StaticClass()))
+		{
+			OutOkIcon = true;
+		}
+		else if (Func)
+		{
+			OutOkIcon = true;
+		}
+		else if (Tex)
+		{
+			OutOkIcon = true;
+		}
+		else if (ParameterCollection)
+		{
+			OutOkIcon = true;
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

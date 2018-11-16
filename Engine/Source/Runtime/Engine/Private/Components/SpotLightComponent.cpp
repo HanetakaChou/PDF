@@ -12,18 +12,9 @@
 
 
 /**
- * The spot light policy for TMeshLightingDrawingPolicy.
- */
-class FSpotLightPolicy
-{
-public:
-	typedef class FSpotLightSceneProxy SceneInfoType;
-};
-
-/**
  * The scene info for a spot light.
  */
-class FSpotLightSceneProxy : public TPointLightSceneProxy<FSpotLightPolicy>
+class FSpotLightSceneProxy : public FPointLightSceneProxy
 {
 public:
 
@@ -52,8 +43,8 @@ public:
 	float InvCosLightShaftConeDifference;
 
 	/** Initialization constructor. */
-	FSpotLightSceneProxy(const USpotLightComponent* Component):
-		TPointLightSceneProxy<FSpotLightPolicy>(Component)
+	FSpotLightSceneProxy(const USpotLightComponent* Component)
+	:	FPointLightSceneProxy(Component)
 	{
 		const float ClampedInnerConeAngle = FMath::Clamp(Component->InnerConeAngle,0.0f,89.0f) * (float)PI / 180.0f;
 		const float ClampedOuterConeAngle = FMath::Clamp(Component->OuterConeAngle * (float)PI / 180.0f,ClampedInnerConeAngle + 0.001f,89.0f * (float)PI / 180.0f + 0.001f);
@@ -69,12 +60,6 @@ public:
 		const float ClampedInnerLightShaftConeAngle = .5f * ClampedOuterLightShaftConeAngle;
 		CosLightShaftConeAngle = FMath::Cos(ClampedOuterLightShaftConeAngle);
 		InvCosLightShaftConeDifference = 1.0f / (FMath::Cos(ClampedInnerLightShaftConeAngle) - CosLightShaftConeAngle);
-	}
-
-	virtual FVector GetPerObjectProjectedShadowProjectionPoint(const FBoxSphereBounds& SubjectBounds) const
-	{
-		const FVector ZAxis(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
-		return FMath::ClosestPointOnSegment(SubjectBounds.Origin, GetOrigin() - ZAxis * SourceLength / 2, GetOrigin() + ZAxis * SourceLength / 2);
 	}
 
 	/** Accesses parameters needed for rendering the light. */
@@ -95,17 +80,17 @@ public:
 		LightParameters.NormalizedLightDirection = -GetDirection();
 		LightParameters.NormalizedLightTangent = ZAxis;
 		LightParameters.SpotAngles = FVector2D(CosOuterCone, InvCosConeDifference);
+		LightParameters.SpecularScale = SpecularScale;
 		LightParameters.LightSourceRadius = SourceRadius;
 		LightParameters.LightSoftSourceRadius = SoftSourceRadius;
 		LightParameters.LightSourceLength = SourceLength;
-		// Prevent 0 Roughness which causes NaNs in Vis_SmithJointApprox
-		LightParameters.LightMinRoughness = FMath::Max(MinRoughness, .04f);
+		LightParameters.SourceTexture = GWhiteTexture;
 	}
 
 	// FLightSceneInfo interface.
 	virtual bool AffectsBounds(const FBoxSphereBounds& Bounds) const override
 	{
-		if(!TPointLightSceneProxy<FSpotLightPolicy>::AffectsBounds(Bounds))
+		if(!FLocalLightSceneProxy::AffectsBounds(Bounds))
 		{
 			return false;
 		}
@@ -160,9 +145,7 @@ public:
 
 	virtual FSphere GetBoundingSphere() const override
 	{
-		// Use the law of cosines to find the distance to the furthest edge of the spotlight cone from a position that is halfway down the spotlight direction
-		const float BoundsRadius = FMath::Sqrt(1.25f * Radius * Radius - Radius * Radius * CosOuterCone);
-		return FSphere(GetOrigin() + .5f * GetDirection() * Radius, BoundsRadius);
+		return FMath::ComputeBoundingSphereForCone(GetOrigin(), GetDirection(), Radius, CosOuterCone, SinOuterCone);
 	}
 
 	virtual float GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices) const override
@@ -171,10 +154,10 @@ public:
 		// We do so because we do not want to use the light's radius directly, which will make us overestimate the shadow map resolution greatly for a spot light
 
 		// In the correct form,
-		//   InscribedSpherePosition = GetOrigin() + GetDirection().Normalize() * GetRadius() / CosOuterCone
+		//   InscribedSpherePosition = GetOrigin() + GetDirection() * GetRadius() / CosOuterCone
 		//   InscribedSphereRadius = GetRadius() / SinOuterCone
 		// Do it incorrectly to avoid division which is more expensive and risks division by zero
-		const FVector InscribedSpherePosition = GetOrigin() + GetDirection().Normalize() * GetRadius() * CosOuterCone;
+		const FVector InscribedSpherePosition = GetOrigin() + GetDirection() * GetRadius() * CosOuterCone;
 		const float InscribedSphereRadius = GetRadius() * SinOuterCone;
 
 		const float SphereDistanceFromViewOrigin = (InscribedSpherePosition - ShadowViewMatrices.GetViewOrigin()).Size();
@@ -203,11 +186,16 @@ USpotLightComponent::USpotLightComponent(const FObjectInitializer& ObjectInitial
 	OuterConeAngle = 44.0f;
 }
 
+float USpotLightComponent::GetHalfConeAngle() const
+{
+	const float ClampedInnerConeAngle = FMath::Clamp(InnerConeAngle, 0.0f, 89.0f) * (float)PI / 180.0f;
+	const float ClampedOuterConeAngle = FMath::Clamp(OuterConeAngle * (float)PI / 180.0f, ClampedInnerConeAngle + 0.001f, 89.0f * (float)PI / 180.0f + 0.001f);
+	return ClampedOuterConeAngle;
+}
+
 float USpotLightComponent::GetCosHalfConeAngle() const
 {
-	const float ClampedInnerConeAngle = FMath::Clamp(InnerConeAngle,0.0f,89.0f) * (float)PI / 180.0f;
-	const float ClampedOuterConeAngle = FMath::Clamp(OuterConeAngle * (float)PI / 180.0f, ClampedInnerConeAngle + 0.001f,89.0f * (float)PI / 180.0f + 0.001f);
-	return FMath::Cos(ClampedOuterConeAngle);
+	return FMath::Cos(GetHalfConeAngle());
 }
 
 void USpotLightComponent::SetInnerConeAngle(float NewInnerConeAngle)
@@ -252,6 +240,32 @@ float USpotLightComponent::ComputeLightBrightness() const
 	return LightBrightness;
 }
 
+#if WITH_EDITOR
+void USpotLightComponent::SetLightBrightness(float InBrightness)
+{
+	if (bUseInverseSquaredFalloff)
+	{
+		if (IntensityUnits == ELightUnits::Candelas)
+		{
+			ULightComponent::SetLightBrightness(InBrightness / (100.f * 100.f)); // Conversion from cm2 to m2
+		}
+		else if (IntensityUnits == ELightUnits::Lumens)
+		{
+			ULightComponent::SetLightBrightness(InBrightness / (100.f * 100.f / 2.f / PI / (1.f - GetCosHalfConeAngle()))); // Conversion from cm2 to m2 and cone remapping
+		}
+		else
+		{
+			ULightComponent::SetLightBrightness(InBrightness / 16); // Legacy scale of 16
+		}
+	}
+	else
+	{
+		ULightComponent::SetLightBrightness(InBrightness);
+	}
+}
+#endif // WITH_EDITOR
+
+
 // Disable for now
 //void USpotLightComponent::SetLightShaftConeAngle(float NewLightShaftConeAngle)
 //{
@@ -269,9 +283,10 @@ FLightSceneProxy* USpotLightComponent::CreateSceneProxy() const
 
 FSphere USpotLightComponent::GetBoundingSphere() const
 {
-	// Use the law of cosines to find the distance to the furthest edge of the spotlight cone from a position that is halfway down the spotlight direction
-	const float BoundsRadius = FMath::Sqrt(1.25f * AttenuationRadius * AttenuationRadius - AttenuationRadius * AttenuationRadius * GetCosHalfConeAngle());
-	return FSphere(GetComponentTransform().GetLocation() + .5f * GetDirection() * AttenuationRadius, BoundsRadius);
+	float ConeAngle = GetHalfConeAngle();
+	float CosConeAngle = FMath::Cos(ConeAngle);
+	float SinConeAngle = FMath::Sin(ConeAngle);
+	return FMath::ComputeBoundingSphereForCone(GetComponentTransform().GetLocation(), GetDirection(), AttenuationRadius, CosConeAngle, SinConeAngle);
 }
 
 bool USpotLightComponent::AffectsBounds(const FBoxSphereBounds& InBounds) const

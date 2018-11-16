@@ -142,7 +142,9 @@ void FRCPassPostProcessBufferInspector::Process(FRenderingCompositePassContext& 
 			const FTexture2DRHIRef &DestinationBufferSceneColor = Scene->PixelInspectorData.RenderTargetBufferSceneColor[PixelInspectorRequest->BufferIndex]->GetRenderTargetTexture();
 			if (DestinationBufferSceneColor.IsValid())
 			{
-				FVector2D SourcePoint = SourceViewportUV * FVector2D(View.ViewRect.Size());
+				FVector2D SourcePoint(
+					FMath::FloorToInt(SourceViewportUV.X * View.ViewRect.Width()),
+					FMath::FloorToInt(SourceViewportUV.Y * View.ViewRect.Height()));
 				FBox2D SourceBox(SourcePoint, SourcePoint + ExtendSize);
 
 				const FRenderingCompositeOutputRef* OutputRef0 = GetInput(ePId_Input2);
@@ -294,7 +296,7 @@ void FRCPassPostProcessBufferInspector::Process(FRenderingCompositePassContext& 
 	Canvas.DrawShadowedString(100, 50, TEXT("Pixel Inspector On"), GetStatsFont(), LabelColor);
 	Canvas.Flush_RenderThread(Context.RHICmdList);
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 
 	// AdjustGBufferRefCount(1) call is done in constructor
 	FSceneRenderTargets::Get(Context.RHICmdList).AdjustGBufferRefCount(Context.RHICmdList, -1);

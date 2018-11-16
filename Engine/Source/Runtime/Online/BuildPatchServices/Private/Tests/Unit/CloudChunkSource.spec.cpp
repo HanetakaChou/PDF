@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "AutomationTest.h"
+#include "Misc/AutomationTest.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Tests/TestHelpers.h"
 #include "Tests/Mock/PlatformProcess.mock.h"
 #include "Tests/Mock/PlatformMisc.mock.h"
@@ -41,7 +42,7 @@ TUniquePtr<BuildPatchServices::FCloudSourceConfig> CloudSourceConfig;
 TSet<FGuid> InitialDownloadSet;
 TSet<FGuid> EmptyInitialDownloadSet;
 TSet<FGuid> LargeInitialDownloadSet;
-FSHAHashData SomeShaData;
+FSHAHash SomeShaData;
 FGuid SomeChunk;
 FGuid FirstChunk;
 BuildPatchServices::FChunkHeader FirstHeader;
@@ -96,7 +97,8 @@ void FCloudChunkSourceSpec::Define()
 		}
 		FirstChunk = MockChunkReferenceTracker->NextReferences[0];
 		FirstHeader.Guid = FirstChunk;
-		FirstHeader.DataSize = 128;
+		FirstHeader.DataSizeCompressed = 128;
+		FirstHeader.DataSizeUncompressed = 128;
 		FakeDownloadService->ThreadLock.Lock();
 		FakeDownloadService->DefaultChunkHeader = FirstHeader;
 		FakeDownloadService->ThreadLock.Unlock();

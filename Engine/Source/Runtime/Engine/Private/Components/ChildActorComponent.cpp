@@ -90,11 +90,23 @@ void UChildActorComponent::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 	if (ChildActorClass == nullptr)
 	{
-		// It is unknown how this state can come to be, so for now we'll simply correct the issue and record that it occurs and 
-		// and if it is occurring frequently, then investigate how the state comes to pass
-		if (!ensureAlwaysMsgf(ChildActorTemplate == nullptr, TEXT("Found unexpected ChildActorTemplate %s when ChildActorClass is null"), *ChildActorTemplate->GetFullName()))
+#if DO_CHECK
+		if (FBlueprintSupport::IsClassPlaceholder(ChildActorClass.DebugAccessRawClassPtr()))
 		{
-			ChildActorTemplate = nullptr;
+			ensureMsgf(false, TEXT("Unexpectedly encountered placeholder class while serializing a component"));
+		}
+		else
+#endif
+		{
+			if (!FBlueprintSupport::IsDeferredDependencyPlaceholder(ChildActorTemplate))
+			{
+				// It is unknown how this state can come to be, so for now we'll simply correct the issue and record that it occurs and 
+				// and if it is occurring frequently, then investigate how the state comes to pass
+				if (!ensureAlwaysMsgf(ChildActorTemplate == nullptr, TEXT("Found unexpected ChildActorTemplate %s when ChildActorClass is null"), *ChildActorTemplate->GetFullName()))
+				{
+					ChildActorTemplate = nullptr;
+				}
+			}
 		}
 	}
 	// Since we sometimes serialize properties in instead of using duplication and we can end up pointing at the wrong template
@@ -106,7 +118,14 @@ void UChildActorComponent::Serialize(FArchive& Ar)
 			if (ChildActorTemplate->GetOuter() != this)
 			{
 				const FString TemplateName = FString::Printf(TEXT("%s_%s_CAT"), *GetName(), *ChildActorClass->GetName());
-				ChildActorTemplate = CastChecked<AActor>(StaticDuplicateObject(ChildActorTemplate, this, *TemplateName));
+				if (UObject* ExistingTemplate = StaticFindObject(nullptr, this, *TemplateName))
+				{
+					ChildActorTemplate = CastChecked<AActor>(ExistingTemplate);
+				}
+				else
+				{
+					ChildActorTemplate = CastChecked<AActor>(StaticDuplicateObject(ChildActorTemplate, this, *TemplateName));
+				}
 			}
 		}
 		else
@@ -452,6 +471,7 @@ void UChildActorComponent::SetChildActorClass(TSubclassOf<AActor> Class)
 	}
 	else if (IsRegistered())
 	{
+		ChildActorName = NAME_None;
 		DestroyChildActor();
 		CreateChildActor();
 	}
@@ -626,8 +646,7 @@ void UChildActorComponent::DestroyChildActor()
 
 				// We would like to make certain that our name is not going to accidentally get taken from us while we're destroyed
 				// so we increment ClassUnique beyond our index to be certain of it.  This is ... a bit hacky.
-				int32& ClassUnique = ChildActor->GetOutermost()->GetClassUniqueNameIndexMap().FindOrAdd(ChildClass->GetFName());
-				ClassUnique = FMath::Max(ClassUnique, ChildActor->GetFName().GetNumber());
+				UpdateSuffixForNextNewObject(ChildActor->GetOuter(), ChildClass, [this](int32& Index) { Index = FMath::Max(Index, ChildActor->GetFName().GetNumber()); });
 
 				// If we are getting here due to garbage collection we can't rename, so we'll have to abandon this child actor name and pick up a new one
 				if (!IsGarbageCollecting())

@@ -48,11 +48,13 @@ public:
 	SLATE_END_ARGS()
 
 	SPopupLayer()
-	: Children()
+		: Children(this)
 	{}
 
 	void Construct( const FArguments& InArgs, const TSharedRef<SWindow>& InWindow )
 	{
+		SetCanTick(false);
+
 		OwnerWindow = InWindow;
 
 		const int32 NumSlots = InArgs.Slots.Num();
@@ -67,7 +69,7 @@ public:
 	{
 		return *(new FPopupLayerSlot());
 	}
-	
+
 	/** Add a slot to the ListPanel */
 	FPopupLayerSlot& AddSlot(int32 InsertAtIndex = INDEX_NONE)
 	{
@@ -80,7 +82,7 @@ public:
 		{
 			this->Children.Insert( &NewSlot, InsertAtIndex );
 		}
-	
+
 		return NewSlot;
 	}
 
@@ -102,12 +104,12 @@ private:
 	/**
 	 * Each child slot essentially tries to place their contents at a specified position on the screen
 	 * and scale as the widget initiating the popup, both of which are stored in the slot attributes.
-	 * The tricky part is that the scale we are given is the fully accumulated layout scale of the widget, which already incorporates 
+	 * The tricky part is that the scale we are given is the fully accumulated layout scale of the widget, which already incorporates
 	 * the DPI Scale of the window. The DPI Scale is also applied to the overlay since it is part of the window,
 	 * so this scale needs to be factored out when determining the scale of the child geometry that will be created to hold the popup.
 	 * We also optionally adjust the window position to keep it within the client bounds of the top-level window. This must be done in screenspace.
 	 * This means some hairy transformation calculus goes on to ensure the computations are done in the proper space so scale is respected.
-	 * 
+	 *
 	 * There are 3 transformational spaces involved, each clearly specified in the variable names:
 	 * Screen      - Basically desktop space. Contains desktop offset and DPI scale.
 	 * WindowLocal - local space of the SWindow containing this popup. Screenspace == Concat(WindowLocal, DPI Scale, Desktop Offset)
@@ -121,10 +123,10 @@ private:
 		// create a transform from screen to local space.
 		// This assumes that the PopupLayer is part of an Overlay that takes up the entire window space.
 		// We should technically be using the AllottedGeometry to transform from AbsoluteToLocal space just in case it has an additional scale on it.
-		// But we can't because the absolute space of the geometry is sometimes given in desktop space (picking, ticking) 
+		// But we can't because the absolute space of the geometry is sometimes given in desktop space (picking, ticking)
 		// and sometimes in window space (painting), and we can't necessarily tell by inspection so we have to just make an assumption here.
 		FSlateLayoutTransform ScreenToWindowLocal = (ensure(OwnerWindow.IsValid())) ? Inverse(OwnerWindow.Pin()->GetLocalToScreenTransform()) : FSlateLayoutTransform();
-		
+
 		for ( int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex )
 		{
 			const FPopupLayerSlot& CurChild = Children[ChildIndex];
@@ -132,7 +134,7 @@ private:
 			if ( ArrangedChildren.Accepts(ChildVisibility) )
 			{
 				// This scale+translate forms the ChildLocal to Screenspace transform.
-				// The translation may be adjusted based on clamping, but the scale is accurate, 
+				// The translation may be adjusted based on clamping, but the scale is accurate,
 				// so we can transform vectors into screenspace using the scale alone.
 				const float ChildLocalToScreenScale = CurChild.Scale_Attribute.Get();
 				FVector2D ChildLocalToScreenOffset = CurChild.DesktopPosition_Attribute.Get();
@@ -145,7 +147,7 @@ private:
 				ChildSizeScreenspace = FVector2D(
 						CurChild.WidthOverride_Attribute.IsSet() ? CurChild.WidthOverride_Attribute.Get() : ChildSizeScreenspace.X,
 						CurChild.HeightOverride_Attribute.IsSet() ? CurChild.HeightOverride_Attribute.Get() : ChildSizeScreenspace.Y);
-				
+
 				// If clamping, move the screen space position to ensure the screen space size stays within the client rect of the top level window.
 				if(CurChild.Clamp_Attribute.Get())
 				{
@@ -246,10 +248,13 @@ void SWindow::Construct(const FArguments& InArgs)
 		.SetMinHeight(InArgs._MinHeight)
 		.SetMaxWidth(InArgs._MaxWidth)
 		.SetMaxHeight(InArgs._MaxHeight);
-	
+	this->bManualManageDPI = InArgs._bManualManageDPI;
+
+	SetCanTick(false);
+
 	// calculate window size from client size
 	bCreateTitleBar = InArgs._CreateTitleBar && !bIsPopupWindow && Type != EWindowType::CursorDecorator && !bHasOSWindowBorder;
-	
+
 	// If the window has no OS border, simulate it ourselves, enlarging window by the size that OS border would have.
 	FVector2D WindowSize = GetWindowSizeFromClientSize(InArgs._ClientSize);
 
@@ -260,9 +265,9 @@ void SWindow::Construct(const FArguments& InArgs)
 
 	// Get desktop metrics
 	FDisplayMetrics DisplayMetrics;
-	FSlateApplicationBase::Get().GetDisplayMetrics( DisplayMetrics );
+	FSlateApplicationBase::Get().GetCachedDisplayMetrics( DisplayMetrics );
 	const FPlatformRect& VirtualDisplayRect = DisplayMetrics.VirtualDisplayRect;
-	FPlatformRect PrimaryDisplayRect = DisplayMetrics.GetMonitorWorkAreaFromPoint(WindowPosition);
+	FPlatformRect PrimaryDisplayRect = AutoCenterRule == EAutoCenter::PrimaryWorkArea ? DisplayMetrics.PrimaryDisplayWorkAreaRect : DisplayMetrics.GetMonitorWorkAreaFromPoint(WindowPosition);
 
 	if (PrimaryDisplayRect == FPlatformRect(0, 0, 0, 0))
 	{
@@ -270,7 +275,7 @@ void SWindow::Construct(const FArguments& InArgs)
 		PrimaryDisplayRect = VirtualDisplayRect;
 	}
 
-	// If we're showing a pop-up window, to avoid creation of driver crashing sized 
+	// If we're showing a pop-up window, to avoid creation of driver crashing sized
 	// tooltips we limit the size a pop-up window can be if max size limit is unspecified.
 	if ( bIsPopupWindow )
 	{
@@ -298,9 +303,9 @@ void SWindow::Construct(const FArguments& InArgs)
 			AutoCenterRule = EAutoCenter::PreferredWorkArea;
 		}
 
-		float PrimaryWidthPadding = DisplayMetrics.PrimaryDisplayWidth - 
+		float PrimaryWidthPadding = DisplayMetrics.PrimaryDisplayWidth -
 			(PrimaryDisplayRect.Right - PrimaryDisplayRect.Left);
-		float PrimaryHeightPadding = DisplayMetrics.PrimaryDisplayHeight - 
+		float PrimaryHeightPadding = DisplayMetrics.PrimaryDisplayHeight -
 			(PrimaryDisplayRect.Bottom - PrimaryDisplayRect.Top);
 
 		float VirtualWidth = (VirtualDisplayRect.Right - VirtualDisplayRect.Left);
@@ -320,10 +325,10 @@ void SWindow::Construct(const FArguments& InArgs)
 		default:
 		case EAutoCenter::PrimaryWorkArea:
 			AutoCenterRect = FSlateRect(
-				(float)PrimaryDisplayRect.Left, 
+				(float)PrimaryDisplayRect.Left,
 				(float)PrimaryDisplayRect.Top,
 				(float)PrimaryDisplayRect.Right,
-				(float)PrimaryDisplayRect.Bottom );		
+				(float)PrimaryDisplayRect.Bottom );
 			break;
 		case EAutoCenter::PreferredWorkArea:
 			AutoCenterRect = FSlateApplicationBase::Get().GetPreferredWorkArea();
@@ -342,7 +347,7 @@ void SWindow::Construct(const FArguments& InArgs)
 			WindowSize.X = FMath::Min(WindowSize.X, AutoCenterRect.GetSize().X);
 			WindowSize.Y = FMath::Min(WindowSize.Y, AutoCenterRect.GetSize().Y);
 		}
-		
+
 		// Setup a position and size for the main frame window that's centered in the desktop work area
 		const FVector2D DisplayTopLeft( AutoCenterRect.Left, AutoCenterRect.Top );
 		const FVector2D DisplaySize( AutoCenterRect.Right - AutoCenterRect.Left, AutoCenterRect.Bottom - AutoCenterRect.Top );
@@ -374,11 +379,11 @@ void SWindow::Construct(const FArguments& InArgs)
 		DeltaSize = WindowSize - InArgs._ClientSize;
 	}
 
-#if PLATFORM_HTML5 
-	// UE expects mouse coordinates in screen space. SDL/HTML5 canvas provides in client space. 
-	// Anchor the window at the top/left corner to make sure client space coordinates and screen space coordinates match up. 
-	WindowPosition.X =  WindowPosition.Y = 0; 
-#endif 
+#if PLATFORM_HTML5
+	// UE expects mouse coordinates in screen space. SDL/HTML5 canvas provides in client space.
+	// Anchor the window at the top/left corner to make sure client space coordinates and screen space coordinates match up.
+	WindowPosition.X =  WindowPosition.Y = 0;
+#endif
 	this->InitialDesiredScreenPosition = WindowPosition;
 	this->InitialDesiredSize = WindowSize;
 
@@ -456,7 +461,7 @@ TSharedRef<SWindow> SWindow::MakeCursorDecorator()
 
 FVector2D SWindow::ComputeWindowSizeForContent( FVector2D ContentSize )
 {
-	// @todo mainframe: This code should be updated to handle the case where we're spawning a window that doesn't have 
+	// @todo mainframe: This code should be updated to handle the case where we're spawning a window that doesn't have
 	//                  a traditional title bar, such as a window that contains a primary SDockingArea.  Currently, the
 	//                  size reported here will be too large!
 	return ContentSize + FVector2D(0, SWindowDefs::DefaultTitleBarSize);
@@ -495,7 +500,7 @@ void SWindow::ConstructWindowInternals()
 	ForegroundColor = FCoreStyle::Get().GetSlateColor("DefaultForeground");
 
 	// Setup widget that represents the main area of the window.  That is, everything inside the window's border.
-	TSharedRef< SVerticalBox > MainWindowArea = 
+	TSharedRef< SVerticalBox > MainWindowArea =
 		SNew( SVerticalBox )
 		.Visibility( EVisibility::SelfHitTestInvisible );
 
@@ -557,13 +562,23 @@ void SWindow::ConstructWindowInternals()
 				)
 			]
 
+			// window outline
+			+ SOverlay::Slot()
+			[
+				FSlateApplicationBase::Get().MakeImage(
+					WindowOutlineAttr,
+					WindowOutlineColorAttr,
+					WindowContentVisibility
+				)
+			]
+
 			// main area
 			+ SOverlay::Slot()
 			[
 				SNew(SVerticalBox)
 				.Visibility(WindowContentVisibility)
 
-				+ SVerticalBox::Slot()					
+				+ SVerticalBox::Slot()
 				.Padding(TAttribute<FMargin>::Create(TAttribute<FMargin>::FGetter::CreateSP(this, &SWindow::GetWindowBorderSize, false)))
 				[
 					MainWindowArea
@@ -574,16 +589,6 @@ void SWindow::ConstructWindowInternals()
 			+ SOverlay::Slot()
 			[
 				SAssignNew(PopupLayer, SPopupLayer, SharedThis(this))
-			]
-
-			// window outline
-			+ SOverlay::Slot()
-			[
-				FSlateApplicationBase::Get().MakeImage(
-					WindowOutlineAttr,
-					WindowOutlineColorAttr,
-					WindowContentVisibility
-				)
 			]
 		];
 	}
@@ -596,10 +601,10 @@ void SWindow::ConstructWindowInternals()
 			[
 				MainWindowArea
 			]
-			+ SOverlay::Slot()
-			[
-				SAssignNew(PopupLayer, SPopupLayer, SharedThis(this))
-			]
+ 			+ SOverlay::Slot()
+ 			[
+ 				SAssignNew(PopupLayer, SPopupLayer, SharedThis(this))
+ 			]
 		];
 	}
 }
@@ -703,6 +708,7 @@ void SWindow::Tick( const FGeometry& AllottedGeometry, const double InCurrentTim
 
 			this->SetOpacity( Morpher.TargetOpacity );
 			Morpher.bIsActive = false;
+			SetCanTick(false);
 		}
 	}
 }
@@ -763,7 +769,7 @@ FSlateRect SWindow::GetNonMaximizedRectInScreen() const
 	int Y = 0;
 	int Width = 0;
 	int Height = 0;
-	
+
 	if ( NativeWindow.IsValid() && NativeWindow->GetRestoredDimensions(X, Y, Width, Height) )
 	{
 		return FSlateRect( X, Y, X+Width, Y+Height );
@@ -775,7 +781,7 @@ FSlateRect SWindow::GetNonMaximizedRectInScreen() const
 }
 
 FSlateRect SWindow::GetRectInScreen() const
-{ 
+{
 	if ( bVirtualWindow )
 	{
 		return FSlateRect(0, 0, Size.X, Size.Y);
@@ -909,24 +915,28 @@ void SWindow::Resize( FVector2D NewSize )
 
 	NewSize = GetWindowSizeFromClientSize(NewSize);
 
-	if ( Size != NewSize )
+	NewSize.X = FMath::Max(SizeLimits.GetMinWidth().Get(NewSize.X), NewSize.X);
+	NewSize.X = FMath::Min(SizeLimits.GetMaxWidth().Get(NewSize.X), NewSize.X);
+
+	NewSize.Y = FMath::Max(SizeLimits.GetMinHeight().Get(NewSize.Y), NewSize.Y);
+	NewSize.Y = FMath::Min(SizeLimits.GetMaxHeight().Get(NewSize.Y), NewSize.Y);
+
+	// ReshapeWindow W/H takes an int, so lets move our new W/H to int before checking if they are the same size
+	FIntPoint CurrentIntSize = FIntPoint(FMath::CeilToInt(Size.X), FMath::CeilToInt(Size.Y));
+	FIntPoint NewIntSize     = FIntPoint(FMath::CeilToInt(NewSize.X), FMath::CeilToInt(NewSize.Y));
+
+	if (CurrentIntSize != NewIntSize)
 	{
-		NewSize.X = FMath::Max(SizeLimits.GetMinWidth().Get(NewSize.X), NewSize.X);
-		NewSize.X = FMath::Min(SizeLimits.GetMaxWidth().Get(NewSize.X), NewSize.X);
-		
-		NewSize.Y = FMath::Max(SizeLimits.GetMinHeight().Get(NewSize.Y), NewSize.Y);
-		NewSize.Y = FMath::Min(SizeLimits.GetMaxHeight().Get(NewSize.Y), NewSize.Y);
-		
 		if (NativeWindow.IsValid())
 		{
-			NativeWindow->ReshapeWindow( FMath::TruncToInt(ScreenPosition.X), FMath::TruncToInt(ScreenPosition.Y), FMath::CeilToInt(NewSize.X), FMath::CeilToInt(NewSize.Y) );
+			NativeWindow->ReshapeWindow(FMath::TruncToInt(ScreenPosition.X), FMath::TruncToInt(ScreenPosition.Y), NewIntSize.X, NewIntSize.Y);
 		}
 		else
 		{
 			InitialDesiredSize = NewSize;
 		}
 	}
-	SetCachedSize(NewSize); 
+	SetCachedSize(NewSize);
 }
 
 FSlateRect SWindow::GetFullScreenInfo() const
@@ -998,7 +1008,7 @@ void SWindow::StartMorph()
 	Morpher.StartingMorphShape = FSlateRect( this->ScreenPosition.X, this->ScreenPosition.Y, this->ScreenPosition.X + this->Size.X, this->ScreenPosition.Y + this->Size.Y );
 	Morpher.bIsActive = true;
 	Morpher.Sequence.JumpToStart();
-
+	SetCanTick(true);
 	if ( !ActiveTimerHandle.IsValid() )
 	{
 		ActiveTimerHandle = RegisterActiveTimer( 0.f, FWidgetActiveTimerDelegate::CreateSP( this, &SWindow::TriggerPlayMorphSequence ) );
@@ -1086,7 +1096,7 @@ TSharedPtr<FGenericWindow> SWindow::GetNativeWindow()
 TSharedPtr<const FGenericWindow> SWindow::GetNativeWindow() const
 {
 	return NativeWindow;
-} 
+}
 
 float SWindow::GetDPIScaleFactor() const
 {
@@ -1098,10 +1108,28 @@ float SWindow::GetDPIScaleFactor() const
 	return 1.0f;
 }
 
+void SWindow::SetDPIScaleFactor(const float Factor)
+{
+	if (NativeWindow.IsValid())
+	{
+		NativeWindow->SetDPIScaleFactor(Factor);
+	}
+}
+
+void SWindow::SetManualManageDPIChanges(const bool bManualDPI)
+{
+	bManualManageDPI = bManualDPI;
+
+	if (NativeWindow.IsValid())
+	{
+		NativeWindow->SetManualManageDPIChanges(bManualManageDPI);
+	}
+}
+
 bool SWindow::IsDescendantOf( const TSharedPtr<SWindow>& ParentWindow ) const
 {
 	TSharedPtr<SWindow> CandidateToCheck = this->GetParentWindow();
-	
+
 	// Keep checking our parent until we get to the root of the tree or find the window we were looking for.
 	while (CandidateToCheck.IsValid())
 	{
@@ -1134,6 +1162,7 @@ void SWindow::SetContent( TSharedRef<SWidget> InContent )
 	{
 		this->ContentSlot->operator[]( InContent );
 	}
+	Invalidate(EInvalidateWidget::LayoutAndVolatility);
 }
 
 TSharedRef<const SWidget> SWindow::GetContent() const
@@ -1248,12 +1277,12 @@ void SWindow::NotifyWindowBeingDestroyed()
 	OnWindowClosed.ExecuteIfBound( SharedThis( this ) );
 
 #if WITH_EDITOR
-    if(bIsModalWindow)
-    {
-        FCoreDelegates::PostSlateModal.Broadcast();
-    }
+	if(bIsModalWindow)
+	{
+		FCoreDelegates::PostSlateModal.Broadcast();
+	}
 #endif
-    
+
 	// Logging to track down window shutdown issues
 	if (IsRegularWindow())
 	{
@@ -1447,7 +1476,7 @@ bool SWindow::IsTopmostWindow() const
 bool SWindow::IsScreenspaceMouseWithin(FVector2D ScreenspaceMouseCoordinate) const
 {
 	const FVector2D LocalMouseCoordinate = ScreenspaceMouseCoordinate - ScreenPosition;
-	return NativeWindow->IsPointInWindow(FMath::TruncToInt(LocalMouseCoordinate.X), FMath::TruncToInt(LocalMouseCoordinate.Y));
+	return !LocalMouseCoordinate.ContainsNaN() && NativeWindow->IsPointInWindow(FMath::TruncToInt(LocalMouseCoordinate.X), FMath::TruncToInt(LocalMouseCoordinate.Y));
 }
 
 /** @return true if this is a user-sized window with a thick edge */
@@ -1786,7 +1815,7 @@ EWindowZone::Type SWindow::GetCurrentWindowZone(FVector2D LocalMousePosition)
 			}
 		}
 
-		static const EWindowZone::Type TypeZones[3][3] = 
+		static const EWindowZone::Type TypeZones[3][3] =
 		{
 			{EWindowZone::TopLeftBorder,		EWindowZone::TopBorder,		EWindowZone::TopRightBorder},
 			{EWindowZone::LeftBorder,			EWindowZone::ClientArea,	EWindowZone::RightBorder},
@@ -1820,7 +1849,7 @@ EWindowZone::Type SWindow::GetCurrentWindowZone(FVector2D LocalMousePosition)
 		}
 		else if (FSlateApplicationBase::Get().AnyMenusVisible())
 		{
-			// Prevent resizing when a menu is open.  This is consistent with OS behavior and prevents a number of crashes when menus 
+			// Prevent resizing when a menu is open.  This is consistent with OS behavior and prevents a number of crashes when menus
 			// stay open while resizing windows causing their parents to often be clipped (SClippingHorizontalBox)
 			WindowZone = EWindowZone::ClientArea;
 		}
@@ -1859,6 +1888,7 @@ SWindow::SWindow()
 	, bIsModalWindow( false )
 	, bIsMirrorWindow( false )
 	, bShouldPreserveAspectRatio( false )
+	, bManualManageDPI( false )
 	, WindowActivationPolicy( EWindowActivationPolicy::Always )
 	, InitialDesiredScreenPosition( FVector2D::ZeroVector )
 	, InitialDesiredSize( FVector2D::ZeroVector )
@@ -1951,7 +1981,7 @@ void SWindow::SetWindowMode( EWindowMode::Type NewWindowMode )
 		bIsDrawingEnabled = false;
 
 		NativeWindow->SetWindowMode( NewWindowMode );
-	
+
 		const FVector2D vp = IsMirrorWindow() ? GetSizeInScreen() : GetViewportSize();
 		FSlateApplicationBase::Get().GetRenderer()->UpdateFullscreenState(SharedThis(this), vp.X, vp.Y);
 
@@ -1979,7 +2009,7 @@ bool SWindow::HasFullWindowOverlayContent() const
 
 void SWindow::BeginFullWindowOverlayTransition()
 {
-	bShouldShowWindowContentDuringOverlay = true; 
+	bShouldShowWindowContentDuringOverlay = true;
 }
 
 void SWindow::EndFullWindowOverlayTransition()

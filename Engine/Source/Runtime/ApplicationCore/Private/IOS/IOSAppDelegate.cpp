@@ -1,14 +1,14 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "IOSAppDelegate.h"
-#include "IOSCommandLineHelper.h"
-#include "ExceptionHandling.h"
-#include "ModuleBoilerplate.h"
-#include "CallbackDevice.h"
-#include "IOSView.h"
-#include "TaskGraphInterfaces.h"
-#include "GenericPlatformChunkInstall.h"
-#include "IOSPlatformMisc.h"
+#include "IOS/IOSAppDelegate.h"
+#include "IOS/IOSCommandLineHelper.h"
+#include "HAL/ExceptionHandling.h"
+#include "Modules/Boilerplate/ModuleBoilerplate.h"
+#include "Misc/CallbackDevice.h"
+#include "IOS/IOSView.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "GenericPlatform/GenericPlatformChunkInstall.h"
+#include "IOS/IOSPlatformMisc.h"
 #include "HAL/PlatformStackWalk.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/OutputDeviceError.h"
@@ -16,26 +16,40 @@
 #include "IOS/IOSPlatformFramePacer.h"
 #include "IOS/IOSAsyncTask.h"
 #include "Misc/ConfigCacheIni.h"
-#include "IOSPlatformCrashContext.h"
+#include "IOS/IOSPlatformCrashContext.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/FeedbackContext.h"
+#include "Algo/AllOf.h"
+#if USE_MUTE_SWITCH_DETECTION
+#include "SharkfoodMuteSwitchDetector.h"
+#include "SharkfoodMuteSwitchDetector.m"
+#endif
 
 #include <AudioToolbox/AudioToolbox.h>
 #include <AVFoundation/AVAudioSession.h>
+#include "HAL/IConsoleManager.h"
 
 // this is the size of the game thread stack, it must be a multiple of 4k
 #if (UE_BUILD_SHIPPING || UE_BUILD_TEST)
-#define GAME_THREAD_STACK_SIZE 1024 * 1024
+#define GAME_THREAD_STACK_SIZE 2 * 1024 * 1024
 #else
 #define GAME_THREAD_STACK_SIZE 16 * 1024 * 1024
 #endif
 
 DEFINE_LOG_CATEGORY(LogIOSAudioSession);
 
+int GAudio_ForceAmbientCategory = 1;
+//static FAutoConsoleVariableRef CVar_ForceAmbientCategory(
+//															  TEXT("audio.ForceAmbientCategory"),
+//															  GAudio_ForceAmbientCategory,
+//															  TEXT("Force the iOS AVAudioSessionCategoryAmbient category over AVAudioSessionCategorySoloAmbient")
+//															  );
+
 extern bool GShowSplashScreen;
 
 FIOSCoreDelegates::FOnOpenURL FIOSCoreDelegates::OnOpenURL;
+TArray<FIOSCoreDelegates::FFilterDelegateAndHandle> FIOSCoreDelegates::PushNotificationFilters;
 
 /*
 	From: https://developer.apple.com/library/ios/documentation/UIKit/Reference/UIApplicationDelegate_Protocol/#//apple_ref/occ/intfm/UIApplicationDelegate/applicationDidEnterBackground:
@@ -101,6 +115,27 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
         GError->HandleError();
     }
     return Context.GenerateCrashInfo();
+}
+
+FDelegateHandle FIOSCoreDelegates::AddPushNotificationFilter(const FPushNotificationFilter& FilterDel)
+{
+	FDelegateHandle NewHandle(FDelegateHandle::EGenerateNewHandleType::GenerateNewHandle);
+	PushNotificationFilters.Push({FilterDel, NewHandle});
+	return NewHandle;
+}
+
+void FIOSCoreDelegates::RemovePushNotificationFilter(FDelegateHandle Handle)
+{
+	PushNotificationFilters.RemoveAll([Handle](const FFilterDelegateAndHandle& Entry) {
+		return Entry.Handle == Handle;
+	});
+}
+
+bool FIOSCoreDelegates::PassesPushNotificationFilters(NSDictionary* Payload)
+{
+	return Algo::AllOf(PushNotificationFilters, [Payload](const FFilterDelegateAndHandle& Entry) {
+		return Entry.Filter.Execute(Payload);
+	});
 }
 
 @implementation IOSAppDelegate
@@ -174,7 +209,7 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 
 	// check to see if we are using the network file system, if so, disable the idle timer
 	FString HostIP;
-	if (FParse::Value(FCommandLine::Get(), TEXT("-FileHostIP="), HostIP))
+//	if (FParse::Value(FCommandLine::Get(), TEXT("-FileHostIP="), HostIP))
 	{
 		[UIApplication sharedApplication].idleTimerDisabled = YES;
 	}
@@ -204,8 +239,15 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	[self InitIdleTimerSettings];
 
 	bEngineInit = true;
-	// @PJS - need a better way to allow the game to turn off the splash screen
-    GShowSplashScreen = false;
+    
+    // put a render thread job to turn off the splash screen after the first render flip
+    if (GShowSplashScreen)
+    {
+        FGraphEventRef SplashTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]()
+        {
+            GShowSplashScreen = false;
+        }, TStatId(), NULL, ENamedThreads::ActualRenderingThread);
+    }
 
 	for (NSDictionary* openUrlParameter in self.savedOpenUrlParameters)
 	{
@@ -227,6 +269,50 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
         }
         else
         {
+			bool bOtherAudioPlayingNow = [self IsBackgroundAudioPlaying];
+			if (bOtherAudioPlayingNow != self.bLastOtherAudioPlaying || self.bForceEmitOtherAudioPlaying)
+			{
+				FGraphEventRef UserMusicInterruptTask = FFunctionGraphTask::CreateAndDispatchWhenReady([bOtherAudioPlayingNow]()
+				   {
+					   //NSLog(@"UserMusicInterrupt Change: %s", bOtherAudioPlayingNow ? "playing" : "paused");
+					   FCoreDelegates::UserMusicInterruptDelegate.Broadcast(bOtherAudioPlayingNow);
+				   }, TStatId(), NULL, ENamedThreads::GameThread);
+				
+				self.bLastOtherAudioPlaying = bOtherAudioPlayingNow;
+				self.bForceEmitOtherAudioPlaying = false;
+			}
+			
+			int OutputVolume = [self GetAudioVolume];
+			bool bMuted = false;
+			
+#if USE_MUTE_SWITCH_DETECTION
+			SharkfoodMuteSwitchDetector* MuteDetector = [SharkfoodMuteSwitchDetector shared];
+			bMuted = MuteDetector.isMute;
+			if (bMuted != self.bLastMutedState || self.bForceEmitMutedState)
+			{
+				FGraphEventRef AudioMuteTask = FFunctionGraphTask::CreateAndDispatchWhenReady([bMuted, OutputVolume]()
+					{
+						//NSLog(@"Audio Session %s", bMuted ? "MUTED" : "UNMUTED");
+						FCoreDelegates::AudioMuteDelegate.Broadcast(bMuted, OutputVolume);
+					}, TStatId(), NULL, ENamedThreads::GameThread);
+				
+				self.bLastMutedState = bMuted;
+				self.bForceEmitMutedState = false;
+			}
+#endif
+
+			if (OutputVolume != self.LastVolume || self.bForceEmitVolume)
+			{
+				FGraphEventRef AudioMuteTask = FFunctionGraphTask::CreateAndDispatchWhenReady([bMuted, OutputVolume]()
+					{
+						//NSLog(@"Audio Volume: %d", OutputVolume);
+						FCoreDelegates::AudioMuteDelegate.Broadcast(bMuted, OutputVolume);
+					}, TStatId(), NULL, ENamedThreads::GameThread);
+
+				self.LastVolume = OutputVolume;
+				self.bForceEmitVolume = false;
+			}
+
             FAppEntry::Tick();
         
             // free any autoreleased objects every once in awhile to keep memory use down (strings, splash screens, etc)
@@ -234,7 +320,7 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
             {
 				// If you crash upon release, turn on Zombie Objects (Edit Scheme... | Diagnostics | Zombie Objects)
 				// This will list the last object sent the release message, which will help identify the double free
-				[AutoreleasePool release];
+                [AutoreleasePool release];
                 AutoreleasePool = [[NSAutoreleasePool alloc] init];
             }
         }
@@ -272,9 +358,16 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 {
 	float TimerDuration = 0.0F;
 	GConfig->GetFloat(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("IdleTimerEnablePeriod"), TimerDuration, GEngineIni);
-	IdleTimerEnablePeriod = TimerDuration;
-	
+    IdleTimerEnablePeriod = TimerDuration;
 	self.IdleTimerEnableTimer = nil;
+	bool bEnableTimer = YES;
+	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bEnableIdleTimer"), bEnableTimer, GEngineIni);
+	[self EnableIdleTimer : bEnableTimer];
+}
+
+-(bool)IsIdleTimerEnabled
+{
+	return ([UIApplication sharedApplication].idleTimerDisabled == NO);
 }
 
 -(void)DeferredEnableIdleTimer
@@ -316,76 +409,59 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	self.bCommandLineReady = true;
 }
 
--(void)AudioInterrupted:(NSNotification*)notification
-{
-	// pull the type of notification out
-	NSDictionary* Info = [notification userInfo];
-	NSNumber* Type = (NSNumber*)[Info valueForKey:AVAudioSessionInterruptionTypeKey];
-
-	NSLog(@"AUDIO INTERRUPTION NOTIFICATION: %d, (began = %d, ended = %d)", (int)[Type integerValue], (int)AVAudioSessionInterruptionTypeBegan, (int)AVAudioSessionInterruptionTypeEnded);
-	if ([Type integerValue] == AVAudioSessionInterruptionTypeBegan)
-	{
-		FAppEntry::Suspend();
-		[self ToggleAudioSession:false];
-	}
-	else if ([Type integerValue] == AVAudioSessionInterruptionTypeEnded)
-	{
-		[self ToggleAudioSession:true];
-	    FAppEntry::Resume();
-	}
-}
-
 - (void)InitializeAudioSession
 {
-	// get notified about interruptions
-	// @todo ios8: Test this (I can't make a notification happen so far)
-	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(AudioInterrupted:) name:AVAudioSessionInterruptionNotification object:[AVAudioSession sharedInstance]];
-	
-	self.bUsingBackgroundMusic = [self IsBackgroundAudioPlaying];
-	if (!self.bUsingBackgroundMusic)
+	[[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:nil usingBlock:^(NSNotification *notification)
 	{
-		NSError* ActiveError = nil;
-		[[AVAudioSession sharedInstance] setActive:YES error:&ActiveError];
-		if (ActiveError)
+		switch ([[[notification userInfo] objectForKey:AVAudioSessionInterruptionTypeKey] unsignedIntegerValue])
 		{
-			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session as active!"));
+			case AVAudioSessionInterruptionTypeBegan:
+				self.bAudioActive = false;
+				FAppEntry::Suspend(true);
+				break;
+				
+			case AVAudioSessionInterruptionTypeEnded:
+				FAppEntry::Resume(true);
+				[self ToggleAudioSession:true force:true];
+				break;
 		}
-		ActiveError = nil;
-		
-		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategorySoloAmbient error:&ActiveError];
-		if (ActiveError)
-		{
-			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategorySoloAmbient!"));
-		}
-		ActiveError = nil;
-	}
-	else
-	{
-		// Allow iPod music to continue playing in the background
-		NSError* ActiveError = nil;
-		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
-		if (ActiveError)
-		{
-			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient!"));
-		}
-		ActiveError = nil;
-	}
+	}];
 
-    self.bAudioActive = true;
+	self.bUsingBackgroundMusic = [self IsBackgroundAudioPlaying];
+	self.bForceEmitOtherAudioPlaying = true;
+
+#if USE_MUTE_SWITCH_DETECTION
+	// Initialize the mute switch detector.
+	[SharkfoodMuteSwitchDetector shared];
+	self.bForceEmitMutedState = true;
+#endif
+	
+	self.bForceEmitVolume = true;
+	
+	FCoreDelegates::ApplicationRequestAudioState.AddLambda([self]()
+		{
+			self.bForceEmitOtherAudioPlaying = true;
+#if USE_MUTE_SWITCH_DETECTION
+			self.bForceEmitMutedState = true;
+#endif
+			self.bForceEmitVolume = true;
+		});
+	
+	[self ToggleAudioSession:true force:true];
 }
 
-- (void)ToggleAudioSession:(bool)bActive
+- (void)ToggleAudioSession:(bool)bActive force:(bool)bForce
 {
 	if (bActive)
 	{
-        if (!self.bAudioActive)
+        if (bForce || !self.bAudioActive)
         {
 			bool bWasUsingBackgroundMusic = self.bUsingBackgroundMusic;
 			self.bUsingBackgroundMusic = [self IsBackgroundAudioPlaying];
 	
-			if (bWasUsingBackgroundMusic != self.bUsingBackgroundMusic)
+			if (bWasUsingBackgroundMusic != self.bUsingBackgroundMusic || GAudio_ForceAmbientCategory)
 			{
-				if (!self.bUsingBackgroundMusic)
+				if (!self.bUsingBackgroundMusic || GAudio_ForceAmbientCategory)
 				{
 					NSError* ActiveError = nil;
 					[[AVAudioSession sharedInstance] setActive:YES error:&ActiveError];
@@ -395,27 +471,67 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 					}
 					ActiveError = nil;
 	
-					[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategorySoloAmbient error:&ActiveError];
-					if (ActiveError)
+                    if (!self.bVoiceChatEnabled)
+                    {
+						if (!GAudio_ForceAmbientCategory)
+						{
+        					[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategorySoloAmbient error:&ActiveError];
+        					if (ActiveError)
+        					{
+        						UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategorySoloAmbient! [Error = %s]"), *FString([ActiveError description]));
+        					}
+						}
+						else
+						{
+							[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
+							if (ActiveError)
+							{
+								UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
+							}
+						}
+    					ActiveError = nil;
+                    }
+					else
 					{
-						UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategorySoloAmbient! [Error = %s]"), *FString([ActiveError description]));
+						AVAudioSessionCategoryOptions opts =
+    						AVAudioSessionCategoryOptionAllowBluetoothA2DP |
+#if !PLATFORM_TVOS
+    						AVAudioSessionCategoryOptionDefaultToSpeaker |
+#endif
+    						AVAudioSessionCategoryOptionMixWithOthers;
+						
+						if (@available(iOS 10, *))
+						{
+							[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeVoiceChat options:opts error:&ActiveError];
+						}
+						else
+						{
+							[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:opts error:&ActiveError];
+						}
+						if (ActiveError)
+						{
+							UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category!"));
+						}
+						ActiveError = nil;
 					}
-					ActiveError = nil;
-	
+
 					/* TODO::JTM - Jan 16, 2013 05:05PM - Music player support */
 				}
 				else
 				{
 					/* TODO::JTM - Jan 16, 2013 05:05PM - Music player support */
 	
-					// Allow iPod music to continue playing in the background
-					NSError* ActiveError = nil;
-					[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
-					if (ActiveError)
-					{
-						UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
-					}
-					ActiveError = nil;
+                    if (!self.bVoiceChatEnabled)
+                    {
+    					// Allow iPod music to continue playing in the background
+    					NSError* ActiveError = nil;
+    					[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
+    					if (ActiveError)
+    					{
+    						UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
+    					}
+    					ActiveError = nil;
+                    }
 				}
 			}
 			else if (!self.bUsingBackgroundMusic)
@@ -427,33 +543,66 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 					UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session as active! [Error = %s]"), *FString([ActiveError description]));
 				}
 				ActiveError = nil;
-				
-				[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategorySoloAmbient error:&ActiveError];
-				if (ActiveError)
+                
+                if (!self.bVoiceChatEnabled)
+                {
+					if (!GAudio_ForceAmbientCategory)
+					{
+						[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategorySoloAmbient error:&ActiveError];
+						if (ActiveError)
+						{
+							UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategorySoloAmbient! [Error = %s]"), *FString([ActiveError description]));
+						}
+					}
+					else
+					{
+						[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
+						if (ActiveError)
+						{
+							UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
+						}
+					}
+    				ActiveError = nil;
+                }
+				else
 				{
-					UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategorySoloAmbient! [Error = %s]"), *FString([ActiveError description]));
+					AVAudioSessionCategoryOptions opts =
+					AVAudioSessionCategoryOptionAllowBluetoothA2DP |
+#if !PLATFORM_TVOS
+					AVAudioSessionCategoryOptionDefaultToSpeaker |
+#endif
+					AVAudioSessionCategoryOptionMixWithOthers;
+					
+					if (@available(iOS 10, *))
+					{
+						[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeVoiceChat options:opts error:&ActiveError];
+					}
+					else
+					{
+						[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:opts error:&ActiveError];
+					}
+					if (ActiveError)
+					{
+						UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category!"));
+					}
+					ActiveError = nil;
 				}
-				ActiveError = nil;
 			}
         }
 	}
-	else if (self.bAudioActive && !self.bUsingBackgroundMusic)
+	else if ((bForce || self.bAudioActive) && !self.bUsingBackgroundMusic)
 	{
 		NSError* ActiveError = nil;
-		[[AVAudioSession sharedInstance] setActive:NO error:&ActiveError];
-		if (ActiveError)
-		{
-			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session as inactive! [Error = %s]"), *FString([ActiveError description]));
-		}
-		ActiveError = nil;
-        
-		// Necessary to prevent audio from getting killing when setup for background iPod audio playback
-		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
-		if (ActiveError)
-		{
-			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
-		}
-		ActiveError = nil;
+        if (!self.bVoiceChatEnabled)
+        {
+    		// Necessary to prevent audio from getting killing when setup for background iPod audio playback
+    		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:&ActiveError];
+    		if (ActiveError)
+    		{
+    			UE_LOG(LogIOSAudioSession, Error, TEXT("Failed to set audio session category to AVAudioSessionCategoryAmbient! [Error = %s]"), *FString([ActiveError description]));
+    		}
+    		ActiveError = nil;
+        }
  	}
     self.bAudioActive = bActive;
 }
@@ -462,6 +611,17 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 {
 	AVAudioSession* Session = [AVAudioSession sharedInstance];
 	return Session.otherAudioPlaying;
+}
+
+- (void)EnableVoiceChat:(bool)bEnable
+{
+    self.bVoiceChatEnabled = bEnable;
+	[self ToggleAudioSession:self.bAudioActive force:true];
+}
+
+- (bool)IsVoiceChatEnabled
+{
+	return self.bVoiceChatEnabled;
 }
 
 - (int)GetAudioVolume
@@ -494,14 +654,7 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	// TVOS does not have a battery, return fully charged
 	return 100;
 #else
-	UIDevice* Device = [UIDevice currentDevice];
-	Device.batteryMonitoringEnabled = YES;
-	
-	// Battery level is from 0.0 to 1.0, get it in terms of 0-100
-	int Level = ((int)([Device batteryLevel] * 100));
-	
-	Device.batteryMonitoringEnabled = NO;
-	return Level;
+    return self.BatteryLevel;
 #endif
 }
 
@@ -511,14 +664,13 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	// TVOS does not have a battery, return plugged in
 	return false;
 #else
-	UIDevice* Device = [UIDevice currentDevice];
-	Device.batteryMonitoringEnabled = YES;
-
-	UIDeviceBatteryState State = Device.batteryState;
-
-	Device.batteryMonitoringEnabled = NO;
-	return State == UIDeviceBatteryStateUnplugged || State == UIDeviceBatteryStateUnknown;
+    return self.bBatteryState;
 #endif
+}
+
+- (NSProcessInfoThermalState)GetThermalState
+{
+    return self.ThermalState;
 }
 
 /**
@@ -529,10 +681,12 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	return (IOSAppDelegate*)[UIApplication sharedApplication].delegate;
 }
 
+bool GIsSuspended = 0;
 - (void)ToggleSuspend:(bool)bSuspend
 {
     self.bHasSuspended = !bSuspend;
     self.bIsSuspended = bSuspend;
+    GIsSuspended = self.bIsSuspended;
 
 	if (bSuspend)
 	{
@@ -548,7 +702,9 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 	{
 		// Don't deadlock here because a msg box may appear super early blocking the game thread and then the app may go into the background
 		double	startTime = FPlatformTime::Seconds();
-		while(!self.bHasSuspended && (FPlatformTime::Seconds() - startTime) < cMaxThreadWaitTime)
+
+		// don't wait for FDefaultGameMoviePlayer::WaitForMovieToFinish(), crash with 0x8badf00d if “Wait for Movies to Complete” is checked
+		while(!self.bHasSuspended && !FAppEntry::IsStartupMoviePlaying() &&  (FPlatformTime::Seconds() - startTime) < cMaxThreadWaitTime)
 		{
             FIOSPlatformRHIFramePacer::Suspend();
 			FPlatformProcess::Sleep(0.05f);
@@ -563,6 +719,13 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 
 	return YES;
 }
+
+static int32 GEnableThermalsReport = 0;
+static FAutoConsoleVariableRef CVarGEnableThermalsReport(
+	TEXT("ios.EnableThermalsReport"),
+	GEnableThermalsReport,
+	TEXT("When set to 1, will enable on-screen thermals debug display.")
+);
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary*)launchOptions
 {
@@ -631,9 +794,9 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 			[ImageString appendString : @"-Portrait"];
 		}
 	}
-	else if (Device == FPlatformMisc::IOS_IPhoneX)
+    else if (Device == FPlatformMisc::IOS_IPhoneX || Device == FPlatformMisc::IOS_IPhoneXS)
 	{
-		[ImageString appendString : @"-IPhoneX"];
+		[ImageString appendString : @"-IPhoneXS"];
 		if (!self.bDeviceInPortraitMode)
 		{
 			[ImageString appendString : @"-Landscape"];
@@ -643,13 +806,37 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 			[ImageString appendString : @"-Portrait"];
 		}
 	}
+    else if (Device == FPlatformMisc::IOS_IPhoneXSMax)
+    {
+        [ImageString appendString : @"-IPhoneXSMax"];
+        if (!self.bDeviceInPortraitMode)
+        {
+            [ImageString appendString : @"-Landscape"];
+        }
+        else
+        {
+            [ImageString appendString : @"-Portrait"];
+        }
+    }
+    else if (Device == FPlatformMisc::IOS_IPhoneXR)
+    {
+        [ImageString appendString : @"-IPhoneXR"];
+        if (!self.bDeviceInPortraitMode)
+        {
+            [ImageString appendString : @"-Landscape"];
+        }
+        else
+        {
+            [ImageString appendString : @"-Portrait"];
+        }
+    }
 	else if (Device == FPlatformMisc::IOS_AppleTV)
 	{
 		// @todo tvos: Make an AppleTV one?
 		// use IPhone6 image for now
 		[ImageString appendString : @"-IPhone6Plus-Landscape"];
 	}
-	else if (Device == FPlatformMisc::IOS_IPadPro_129)
+	else if (Device == FPlatformMisc::IOS_IPadPro_129 || Device == FPlatformMisc::IOS_IPadPro2_129 || Device == FPlatformMisc::IOS_IPadPro3_129)
 	{
 		if (!self.bDeviceInPortraitMode)
 		{
@@ -664,6 +851,38 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
         {
             [ImageString appendString:@"@2x"];
         }
+	}
+	else if (Device == FPlatformMisc::IOS_IPadPro_105)
+	{
+		if (!self.bDeviceInPortraitMode)
+		{
+			[ImageString appendString : @"-Landscape-1112"];
+		}
+		else
+		{
+			[ImageString appendString : @"-Portrait-1112"];
+		}
+
+		if (NativeScale > 1.0f)
+		{
+			[ImageString appendString : @"@2x"];
+		}
+	}
+	else if (Device == FPlatformMisc::IOS_IPadPro_11)
+	{
+		if (!self.bDeviceInPortraitMode)
+		{
+			[ImageString appendString : @"-Landscape-1194"];
+		}
+		else
+		{
+			[ImageString appendString : @"-Portrait-1194"];
+		}
+
+		if (NativeScale > 1.0f)
+		{
+			[ImageString appendString : @"@2x"];
+		}
 	}
 	else
 	{
@@ -721,6 +940,10 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
     GShowSplashScreen = true;
 	
 #if !PLATFORM_TVOS
+#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
+	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
+	Center.delegate = self;
+#else
 	// Save launch local notification so the app can check for it when it is ready
 	UILocalNotification *notification = [launchOptions objectForKey:UIApplicationLaunchOptionsLocalNotificationKey];
 	if ( notification != nullptr )
@@ -738,6 +961,7 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 			}
 		}
 	}
+#endif
 #endif
 	
     timer = [NSTimer scheduledTimerWithTimeInterval: 0.05f target:self selector:@selector(timerForSplashScreen) userInfo:nil repeats:YES];
@@ -761,8 +985,58 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 		[self.ConsoleHistoryValues addObjectsFromArray:SavedHistory];
 	}
 	self.ConsoleHistoryValuesIndex = -1;
+
+	if (@available(iOS 11, *))
+	{
+		FCoreDelegates::OnGetOnScreenMessages.AddLambda(
+			[&EnableThermalsReport = GEnableThermalsReport](TMultiMap<FCoreDelegates::EOnScreenMessageSeverity, FText >& OutMessages)
+			{
+				if (EnableThermalsReport)
+				{
+					switch ([[NSProcessInfo processInfo] thermalState])
+					{
+						case NSProcessInfoThermalStateNominal:	OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Info, FText::FromString(TEXT("Thermals are Nominal"))); break;
+						case NSProcessInfoThermalStateFair:		OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Info, FText::FromString(TEXT("Thermals are Fair"))); break;
+						case NSProcessInfoThermalStateSerious:	OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Warning, FText::FromString(TEXT("Thermals are Serious"))); break;
+						case NSProcessInfoThermalStateCritical:	OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Error, FText::FromString(TEXT("Thermals are Critical"))); break;
+					}
+				}
+
+				// Uncomment to view the state of the AVAudioSession category, mode, and options.
+//#define VIEW_AVAUDIOSESSION_INFO
+#if defined(VIEW_AVAUDIOSESSION_INFO)
+				FString Message = FString::Printf(
+					TEXT("Session Category: %s, Mode: %s, Options: %x"),
+					UTF8_TO_TCHAR([[AVAudioSession sharedInstance].category UTF8String]),
+					UTF8_TO_TCHAR([[AVAudioSession sharedInstance].mode UTF8String]),
+					[AVAudioSession sharedInstance].categoryOptions);
+				OutMessages.Add(FCoreDelegates::EOnScreenMessageSeverity::Info, FText::FromString(Message));
+#endif // defined(VIEW_AVAUDIOSESSION_INFO)
+			});
+	}
+
+
 #endif
 
+#if !PLATFORM_TVOS
+	if (@available(iOS 11, *))
+	{
+        UIDevice* UiDevice = [UIDevice currentDevice];
+        UiDevice.batteryMonitoringEnabled = YES;
+        
+        // Battery level is from 0.0 to 1.0, get it in terms of 0-100
+        self.BatteryLevel = ((int)([UiDevice batteryLevel] * 100));
+        UIDeviceBatteryState State = UiDevice.batteryState;
+        self.bBatteryState = State == UIDeviceBatteryStateUnplugged || State == UIDeviceBatteryStateUnknown;
+        self.ThermalState = [[NSProcessInfo processInfo] thermalState];
+
+		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(temperatureChanged:) name:NSProcessInfoThermalStateDidChangeNotification object:nil];
+		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(lowPowerModeChanged:) name:NSProcessInfoPowerStateDidChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(batteryChanged:) name:UIDeviceBatteryLevelDidChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(batteryStateChanged:) name:UIDeviceBatteryStateDidChangeNotification object:nil];
+	}
+#endif
+    
 	[self InitializeAudioSession];
 	
 #if !PLATFORM_TVOS
@@ -784,6 +1058,9 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 		FFunctionGraphTask::CreateAndDispatchWhenReady([orientation]()
 		{
 			FCoreDelegates::ApplicationReceivedScreenOrientationChangedNotificationDelegate.Broadcast((int32)orientation);
+
+			//we also want to fire off the safe frame event
+			FCoreDelegates::OnSafeFrameChangedEvent.Broadcast();
 		}, TStatId(), NULL, ENamedThreads::GameThread);
 	}
 #endif
@@ -841,9 +1118,18 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 FCriticalSection RenderSuspend;
 - (void)applicationWillResignActive:(UIApplication *)application
 {
-	/*
-	 Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
-	 Use this method to pause ongoing tasks, disable timers, and throttle down OpenGL ES frame rates. Games should use this method to pause the game.
+    
+    FIOSPlatformMisc::ResetBrightness();
+    
+    /*
+		Sent when the application is about to move from active to inactive
+		state. This can occur for certain types of temporary interruptions (such
+		as an incoming phone call or SMS message) or when the user quits the
+		application and it begins the transition to the background state.
+
+		Use this method to pause ongoing tasks, disable timers, and throttle
+	 	down OpenGL ES frame rates. Games should use this method to pause the
+		game.
 	 */
     if (bEngineInit)
     {
@@ -863,24 +1149,39 @@ FCriticalSection RenderSuspend;
 			}
 		}
     }
-
 	[self ToggleSuspend:true];
-	[self ToggleAudioSession:false];
-
-	RenderSuspend.TryLock();
-	FGraphEventRef ResignTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]()
-	{
-		FScopeLock ScopeLock(&RenderSuspend);
-	}, TStatId(), NULL, ENamedThreads::ActualRenderingThread);
+	[self ToggleAudioSession:false force:true];
+    
+    RenderSuspend.TryLock();
+    if (FTaskGraphInterface::IsRunning())
+    {
+        if (bEngineInit)
+        {
+            FGraphEventRef ResignTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]()
+            {
+                FScopeLock ScopeLock(&RenderSuspend);
+            }, TStatId(), NULL, ENamedThreads::GameThread);
+        }
+        else
+        {
+            FGraphEventRef ResignTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]()
+            {
+                FScopeLock ScopeLock(&RenderSuspend);
+            }, TStatId(), NULL, ENamedThreads::ActualRenderingThread);
+        }
+    }
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application
 {
 	/*
-	 Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later. 
-	 If your application supports background execution, this method is called instead of applicationWillTerminate: when the user quits.
+	 Use this method to release shared resources, save user data, invalidate
+	 timers, and store enough application state information to restore your
+	 application to its current state in case it is terminated later.
+	 
+	 If your application supports background execution, this method is called
+	 instead of applicationWillTerminate: when the user quits.
 	 */
-
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Broadcast();
 }
 
@@ -889,7 +1190,6 @@ FCriticalSection RenderSuspend;
 	/*
 	 Called as part of the transition from the background to the inactive state; here you can undo many of the changes made on entering the background.
 	 */
-
     FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Broadcast();
 }
 
@@ -899,8 +1199,8 @@ FCriticalSection RenderSuspend;
 	 Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
 	 */
 	RenderSuspend.Unlock();
+    [self ToggleAudioSession:true force:true];
 	[self ToggleSuspend : false];
-	[self ToggleAudioSession:true];
 
     if (bEngineInit)
     {
@@ -934,10 +1234,18 @@ FCriticalSection RenderSuspend;
     // note that we are shutting down
     GIsRequestingExit = true;
     
-    // wait for the game thread to shut down
-    while (self.bHasStarted == true)
+    if (!bEngineInit)
     {
-        usleep(3);
+        // we haven't yet made it to the point where the engine is initialized, so just exit the app
+        _Exit(0);
+    }
+    else
+    {
+        // wait for the game thread to shut down
+        while (self.bHasStarted == true)
+        {
+            usleep(3);
+        }
     }
 }
 
@@ -949,8 +1257,25 @@ FCriticalSection RenderSuspend;
 	FPlatformMisc::HandleLowMemoryWarning();
 }
 
+#if !PLATFORM_TVOS && BACKGROUNDFETCH_ENABLED // NOTE: TVOS can do this starting in tvOS 11
+- (void)application:(UIApplication *)application performFetchWithCompletionHandler:(void(^)(UIBackgroundFetchResult result))completionHandler
+{
+    // NOTE: the completionHandler must be called within 30 seconds
+    FCoreDelegates::ApplicationPerformFetchDelegate.Broadcast();
+    completionHandler(UIBackgroundFetchResultNewData);
+}
+
+- (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
+{
+    FString Id(identifier);
+    FCoreDelegates::ApplicationBackgroundSessionEventDelegate.Broadcast(Id);
+    completionHandler();
+}
+#endif
+
 #if !PLATFORM_TVOS && NOTIFICATIONS_ENABLED
 
+#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_10_0
 #ifdef __IPHONE_8_0
 - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
 {
@@ -961,6 +1286,7 @@ FCriticalSection RenderSuspend;
 		FCoreDelegates::ApplicationRegisteredForUserNotificationsDelegate.Broadcast(types);
     }, TStatId(), NULL, ENamedThreads::GameThread);
 }
+#endif
 #endif
 
 - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
@@ -994,9 +1320,10 @@ FCriticalSection RenderSuspend;
     }, TStatId(), NULL, ENamedThreads::GameThread);
 }
 
+#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_10_0
 -(void)application : (UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void(^)(UIBackgroundFetchResult result))handler
 {
-	if (bEngineInit)
+	if (bEngineInit && FIOSCoreDelegates::PassesPushNotificationFilters(userInfo))
 	{
 		NSString* JsonString = @"{}";
 		NSError* JsonError;
@@ -1039,11 +1366,115 @@ FCriticalSection RenderSuspend;
 	//   notification.
 	handler(UIBackgroundFetchResultNoData);
 }
+#endif
 
 #endif
 
 #if !PLATFORM_TVOS
 
+#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
+void HandleReceivedNotification(UNNotification* notification)
+{
+	bool IsLocal = false;
+	
+	if ([IOSAppDelegate GetDelegate].bEngineInit)
+	{
+		NSString* NotificationType = (NSString*)[notification.request.content.userInfo objectForKey: @"NotificationType"];
+		if(NotificationType != nullptr)
+		{
+			FString LocalOrRemote(NotificationType);
+			if(LocalOrRemote == FString(TEXT("Local")))
+			{
+				IsLocal = true;
+			}
+		}
+		
+		int AppState;
+		if ([UIApplication sharedApplication].applicationState == UIApplicationStateInactive)
+		{
+			AppState = 1; // EApplicationState::Inactive;
+		}
+		else if ([UIApplication sharedApplication].applicationState == UIApplicationStateBackground)
+		{
+			AppState = 2; // EApplicationState::Background;
+		}
+		else
+		{
+			AppState = 3; // EApplicationState::Active;
+		}
+		
+		if(IsLocal)
+		{
+			NSString*	activationEvent = (NSString*)[notification.request.content.userInfo objectForKey: @"ActivationEvent"];
+			if(activationEvent != nullptr)
+			{
+				FString	activationEventFString(activationEvent);
+				int32	fireDate = [notification.date timeIntervalSince1970];
+				
+				FFunctionGraphTask::CreateAndDispatchWhenReady([activationEventFString, fireDate, AppState]()
+															   {
+																   FCoreDelegates::ApplicationReceivedLocalNotificationDelegate.Broadcast(activationEventFString, fireDate, AppState);
+															   }, TStatId(), NULL, ENamedThreads::GameThread);
+			}
+		}
+		else
+		{
+			NSString* JsonString = @"{}";
+			NSError* JsonError;
+			NSData* JsonData = [NSJSONSerialization dataWithJSONObject : notification.request.content.userInfo
+															   options : 0
+																 error : &JsonError];
+			
+			if (JsonData)
+			{
+				JsonString = [[[NSString alloc] initWithData:JsonData encoding : NSUTF8StringEncoding] autorelease];
+			}
+			
+			FString	jsonFString(JsonString);
+			
+			FFunctionGraphTask::CreateAndDispatchWhenReady([jsonFString, AppState]()
+														   {
+															   FCoreDelegates::ApplicationReceivedRemoteNotificationDelegate.Broadcast(jsonFString, AppState);
+														   }, TStatId(), NULL, ENamedThreads::GameThread);
+		}
+	}
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+	   willPresentNotification:(UNNotification *)notification
+		 withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler
+{
+	// Received notification while app is in the foreground
+	HandleReceivedNotification(notification);
+	
+	completionHandler(UNNotificationPresentationOptionNone);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+		 withCompletionHandler:(void (^)())completionHandler
+{
+	// Received notification while app is in the background or closed
+	
+	// Save launch local notification so the app can check for it when it is ready
+	NSDictionary* userInfo = response.notification.request.content.userInfo;
+	if(userInfo != nullptr)
+	{
+		NSString*	activationEvent = (NSString*)[userInfo objectForKey: @"ActivationEvent"];
+		
+		if(activationEvent != nullptr)
+		{
+			FAppEntry::gAppLaunchedWithLocalNotification = true;
+			FAppEntry::gLaunchLocalNotificationActivationEvent = FString(activationEvent);
+			FAppEntry::gLaunchLocalNotificationFireDate = [response.notification.date timeIntervalSince1970];
+		}
+	}
+	
+	HandleReceivedNotification(response.notification);
+	
+	completionHandler();
+}
+#else
 - (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
 {
 	NSString*	activationEvent = (NSString*)[notification.userInfo objectForKey: @"ActivationEvent"];
@@ -1077,6 +1508,7 @@ FCriticalSection RenderSuspend;
 		NSLog(@"Warning: Missing local notification activation event");
 	}
 }
+#endif
 
 #endif
 
@@ -1101,10 +1533,10 @@ FCriticalSection RenderSuspend;
  * @param Controller The Controller object to animate off the screen
  * @param bShouldAnimate YES to slide down, NO to hide immediately
  */
--(void)HideController:(UIViewController*)Controller Animated:(BOOL)bShouldAnimate
+-(void)HideController:(UIViewController*)Controller Animated : (BOOL)bShouldAnimate
 {
-    // slide it off
-    [Controller dismissViewControllerAnimated : bShouldAnimate completion : nil];
+	// slide it off
+	[Controller dismissViewControllerAnimated : bShouldAnimate completion : nil];
 
 	// stop drawing the 3D world for faster UI speed
 	//FViewport::SetGameRenderingEnabled(true);
@@ -1138,19 +1570,19 @@ FCriticalSection RenderSuspend;
 	GameCenterDisplay.viewState = GKGameCenterViewControllerStateLeaderboards;
 #endif
 #ifdef __IPHONE_7_0
-    if ([GameCenterDisplay respondsToSelector:@selector(leaderboardIdentifier)] == YES)
-    {
+	if ([GameCenterDisplay respondsToSelector : @selector(leaderboardIdentifier)] == YES)
+	{
 #if !PLATFORM_TVOS // @todo tvos: Why not??
-        GameCenterDisplay.leaderboardIdentifier = Category;
+		GameCenterDisplay.leaderboardIdentifier = Category;
 #endif
-    }
-    else
+	}
+	else
 #endif
-    {
+	{
 #if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0
-        GameCenterDisplay.leaderboardCategory = Category;
+		GameCenterDisplay.leaderboardCategory = Category;
 #endif
-    }
+	}
 	GameCenterDisplay.gameCenterDelegate = self;
 
 	// show it 
@@ -1162,15 +1594,18 @@ FCriticalSection RenderSuspend;
  */
 -(void)ShowAchievements
 {
+#if !PLATFORM_TVOS
 	// create the leaderboard display object 
 	GKGameCenterViewController* GameCenterDisplay = [[[GKGameCenterViewController alloc] init] autorelease];
-#if !PLATFORM_TVOS
+    if (@available(iOS 7, tvOS 999, *))
+    {
 	GameCenterDisplay.viewState = GKGameCenterViewControllerStateAchievements;
-#endif
+    }
 	GameCenterDisplay.gameCenterDelegate = self;
 
 	// show it 
 	[self ShowController : GameCenterDisplay];
+#endif // !PLATFORM_TVOS
 }
 
 /**
@@ -1179,8 +1614,8 @@ FCriticalSection RenderSuspend;
 CORE_API bool IOSShowLeaderboardUI(const FString& CategoryName)
 {
 	// route the function to iOS thread, passing the category string along as the object
-	NSString* CategoryToShow = [NSString stringWithFString:CategoryName];
-	[[IOSAppDelegate GetDelegate] performSelectorOnMainThread:@selector(ShowLeaderboard:) withObject:CategoryToShow waitUntilDone : NO];
+	NSString* CategoryToShow = [NSString stringWithFString : CategoryName];
+	[[IOSAppDelegate GetDelegate] performSelectorOnMainThread:@selector(ShowLeaderboard : ) withObject:CategoryToShow waitUntilDone : NO];
 
 	return true;
 }
@@ -1190,11 +1625,73 @@ CORE_API bool IOSShowLeaderboardUI(const FString& CategoryName)
 */
 CORE_API bool IOSShowAchievementsUI()
 {
-	
+
 	// route the function to iOS thread
 	[[IOSAppDelegate GetDelegate] performSelectorOnMainThread:@selector(ShowAchievements) withObject:nil waitUntilDone : NO];
 
 	return true;
+}
+
+-(void)batteryChanged:(NSNotification*)notification
+{
+#if !PLATFORM_TVOS
+    UIDevice* Device = [UIDevice currentDevice];
+    
+    // Battery level is from 0.0 to 1.0, get it in terms of 0-100
+    self.BatteryLevel = ((int)([Device batteryLevel] * 100));
+    UE_LOG(LogIOS, Display, TEXT("Battery Level Changed: %d"), self.BatteryLevel);
+#endif
+}
+
+-(void)batteryStateChanged:(NSNotification*)notification
+{
+#if !PLATFORM_TVOS
+    UIDevice* Device = [UIDevice currentDevice];
+    UIDeviceBatteryState State = Device.batteryState;
+    self.bBatteryState = State == UIDeviceBatteryStateUnplugged || State == UIDeviceBatteryStateUnknown;
+    UE_LOG(LogIOS, Display, TEXT("Battery State Changed: %d"), self.bBatteryState);
+#endif
+}
+
+-(void)temperatureChanged:(NSNotification *)notification
+{
+#if !PLATFORM_TVOS
+	if (@available(iOS 11, *))
+	{
+		// send game callback with new temperature severity
+		FCoreDelegates::ETemperatureSeverity Severity;
+        FString Level = TEXT("Unknown");
+        self.ThermalState = [[NSProcessInfo processInfo] thermalState];
+		switch (self.ThermalState)
+		{
+			case NSProcessInfoThermalStateNominal:	Severity = FCoreDelegates::ETemperatureSeverity::Good; Level = TEXT("Good"); break;
+			case NSProcessInfoThermalStateFair:		Severity = FCoreDelegates::ETemperatureSeverity::Bad; Level = TEXT("Bad"); break;
+			case NSProcessInfoThermalStateSerious:	Severity = FCoreDelegates::ETemperatureSeverity::Serious; Level = TEXT("Serious"); break;
+			case NSProcessInfoThermalStateCritical:	Severity = FCoreDelegates::ETemperatureSeverity::Critical; Level = TEXT("Critical"); break;
+		}
+
+        UE_LOG(LogIOS, Display, TEXT("Temperaure Changed: %s"), *Level);
+		FCoreDelegates::OnTemperatureChange.Broadcast(Severity);
+	}
+#endif
+}
+
+-(void)lowPowerModeChanged:(NSNotification *)notification
+{
+#if !PLATFORM_TVOS
+	if (@available(iOS 11, *))
+	{	
+        FIOSAsyncTask* AsyncTask = [[FIOSAsyncTask alloc] init];
+        AsyncTask.GameThreadCallback = ^ bool(void)
+        {
+            bool bInLowPowerMode = [[NSProcessInfo processInfo] isLowPowerModeEnabled];
+            UE_LOG(LogIOS, Display, TEXT("Low Power Mode Changed: %d"), bInLowPowerMode);
+            FCoreDelegates::OnLowPowerMode.Broadcast(bInLowPowerMode);
+            return true;
+        };
+        [AsyncTask FinishedTask];
+	}
+#endif
 }
 
 -(UIWindow*)window

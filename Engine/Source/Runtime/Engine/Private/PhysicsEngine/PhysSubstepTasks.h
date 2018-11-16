@@ -5,9 +5,13 @@
 #include "CoreMinimal.h"
 #include "EngineDefines.h"
 #include "HAL/ThreadSafeBool.h"
+#include "Physics/PhysicsInterfaceCore.h"
+#include "PhysicsEngine/BodyInstance.h"
 #if WITH_PHYSX
 #include "PhysicsEngine/PhysXSupport.h"
 #endif
+
+struct FSimulationScratchBuffer;
 
 void FinishSceneStat(uint32 Scene);
 
@@ -55,15 +59,8 @@ public:
 		return "CompleteSimulate";
 	}
 
-	uint8* GetScratchBufferData()
-	{
-		return ScratchBuffer ? ScratchBuffer->Buffer : nullptr;
-	}
-
-	int32 GetScratchBufferSize()
-	{
-		return ScratchBuffer ? ScratchBuffer->BufferSize : 0;
-	}
+	uint8* GetScratchBufferData();
+	int32 GetScratchBufferSize();
 };
 #endif	//#if WITH_PHYSX
 
@@ -87,6 +84,17 @@ struct FKinematicTarget
 
 	/** Start transform for kinematic actor*/
 	FTransform OriginalTM;
+};
+
+/** Kinematic target struct to use when lock is assumed */
+struct FKinematicTarget_AssumesLocked : public FKinematicTarget
+{
+	FKinematicTarget_AssumesLocked(FBodyInstance* Body, const FTransform& TM)
+	{
+		BodyInstance = Body;
+		TargetTM = TM;
+		OriginalTM = Body->GetUnrealWorldTransform_AssumesLocked(true, true);
+	}
 };
 
 /** Holds information about requested force */
@@ -165,8 +173,10 @@ public:
 	void AddCustomPhysics_AssumesLocked(FBodyInstance* Body, const FCalculateCustomPhysics& CalculateCustomPhysics);
 	void AddForce_AssumesLocked(FBodyInstance* Body, const FVector& Force, bool bAccelChange);
 	void AddForceAtPosition_AssumesLocked(FBodyInstance* Body, const FVector& Force, const FVector& Position, bool bIsLocalForce);
-	void AddTorque_AssumesLocked(FBodyInstance* Body, const FVector& Torque, bool bAccelChange);
 	void AddRadialForceToBody_AssumesLocked(FBodyInstance* Body, const FVector& Origin, const float Radius, const float Strength, const uint8 Falloff, const bool bAccelChange);
+	void ClearForces_AssumesLocked(FBodyInstance* Body);
+	void AddTorque_AssumesLocked(FBodyInstance* Body, const FVector& Torque, bool bAccelChange);
+	void ClearTorques_AssumesLocked(FBodyInstance* Body);
 
 	/** Removes a BodyInstance from doing substep work - should only be called when the FBodyInstance is getting destroyed */
 	void RemoveBodyInstance_AssumesLocked(FBodyInstance* Body);
@@ -202,6 +212,9 @@ private:
 	float StepScale;
 	float TotalSubTime;
 	uint32 CurrentSubStep;
+	int32 SubstepCallbackGuard;
+	friend struct FSubstepCallbackGuard;
+
 	FGraphEventRef CompletionEvent;
 
 	FPhysScene* PhysScene;

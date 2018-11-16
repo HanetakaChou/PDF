@@ -228,6 +228,17 @@ public:
 		int32 TextLen;
 	};
 
+	explicit FShapedGlyphSequence()
+		: GlyphsToRender()
+		, TextBaseline(0)
+		, MaxTextHeight(0)
+		, FontMaterial(nullptr)
+		, OutlineSettings()
+		, SequenceWidth(0)
+		, GlyphFontFaces()
+		, SourceIndicesToGlyphData(FSourceTextRange(0, 0))
+	{ }
+
 	FShapedGlyphSequence(TArray<FShapedGlyphEntry> InGlyphsToRender, const int16 InTextBaseline, const uint16 InMaxTextHeight, const UObject* InFontMaterial, const FFontOutlineSettings& InOutlineSettings, const FSourceTextRange& InSourceTextRange);
 	~FShapedGlyphSequence();
 
@@ -338,6 +349,8 @@ public:
 	 * @return The sub-sequence, or an null if the sub-sequence couldn't be created (eg, because you started or ended on a merged ligature, or because the range is out-of-bounds)
 	 */
 	FShapedGlyphSequencePtr GetSubSequence(const int32 InStartIndex, const int32 InEndIndex) const;
+
+	void AddReferencedObjects(FReferenceCollector& Collector);
 
 private:
 	/** Non-copyable */
@@ -815,6 +828,14 @@ public:
 	const TSet<FName>& GetFontAttributes( const FFontData& InFontData ) const;
 
 	/**
+	 * Get the available sub-face data from the given font.
+	 * Typically there will only be one face unless this is a TTC/OTC font.
+	 * The index of the returned entry can be passed as InFaceIndex to the FFreeTypeFace constructor.
+	 */
+	TArray<FString> GetAvailableFontSubFaces(FFontFaceDataConstRef InMemory) const;
+	TArray<FString> GetAvailableFontSubFaces(const FString& InFilename) const;
+
+	/**
 	 * Get the revision index of the currently active localized fallback font.
 	 */
 	uint16 GetLocalizedFallbackFontRevision() const;
@@ -822,7 +843,7 @@ public:
 	/**
 	 * Issues a request to clear all cached data from the cache
 	 */
-	void RequestFlushCache();
+	void RequestFlushCache(const FString& FlushReason);
 
 	/**
 	 * Clears just the cached font data, but leaves the atlases alone
@@ -837,7 +858,7 @@ private:
 	/**
 	 * Clears all cached data from the cache
 	 */
-	void FlushCache();
+	bool FlushCache();
 
 	/**
 	 * Clears out any pending UFont objects that were requested to be flushed
@@ -892,10 +913,10 @@ private:
 	volatile bool bFlushRequested;
 
 	/** Number of atlas pages we can have before we request that the cache be flushed */
-	int32 MaxAtlasPagesBeforeFlushRequest;
+	int32 CurrentMaxAtlasPagesBeforeFlushRequest;
 
 	/** Number of non-atlased textures we can have before we request that the cache be flushed */
-	int32 MaxNonAtlasedTexturesBeforeFlushRequest;
+	int32 CurrentMaxNonAtlasedTexturesBeforeFlushRequest;
 
 	/** The frame counter the last time the font cache was asked to be flushed */
 	uint64 FrameCounterLastFlushRequest;

@@ -112,6 +112,7 @@ struct MOVIEPLAYER_API FLoadingScreenAttributes
 		, bMoviesAreSkippable(true)
 		, bWaitForManualStop(false)
 		, bAllowInEarlyStartup(false)
+		, bAllowEngineTick(false)
 		, PlaybackType(EMoviePlaybackType::MT_Normal) {}
 
 	/** The widget to be displayed on top of the movie or simply standalone if there is no movie. */
@@ -135,6 +136,9 @@ struct MOVIEPLAYER_API FLoadingScreenAttributes
 	/** If true loading screens here cannot have any uobjects of any kind or use any engine features at all. This will start the movies very early as a result on platforms that support it */
 	bool bAllowInEarlyStartup;
 
+	/** If true, this will call the engine tick while the game thread is stalled waiting for a loading movie to finish. This only works for post-startup load screens and is potentially unsafe */
+	bool bAllowEngineTick;
+
 	/** Should we just play back, loop, etc.  NOTE: if the playback type is MT_LoopLast, then bAutoCompleteWhenLoadingCompletes will be togged on when the last movie is hit*/
 	TEnumAsByte<EMoviePlaybackType> PlaybackType;
 
@@ -154,7 +158,7 @@ public:
 	virtual void RegisterMovieStreamer(TSharedPtr<IMovieStreamer> InMovieStreamer) = 0;
 
 	/** Initializes this movie player, creating the startup window and hiding the splash screen. To be called in the launch engine loop. */
-	virtual void Initialize(class FSlateRenderer& InSlateRenderer) = 0;
+	virtual void Initialize(class FSlateRenderer& InSlateRenderer, TSharedPtr<SWindow> RenderTarget = nullptr) = 0;
 
 	/** Shutsdown the movie player. */
 	virtual void Shutdown() = 0;
@@ -192,8 +196,8 @@ public:
 	 */
 	virtual void StopMovie() = 0;
 	
-	/** Call only on the game thread. Spins this thread until the movie stops. */
-	virtual void WaitForMovieToFinish() = 0;
+	/** Call only on the game thread. Spins this thread until the movie stops. If bAllowEngineTick is true, the engine tick may run inside here */
+	virtual void WaitForMovieToFinish(bool bAllowEngineTick = false) = 0;
 
 	/** Called from to check if the game thread is finished loading. */
 	virtual bool IsLoadingFinished() const = 0;
@@ -213,6 +217,10 @@ public:
 	/** returns true if the movie being played in the last one in the play list */
 	virtual bool IsLastMovieInPlaylist() = 0;
 
+	/* Callback for when the LoadingScreen setup above in WidgetLoadingScreen is displayed **/
+	DECLARE_EVENT(IGameMoviePlayer, FOnMoviePlaybackStarted)
+	virtual FOnMoviePlaybackStarted& OnMoviePlaybackStarted() = 0;
+
 	DECLARE_EVENT(IGameMoviePlayer, FOnMoviePlaybackFinished)
 	virtual FOnMoviePlaybackFinished& OnMoviePlaybackFinished() = 0;
 
@@ -229,6 +237,10 @@ public:
 	virtual bool WillAutoCompleteWhenLoadFinishes() = 0;
 
 	virtual ~IGameMoviePlayer() {}
+
+	/** Check if the initial movie(s) is still playing */
+	virtual bool IsStartupMoviePlaying() const { return false; };
+	virtual void ForceCompletion() {};
 };
 
 /** Creates the movie player */

@@ -67,11 +67,12 @@ public:
 	/**
      * Create a format specific archive for precompiled shader code.
      *
+     * @param LibraryName The name of this shader library.
      * @param Format The format of shaders to cache.
      * @param WorkingDirectory The working directory.
      * @returns An archive object on success or nullptr on failure.
      */
-    virtual class IShaderFormatArchive* CreateShaderArchive( FName Format, const FString& WorkingDirectory ) const { return nullptr; }
+    virtual class IShaderFormatArchive* CreateShaderArchive( FString const& LibraryName, FName Format, const FString& WorkingDirectory ) const { return nullptr; }
 	
 	/**
 	 * Can the shader format compile shaders to the native binary format for the platform.
@@ -79,8 +80,27 @@ public:
 	 */
 	virtual bool CanCompileBinaryShaders() const { return true; }
 
-public:
+	/**
+	* Returns name of directory with platform specific shaders.
+	*
+	* @returns Name of directory with platform specific shaders.
+	*/
+	virtual const TCHAR* GetPlatformIncludeDirectory() const = 0;
+	
 
+	/**
+	 * Called before a shader is compiled to allow the platform shader format to modify the shader compiler input,
+	 * e.g. by adding console variable values relevant to shader compilation on that platform.
+	 */
+	virtual void ModifyShaderCompilerInput(FShaderCompilerInput& Input) const { }
+
+	/**
+	 * Called when a shader resource is cooked, so the shader format can perform platform-specific operations on the debug data.
+	 * Does nothing on platforms that make no use of the platform debug data.
+	 */
+	virtual void NotifyShaderCooked(const TArray<uint8>& PlatformDebugData) const { }
+
+public:
 	/** Virtual destructor. */
 	virtual ~IShaderFormat() { }
 };

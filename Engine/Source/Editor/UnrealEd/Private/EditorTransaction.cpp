@@ -58,8 +58,9 @@ inline UObject* BuildSubobjectKey(UObject* InObj, TArray<FName>& OutHierarchyNam
 	A single transaction.
 -----------------------------------------------------------------------------*/
 
-FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObject, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor)
+FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor)
 	:	Object				( InObject )
+	,	CustomChange		( MoveTemp( InCustomChange ) )
 	,	Array				( InArray )
 	,	Index				( InIndex )
 	,	Count				( InCount )
@@ -69,6 +70,8 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 	,	Serializer			( InSerializer )
 	,	Destructor			( InDestructor )
 	,	bRestored			( false )
+	,   bFinalized			( false )
+	,	bSnapshot			( false )
 	,	bWantsBinarySerialization ( true )
 {
 	// Blueprint compile-in-place can alter class layout so use tagged serialization for objects relying on a UBlueprint's Class
@@ -81,23 +84,33 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 	{
 		bWantsBinarySerialization = false;
 	}
-	ObjectAnnotation = Object->GetTransactionAnnotation();
-	FWriter Writer( Data, ReferencedObjects, ReferencedNames, bWantsBinarySerialization );
-	SerializeContents( Writer, Oper );
+
+	// Don't bother saving the object state if we have a custom change which can perform the undo operation
+	if( CustomChange.IsValid() )
+	{
+		// @todo mesheditor debug
+		//GWarn->Logf( TEXT( "------------ Saved Undo Change ------------" ) );
+		//CustomChange->PrintToLog( *GWarn );
+		//GWarn->Logf( TEXT( "-------------------------------------------" ) );
+	}
+	else
+	{
+		SerializedObject.SetObject(Object.Get());
+		FWriter Writer( SerializedObject, bWantsBinarySerialization );
+		SerializeContents( Writer, Oper );
+	}
 }
 
 void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper )
 {
-	// Cache to restore at the end
-	bool bWasArIgnoreOuterRef = Ar.ArIgnoreOuterRef;
-
-	if (Object.SubObjectHierarchyID.Num() != 0)
-	{
-		Ar.ArIgnoreOuterRef = true;
-	}
-
 	if( Array )
 	{
+		const bool bWasArIgnoreOuterRef = Ar.ArIgnoreOuterRef;
+		if (Object.SubObjectHierarchyID.Num() != 0)
+		{
+			Ar.ArIgnoreOuterRef = true;
+		}
+
 		//UE_LOG( LogEditorTransaction, Log, TEXT("Array %s %i*%i: %i"), Object ? *Object->GetFullName() : TEXT("Invalid Object"), Index, ElementSize, InOper);
 
 		check((SIZE_T)Array >= (SIZE_T)Object.Get() + sizeof(UObject));
@@ -139,6 +152,8 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 				Serializer( Ar, (uint8*)Array->GetData() + i*ElementSize );
 			}
 		}
+
+		Ar.ArIgnoreOuterRef = bWasArIgnoreOuterRef;
 	}
 	else
 	{
@@ -147,13 +162,25 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 		check(ElementSize==0);
 		check(DefaultConstructor==NULL);
 		check(Serializer==NULL);
-		// Once UE-46691 this should probably become an ensure
-		if (UObject* Obj = Object.Get())
-		{
-			Obj->Serialize(Ar);
-		}
+		SerializeObject( Ar );
 	}
-	Ar.ArIgnoreOuterRef = bWasArIgnoreOuterRef;
+}
+
+void FTransaction::FObjectRecord::SerializeObject( FArchive& Ar )
+{
+	check(!Array);
+
+	UObject* CurrentObject = Object.Get();
+	if (CurrentObject)
+	{
+		const bool bWasArIgnoreOuterRef = Ar.ArIgnoreOuterRef;
+		if (Object.SubObjectHierarchyID.Num() != 0)
+		{
+			Ar.ArIgnoreOuterRef = true;
+		}
+		CurrentObject->Serialize(Ar);
+		Ar.ArIgnoreOuterRef = bWasArIgnoreOuterRef;
+	}
 }
 
 void FTransaction::FObjectRecord::Restore( FTransaction* Owner )
@@ -163,27 +190,35 @@ void FTransaction::FObjectRecord::Restore( FTransaction* Owner )
 	{
 		bRestored = true;
 		check(!Owner->bFlip);
-		FTransaction::FObjectRecord::FReader Reader( Owner, Data, ReferencedObjects, ReferencedNames, bWantsBinarySerialization );
+		check(!CustomChange.IsValid());
+
+		FReader Reader( Owner, SerializedObject, bWantsBinarySerialization );
+	
 		SerializeContents( Reader, Oper );
 	}
 }
 
 void FTransaction::FObjectRecord::Save(FTransaction* Owner)
 {
+	// if record has a custom change, no need to do anything here
+	if( CustomChange.IsValid() )
+	{
+		return;
+	}
+
 	// common undo/redo path, before applying undo/redo buffer we save current state:
 	check(Owner->bFlip);
 	if (!bRestored)
 	{
-		FlipData.Empty();
-		FlipReferencedObjects.Empty();
-		FlipReferencedNames.Empty();
-		FlipObjectAnnotation = TSharedPtr<ITransactionObjectAnnotation>();
-		// Once UE-46691 this should probably become an ensure
-		if (UObject* Obj = Object.Get())
+		SerializedObjectFlip.Reset();
+
+		UObject* CurrentObject = Object.Get();
+		if (CurrentObject)
 		{
-			FlipObjectAnnotation = Obj->GetTransactionAnnotation();
+			SerializedObjectFlip.SetObject(CurrentObject);
 		}
-		FWriter Writer(FlipData, FlipReferencedObjects, FlipReferencedNames, bWantsBinarySerialization);
+
+		FWriter Writer(SerializedObjectFlip, bWantsBinarySerialization);
 		SerializeContents(Writer, -Oper);
 	}
 }
@@ -195,13 +230,277 @@ void FTransaction::FObjectRecord::Load(FTransaction* Owner)
 	if (!bRestored)
 	{
 		bRestored = true;
-		FTransaction::FObjectRecord::FReader Reader(Owner, Data, ReferencedObjects, ReferencedNames, bWantsBinarySerialization);
-		SerializeContents(Reader, Oper);
-		Exchange(ObjectAnnotation, FlipObjectAnnotation);
-		Exchange(Data, FlipData);
-		Exchange(ReferencedObjects, FlipReferencedObjects);
-		Exchange(ReferencedNames, FlipReferencedNames);
+
+		if (CustomChange.IsValid())
+		{
+			TUniquePtr<FChange> InvertedChange = CustomChange->Execute( Object.Get() );
+			CustomChange = MoveTemp( InvertedChange );
+		}
+		else
+		{
+			// When objects are created outside the transaction system we can end up
+			// finding them but not having any data for them, so don't serialize 
+			// when that happens:
+			if (SerializedObject.Data.Num() > 0)
+			{
+				FReader Reader(Owner, SerializedObject, bWantsBinarySerialization);
+				SerializeContents(Reader, Oper);
+			}
+			SerializedObject.Swap(SerializedObjectFlip);
+		}
 		Oper *= -1;
+	}
+}
+
+void FTransaction::FObjectRecord::Finalize( FTransaction* Owner, TSharedPtr<ITransactionObjectAnnotation>& OutFinalizedObjectAnnotation )
+{
+	OutFinalizedObjectAnnotation.Reset();
+
+	if (Array)
+	{
+		// Can only diff objects
+		return;
+	}
+
+	if (!bFinalized)
+	{
+		bFinalized = true;
+
+		UObject* CurrentObject = Object.Get();
+		if (CurrentObject)
+		{
+			// Serialize the object so we can diff it
+			FSerializedObject CurrentSerializedObject;
+			{
+				CurrentSerializedObject.SetObject(CurrentObject);
+				OutFinalizedObjectAnnotation = CurrentSerializedObject.ObjectAnnotation;
+				FWriter Writer(CurrentSerializedObject, bWantsBinarySerialization);
+				SerializeObject(Writer);
+			}
+			
+			// Diff against the object state when the transaction started
+			Diff(Owner, SerializedObject, CurrentSerializedObject, DeltaChange);
+
+			// If we have a previous snapshot then we need to consider that part of the diff for the finalized object, as systems may 
+			// have been tracking delta-changes between snapshots and this finalization will need to account for those changes too
+			if (bSnapshot)
+			{
+				Diff(Owner, SerializedObjectSnapshot, CurrentSerializedObject, DeltaChange);
+			}
+		}
+
+		// Clear out any snapshot data now as we won't be getting any more snapshot requests once finalized
+		bSnapshot = false;
+		SerializedObjectSnapshot.Reset();
+	}
+}
+
+void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner )
+{
+	if (Array)
+	{
+		// Can only diff objects
+		return;
+	}
+
+	if (bFinalized)
+	{
+		// Cannot snapshot once finalized
+		return;
+	}
+
+	UObject* CurrentObject = Object.Get();
+	if (CurrentObject)
+	{
+		// Serialize the object so we can diff it
+		FSerializedObject CurrentSerializedObject;
+		{
+			CurrentSerializedObject.SetObject(CurrentObject);
+			FWriter Writer(CurrentSerializedObject, bWantsBinarySerialization);
+			SerializeObject(Writer);
+		}
+
+		// Diff against the correct serialized data depending on whether we already had a snapshot
+		const FSerializedObject& InitialSerializedObject = bSnapshot ? SerializedObjectSnapshot : SerializedObject;
+		FTransactionObjectDeltaChange SnapshotDeltaChange;
+		Diff(Owner, InitialSerializedObject, CurrentSerializedObject, SnapshotDeltaChange);
+
+		// Update the snapshot data for next time
+		bSnapshot = true;
+		SerializedObjectSnapshot.Swap(CurrentSerializedObject);
+
+		TSharedPtr<ITransactionObjectAnnotation> ChangedObjectTransactionAnnotation = SerializedObjectSnapshot.ObjectAnnotation;
+
+		// Notify any listeners of this change
+		if (SnapshotDeltaChange.HasChanged() || ChangedObjectTransactionAnnotation.IsValid())
+		{
+			CurrentObject->PostTransacted(FTransactionObjectEvent(Owner->GetId(), Owner->GetOperationId(), ETransactionObjectEventType::Snapshot, SnapshotDeltaChange, ChangedObjectTransactionAnnotation, InitialSerializedObject.ObjectName, InitialSerializedObject.ObjectPathName, InitialSerializedObject.ObjectOuterPathName));
+		}
+	}
+}
+
+void FTransaction::FObjectRecord::Diff( FTransaction* Owner, const FSerializedObject& OldSerializedObject, const FSerializedObject& NewSerializedObject, FTransactionObjectDeltaChange& OutDeltaChange )
+{
+	auto AreObjectPointersIdentical = [&OldSerializedObject, &NewSerializedObject](const FName InPropertyName)
+	{
+		TArray<int32, TInlineAllocator<8>> OldSerializedObjectIndices;
+		OldSerializedObject.SerializedObjectIndices.MultiFind(InPropertyName, OldSerializedObjectIndices, true);
+
+		TArray<int32, TInlineAllocator<8>> NewSerializedObjectIndices;
+		NewSerializedObject.SerializedObjectIndices.MultiFind(InPropertyName, NewSerializedObjectIndices, true);
+
+		bool bAreObjectPointersIdentical = OldSerializedObjectIndices.Num() == NewSerializedObjectIndices.Num();
+		if (bAreObjectPointersIdentical)
+		{
+			for (int32 ObjIndex = 0; ObjIndex < OldSerializedObjectIndices.Num() && bAreObjectPointersIdentical; ++ObjIndex)
+			{
+				const UObject* OldObjectPtr = OldSerializedObject.ReferencedObjects.IsValidIndex(OldSerializedObjectIndices[ObjIndex]) ? OldSerializedObject.ReferencedObjects[OldSerializedObjectIndices[ObjIndex]].Get() : nullptr;
+				const UObject* NewObjectPtr = NewSerializedObject.ReferencedObjects.IsValidIndex(NewSerializedObjectIndices[ObjIndex]) ? NewSerializedObject.ReferencedObjects[NewSerializedObjectIndices[ObjIndex]].Get() : nullptr;
+				bAreObjectPointersIdentical = OldObjectPtr == NewObjectPtr;
+			}
+		}
+		return bAreObjectPointersIdentical;
+	};
+
+	auto AreNamesIdentical = [&OldSerializedObject, &NewSerializedObject](const FName InPropertyName)
+	{
+		TArray<int32, TInlineAllocator<8>> OldSerializedNameIndices;
+		OldSerializedObject.SerializedNameIndices.MultiFind(InPropertyName, OldSerializedNameIndices, true);
+
+		TArray<int32, TInlineAllocator<8>> NewSerializedNameIndices;
+		NewSerializedObject.SerializedNameIndices.MultiFind(InPropertyName, NewSerializedNameIndices, true);
+
+		bool bAreNamesIdentical = OldSerializedNameIndices.Num() == NewSerializedNameIndices.Num();
+		if (bAreNamesIdentical)
+		{
+			for (int32 ObjIndex = 0; ObjIndex < OldSerializedNameIndices.Num() && bAreNamesIdentical; ++ObjIndex)
+			{
+				const FName& OldName = OldSerializedObject.ReferencedNames.IsValidIndex(OldSerializedNameIndices[ObjIndex]) ? OldSerializedObject.ReferencedNames[OldSerializedNameIndices[ObjIndex]] : FName();
+				const FName& NewName = NewSerializedObject.ReferencedNames.IsValidIndex(NewSerializedNameIndices[ObjIndex]) ? NewSerializedObject.ReferencedNames[NewSerializedNameIndices[ObjIndex]] : FName();
+				bAreNamesIdentical = OldName == NewName;
+			}
+		}
+		return bAreNamesIdentical;
+	};
+
+	OutDeltaChange.bHasNameChange |= OldSerializedObject.ObjectName != NewSerializedObject.ObjectName;
+	OutDeltaChange.bHasOuterChange |= OldSerializedObject.ObjectOuterPathName != NewSerializedObject.ObjectOuterPathName;
+	OutDeltaChange.bHasPendingKillChange |= OldSerializedObject.bIsPendingKill != NewSerializedObject.bIsPendingKill;
+
+	if (!AreObjectPointersIdentical(NAME_None))
+	{
+		OutDeltaChange.bHasNonPropertyChanges = true;
+	}
+
+	if (!AreNamesIdentical(NAME_None))
+	{
+		OutDeltaChange.bHasNonPropertyChanges = true;
+	}
+
+	if (OldSerializedObject.SerializedProperties.Num() > 0 || NewSerializedObject.SerializedProperties.Num() > 0)
+	{
+		int32 StartOfOldPropertyBlock = INT_MAX;
+		int32 StartOfNewPropertyBlock = INT_MAX;
+		int32 EndOfOldPropertyBlock = -1;
+		int32 EndOfNewPropertyBlock = -1;
+
+		for (const TPair<FName, FSerializedProperty>& NewNamePropertyPair : NewSerializedObject.SerializedProperties)
+		{
+			const FSerializedProperty* OldSerializedProperty = OldSerializedObject.SerializedProperties.Find(NewNamePropertyPair.Key);
+			if (!OldSerializedProperty)
+			{
+				// Missing property, assume that the property changed
+				OutDeltaChange.ChangedProperties.AddUnique(NewNamePropertyPair.Key);
+				continue;
+			}
+
+			// Update the tracking for the start/end of the property block within the serialized data
+			StartOfOldPropertyBlock = FMath::Min(StartOfOldPropertyBlock, OldSerializedProperty->DataOffset);
+			StartOfNewPropertyBlock = FMath::Min(StartOfNewPropertyBlock, NewNamePropertyPair.Value.DataOffset);
+			EndOfOldPropertyBlock = FMath::Max(EndOfOldPropertyBlock, OldSerializedProperty->DataOffset + OldSerializedProperty->DataSize);
+			EndOfNewPropertyBlock = FMath::Max(EndOfNewPropertyBlock, NewNamePropertyPair.Value.DataOffset + NewNamePropertyPair.Value.DataSize);
+
+			// Binary compare the serialized data to see if something has changed for this property
+			bool bIsPropertyIdentical = OldSerializedProperty->DataSize == NewNamePropertyPair.Value.DataSize;
+			if (bIsPropertyIdentical && NewNamePropertyPair.Value.DataSize > 0)
+			{
+				bIsPropertyIdentical = FMemory::Memcmp(&OldSerializedObject.Data[OldSerializedProperty->DataOffset], &NewSerializedObject.Data[NewNamePropertyPair.Value.DataOffset], NewNamePropertyPair.Value.DataSize) == 0;
+			}
+			if (bIsPropertyIdentical)
+			{
+				bIsPropertyIdentical = AreObjectPointersIdentical(NewNamePropertyPair.Key);
+			}
+			if (bIsPropertyIdentical)
+			{
+				bIsPropertyIdentical = AreNamesIdentical(NewNamePropertyPair.Key);
+			}
+
+			if (!bIsPropertyIdentical)
+			{
+				OutDeltaChange.ChangedProperties.AddUnique(NewNamePropertyPair.Key);
+			}
+		}
+
+		for (const TPair<FName, FSerializedProperty>& OldNamePropertyPair : OldSerializedObject.SerializedProperties)
+		{
+			const FSerializedProperty* NewSerializedProperty = NewSerializedObject.SerializedProperties.Find(OldNamePropertyPair.Key);
+			if (!NewSerializedProperty)
+			{
+				// Missing property, assume that the property changed
+				OutDeltaChange.ChangedProperties.AddUnique(OldNamePropertyPair.Key);
+				continue;
+			}
+		}
+
+		// Compare the data before the property block to see if something else in the object has changed
+		if (!OutDeltaChange.bHasNonPropertyChanges)
+		{
+			const int32 OldHeaderSize = StartOfOldPropertyBlock;
+			const int32 CurrentHeaderSize = StartOfNewPropertyBlock;
+
+			bool bIsHeaderIdentical = OldHeaderSize == CurrentHeaderSize;
+			if (bIsHeaderIdentical && CurrentHeaderSize > 0)
+			{
+				bIsHeaderIdentical = FMemory::Memcmp(&OldSerializedObject.Data[0], &NewSerializedObject.Data[0], CurrentHeaderSize) == 0;
+			}
+
+			if (!bIsHeaderIdentical)
+			{
+				OutDeltaChange.bHasNonPropertyChanges = true;
+			}
+		}
+
+		// Compare the data after the property block to see if something else in the object has changed
+		if (!OutDeltaChange.bHasNonPropertyChanges)
+		{
+			const int32 OldFooterSize = OldSerializedObject.Data.Num() - EndOfOldPropertyBlock;
+			const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - EndOfNewPropertyBlock;
+
+			bool bIsFooterIdentical = OldFooterSize == CurrentFooterSize;
+			if (bIsFooterIdentical && CurrentFooterSize > 0)
+			{
+				bIsFooterIdentical = FMemory::Memcmp(&OldSerializedObject.Data[EndOfOldPropertyBlock], &NewSerializedObject.Data[EndOfNewPropertyBlock], CurrentFooterSize) == 0;
+			}
+
+			if (!bIsFooterIdentical)
+			{
+				OutDeltaChange.bHasNonPropertyChanges = true;
+			}
+		}
+	}
+	else
+	{
+		// No properties, so just compare the whole blob
+		bool bIsBlobIdentical = OldSerializedObject.Data.Num() == NewSerializedObject.Data.Num();
+		if (bIsBlobIdentical && NewSerializedObject.Data.Num() > 0)
+		{
+			bIsBlobIdentical = FMemory::Memcmp(&OldSerializedObject.Data[0], &NewSerializedObject.Data[0], NewSerializedObject.Data.Num()) == 0;
+		}
+
+		if (!bIsBlobIdentical)
+		{
+			OutDeltaChange.bHasNonPropertyChanges = true;
+		}
 	}
 }
 
@@ -210,7 +509,7 @@ int32 FTransaction::GetRecordCount() const
 	return Records.Num();
 }
 
-bool FTransaction::ContainsPieObject() const
+bool FTransaction::ContainsPieObjects() const
 {
 	for( const FObjectRecord& Record : Records )
 	{
@@ -253,7 +552,7 @@ void FTransaction::RemoveRecords( int32 Count /* = 1  */ )
 void FTransaction::DumpObjectMap(FOutputDevice& Ar) const
 {
 	Ar.Logf( TEXT("===== DumpObjectMap %s ==== "), *Title.ToString() );
-	for ( ObjectMapType::TConstIterator It(ObjectMap) ; It ; ++It )
+	for ( auto It = ObjectMap.CreateConstIterator(); It; ++It )
 	{
 		const UObject* CurrentObject	= It.Key();
 		const int32 SaveCount				= It.Value();
@@ -266,9 +565,9 @@ FArchive& operator<<( FArchive& Ar, FTransaction::FObjectRecord& R )
 {
 	FMemMark Mark(FMemStack::Get());
 	Ar << R.Object;
-	Ar << R.Data;
-	Ar << R.ReferencedObjects;
-	Ar << R.ReferencedNames;
+	Ar << R.SerializedObject.Data;
+	Ar << R.SerializedObject.ReferencedObjects;
+	Ar << R.SerializedObject.ReferencedNames;
 	Mark.Pop();
 	return Ar;
 }
@@ -333,16 +632,16 @@ void FTransaction::FObjectRecord::AddReferencedObjects( FReferenceCollector& Col
 	Collector.AddReferencedObject(Obj);
 	Object.Object = Obj;
 
-	for (FPersistentObjectRef& ReferencedObject : ReferencedObjects)
+	for (FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
 	{
 		UObject* RefObj = ReferencedObject.Object;
 		Collector.AddReferencedObject(RefObj);
 		ReferencedObject.Object = RefObj;
 	}
 
-	if (ObjectAnnotation.IsValid())
+	if (SerializedObject.ObjectAnnotation.IsValid())
 	{
-		ObjectAnnotation->AddReferencedObjects(Collector);
+		SerializedObject.ObjectAnnotation->AddReferencedObjects(Collector);
 	}
 }
 
@@ -357,7 +656,7 @@ bool FTransaction::FObjectRecord::ContainsPieObject() const
 		}
 	}
 
-	for (const FPersistentObjectRef& ReferencedObject : ReferencedObjects)
+	for (const FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
 	{
 		const UObject* Obj = ReferencedObject.Object;
 		if( Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
@@ -378,7 +677,6 @@ void FTransaction::AddReferencedObjects( FReferenceCollector& Collector )
 	Collector.AddReferencedObjects(ObjectMap);
 }
 
-// FTransactionBase interface.
 void FTransaction::SaveObject( UObject* Object )
 {
 	check(Object);
@@ -389,7 +687,7 @@ void FTransaction::SaveObject( UObject* Object )
 	{
 		ObjectMap.Add(Object,1);
 		// Save the object.
-		new( Records )FObjectRecord( this, Object, NULL, 0, 0, 0, 0, NULL, NULL, NULL );
+		new( Records )FObjectRecord( this, Object, nullptr, NULL, 0, 0, 0, 0, NULL, NULL, NULL );
 	}
 	else
 	{
@@ -415,8 +713,23 @@ void FTransaction::SaveArray( UObject* Object, FScriptArray* Array, int32 Index,
 	if( Object->HasAnyFlags(RF_Transactional) && !Object->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
 	{
 		// Save the array.
-		new( Records )FObjectRecord( this, Object, Array, Index, Count, Oper, ElementSize, DefaultConstructor, Serializer, Destructor );
+		new( Records )FObjectRecord( this, Object, nullptr, Array, Index, Count, Oper, ElementSize, DefaultConstructor, Serializer, Destructor );
 	}
+}
+
+void FTransaction::StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange )
+{
+	check( Object );
+	Object->CheckDefaultSubobjects();
+
+	int32* SaveCount = ObjectMap.Find( Object );
+	if( !SaveCount )
+	{
+		ObjectMap.Add( Object, 0 );
+	}
+
+	// Save the undo record
+	new( Records )FObjectRecord( this, Object, MoveTemp( UndoChange ), NULL, 0, 0, 0, 0, NULL, NULL, NULL );
 }
 
 void FTransaction::SetPrimaryObject(UObject* InObject)
@@ -427,9 +740,34 @@ void FTransaction::SetPrimaryObject(UObject* InObject)
 	}
 }
 
-/**
- * Enacts the transaction.
- */
+void FTransaction::SnapshotObject( UObject* InObject )
+{
+	if (InObject && ObjectMap.Contains(InObject))
+	{
+		FObjectRecord* FoundObjectRecord = Records.FindByPredicate([InObject](const FObjectRecord& ObjRecord)
+		{
+			return ObjRecord.Object.Get() == InObject;
+		});
+
+		if (FoundObjectRecord)
+		{
+			FoundObjectRecord->Snapshot(this);
+		}
+	}
+}
+
+void FTransaction::BeginOperation()
+{
+	check(!OperationId.IsValid());
+	OperationId = FGuid::NewGuid();
+}
+
+void FTransaction::EndOperation()
+{
+	check(OperationId.IsValid());
+	OperationId.Invalidate();
+}
+
 void FTransaction::Apply()
 {
 	checkSlow(Inc==1||Inc==-1);
@@ -444,6 +782,14 @@ void FTransaction::Apply()
 		FObjectRecord& Record = Records[i];
 		Record.bRestored = false;
 
+		// Apply may be called before Finalize in order to revert an object back to its prior state in the case that a transaction is canceled
+		// In this case we still need to generate a diff for the transaction so that we notify correctly
+		if (!Record.bFinalized)
+		{
+			TSharedPtr<ITransactionObjectAnnotation> FinalizedObjectAnnotation;
+			Record.Finalize(this, FinalizedObjectAnnotation);
+		}
+
 		UObject* Object = Record.Object.Get();
 		if (Object)
 		{
@@ -453,7 +799,7 @@ void FTransaction::Apply()
 				Object->PreEditUndo();
 			}
 
-			ChangedObjects.Add(Object, Record.ObjectAnnotation);
+			ChangedObjects.Add(Object, FChangedObjectValue(i, Record.SerializedObject.ObjectAnnotation));
 		}
 	}
 
@@ -476,15 +822,23 @@ void FTransaction::Apply()
 		}
 	}
 
-	// An Actor's components must always get its PostEditUndo before the owning Actor so do a quick sort
+	// An Actor's components must always get its PostEditUndo before the owning Actor
+	// so do a quick sort on Outer depth, component will deeper than their owner
 	ChangedObjects.KeySort([](UObject& A, UObject& B)
 	{
-		UActorComponent* BAsComponent = Cast<UActorComponent>(&B);
-		return (BAsComponent ? (BAsComponent->GetOwner() != &A) : true);
+		auto GetObjectDepth = [](UObject* InObj)
+		{
+			int32 Depth = 0;
+			for (UObject* Outer = InObj; Outer; Outer = Outer->GetOuter())
+			{
+				++Depth;
+			}
+			return Depth;
+		};
+		return GetObjectDepth(&A) > GetObjectDepth(&B);
 	});
 
 	TArray<ULevel*> LevelsToCommitModelSurface;
-	NumModelsModified = 0;		// Count the number of UModels that were changed.
 	for (auto ChangedObjectIt : ChangedObjects)
 	{
 		UObject* ChangedObject = ChangedObjectIt.Key;
@@ -492,7 +846,6 @@ void FTransaction::Apply()
 		if (Model && Model->Nodes.Num())
 		{
 			FBSPOps::bspBuildBounds(Model);
-			++NumModelsModified;
 		}
 		
 		if (UModelComponent* ModelComponent = Cast<UModelComponent>(ChangedObject))
@@ -502,7 +855,7 @@ void FTransaction::Apply()
 			LevelsToCommitModelSurface.AddUnique(Level);
 		}
 
-		TSharedPtr<ITransactionObjectAnnotation> ChangedObjectTransactionAnnotation = ChangedObjectIt.Value;
+		TSharedPtr<ITransactionObjectAnnotation> ChangedObjectTransactionAnnotation = ChangedObjectIt.Value.Annotation;
 		if (ChangedObjectTransactionAnnotation.IsValid())
 		{
 			ChangedObject->PostEditUndo(ChangedObjectTransactionAnnotation);
@@ -510,6 +863,14 @@ void FTransaction::Apply()
 		else
 		{
 			ChangedObject->PostEditUndo();
+		}
+
+		const FObjectRecord& ChangedObjectRecord = Records[ChangedObjectIt.Value.RecordIndex];
+		const FTransactionObjectDeltaChange& DeltaChange = ChangedObjectRecord.DeltaChange;
+		if (DeltaChange.HasChanged() || ChangedObjectTransactionAnnotation.IsValid())
+		{
+			const FObjectRecord::FSerializedObject& InitialSerializedObject = ChangedObjectRecord.SerializedObject;
+			ChangedObject->PostTransacted(FTransactionObjectEvent(Id, OperationId, ETransactionObjectEventType::UndoRedo, DeltaChange, ChangedObjectTransactionAnnotation, InitialSerializedObject.ObjectName, InitialSerializedObject.ObjectPathName, InitialSerializedObject.ObjectOuterPathName));
 		}
 	}
 
@@ -530,7 +891,60 @@ void FTransaction::Apply()
 		ChangedObject->CheckDefaultSubobjects();
 	}
 
-	ChangedObjects.Empty();
+	ChangedObjects.Reset();
+}
+
+void FTransaction::Finalize()
+{
+	for (int32 i = 0; i < Records.Num(); ++i)
+	{
+		TSharedPtr<ITransactionObjectAnnotation> FinalizedObjectAnnotation;
+
+		FObjectRecord& ObjectRecord = Records[i];
+		ObjectRecord.Finalize(this, FinalizedObjectAnnotation);
+
+		UObject* Object = ObjectRecord.Object.Get();
+		if (Object)
+		{
+			if (!ChangedObjects.Contains(Object))
+			{
+				ChangedObjects.Add(Object, FChangedObjectValue(i, FinalizedObjectAnnotation));
+			}
+		}
+	}
+
+	// An Actor's components must always be notified before the owning Actor
+	// so do a quick sort on Outer depth, component will deeper than their owner
+	ChangedObjects.KeySort([](UObject& A, UObject& B)
+	{
+		auto GetObjectDepth = [](UObject* InObj)
+		{
+			int32 Depth = 0;
+			for (UObject* Outer = InObj; Outer; Outer = Outer->GetOuter())
+			{
+				++Depth;
+			}
+			return Depth;
+		};
+		return GetObjectDepth(&A) > GetObjectDepth(&B);
+	});
+
+	for (auto ChangedObjectIt : ChangedObjects)
+	{
+		TSharedPtr<ITransactionObjectAnnotation> ChangedObjectTransactionAnnotation = ChangedObjectIt.Value.Annotation;
+
+		const FObjectRecord& ChangedObjectRecord = Records[ChangedObjectIt.Value.RecordIndex];
+		const FTransactionObjectDeltaChange& DeltaChange = ChangedObjectRecord.DeltaChange;
+		if (DeltaChange.HasChanged() || ChangedObjectTransactionAnnotation.IsValid())
+		{
+			UObject* ChangedObject = ChangedObjectIt.Key;
+
+			const FObjectRecord::FSerializedObject& InitialSerializedObject = ChangedObjectRecord.SerializedObject;
+			ChangedObject->PostTransacted(FTransactionObjectEvent(Id, OperationId, ETransactionObjectEventType::Finalized, DeltaChange, ChangedObjectTransactionAnnotation, InitialSerializedObject.ObjectName, InitialSerializedObject.ObjectPathName, InitialSerializedObject.ObjectOuterPathName));
+		}
+	}
+
+	ChangedObjects.Reset();
 }
 
 SIZE_T FTransaction::DataSize() const
@@ -538,7 +952,7 @@ SIZE_T FTransaction::DataSize() const
 	SIZE_T Result=0;
 	for( int32 i=0; i<Records.Num(); i++ )
 	{
-		Result += Records[i].Data.Num();
+		Result += Records[i].SerializedObject.Data.Num();
 	}
 	return Result;
 }
@@ -658,6 +1072,21 @@ int32 UTransBuffer::End()
 				static_cast<FTransaction*>(GUndo)->DumpObjectMap( *GLog );
 			}
 #endif
+			if (GUndo)
+			{
+				GUndo->Finalize();
+				TransactionStateChangedDelegate.Broadcast(GUndo->GetContext(), ETransactionStateEventType::TransactionFinalized);
+				GUndo->EndOperation();
+
+				// PIE objects now generate transactions.
+				// Once the transaction is finalized however, they aren't kept in the undo buffer.
+				if (GUndo->ContainsPieObjects())
+				{
+					check(UndoCount == 0);
+					UndoBuffer.Pop(false);
+					UndoBufferChangedDelegate.Broadcast();
+				}
+			}
 			GUndo = nullptr;
 			PreviousUndoCount = INDEX_NONE;
 			RemovedTransactions.Reset();
@@ -699,6 +1128,7 @@ void UTransBuffer::Reset( const FText& Reason )
 		ResetReason = Reason;
 		ActiveCount = 0;
 		ActiveRecordCounts.Empty();
+		UndoBufferChangedDelegate.Broadcast();
 
 		CheckState();
 	}
@@ -714,22 +1144,32 @@ void UTransBuffer::Cancel( int32 StartIndex /*=0*/ )
 	{
 		if ( StartIndex == 0 )
 		{
+			if (GUndo)
+			{
+				TransactionStateChangedDelegate.Broadcast(GUndo->GetContext(), ETransactionStateEventType::TransactionCanceled);
+				GUndo->EndOperation();
+			}
+
 			// clear the global pointer to the soon-to-be-deleted transaction
 			GUndo = nullptr;
 			
-			// remove the currently active transaction from the buffer
 			UndoBuffer.Pop(false);
-
-			// replace the removed transactions
 			UndoBuffer.Reserve(UndoBuffer.Num() + RemovedTransactions.Num());
-			for (TSharedRef<FTransaction>& Transaction : RemovedTransactions)
+
+			if (PreviousUndoCount > 0)
 			{
-				UndoBuffer.Add(Transaction);
+				UndoBuffer.Append(RemovedTransactions);
 			}
+			else
+			{
+				UndoBuffer.Insert(RemovedTransactions, 0);
+			}
+
 			RemovedTransactions.Reset();
 
 			UndoCount = PreviousUndoCount;
 			PreviousUndoCount = INDEX_NONE;
+			UndoBufferChangedDelegate.Broadcast();
 		}
 		else
 		{
@@ -823,9 +1263,9 @@ const FTransaction* UTransBuffer::GetTransaction( int32 QueueIndex ) const
 }
 
 
-FUndoSessionContext UTransBuffer::GetUndoContext( bool bCheckWhetherUndoPossible )
+FTransactionContext UTransBuffer::GetUndoContext( bool bCheckWhetherUndoPossible )
 {
-	FUndoSessionContext Context;
+	FTransactionContext Context;
 	FText Title;
 	if( bCheckWhetherUndoPossible && !CanUndo( &Title ) )
 	{
@@ -838,9 +1278,9 @@ FUndoSessionContext UTransBuffer::GetUndoContext( bool bCheckWhetherUndoPossible
 }
 
 
-FUndoSessionContext UTransBuffer::GetRedoContext()
+FTransactionContext UTransBuffer::GetRedoContext()
 {
-	FUndoSessionContext Context;
+	FTransactionContext Context;
 	FText Title;
 	if( !CanRedo( &Title ) )
 	{
@@ -880,7 +1320,7 @@ bool UTransBuffer::Undo(bool bCanRedo)
 
 	if (!CanUndo())
 	{
-		UndoDelegate.Broadcast(FUndoSessionContext(), false);
+		UndoDelegate.Broadcast(FTransactionContext(), false);
 
 		return false;
 	}
@@ -891,18 +1331,25 @@ bool UTransBuffer::Undo(bool bCanRedo)
 		FTransaction& Transaction = UndoBuffer[ UndoBuffer.Num() - ++UndoCount ].Get();
 		UE_LOG(LogEditorTransaction, Log,  TEXT("Undo %s"), *Transaction.GetTitle().ToString() );
 		CurrentTransaction = &Transaction;
+		CurrentTransaction->BeginOperation();
 
-		BeforeRedoUndoDelegate.Broadcast(Transaction.GetContext());
+		const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
+		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
+		BeforeRedoUndoDelegate.Broadcast(TransactionContext);
 		Transaction.Apply();
-		UndoDelegate.Broadcast(Transaction.GetContext(), true);
+		UndoDelegate.Broadcast(TransactionContext, true);
+		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
+
+		CurrentTransaction->EndOperation();
+		CurrentTransaction = nullptr;
 
 		if (!bCanRedo)
 		{
 			UndoBuffer.RemoveAt(UndoBuffer.Num() - UndoCount, UndoCount);
 			UndoCount = 0;
-		}
 
-		CurrentTransaction = nullptr;
+			UndoBufferChangedDelegate.Broadcast();
+		}
 	}
 	GIsTransacting = false;
 
@@ -917,7 +1364,7 @@ bool UTransBuffer::Redo()
 
 	if (!CanRedo())
 	{
-		RedoDelegate.Broadcast(FUndoSessionContext(), false);
+		RedoDelegate.Broadcast(FTransactionContext(), false);
 
 		return false;
 	}
@@ -928,11 +1375,16 @@ bool UTransBuffer::Redo()
 		FTransaction& Transaction = UndoBuffer[ UndoBuffer.Num() - UndoCount-- ].Get();
 		UE_LOG(LogEditorTransaction, Log,  TEXT("Redo %s"), *Transaction.GetTitle().ToString() );
 		CurrentTransaction = &Transaction;
+		CurrentTransaction->BeginOperation();
 
-		BeforeRedoUndoDelegate.Broadcast(Transaction.GetContext());
+		const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
+		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
+		BeforeRedoUndoDelegate.Broadcast(TransactionContext);
 		Transaction.Apply();
-		RedoDelegate.Broadcast(Transaction.GetContext(), true);
+		RedoDelegate.Broadcast(TransactionContext, true);
+		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
 
+		CurrentTransaction->EndOperation();
 		CurrentTransaction = nullptr;
 	}
 	GIsTransacting = false;
@@ -1019,11 +1471,11 @@ bool UTransBuffer::IsObjectTransacting(const UObject* Object) const
 	return false;
 }
 
-bool UTransBuffer::ContainsPieObject() const
+bool UTransBuffer::ContainsPieObjects() const
 {
 	for( const TSharedRef<FTransaction>& Transaction : UndoBuffer )
 	{
-		if( Transaction->ContainsPieObject() )
+		if( Transaction->ContainsPieObjects() )
 		{
 			return true;
 		}

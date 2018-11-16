@@ -71,9 +71,11 @@ void UPackage::SetDirtyFlag( bool bIsDirty )
 		}
 
 		// Update dirty bit
+		const bool bWasDirty = bDirty;
 		bDirty = bIsDirty;
 
-		if( GIsEditor									// Only fire the callback in editor mode
+		if( bWasDirty != bIsDirty						// Only fire the callback if the dirty state actually changes
+			&& GIsEditor								// Only fire the callback in editor mode
 			&& !HasAnyPackageFlags(PKG_ContainsScript)	// Skip script packages
 			&& !HasAnyPackageFlags(PKG_PlayInEditor)	// Skip packages for PIE
 			&& GetTransientPackage() != this )			// Skip the transient package
@@ -220,12 +222,19 @@ void UPackage::BeginDestroy()
 	// Detach linker if still attached
 	if (LinkerLoad)
 	{
-		LinkerLoad->Detach();
-		FLinkerManager::Get().RemoveLinker(LinkerLoad);
+		// Detach() below will most likely null the LinkerLoad so keep a temp copy so that we can still call RemoveLinker on it
+		FLinkerLoad* LocalLinkerToRemove = LinkerLoad;
+		LocalLinkerToRemove->Detach();
+		FLinkerManager::Get().RemoveLinker(LocalLinkerToRemove);
 		LinkerLoad = nullptr;
 	}
 
 	Super::BeginDestroy();
+}
+
+bool UPackage::IsPostLoadThreadSafe() const
+{
+	return true;
 }
 
 // UE-21181 - Tracking where the loaded editor level's package gets flagged as a PIE object

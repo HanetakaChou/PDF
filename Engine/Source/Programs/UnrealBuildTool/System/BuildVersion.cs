@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -44,12 +44,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Whether the changelist numbers are a licensee changelist
 		/// </summary>
-		public int IsLicenseeVersion;
+		public bool IsLicenseeVersion;
 
 		/// <summary>
 		/// Whether the current build is a promoted build, that is, built strictly from a clean sync of the given changelist
 		/// </summary>
-		public int IsPromotedBuild;
+		public bool IsPromotedBuild;
 
 		/// <summary>
 		/// Name of the current branch, with '/' characters escaped as '+'
@@ -60,6 +60,11 @@ namespace UnrealBuildTool
 		/// The current build id. This will be generated automatically whenever engine binaries change if not set in the default Engine/Build/Build.version.
 		/// </summary>
 		public string BuildId;
+
+		/// <summary>
+		/// The build version string
+		/// </summary>
+		public string BuildVersionString;
 
 		/// <summary>
 		/// Returns the value which can be used as the compatible changelist. Requires that the regular changelist is also set, and defaults to the 
@@ -158,10 +163,18 @@ namespace UnrealBuildTool
 
 			Object.TryGetIntegerField("Changelist", out NewVersion.Changelist);
 			Object.TryGetIntegerField("CompatibleChangelist", out NewVersion.CompatibleChangelist);
-			Object.TryGetIntegerField("IsLicenseeVersion", out NewVersion.IsLicenseeVersion);
-			Object.TryGetIntegerField("IsPromotedBuild", out NewVersion.IsPromotedBuild);
+
+			int IsLicenseeVersionInt;
+			Object.TryGetIntegerField("IsLicenseeVersion", out IsLicenseeVersionInt);
+			NewVersion.IsLicenseeVersion = IsLicenseeVersionInt != 0;
+
+			int IsPromotedBuildInt;
+			Object.TryGetIntegerField("IsPromotedBuild", out IsPromotedBuildInt);
+			NewVersion.IsPromotedBuild = IsPromotedBuildInt != 0;
+
 			Object.TryGetStringField("BranchName", out NewVersion.BranchName);
 			Object.TryGetStringField("BuildId", out NewVersion.BuildId);
+			Object.TryGetStringField("BuildVersion", out NewVersion.BuildVersionString);
 
 			Version = NewVersion;
 			return true;
@@ -205,10 +218,11 @@ namespace UnrealBuildTool
 			Writer.WriteValue("PatchVersion", PatchVersion);
 			Writer.WriteValue("Changelist", Changelist);
 			Writer.WriteValue("CompatibleChangelist", CompatibleChangelist);
-			Writer.WriteValue("IsLicenseeVersion", IsLicenseeVersion);
-			Writer.WriteValue("IsPromotedBuild", IsPromotedBuild);
+			Writer.WriteValue("IsLicenseeVersion", IsLicenseeVersion? 1 : 0);
+			Writer.WriteValue("IsPromotedBuild", IsPromotedBuild? 1 : 0);
 			Writer.WriteValue("BranchName", BranchName);
 			Writer.WriteValue("BuildId", BuildId);
+			Writer.WriteValue("BuildVersion", BuildVersionString);
 		}
 	}
 
@@ -268,17 +282,22 @@ namespace UnrealBuildTool
 
 		public bool IsLicenseeVersion
 		{
-			get { return Inner.IsLicenseeVersion != 0; }
+			get { return Inner.IsLicenseeVersion; }
 		}
 
 		public bool IsPromotedBuild
 		{
-			get { return Inner.IsPromotedBuild != 0; }
+			get { return Inner.IsPromotedBuild; }
 		}
 
 		public string BranchName
 		{
 			get { return Inner.BranchName; }
+		}
+
+		public string BuildVersionString
+		{
+			get { return Inner.BuildVersionString; }
 		}
 
 		#if !__MonoCS__

@@ -39,6 +39,8 @@ public class StaticMeshEditor : ModuleRules
                 "Json",
                 "JsonUtilities",
                 "AdvancedPreviewScene",
+                "DesktopPlatform",
+                "DesktopWidgets"
             }
 		);
 
@@ -52,6 +54,6 @@ public class StaticMeshEditor : ModuleRules
             }
 		);
 
-		SetupModulePhysXAPEXSupport(Target);
+		SetupModulePhysicsSupport(Target);
 	}
 }

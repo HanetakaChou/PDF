@@ -426,6 +426,12 @@ namespace AutomationTool
 		/// </summary>
 		[Description("add into")]
 		AddInto,
+
+		/// <summary>
+		/// file was reverted to a previous revision
+		/// </summary>
+		[Description("undid")]
+		Undid,
 	}
 
 	/// <summary>
@@ -1161,13 +1167,15 @@ namespace AutomationTool
 		/// <param name="Client">Workspace (can be null, in which case the environment variable default will be used)</param>
 		/// <param name="ServerAndPort">Server:Port (can be null, in which case the environment variable default will be used)</param>
 		/// <param name="P4LogPath">Log filename (can be null, in which case CmdEnv.LogFolder/p4.log will be used)</param>
-		public P4Connection(string User, string Client, string ServerAndPort = null, string P4LogPath = null)
+		/// <param name="AdditionalOpts">Additional global options to include on every p4 command line</param>
+		public P4Connection(string User, string Client, string ServerAndPort = null, string P4LogPath = null, string AdditionalOpts = null)
 		{
 			var UserOpts = String.IsNullOrEmpty(User) ? "" : ("-u" + User + " ");
 			var ClientOpts = String.IsNullOrEmpty(Client) ? "" : ("-c" + Client + " ");
-			var ServerOpts = String.IsNullOrEmpty(ServerAndPort) ? "" : ("-p" + ServerAndPort + " ");			
-			GlobalOptions = UserOpts + ClientOpts + ServerOpts;
-            GlobalOptionsWithoutClient = UserOpts + ServerOpts;
+			var ServerOpts = String.IsNullOrEmpty(ServerAndPort) ? "" : ("-p" + ServerAndPort + " ");
+			AdditionalOpts = String.IsNullOrEmpty(AdditionalOpts) ? "" : AdditionalOpts + " ";
+			GlobalOptions = UserOpts + ClientOpts + ServerOpts + AdditionalOpts;
+            GlobalOptionsWithoutClient = UserOpts + ServerOpts + AdditionalOpts;
 
 			if (P4LogPath == null)
 			{
@@ -1687,10 +1695,10 @@ namespace AutomationTool
 		/// <param name="DescribeRecord">Describe record for the given changelist.</param>
 		/// <param name="AllowSpew"></param>
 		/// <returns>True if everything went okay</returns>
-        public bool DescribeChangelist(int Changelist, out DescribeRecord DescribeRecord, bool AllowSpew = true)
+        public bool DescribeChangelist(int Changelist, out DescribeRecord DescribeRecord, bool AllowSpew = true, bool bShelvedFiles = false)
         {
 			List<DescribeRecord> DescribeRecords;
-			if(!DescribeChangelists(new List<int>{ Changelist }, out DescribeRecords, AllowSpew))
+			if(!DescribeChangelists(new List<int>{ Changelist }, out DescribeRecords, AllowSpew, bShelvedFiles))
 			{
 				DescribeRecord = null;
 				return false;
@@ -1713,8 +1721,9 @@ namespace AutomationTool
 		/// <param name="Changelists">List of changelist numbers to query full descriptions for</param>
 		/// <param name="DescribeRecords">List of records we found.  One for each changelist number.  These will be sorted from oldest to newest.</param>
 		/// <param name="AllowSpew"></param>
+		/// <param name="bShelvedFiles">Whether to display shelved files</param>
 		/// <returns>True if everything went okay</returns>
-        public bool DescribeChangelists(List<int> Changelists, out List<DescribeRecord> DescribeRecords, bool AllowSpew = true)
+        public bool DescribeChangelists(List<int> Changelists, out List<DescribeRecord> DescribeRecords, bool AllowSpew = true, bool bShelvedFiles = false)
         {
 			DescribeRecords = new List<DescribeRecord>();
             try
@@ -1731,7 +1740,11 @@ namespace AutomationTool
 
 				string Output;
 				string CommandLine = "-s";		// Don't automatically diff the files
-				
+				if(bShelvedFiles)
+				{
+					CommandLine += " -S";
+				}
+
 				// Add changelists to the command-line
 				foreach( var Changelist in Changelists )
 				{
@@ -1826,7 +1839,7 @@ namespace AutomationTool
 
 						Line = Lines[ LineIndex ];
 
-						string MatchAffectedFiles = "Affected files";
+						string MatchAffectedFiles = bShelvedFiles? "Shelved files" : "Affected files";
 						int AffectedFilesAt = Line.IndexOf(MatchAffectedFiles);
 						if( AffectedFilesAt == 0 )
 						{
@@ -1989,9 +2002,38 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="CL">Changelist where the checked out files should be added.</param>
 		/// <param name="CommandLine">Commandline for the command.</param>
-		public void Edit(int CL, string CommandLine)
+		public void Edit(int CL, string CommandLine, bool AllowSpew = true)
 		{
-			LogP4("edit " + String.Format("-c {0} ", CL) + CommandLine);
+			LogP4("edit " + String.Format("-c {0} ", CL) + CommandLine, AllowSpew: AllowSpew);
+		}
+
+		/// <summary>
+		/// Invokes p4 edit command with a list of files.
+		/// </summary>
+		/// <param name="CL">Changelist where the checked out files should be added.</param>
+		/// <param name="CommandLine">Commandline for the command.</param>
+		public void Edit(int CL, List<string> Files, bool AllowSpew = true)
+		{
+			const int MaxCommandLineLength = 1024;
+
+			StringBuilder CommandLine = new StringBuilder();
+			for(int Idx = 0; Idx < Files.Count; Idx++)
+			{
+				if(CommandLine.Length + Files[Idx].Length + 3 > MaxCommandLineLength)
+				{
+					LogP4(String.Format("edit -c {0} {1}", CL, CommandLine.ToString()), AllowSpew: AllowSpew);
+					CommandLine.Clear();
+				}
+				if(CommandLine.Length > 0)
+				{
+					CommandLine.Append(" ");
+				}
+				CommandLine.AppendFormat("\"{0}\"", Files[Idx]);
+			}
+			if(CommandLine.Length > 0)
+			{
+				LogP4(String.Format("edit -c {0} {1}", CL, CommandLine.ToString()), AllowSpew: AllowSpew);
+			}
 		}
 
 		/// <summary>
@@ -2141,7 +2183,7 @@ namespace AutomationTool
                 bool isClPending = false;
                 if (ChangeFiles(CL, out isClPending, false).Count == 0)
                 {
-					CommandUtils.Log("No edits left to commit after brutal submit resolve. Assuming another build committed same changes already and exiting as success.");
+					CommandUtils.LogInformation("No edits left to commit after brutal submit resolve. Assuming another build committed same changes already and exiting as success.");
                     DeleteChange(CL);
                     // No changes to submit, no need to retry.
                     return;
@@ -2153,7 +2195,7 @@ namespace AutomationTool
 					{
 						throw new P4Exception("Change {0} failed to submit.\n{1}", CL, CmdOutput);
 					}
-					CommandUtils.Log("**** P4 Returned\n{0}\n*******", CmdOutput);
+					CommandUtils.LogInformation("**** P4 Returned\n{0}\n*******", CmdOutput);
 
 					LastCmdOutput = CmdOutput;
 					bool DidSomething = false;
@@ -2216,7 +2258,7 @@ namespace AutomationTool
                                 {
                                     continue;
                                 }
-								CommandUtils.Log("Brutal 'resolve' on {0} to force submit.\n", File);
+								CommandUtils.LogInformation("Brutal 'resolve' on {0} to force submit.\n", File);
 								Revert(CL, "-k " + CommandUtils.MakePathSafeToUseWithCommandLine(File));  // revert the file without overwriting the local one
 								Sync("-f -k " + CommandUtils.MakePathSafeToUseWithCommandLine(File + "#head"), false); // sync the file without overwriting local one
 								ReconcileNoDeletes(CL, CommandUtils.MakePathSafeToUseWithCommandLine(File));  // re-check out, if it changed, or add
@@ -2227,7 +2269,7 @@ namespace AutomationTool
                     }
 					if (!DidSomething)
 					{
-						CommandUtils.Log("Change {0} failed to submit for reasons we do not recognize.\n{1}\nWaiting and retrying.", CL, CmdOutput);
+						CommandUtils.LogInformation("Change {0} failed to submit for reasons we do not recognize.\n{1}\nWaiting and retrying.", CL, CmdOutput);
 					}
 					System.Threading.Thread.Sleep(30000);
 				}
@@ -2259,7 +2301,7 @@ namespace AutomationTool
 							}
 						}
 
-						CommandUtils.Log("Submitted CL {0} which became CL {1}\n", CL, SubmittedCL);
+						CommandUtils.LogInformation("Submitted CL {0} which became CL {1}\n", CL, SubmittedCL);
 					}
 
 					if (SubmittedCL < CL)
@@ -2303,7 +2345,7 @@ namespace AutomationTool
 			int CL = 0;
 			if(AllowSpew)
 			{
-				CommandUtils.Log("Creating Change\n {0}\n", ChangeSpec);
+				CommandUtils.LogInformation("Creating Change\n {0}\n", ChangeSpec);
 			}
 			if (LogP4Output(out CmdOutput, "change -i", Input: ChangeSpec, AllowSpew: AllowSpew))
 			{
@@ -2322,7 +2364,7 @@ namespace AutomationTool
 			}
 			else if(AllowSpew)
 			{
-				CommandUtils.Log("Returned CL {0}\n", CL);
+				CommandUtils.LogInformation("Returned CL {0}\n", CL);
 			}
 			return CL;
 		}
@@ -2446,7 +2488,7 @@ namespace AutomationTool
 				int EndOffset = CmdOutput.LastIndexOf(EndStr);
 				if (Offset == 0 && Offset < EndOffset)
 				{
-					CommandUtils.Log("Change {0} does not exist", CL);
+					CommandUtils.LogInformation("Change {0} does not exist", CL);
 					return false;
 				}
 
@@ -2460,7 +2502,7 @@ namespace AutomationTool
 				}
 
 				string Status = CmdOutput.Substring(StatusOffset + StatusStr.Length).TrimStart().Split('\n')[0].TrimEnd();
-				CommandUtils.Log("Change {0} exists ({1})", CL, Status);
+				CommandUtils.LogInformation("Change {0} exists ({1})", CL, Status);
 				Pending = (Status == "pending");
 				return true;
 			}
@@ -2549,7 +2591,7 @@ namespace AutomationTool
 			string Output;
 			if (!LogP4Output(out Output, CommandLine, null, AllowSpew))
 			{
-				CommandUtils.Log("Couldn't delete label '{0}'.  It may not have existed in the first place.", LabelName);
+				CommandUtils.LogInformation("Couldn't delete label '{0}'.  It may not have existed in the first place.", LabelName);
 			}
 		}
 
@@ -2580,7 +2622,7 @@ namespace AutomationTool
 			LabelSpec += "View: \n";
 			LabelSpec += " " + View;
 
-			CommandUtils.Log("Creating Label\n {0}\n", LabelSpec);
+			CommandUtils.LogInformation("Creating Label\n {0}\n", LabelSpec);
 			LogP4("label -i", Input: LabelSpec);
 		}
 
@@ -2900,7 +2942,7 @@ namespace AutomationTool
 					for(; LineIdx < Lines.Count && Lines[LineIdx].Length > 0; LineIdx++)
 					{
 						const string DepotFilePrefix = "... depotFile ";
-						if(Lines[LineIdx].StartsWith(DepotFilePrefix) && Lines[LineIdx].Substring(DepotFilePrefix.Length) != DepotFile)
+						if(Lines[LineIdx].StartsWith(DepotFilePrefix) && !Lines[LineIdx].Substring(DepotFilePrefix.Length).Equals(DepotFile, StringComparison.InvariantCultureIgnoreCase))
 						{
 							throw new AutomationException("Expected file record for '{0}'; received output '{1}'", DepotFile, Lines[LineIdx]);
 						}
@@ -3712,11 +3754,11 @@ namespace AutomationTool
 			}
 			if(Filter != null)
 			{
-				CommandLine.AppendFormat("-F \"{0}\"", Filter);
+				CommandLine.AppendFormat(" -F \"{0}\"", Filter);
 			}
 			if(MaxResults > 0)
 			{
-				CommandLine.AppendFormat("-m {0}", MaxResults);
+				CommandLine.AppendFormat(" -m {0}", MaxResults);
 			}
 			CommandLine.AppendFormat(" \"{0}\"", StreamPath);
 
@@ -3848,7 +3890,7 @@ namespace AutomationTool
 			P4IntegrateAction Action;
 			if(!DescriptionToIntegrationAction.Value.TryGetValue(ActionText, out Action))
 			{
-				throw new P4Exception("Invalid integration action '{0}'", Action);
+				throw new P4Exception("Invalid integration action '{0}'", ActionText);
 			}
 			return Action;
 		}

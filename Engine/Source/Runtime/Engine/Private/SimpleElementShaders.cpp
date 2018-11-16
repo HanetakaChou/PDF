@@ -35,7 +35,7 @@ bool FSimpleElementVS::Serialize(FArchive& Ar)
 void FSimpleElementVS::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	OutEnvironment.SetDefine(TEXT("ALLOW_SWITCH_VERTICALAXIS"), (Parameters.Platform != SP_METAL));
+	OutEnvironment.SetDefine(TEXT("ALLOW_SWITCH_VERTICALAXIS"), !IsMetalMobilePlatform(Parameters.Platform));
 }
 
 /*------------------------------------------------------------------------------
@@ -79,7 +79,6 @@ bool FSimpleElementPS::Serialize(FArchive& Ar)
 	Ar << InTextureSampler;
 	Ar << TextureComponentReplicate;
 	Ar << TextureComponentReplicateAlpha;
-	Ar << SceneDepthTextureNonMS;
 	Ar << EditorCompositeDepthTestParameter;
 	Ar << ScreenToPixel;
 	return bShaderHasOutdatedParameters;

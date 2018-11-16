@@ -3,6 +3,7 @@
 #pragma once 
 
 #include "CoreMinimal.h"
+#include "Internationalization/LocKeyFuncs.h"
 
 /**
 * Class for handling language codes used in the Portable Object format.
@@ -112,9 +113,9 @@ public:
 	friend inline uint32 GetTypeHash(const FPortableObjectEntryKey& Key)
 	{
 		uint32 Hash = 0;
-		Hash = HashCombine(FCrc::StrCrc32(*Key.MsgId), Hash);
-		Hash = HashCombine(FCrc::StrCrc32(*Key.MsgIdPlural), Hash);
-		Hash = HashCombine(FCrc::StrCrc32(*Key.MsgCtxt), Hash);
+		Hash = FLocKey::ProduceHash(Key.MsgId, Hash);
+		Hash = FLocKey::ProduceHash(Key.MsgIdPlural, Hash);
+		Hash = FLocKey::ProduceHash(Key.MsgCtxt, Hash);
 		return Hash;
 	}
 
@@ -316,9 +317,10 @@ public:
 	 * Parses Portable Object elements from a string.
 	 *
 	 * @param InStr	String representing a Portable Object file(.PO) or Portable Object Template file(.POT).
+	 * @param OutErrorMsg Optional Text to be filled with error information.
 	 * @return	Returns true if successful, false otherwise.
 	 */
-	bool FromString( const FString& InStr );
+	bool FromString( const FString& InStr, FText* OutErrorMsg = nullptr );
 
 	/** Creates a header entry based on the project and language info. */
 	void CreateNewHeader();

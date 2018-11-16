@@ -43,7 +43,12 @@ struct CORE_API FWindowsPlatformMisc
 	static void PlatformPreInit();
 	static void PlatformInit();
 	static void SetGracefulTerminationHandler();
+	static int32 GetMaxPathLength();
+
+	DEPRECATED(4.21, "void FPlatformMisc::GetEnvironmentVariable(Name, Result, Length) is deprecated. Use FString FPlatformMisc::GetEnvironmentVariable(Name) instead.")
 	static void GetEnvironmentVariable(const TCHAR* VariableName, TCHAR* Result, int32 ResultLength);
+
+	static FString GetEnvironmentVariable(const TCHAR* VariableName);
 	static void SetEnvironmentVar(const TCHAR* VariableName, const TCHAR* Value);
 
 	static TArray<uint8> GetMacAddress();
@@ -85,6 +90,13 @@ struct CORE_API FWindowsPlatformMisc
 
 		return false;
 	}
+
+#if !UE_BUILD_SHIPPING
+	static void BeginNamedEventFrame();
+	static void BeginNamedEvent(const struct FColor& Color, const TCHAR* Text);
+	static void BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text);
+	static void EndNamedEvent();
+#endif
 
 	FORCEINLINE static void MemoryBarrier() { _mm_sfence(); }
 

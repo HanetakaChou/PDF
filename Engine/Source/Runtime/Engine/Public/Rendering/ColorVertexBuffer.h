@@ -27,26 +27,28 @@ public:
 	/** Delete existing resources */
 	ENGINE_API void CleanUp();
 
-	ENGINE_API void Init(uint32 InNumVertices);
+	ENGINE_API void Init(uint32 InNumVertices, bool bNeedsCPUAccess = true);
 
 	/**
 	* Initializes the buffer with the given vertices, used to convert legacy layouts.
 	* @param InVertices - The vertices to initialize the buffer with.
 	*/
-	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices);
+	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bNeedsCPUAccess = true);
 
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
 	* @param InVertexBuffer - The vertex buffer to initialize from.
 	*/
-	void Init(const FColorVertexBuffer& InVertexBuffer);
-
+	void Init(const FColorVertexBuffer& InVertexBuffer, bool bNeedsCPUAccess = true);
+	
 	/**
-	* Removes the cloned vertices used for extruding shadow volumes.
-	* @param NumVertices - The real number of static mesh vertices which should remain in the buffer upon return.
-	*/
-	void RemoveLegacyShadowVolumeVertices(uint32 InNumVertices);
-
+	 * Appends the specified vertices to the end of the buffer
+	 *
+	 * @param	Vertices	The vertex data to be appended.  Must not be nullptr.
+	 * @param	NumVerticesToAppend		How many vertices should be added
+	 */
+	ENGINE_API void AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend );
+	
 	/**
 	* Serializer
 	*
@@ -110,7 +112,7 @@ public:
 	* @param Count - must be > 0
 	* @param Stride - in bytes, usually sizeof(FColor) but can be 0 to use a single input color or larger.
 	*/
-	ENGINE_API void InitFromColorArray(const FColor *InColors, uint32 Count, uint32 Stride = sizeof(FColor));
+	ENGINE_API void InitFromColorArray(const FColor *InColors, uint32 Count, uint32 Stride = sizeof(FColor), bool bNeedsCPUAccess = true);
 
 	/**
 	* Load from raw color array.
@@ -163,6 +165,8 @@ private:
 
 	/** The cached number of vertices. */
 	uint32 NumVertices;
+
+	bool NeedsCPUAccess = true;
 
 	/** Allocates the vertex data storage type. */
 	void AllocateData(bool bNeedsCPUAccess = true);

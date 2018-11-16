@@ -732,6 +732,7 @@ bool AssertResourceState(ID3D12CommandList* pCommandList, FD3D12Resource* pResou
 //
 
 DEFINE_STAT(STAT_D3D12PresentTime);
+DEFINE_STAT(STAT_D3D12CustomPresentTime);
 
 DEFINE_STAT(STAT_D3D12NumCommandAllocators);
 DEFINE_STAT(STAT_D3D12NumCommandLists);
@@ -772,7 +773,6 @@ DEFINE_STAT(STAT_D3D12ApplyStateSetSRVTime);
 DEFINE_STAT(STAT_D3D12ApplyStateSetUAVTime);
 DEFINE_STAT(STAT_D3D12ApplyStateSetVertexBufferTime);
 DEFINE_STAT(STAT_D3D12ApplyStateSetConstantBufferTime);
-DEFINE_STAT(STAT_D3D12PSOCreateTime);
 DEFINE_STAT(STAT_D3D12ClearMRT);
 
 DEFINE_STAT(STAT_D3D12ExecuteCommandListTime);
@@ -781,4 +781,18 @@ DEFINE_STAT(STAT_D3D12WaitForFenceTime);
 DEFINE_STAT(STAT_D3D12UsedVideoMemory);
 DEFINE_STAT(STAT_D3D12AvailableVideoMemory);
 DEFINE_STAT(STAT_D3D12TotalVideoMemory);
+
+DEFINE_STAT(STAT_ViewHeapChanged);
+DEFINE_STAT(STAT_SamplerHeapChanged);
+
+DEFINE_STAT(STAT_NumViewOnlineDescriptorHeaps);
+DEFINE_STAT(STAT_NumSamplerOnlineDescriptorHeaps);
+DEFINE_STAT(STAT_NumReuseableSamplerOnlineDescriptorTables);
+DEFINE_STAT(STAT_NumReservedViewOnlineDescriptors);
+DEFINE_STAT(STAT_NumReservedSamplerOnlineDescriptors);
+DEFINE_STAT(STAT_NumReusedSamplerOnlineDescriptors);
+
+DEFINE_STAT(STAT_ViewOnlineDescriptorHeapMemory);
+DEFINE_STAT(STAT_SamplerOnlineDescriptorHeapMemory);
+
 #undef LOCTEXT_NAMESPACE

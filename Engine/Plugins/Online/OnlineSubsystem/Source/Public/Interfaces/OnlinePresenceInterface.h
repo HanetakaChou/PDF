@@ -8,6 +8,18 @@
 #include "OnlineDelegateMacros.h"
 #include "OnlineKeyValuePair.h"
 
+ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlinePresence, Log, All);
+
+#define UE_LOG_ONLINE_PRESENCE(Verbosity, Format, ...) \
+{ \
+	UE_LOG(LogOnlinePresence, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
+
+#define UE_CLOG_ONLINE_PRESENCE(Conditional, Verbosity, Format, ...) \
+{ \
+	UE_CLOG(Conditional, LogOnlinePresence, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
+
 /** Type of presence keys */
 typedef FString FPresenceKey;
 
@@ -23,7 +35,7 @@ const FString CustomPresenceDataKey = TEXT("CustomData");
 /** Name of the client that sent the presence update */
 const FString DefaultAppIdKey = TEXT("AppId");
 
-/** Name of the platform the the presence update */
+/** Platform of the client that sent the presence update */
 const FString DefaultPlatformKey = TEXT("Platform");
 
 /** Override Id of the client to set the presence state to */
@@ -111,7 +123,16 @@ public:
 	FOnlineUserPresenceStatus()
 		: State(EOnlinePresenceState::Offline)
 	{
+	}
 
+	FString ToDebugString() const
+	{
+		FString PropertiesStr;
+		for (const TPair<FPresenceKey, FVariantData>& Pair : Properties)
+		{
+			PropertiesStr += FString::Printf(TEXT("\n%s : %s"), *Pair.Key, *Pair.Value.ToString());
+		}
+		return FString::Printf(TEXT("FOnlineUserPresenceStatus {State: %s, Status: %s, Properties: %s}"), EOnlinePresenceState::ToString(State), *StatusStr, *PropertiesStr);
 	}
 };
 
@@ -144,6 +165,38 @@ public:
 		bIsJoinable = 0;
 		bHasVoiceSupport = 0;
 		Status = FOnlineUserPresenceStatus();
+	}
+
+	const FString GetPlatform() const
+	{
+		FString ParsedOnlinePlatform = TEXT("");
+		const FVariantData* VariantOnlinePlatform = Status.Properties.Find(DefaultPlatformKey);
+		if (VariantOnlinePlatform != nullptr && VariantOnlinePlatform->GetType() == EOnlineKeyValuePairDataType::String)
+		{
+			VariantOnlinePlatform->GetValue(ParsedOnlinePlatform);
+		}
+		return ParsedOnlinePlatform;
+	}
+
+	const FString GetAppId() const
+	{
+		FString Result = TEXT("");
+		const FVariantData* AppId = Status.Properties.Find(DefaultAppIdKey);
+		const FVariantData* OverrideAppId = Status.Properties.Find(OverrideAppIdKey);
+		if (OverrideAppId != nullptr && OverrideAppId->GetType() == EOnlineKeyValuePairDataType::String)
+		{
+			OverrideAppId->GetValue(Result);
+		}
+		else if (AppId != nullptr && AppId->GetType() == EOnlineKeyValuePairDataType::String)
+		{
+			AppId->GetValue(Result);
+		}
+		return Result;
+	}
+
+	FString ToDebugString() const
+	{
+		return FString::Printf(TEXT("FOnlineUserPresence {Online: %d Playing: %d ThisGame: %d Joinable: %d VoiceSupport: %d SessionId: %s Status: %s"), bIsOnline, bIsPlaying, bIsPlayingThisGame, bIsJoinable, bHasVoiceSupport, SessionId.IsValid() ? *SessionId->ToDebugString() : TEXT("NULL"), *Status.ToDebugString());
 	}
 };
 
@@ -205,16 +258,16 @@ public:
 	 * Delegate executed when new presence data is available for a user.
 	 *
 	 * @param UserId The unique id of the user whose presence was received.
-	 * @param Presence The unique id of the user whose presence was received.
+	 * @param Presence The presence that was received.
 	 */
 	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnPresenceReceived, const class FUniqueNetId& /*UserId*/, const TSharedRef<FOnlineUserPresence>& /*Presence*/);
 
 	/**
- 	 * Delegate executed when the array of presence data for a user changes.
- 	 *
+	 * Delegate executed when the array of presence data for a user changes.
+	 *
 	 * @param UserId The unique id of the user whose presence was received.
- 	 * @param PresenceArray The updated presence array
- 	 */
+	 * @param PresenceArray The updated presence array
+	 */
 	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnPresenceArrayUpdated, const class FUniqueNetId& /*UserId*/, const TArray<TSharedRef<FOnlineUserPresence> >& /*NewPresenceArray*/);
 
 	/**

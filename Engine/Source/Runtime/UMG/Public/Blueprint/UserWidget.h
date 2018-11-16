@@ -20,7 +20,6 @@
 #include "Widgets/Layout/Anchors.h"
 #include "Logging/MessageLog.h"
 #include "Stats/Stats.h"
-#include "Stats/SlateStats.h"
 #include "EngineStats.h"
 #include "SlateGlobals.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
@@ -35,6 +34,21 @@ class UUMGSequencePlayer;
 class UWidgetAnimation;
 class UWidgetTree;
 class UNamedSlot;
+
+UENUM()
+enum class EWidgetTickFrequency : uint8
+{
+	/** This widget never ticks */
+	Never = 0,
+
+	/** 
+	 * This widget will tick if a blueprint tick function is implemented, any latent actions are found or animations need to play
+	 * If the widget inherits from something other than UserWidget it will also tick so that native C++ or inherited ticks function
+	 * To disable native ticking use add the class metadata flag "DisableNativeTick".  I.E: meta=(DisableNativeTick) 
+	 */
+	Auto,
+};
+
 
 
 /**
@@ -146,11 +160,12 @@ DECLARE_DYNAMIC_DELEGATE( FOnInputAction );
 /**
  * The user widget is extensible by users through the WidgetBlueprint.
  */
-UCLASS(Abstract, editinlinenew, BlueprintType, Blueprintable, meta=( DontUseGenericSpawnObject="True" ) )
+UCLASS(Abstract, editinlinenew, BlueprintType, Blueprintable, meta=( DontUseGenericSpawnObject="True", DisableNativeTick) )
 class UMG_API UUserWidget : public UWidget, public INamedSlotInterface
 {
 	GENERATED_BODY()
 
+	friend class SObjectWidget;
 public:
 	UUserWidget(const FObjectInitializer& ObjectInitializer);
 
@@ -170,6 +185,8 @@ public:
 
 	bool CanInitialize() const;
 	virtual bool Initialize();
+
+	EWidgetTickFrequency GetDesiredTickFrequency() const { return TickFrequency; }
 
 protected:
 	UWidgetBlueprintGeneratedClass* GetWidgetTreeOwningClass();
@@ -275,22 +292,40 @@ public:
 	 * Gets the local player associated with this UI.
 	 * @return The owning local player.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Player")
-	ULocalPlayer* GetOwningLocalPlayer() const;
+	virtual ULocalPlayer* GetOwningLocalPlayer() const override;
+	
+	/**
+	 * Gets the local player associated with this UI cast to the template type.
+	 * @return The owning local player. May be NULL if the cast fails.
+	 */
+	template < class T >
+	T* GetOwningLocalPlayer() const
+	{
+		return Cast<T>(GetOwningLocalPlayer());
+	}
 
 	/**
 	 * Sets the player associated with this UI via LocalPlayer reference.
 	 * @param LocalPlayer The local player you want to be the conceptual owner of this UI.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Player")
 	void SetOwningLocalPlayer(ULocalPlayer* LocalPlayer);
 
 	/**
 	 * Gets the player controller associated with this UI.
 	 * @return The player controller that owns the UI.
 	 */
-	class APlayerController* GetOwningPlayer() const override;
-
+	virtual APlayerController* GetOwningPlayer() const override;
+	
+	/**
+	 * Gets the player controller associated with this UI cast to the template type.
+	 * @return The player controller that owns the UI. May be NULL if the cast fails.
+	 */
+	template < class T >
+	T* GetOwningPlayer() const
+	{
+		return Cast<T>(GetOwningPlayer());
+	}
+	
 	/**
 	 * Sets the local player associated with this UI via PlayerController reference.
 	 * @param LocalPlayerController The PlayerController of the local player you want to be the conceptual owner of this UI.
@@ -304,6 +339,17 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Player")
 	class APawn* GetOwningPlayerPawn() const;
+	
+	/**
+	 * Gets the player pawn associated with this UI cast to the template type.
+	 * @return Gets the owning player pawn that's owned by the player controller assigned to this widget.
+	 * May be NULL if the cast fails.
+	 */
+	template < class T >
+	T* GetOwningPlayerPawn() const
+	{
+		return Cast<T>(GetOwningPlayerPawn());
+	}
 
 	/**
 	 * Get the owning player's PlayerState.
@@ -321,6 +367,14 @@ public:
 
 		return nullptr;
 	}
+
+	/** 
+	 * Called once only at game time on non-template instances.
+	 * While Construct/Destruct pertain to the underlying Slate, this is called only once for the UUserWidget.
+	 * If you have one-time things to establish up-front (like binding callbacks to events on BindWidget properties), do so here.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, BlueprintCosmetic, Category="User Interface")
+	void OnInitialized();
 
 	/**
 	 * Called by both the game and the editor.  Allows users to run initial setup for their widgets to better preview
@@ -340,6 +394,7 @@ public:
 	/**
 	 * Called after the underlying slate widget is constructed.  Depending on how the slate object is used
 	 * this event may be called multiple times due to adding and removing from the hierarchy.
+	 * If you need a true called-once-when-created event, use OnInitialized.
 	 */
 	UFUNCTION(BlueprintImplementableEvent, BlueprintCosmetic, Category="User Interface", meta=( Keywords="Begin Play" ))
 	void Construct();
@@ -677,6 +732,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Delay")
 	void StopAnimationsAndLatentActions();
 
+	/**
+	* Called when a touchpad force has changed (user pressed down harder or let up)
+	*
+	* @param MyGeometry    The geometry of the widget receiving the event.
+	* @param InTouchEvent	The touch event generated
+	*/
+	UFUNCTION(BlueprintImplementableEvent, BlueprintCosmetic, Category = "Touch Input")
+	FEventReply OnTouchForceChanged(FGeometry MyGeometry, const FPointerEvent& InTouchEvent);
+
 public:
 
 	/**
@@ -698,8 +762,6 @@ public:
 	void OnAnimationFinished( const UWidgetAnimation* Animation );
 
 	virtual void OnAnimationFinished_Implementation(const UWidgetAnimation* Animation);
-
-public:
 
 	/**
 	 * Sets the tint of the widget, this affects all child widgets.
@@ -859,23 +921,43 @@ public:
 
 	/** Are we currently playing any animations? */
 	UFUNCTION(BlueprintCallable, Category="User Interface|Animation")
-	bool IsPlayingAnimation() const { return ActiveSequencePlayers.Num() > 0; }
+	FORCEINLINE bool IsPlayingAnimation() const { return ActiveSequencePlayers.Num() > 0; }
 
 #if WITH_EDITOR
 	//~ Begin UWidget Interface
 	virtual const FText GetPaletteCategory() override;
 	//~ End UWidget Interface
 
-	void SetDesignerFlags(EWidgetDesignFlags::Type NewFlags);
-
-	void OnDesignerChanged(const FDesignerChangedEventArgs& EventArgs) override;
-
+	virtual void SetDesignerFlags(EWidgetDesignFlags::Type NewFlags) override;
+	virtual void OnDesignerChanged(const FDesignerChangedEventArgs& EventArgs) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/**
+	 * Final step of Widget Blueprint compilation. Allows widgets to perform custom validation and trigger compiler outputs as needed.
+	 * @see ValidateCompiledDefaults
+	 * @see ValidateCompiledWidgetTree
+	 */
+	void ValidateBlueprint(const UWidgetTree& BlueprintWidgetTree, FCompilerResultsLog& OutErrors) const;
+
+	/**
+	 * Override to perform any custom inspections of the default widget tree at the end of compilation.
+	 *
+	 * Note: The WidgetTree and BindWidget properties of this user widget will not be established at this point,
+	 * so be sure to inspect only the given BlueprintWidgetTree.
+	 *
+	 * Tip: If you need to validate properties of BindWidget members, you can search for them by property name within the widget tree.
+	 */
+	virtual void ValidateCompiledWidgetTree(const UWidgetTree& BlueprintWidgetTree, FCompilerResultsLog& OutErrors) const {};
 #endif
 
-	static UUserWidget* NewWidgetObject(UObject* Outer, UClass* UserWidgetClass, FName WidgetName = NAME_None, EObjectFlags Flags = RF_NoFlags);
-	
-	static UUserWidget* CreateWidgetOfClass(UClass* UserWidgetClass, UGameInstance* InGameInstance, UWorld* InWorld, APlayerController* InOwningPlayer);
+	static UUserWidget* CreateWidgetInstance(UWidget& OwningWidget, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName);
+	static UUserWidget* CreateWidgetInstance(UWidgetTree& OwningWidgetTree, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName);
+	static UUserWidget* CreateWidgetInstance(APlayerController& OwnerPC, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName);
+	static UUserWidget* CreateWidgetInstance(UGameInstance& GameInstance, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName);
+	static UUserWidget* CreateWidgetInstance(UWorld& World, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName);
+
+private:
+	static UUserWidget* CreateInstanceInternal(UObject* Outer, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName, UWorld* World, ULocalPlayer* LocalPlayer);
 
 public:
 	/** The color and opacity of this widget.  Tints all child widgets. */
@@ -954,14 +1036,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	uint8 bStopAction : 1;
 
-	/** If a widget doesn't ever need to tick the blueprint, setting this to false is an optimization. */
+	/** If a widget has an implemented tick blueprint function */
 	UPROPERTY()
-	uint8 bCanEverTick : 1;
+	uint8 bHasScriptImplementedTick : 1;
 
-	/** If a widget doesn't ever need to do custom painting in the blueprint, setting this to false is an optimization. */
+	/** If a widget has an implemented paint blueprint function */
 	UPROPERTY()
-	uint8 bCanEverPaint : 1;
-
+	uint8 bHasScriptImplementedPaint : 1;
 protected:
 
 	/** Has this widget been initialized by its class yet? */
@@ -994,15 +1075,24 @@ protected:
 
 	FMargin GetFullScreenOffset() const;
 
-	//native SObjectWidget methods
+	//native SObjectWidget methods (see the corresponding BlueprintImplementableEvent declarations above for more info on each)
 	friend class SObjectWidget;
 
+	virtual void NativeOnInitialized();
 	virtual void NativePreConstruct();
 	virtual void NativeConstruct();
 	virtual void NativeDestruct();
 
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime);
-	virtual void NativePaint( FPaintContext& InContext ) const;
+
+	DEPRECATED(2.20, "Please override the other version of NativePaint that accepts all the parameters, not just the paint context.")
+	virtual void NativePaint(FPaintContext& InContext) const { }
+
+	/**
+	 * Native implemented paint function for the Widget
+	 * Returns the maximum LayerID painted on
+	 */
+	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const;
 
 	virtual bool NativeIsInteractable() const;
 	virtual bool NativeSupportsKeyboardFocus() const;
@@ -1038,11 +1128,30 @@ protected:
 	virtual FReply NativeOnTouchMoved( const FGeometry& InGeometry, const FPointerEvent& InGestureEvent );
 	virtual FReply NativeOnTouchEnded( const FGeometry& InGeometry, const FPointerEvent& InGestureEvent );
 	virtual FReply NativeOnMotionDetected( const FGeometry& InGeometry, const FMotionEvent& InMotionEvent );
+	virtual FReply NativeOnTouchForceChanged(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent);
 	virtual FCursorReply NativeOnCursorQuery( const FGeometry& InGeometry, const FPointerEvent& InCursorEvent );
 	virtual FNavigationReply NativeOnNavigation(const FGeometry& InGeometry, const FNavigationEvent& InNavigationEvent);
-	virtual void NativeOnMouseCaptureLost();
+	DEPRECATED(4.20, "Please use NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)")
+	void NativeOnMouseCaptureLost() {}
+	virtual void NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent);
 
 protected:
+	/**
+	*  Helper function to get the game instance
+	*
+	*  @return a pointer to the owning game instance
+	*/
+	template <class TGameInstance = UGameInstance>
+	TGameInstance* GetGameInstance() const
+	{
+		if (UWorld* World = GetWorld())
+		{
+			return Cast<TGameInstance>(World->GetGameInstance());
+		}
+
+		return nullptr;
+	}
+
 	bool ShouldSerializeWidgetTree(const class ITargetPlatform* TargetPlatform) const;
 
 	/**
@@ -1106,10 +1215,21 @@ protected:
 
 	virtual void InitializeInputComponent();
 
-	UPROPERTY( Transient, DuplicateTransient )
+private:
+	/**
+	 * This widget is allowed to tick. If this is unchecked tick will never be called, animations will not play correctly, and latent actions will not execute.
+	 * Uncheck this for performance reasons only
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Performance", meta=(AllowPrivateAccess="true"))
+	EWidgetTickFrequency TickFrequency;
+
+protected:
+	UPROPERTY(Transient, DuplicateTransient)
 	class UInputComponent* InputComponent;
 
 private:
+	static void OnLatentActionsChanged(UObject* ObjectWhichChanged, ELatentActionChangeType ChangeType);
+
 	FAnchors ViewportAnchors;
 	FMargin ViewportOffsets;
 	FVector2D ViewportAlignment;
@@ -1124,6 +1244,8 @@ private:
 	static bool bTemplateInitializing;
 	static uint32 bInitializingFromWidgetTree;
 
+	void UpdateCanTick();
+
 protected:
 
 	PROPERTY_BINDING_IMPLEMENTATION(FLinearColor, ColorAndOpacity);
@@ -1137,22 +1259,26 @@ namespace CreateWidgetHelpers
 	UMG_API bool ValidateUserWidgetClass(const UClass* UserWidgetClass);
 }
 
-template< class T >
-T* CreateWidget(APlayerController* OwningPlayer, UClass* UserWidgetClass = T::StaticClass())
-{
-	return Cast<T>(UUserWidget::CreateWidgetOfClass(UserWidgetClass, nullptr, nullptr, OwningPlayer));
-}
+DECLARE_CYCLE_STAT(TEXT("UserWidget Create"), STAT_CreateWidget, STATGROUP_Slate);
 
-template< class T >
-T* CreateWidget(UWorld* World, UClass* UserWidgetClass = T::StaticClass() )
+template <typename WidgetT = UUserWidget, typename OwnerT = UObject>
+WidgetT* CreateWidget(OwnerT* OwningObject, TSubclassOf<UUserWidget> UserWidgetClass = WidgetT::StaticClass(), FName WidgetName = NAME_None)
 {
-	return Cast<T>(UUserWidget::CreateWidgetOfClass(UserWidgetClass, nullptr, World, nullptr));
-}
+	static_assert(TIsDerivedFrom<WidgetT, UUserWidget>::IsDerived, "CreateWidget can only be used to create UserWidget instances. If creating a UWidget, use WidgetTree::ConstructWidget.");
+	
+	static_assert(TIsDerivedFrom<OwnerT, UWidget>::IsDerived
+		|| TIsDerivedFrom<OwnerT, UWidgetTree>::IsDerived
+		|| TIsDerivedFrom<OwnerT, APlayerController>::IsDerived
+		|| TIsDerivedFrom<OwnerT, UGameInstance>::IsDerived
+		|| TIsDerivedFrom<OwnerT, UWorld>::IsDerived, "The given OwningObject is not of a supported type for use with CreateWidget.");
 
-template< class T >
-T* CreateWidget(UGameInstance* OwningGame, UClass* UserWidgetClass = T::StaticClass() )
-{
-	return Cast<T>(UUserWidget::CreateWidgetOfClass(UserWidgetClass, OwningGame, nullptr, nullptr));
+	SCOPE_CYCLE_COUNTER(STAT_CreateWidget);
+
+	if (OwningObject)
+	{
+		return Cast<WidgetT>(UUserWidget::CreateWidgetInstance(*OwningObject, UserWidgetClass, WidgetName));
+	}
+	return nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

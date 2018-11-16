@@ -7,8 +7,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ObjectMacros.h"
-#include "SubclassOf.h"
+#include "UObject/ObjectMacros.h"
+#include "Templates/SubclassOf.h"
 #include "EditorLevelUtils.generated.h"
 
 class AActor;
@@ -55,29 +55,39 @@ public:
 	/**
 	 * Moves the specified list of actors to the specified streaming level. The new actors will be selected
 	 *
-	 * @param	ActorsToMove		List of actors to move
-	 * @param	DestStreamingLevel	The destination streaming level of the current world to move the actors to
-	 * @return						The number of actors that were successfully moved to the new level
+	 * @param	ActorsToMove			List of actors to move
+	 * @param	DestStreamingLevel		The destination streaming level of the current world to move the actors to
+	 * @param	bWarnAboutReferences	Whether or not to show a modal warning about referenced actors that may no longer function after being moved
+	 * @return							The number of actors that were successfully moved to the new level
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Creation")
-	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevelStreaming* DestStreamingLevel);
+	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevelStreaming* DestStreamingLevel, bool bWarnAboutReferences = true);
 
+	/**
+	 * Moves the currently selected actors to the specified streaming level. The new actors will be selected
+	 *
+	 * @param	DestStreamingLevel		The destination streaming level of the current world to move the actors to
+	 * @param	bWarnAboutReferences	Whether or not to show a modal warning about referenced actors that may no longer function after being moved
+	 * @return							The number of actors that were successfully moved to the new level
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Creation")
-	static UNREALED_API int32 MoveSelectedActorsToLevel(ULevelStreaming* DestLevel);
+	static UNREALED_API int32 MoveSelectedActorsToLevel(ULevelStreaming* DestLevel, bool bWarnAboutReferences = true);
 
 	
 	/**
 	 * Makes the specified level the current level for editing.
 	 * The current level is where actors are spawned to when calling SpawnActor
+	 * @param InLevel			The level to make current
+	 * @param bForceOperation	True if the operation should succeed even if the level is locked.  In certian circumstances (like removing the current level, we must be able to set a new current level even if the only one left is locked)
 	 *
 	 * @return	true	If a level was removed.
 	 */
-	static UNREALED_API void MakeLevelCurrent(ULevel* InLevel);
+	static UNREALED_API void MakeLevelCurrent(ULevel* InLevel, bool bEvenIfLocked = false);
 
 	
-	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel);
+	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bWarnAboutReferences = true);
 
-	static UNREALED_API int32 MoveSelectedActorsToLevel(ULevel* DestLevel);
+	static UNREALED_API int32 MoveSelectedActorsToLevel(ULevel* DestLevel, bool bWarnAboutReferences = true);
 
 	/**
 	 * Creates a new streaming level and adds it to a world
@@ -101,7 +111,7 @@ public:
 	 *
 	 * @return								The new level, or NULL if the level couldn't added.
 	 */
-	static UNREALED_API ULevel* AddLevelsToWorld(UWorld* InWorld, const TArray<FString>& LevelPackageNames, UClass* LevelStreamingClass);
+	static UNREALED_API ULevel* AddLevelsToWorld(UWorld* InWorld, TArray<FString> LevelPackageNames, TSubclassOf<ULevelStreaming> LevelStreamingClass);
 
 
 	/**
@@ -113,8 +123,13 @@ public:
 	 *
 	 * @return								The new level, or NULL if the level couldn't added.
 	 */
-	static UNREALED_API ULevelStreaming* AddLevelToWorld(UWorld* InWorld, const TCHAR* LevelPackageName, TSubclassOf<ULevelStreaming> LevelStreamingClass);
+	static UNREALED_API ULevelStreaming* AddLevelToWorld(UWorld* InWorld, const TCHAR* LevelPackageName, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FTransform& LevelTransform = FTransform::Identity);
 
+private:
+
+	static UNREALED_API ULevelStreaming* AddLevelToWorld_Internal(UWorld* InWorld, const TCHAR* LevelPackageName, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FTransform& LevelTransform = FTransform::Identity);
+
+public:
 	/** Sets the LevelStreamingClass for the specified Level 
 	  * @param	InLevel				The level for which to change the streaming class
 	  * @param	LevelStreamingClass	The desired streaming class

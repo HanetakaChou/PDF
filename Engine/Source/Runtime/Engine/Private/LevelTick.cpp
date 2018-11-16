@@ -21,9 +21,10 @@
 #include "Engine/EngineTypes.h"
 #include "RHI.h"
 #include "RenderingThread.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "GameFramework/PlayerController.h"
 #include "SceneUtils.h"
 #include "ParticleHelper.h"
@@ -40,6 +41,9 @@
 #include "TimerManager.h"
 #include "Camera/CameraPhotography.h"
 #include "HAL/LowLevelMemTracker.h"
+#if WITH_APEIRON
+#include "PhysicsEngine/CollisionAnalyzerCapture.h"
+#endif
 
 //#include "SoundDefinitions.h"
 #include "FXSystem.h"
@@ -54,10 +58,13 @@
 
 #include "InGamePerformanceTracker.h"
 #include "Streaming/TextureStreamingHelpers.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 #if WITH_EDITOR
 	#include "Editor.h"
 #endif
+
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 // this will log out all of the objects that were ticked in the FDetailedTickStats struct so you can isolate what is expensive
 #define LOG_DETAILED_DUMPSTATS 0
@@ -110,6 +117,7 @@ DEFINE_STAT(STAT_RuntimeMovieSceneTickTime);
 DEFINE_STAT(STAT_FinishAsyncTraceTickTime);
 DEFINE_STAT(STAT_NetBroadcastTickTime);
 DEFINE_STAT(STAT_NetServerRepActorsTime);
+DEFINE_STAT(STAT_NetServerGatherPrioritizeRepActorsTime);
 DEFINE_STAT(STAT_NetConsiderActorsTime);
 DEFINE_STAT(STAT_NetUpdateUnmappedObjectsTime);
 DEFINE_STAT(STAT_NetInitialDormantCheckTime);
@@ -424,7 +432,7 @@ void UWorld::TickNetClient( float DeltaSeconds )
 	// and there isn't a PendingNetGame, throw a network failure error.
 	if( NetDriver->ServerConnection->State == USOCK_Closed )
 	{
-		if (GEngine->PendingNetGameFromWorld(this) == NULL)
+		if (GEngine->PendingNetGameFromWorld(this) == nullptr)
 		{
 			const FString Error = NSLOCTEXT("Engine", "ConnectionFailed", "Your connection to the host has been lost.").ToString();
 			GEngine->BroadcastNetworkFailure(this, NetDriver, ENetworkFailure::ConnectionLost, Error);
@@ -440,8 +448,8 @@ void UWorld::TickNetClient( float DeltaSeconds )
 bool UWorld::IsPaused() const
 {
 	// pause if specifically set or if we're waiting for the end of the tick to perform streaming level loads (so actors don't fall through the world in the meantime, etc)
-	const AWorldSettings* Info = GetWorldSettings();
-	return ( (Info && Info->Pauser != NULL && TimeSeconds >= PauseDelay) ||
+	const AWorldSettings* Info = GetWorldSettings(/*bCheckStreamingPersistent=*/false, /*bChecked=*/false);
+	return ( (Info && Info->Pauser != nullptr && TimeSeconds >= PauseDelay) ||
 				(bRequestedBlockOnAsyncLoading && GetNetMode() == NM_Client) ||
 				(GEngine->ShouldCommitPendingMapChange(this)) ||
 				(IsPlayInEditor() && bDebugPauseExecution) );
@@ -574,7 +582,7 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 	for (FConstPlayerControllerIterator Iterator = GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
 		APlayerController* PlayerActor = Iterator->Get();
-		if (PlayerActor->bIsUsingStreamingVolumes)
+		if (PlayerActor && PlayerActor->bIsUsingStreamingVolumes)
 		{
 			bStreamingVolumesAreRelevant = true;
 			break;
@@ -616,7 +624,7 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 		for( FConstPlayerControllerIterator Iterator = GetPlayerControllerIterator(); Iterator; ++Iterator )
 		{
 			APlayerController* PlayerActor = Iterator->Get();
-			if (PlayerActor->bIsUsingStreamingVolumes)
+			if (PlayerActor && PlayerActor->bIsUsingStreamingVolumes)
 			{
 				FVector ViewLocation(0,0,0);
 				// let the caller override the location to check for volumes
@@ -706,20 +714,20 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 
 			// Figure out whether level should be loaded and keep track of original state for notifications on change.
 			FVisibleLevelStreamingSettings* NewStreamingSettings= VisibleLevelStreamingObjects.Find( LevelStreamingObject );
-			bool bShouldAffectLoading							= LevelStreamingObjectsWithVolumesOtherThanBlockingLoad.Find( LevelStreamingObject ) != NULL;
-			bool bShouldBeLoaded								= (NewStreamingSettings != NULL);
-			bool bOriginalShouldBeLoaded						= LevelStreamingObject->bShouldBeLoaded;
-			bool bOriginalShouldBeVisible						= LevelStreamingObject->bShouldBeVisible;
+			bool bShouldAffectLoading							= LevelStreamingObjectsWithVolumesOtherThanBlockingLoad.Find( LevelStreamingObject ) != nullptr;
+			bool bShouldBeLoaded								= (NewStreamingSettings != nullptr);
+			bool bOriginalShouldBeLoaded						= LevelStreamingObject->ShouldBeLoaded();
+			bool bOriginalShouldBeVisible						= LevelStreamingObject->ShouldBeVisible();
 			bool bOriginalShouldBlockOnLoad						= LevelStreamingObject->bShouldBlockOnLoad;
-			int32 bOriginalLODIndex								= LevelStreamingObject->LevelLODIndex;
+			int32 OriginalLODIndex								= LevelStreamingObject->GetLevelLODIndex();
 
 			if( bShouldBeLoaded || bShouldAffectLoading )
 			{
 				if( bShouldBeLoaded )
 				{
 					// Loading.
-					LevelStreamingObject->bShouldBeLoaded		= true;
-					LevelStreamingObject->bShouldBeVisible		= NewStreamingSettings->ShouldBeVisible( bOriginalShouldBeVisible );
+					LevelStreamingObject->SetShouldBeLoaded(true);
+					LevelStreamingObject->SetShouldBeVisible(NewStreamingSettings->ShouldBeVisible(bOriginalShouldBeVisible));
 					LevelStreamingObject->bShouldBlockOnLoad	= NewStreamingSettings->ShouldBlockOnLoad();
 				}
 				// Prevent unload request flood.  The additional check ensures that unload requests can still be issued in the first UnloadCooldownTime seconds of play.
@@ -731,26 +739,31 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 					if( GetPlayerControllerIterator() )
 					{
 						LevelStreamingObject->LastVolumeUnloadRequestTime	= TimeSeconds;
-						LevelStreamingObject->bShouldBeLoaded				= false;
-						LevelStreamingObject->bShouldBeVisible				= false;						
+						LevelStreamingObject->SetShouldBeLoaded(false);
+						LevelStreamingObject->SetShouldBeVisible(false);
 					}
 				}
-			
+
+				const bool bNewShouldBeLoaded = LevelStreamingObject->ShouldBeLoaded();
+				const bool bNewShouldBeVisible = LevelStreamingObject->ShouldBeVisible();
+
 				// Notify players of the change.
-				if( bOriginalShouldBeLoaded		!= LevelStreamingObject->bShouldBeLoaded
-				||	bOriginalShouldBeVisible	!= LevelStreamingObject->bShouldBeVisible 
+				if( bOriginalShouldBeLoaded		!= bNewShouldBeLoaded
+				||	bOriginalShouldBeVisible	!= bNewShouldBeVisible
 				||	bOriginalShouldBlockOnLoad	!= LevelStreamingObject->bShouldBlockOnLoad
-				||  bOriginalLODIndex			!= LevelStreamingObject->LevelLODIndex)
+				||  OriginalLODIndex			!= LevelStreamingObject->GetLevelLODIndex())
 				{
 					for( FConstPlayerControllerIterator Iterator = GetPlayerControllerIterator(); Iterator; ++Iterator )
 					{
-						APlayerController* PlayerController = Iterator->Get();
-						PlayerController->LevelStreamingStatusChanged( 
-								LevelStreamingObject, 
-								LevelStreamingObject->bShouldBeLoaded, 
-								LevelStreamingObject->bShouldBeVisible,
-								LevelStreamingObject->bShouldBlockOnLoad,
-								LevelStreamingObject->LevelLODIndex);
+						if (APlayerController* PlayerController = Iterator->Get())
+						{
+							PlayerController->LevelStreamingStatusChanged( 
+									LevelStreamingObject, 
+									bNewShouldBeLoaded, 
+									bNewShouldBeVisible,
+									LevelStreamingObject->bShouldBlockOnLoad,
+									LevelStreamingObject->GetLevelLODIndex());
+						}
 					}
 				}
 			}
@@ -881,14 +894,19 @@ void UWorld::MarkActorComponentForNeededEndOfFrameUpdate(UActorComponent* Compon
 	}
 }
 
-bool UWorld::HasEndOfFrameUpdates()
+void UWorld::SetMaterialParameterCollectionInstanceNeedsUpdate()
 {
-	return ComponentsThatNeedEndOfFrameUpdate_OnGameThread.Num() > 0 || ComponentsThatNeedEndOfFrameUpdate.Num() > 0;
+	bMaterialParameterCollectionInstanceNeedsDeferredUpdate = true;
+}
+
+bool UWorld::HasEndOfFrameUpdates() const
+{
+	return ComponentsThatNeedEndOfFrameUpdate_OnGameThread.Num() > 0 || ComponentsThatNeedEndOfFrameUpdate.Num() > 0 || bMaterialParameterCollectionInstanceNeedsDeferredUpdate;
 }
 
 TDrawEvent<FRHICommandList>* BeginSendEndOfFrameUpdatesDrawEvent()
 {
-	TDrawEvent<FRHICommandList>* DrawEvent = NULL;
+	TDrawEvent<FRHICommandList>* DrawEvent = nullptr;
 
 #if WANTS_DRAW_MESH_EVENTS
 	DrawEvent = new TDrawEvent<FRHICommandList>();
@@ -928,6 +946,8 @@ void EndSendEndOfFrameUpdatesDrawEvent(TDrawEvent<FRHICommandList>* DrawEvent)
 void UWorld::SendAllEndOfFrameUpdates()
 {
 	SCOPE_CYCLE_COUNTER(STAT_PostTickComponentUpdate);
+	CSV_SCOPED_TIMING_STAT(Basic, PostTickComponentUpdate);
+
 	if (!HasEndOfFrameUpdates())
 	{
 		return;
@@ -959,7 +979,7 @@ void UWorld::SendAllEndOfFrameUpdates()
 				if (NextComponent->IsRegistered() && !NextComponent->IsTemplate() && !NextComponent->IsPendingKill())
 				{
 					FScopeCycleCounterUObject ComponentScope(NextComponent);
-					FScopeCycleCounterUObject AdditionalScope(STATS ? NextComponent->AdditionalStatObject() : NULL);
+					FScopeCycleCounterUObject AdditionalScope(STATS ? NextComponent->AdditionalStatObject() : nullptr);
 					NextComponent->DoDeferredRenderUpdates_Concurrent();
 				}
 				check(NextComponent->GetMarkedForEndOfFrameUpdateState() == EComponentMarkedForEndOfFrameUpdateState::Marked);
@@ -978,7 +998,7 @@ void UWorld::SendAllEndOfFrameUpdates()
 					if (Component->IsRegistered() && !Component->IsTemplate() && !Component->IsPendingKill())
 					{
 						FScopeCycleCounterUObject ComponentScope(Component);
-						FScopeCycleCounterUObject AdditionalScope(STATS ? Component->AdditionalStatObject() : NULL);
+						FScopeCycleCounterUObject AdditionalScope(STATS ? Component->AdditionalStatObject() : nullptr);
 						Component->DoDeferredRenderUpdates_Concurrent();
 					}
 					check(Component->GetMarkedForEndOfFrameUpdateState() == EComponentMarkedForEndOfFrameUpdateState::MarkedForGameThread);
@@ -998,6 +1018,16 @@ void UWorld::SendAllEndOfFrameUpdates()
 		GTWork();
 		ParallelFor(LocalComponentsThatNeedEndOfFrameUpdate.Num(), ParallelWork);
 	}
+	
+	for (UMaterialParameterCollectionInstance* ParameterCollectionInstance : ParameterCollectionInstances)
+	{
+		if (ParameterCollectionInstance)
+		{
+			ParameterCollectionInstance->DeferredUpdateRenderState();
+		}
+	}
+	bMaterialParameterCollectionInstanceNeedsDeferredUpdate = false;
+			
 	LocalComponentsThatNeedEndOfFrameUpdate.Reset();
 
 	EndSendEndOfFrameUpdatesDrawEvent(DrawEvent);
@@ -1015,13 +1045,13 @@ static class FFileProfileWrapperExec: private FSelfRegisteringExec
 			if( FParse::Command( &Cmd, TEXT("File") ) ) // if they didn't use the list command, we will show usage
 			{
 				FProfiledPlatformFile* ProfilePlatformFile = (FProfiledPlatformFile*)FPlatformFileManager::Get().FindPlatformFile(TProfiledPlatformFile<FProfiledFileStatsFileDetailed>::GetTypeName());
-				if (ProfilePlatformFile == NULL)
+				if (ProfilePlatformFile == nullptr)
 				{
 					// Try 'simple' profiler file.
 					ProfilePlatformFile = (FProfiledPlatformFile*)FPlatformFileManager::Get().FindPlatformFile(TProfiledPlatformFile<FProfiledFileStatsFileSimple>::GetTypeName());
 				}				
 
-				if( ProfilePlatformFile != NULL)
+				if( ProfilePlatformFile != nullptr)
 				{
 					DisplayProfileData( ProfilePlatformFile->GetStats() );
 				}
@@ -1223,7 +1253,7 @@ void FTickableGameObject::TickObjects(UWorld* World, const int32 InTickType, con
 					if ((GIsEditor && TickableObject->IsTickableInEditor()) ||
 						(bIsGameWorld && ((!bIsPaused && TickType != LEVELTICK_TimeOnly) || (bIsPaused && TickableObject->IsTickableWhenPaused()))))
 					{
-						STAT(FScopeCycleCounter Context(TickableObject->GetStatId());)
+						FScopeCycleCounter Context(TickableObject->GetStatId());
 						TickableObject->Tick(DeltaSeconds);
 
 						// In case it was removed during tick
@@ -1258,6 +1288,8 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	SCOPE_TIME_GUARD(TEXT("UWorld::Tick"));
 
 	SCOPED_NAMED_EVENT(UWorld_Tick, FColor::Orange);
+	CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick);
+
 	if (GIntraFrameDebuggingGameThread)
 	{
 		return;
@@ -1308,11 +1340,13 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	bool bIsPaused = IsPaused();
 
 	{
+		CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_NetWorldTickTime);
 		SCOPE_CYCLE_COUNTER(STAT_NetWorldTickTime);
 		SCOPE_TIME_GUARD(TEXT("UWorld::Tick - NetTick"));
 		LLM_SCOPE(ELLMTag::Networking);
 		// Update the net code and fetch all incoming packets.
 		BroadcastTickDispatch(DeltaSeconds);
+		BroadcastPostTickDispatch();
 
 		if( NetDriver && NetDriver->ServerConnection )
 		{
@@ -1372,13 +1406,10 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	}
 	
 	// update world's subsystems (NavigationSystem for now)
-	if ( !bIsPaused )
+	if (NavigationSystem != nullptr)
 	{
-		if (NavigationSystem != NULL)
-		{
-			SCOPE_CYCLE_COUNTER(STAT_NavWorldTickTime);
-			NavigationSystem->Tick(DeltaSeconds);
-		}
+		SCOPE_CYCLE_COUNTER(STAT_NavWorldTickTime);
+		NavigationSystem->Tick(DeltaSeconds);
 	}
 
 	bool bDoingActorTicks = 
@@ -1432,6 +1463,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			EnsureCollisionTreeIsBuilt();
 			bInTick = true;
 			{
+				SCOPE_CYCLE_COUNTER(STAT_TG_StartPhysics);
 				SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - TG_StartPhysics"), 10);
 				RunTickGroup(TG_StartPhysics); 
 			}
@@ -1465,7 +1497,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			if( !bIsPaused )
 			{
 				// This will process any latent actions that have not been processed already
-				CurrentLatentActionManager.ProcessLatentActions(NULL, DeltaSeconds);
+				CurrentLatentActionManager.ProcessLatentActions(nullptr, DeltaSeconds);
 			}
 #if 0 // if you need to debug physics drawing in editor, use this. If you type pxvis collision, it will work. 
 			else
@@ -1499,14 +1531,16 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 				// Update cameras last. This needs to be done before NetUpdates, and after all actors have been ticked.
 				for( FConstPlayerControllerIterator Iterator = GetPlayerControllerIterator(); Iterator; ++Iterator )
 				{
-					APlayerController* PlayerController = Iterator->Get();
-					if (!bIsPaused || PlayerController->ShouldPerformFullTickWhenPaused())
+					if (APlayerController* PlayerController = Iterator->Get())
 					{
-						PlayerController->UpdateCameraManager(DeltaSeconds);
-					}
-					else if (PlayerController->PlayerCameraManager && FCameraPhotographyManager::IsSupported(this))
-					{
-						PlayerController->PlayerCameraManager->UpdateCameraPhotographyOnly();
+						if (!bIsPaused || PlayerController->ShouldPerformFullTickWhenPaused())
+						{
+							PlayerController->UpdateCameraManager(DeltaSeconds);
+						}
+						else if (PlayerController->PlayerCameraManager && FCameraPhotographyManager::IsSupported(this))
+						{
+							PlayerController->PlayerCameraManager->UpdateCameraPhotographyOnly();
+						}
 					}
 				}
 
@@ -1551,7 +1585,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 		FWorldDelegates::OnWorldPostActorTick.Broadcast(this, TickType, DeltaSeconds);
 
 #if WITH_PHYSX
-		if ( PhysicsScene != NULL )
+		if ( PhysicsScene != nullptr )
 		{
 			GPhysCommandHandler->Flush();
 		}
@@ -1572,13 +1606,14 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	// Update net and flush networking.
     // Tick all net drivers
 	{
+		CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_NetBroadcastTickTime);
 		SCOPE_CYCLE_COUNTER(STAT_NetBroadcastTickTime);
 		BroadcastTickFlush(RealDeltaSeconds); // note: undilated time is being used here
 	}
 	
      // PostTick all net drivers
 	{
-		SCOPE_CYCLE_COUNTER(STAT_NetBroadcastPostTickTime);
+		CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_NetBroadcastPostTickTime);
 		BroadcastPostTickFlush(RealDeltaSeconds); // note: undilated time is being used here
 	}
 
@@ -1589,7 +1624,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	}
 
 	// Tick the FX system.
-	if (!bIsPaused && FXSystem != NULL)
+	if (!bIsPaused && FXSystem != nullptr)
 	{
 		SCOPE_TIME_GUARD_MS(TEXT("UWorld::Tick - FX"), 5);
 		FXSystem->Tick(DeltaSeconds);
@@ -1722,7 +1757,7 @@ void UWorld::CleanupActors()
 		// Don't compact actors array for levels that are currently in the process of being made visible as the
 		// code that spreads this work across several frames relies on the actor count not changing as it keeps
 		// an index into the array.
-		if( CurrentLevelPendingVisibility != Level )
+		if( ensure(Level != nullptr) && (CurrentLevelPendingVisibility != Level) )
 		{
 			// Actor 0 (world info) and 1 (default brush) are special and should never be removed from the actor array even if NULL
 			const int32 FirstDynamicIndex = 2;

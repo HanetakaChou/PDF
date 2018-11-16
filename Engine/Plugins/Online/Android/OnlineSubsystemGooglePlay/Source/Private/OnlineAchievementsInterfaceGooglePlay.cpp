@@ -2,11 +2,11 @@
 
 #include "OnlineAchievementsInterfaceGooglePlay.h"
 #include "OnlineAsyncTaskManagerGooglePlay.h"
-#include "Online.h"
 #include "Android/AndroidJNI.h"
 #include "OnlineAsyncTaskGooglePlayQueryAchievements.h"
 #include "OnlineSubsystemGooglePlay.h"
 #include "UObject/Class.h"
+#include "OnlineIdentityInterfaceGooglePlay.h"
 
 using namespace gpg;
 
@@ -25,7 +25,7 @@ void FOnlineAchievementsGooglePlay::QueryAchievements(const FUniqueNetId& Player
 		return;
 	}
 
-	auto QueryTask = new FOnlineAsyncTaskGooglePlayQueryAchievements(AndroidSubsystem, FUniqueNetIdString(PlayerId), Delegate);
+	auto QueryTask = new FOnlineAsyncTaskGooglePlayQueryAchievements(AndroidSubsystem, FUniqueNetIdGooglePlay(PlayerId), Delegate);
 	AndroidSubsystem->QueueAsyncTask(QueryTask);
 }
 
@@ -81,7 +81,7 @@ void FOnlineAchievementsGooglePlay::FinishAchievementWrite(
 			}
 		default:
 			{
-				UE_LOG(LogOnline, Error, TEXT("FOnlineAchievementsGooglePlay Trying to write an achievement with incompatible format. Not a float or int"));
+				UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("FOnlineAchievementsGooglePlay Trying to write an achievement with incompatible format. Not a float or int"));
 				break;
 			}
 		}
@@ -95,7 +95,7 @@ void FOnlineAchievementsGooglePlay::FinishAchievementWrite(
 
 		const FString GoogleId(GoogleAchievement.Id().c_str());
 
-		UE_LOG(LogOnline, Log, TEXT("Writing achievement name: %s, Google id: %s, progress: %.0f"),
+		UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("Writing achievement name: %s, Google id: %s, progress: %.0f"),
 			*UnrealAchievementId, *GoogleId, PercentComplete);
 		
 		switch(GoogleAchievement.Type())
@@ -107,12 +107,12 @@ void FOnlineAchievementsGooglePlay::FinishAchievementWrite(
 
 				if(RoundedSteps > 0)
 				{
-					UE_LOG(LogOnline, Log, TEXT("  Incremental: setting progress to %d"), RoundedSteps);
+					UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("  Incremental: setting progress to %d"), RoundedSteps);
 					AndroidSubsystem->GetGameServices()->Achievements().SetStepsAtLeast(GoogleAchievement.Id(), RoundedSteps);
 				}
 				else
 				{
-					UE_LOG(LogOnline, Log, TEXT("  Incremental: not setting progress to %d"), RoundedSteps);
+					UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("  Incremental: not setting progress to %d"), RoundedSteps);
 				}
 				break;
 			}
@@ -122,7 +122,7 @@ void FOnlineAchievementsGooglePlay::FinishAchievementWrite(
 				// Standard achievements only unlock if the progress is at least 100%.
 				if (PercentComplete >= 100.0f)
 				{
-					UE_LOG(LogOnline, Log, TEXT("  Standard: unlocking"));
+					UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("  Standard: unlocking"));
 					AndroidSubsystem->GetGameServices()->Achievements().Unlock(GoogleAchievement.Id());
 				}
 				break;
@@ -148,7 +148,7 @@ void FOnlineAchievementsGooglePlay::WriteAchievements( const FUniqueNetId& Playe
 	// Kick off a query if we don't have valid data.
 	if (GoogleAchievements.status != ResponseStatus::VALID)
 	{
-		auto QueryTask = new FOnlineAsyncTaskGooglePlayQueryAchievements(AndroidSubsystem, FUniqueNetIdString(PlayerId),
+		auto QueryTask = new FOnlineAsyncTaskGooglePlayQueryAchievements(AndroidSubsystem, FUniqueNetIdGooglePlay(PlayerId),
 			FOnQueryAchievementsCompleteDelegate::CreateRaw(
 				this,
 				&FOnlineAchievementsGooglePlay::FinishAchievementWrite,
@@ -211,7 +211,7 @@ EOnlineCachedResult::Type FOnlineAchievementsGooglePlay::GetCachedAchievementDes
 #if !UE_BUILD_SHIPPING
 bool FOnlineAchievementsGooglePlay::ResetAchievements( const FUniqueNetId& PlayerId )
 {
-	UE_LOG(LogOnline, Log, TEXT("Resetting Google Play achievements."));
+	UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("Resetting Google Play achievements."));
 
 	extern void AndroidThunkCpp_ResetAchievements();
 	AndroidThunkCpp_ResetAchievements();

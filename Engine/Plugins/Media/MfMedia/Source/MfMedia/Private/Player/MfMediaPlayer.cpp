@@ -8,16 +8,17 @@
 #include "IMediaEventSink.h"
 #include "IMediaOptions.h"
 #include "MediaSamples.h"
+#include "MediaPlayerOptions.h"
 
 #include "MfMediaSourceReaderCallback.h"
 #include "MfMediaTracks.h"
 #include "MfMediaUtils.h"
 
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
-	#include "AllowWindowsPlatformTypes.h"
+	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
 #else
-	#include "XboxOneAllowPlatformTypes.h"
+	#include "XboxOne/XboxOneAllowPlatformTypes.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "FMfMediaPlayer"
@@ -151,7 +152,7 @@ IMediaView& FMfMediaPlayer::GetView()
 }
 
 
-bool FMfMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
+bool FMfMediaPlayer::Open(const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions)
 {
 	Close();
 
@@ -162,7 +163,13 @@ bool FMfMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 
 	const bool Precache = (Options != nullptr) ? Options->GetMediaOption("PrecacheFile", false) : false;
 
-	return InitializePlayer(nullptr, Url, Precache);
+	return InitializePlayer(nullptr, Url, Precache, PlayerOptions);
+}
+
+
+bool FMfMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
+{
+	return Open(Url, Options, nullptr);
 }
 
 
@@ -182,7 +189,7 @@ bool FMfMediaPlayer::Open(const TSharedRef<FArchive, ESPMode::ThreadSafe>& Archi
 		return false;
 	}
 
-	return InitializePlayer(Archive, OriginalUrl, false);
+	return InitializePlayer(Archive, OriginalUrl, false, nullptr);
 }
 
 
@@ -325,6 +332,11 @@ void FMfMediaPlayer::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 bool FMfMediaPlayer::CommitTime(FTimespan Time)
 {
+	if (SourceReader == NULL)
+	{
+		return false;
+	}
+
 	// perform seek
 	PROPVARIANT Position;
 
@@ -353,7 +365,7 @@ bool FMfMediaPlayer::CommitTime(FTimespan Time)
 }
 
 
-bool FMfMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::ThreadSafe>& Archive, const FString& Url, bool Precache)
+bool FMfMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::ThreadSafe>& Archive, const FString& Url, bool Precache, const FMediaPlayerOptions* PlayerOptions)
 {
 	UE_LOG(LogMfMedia, VeryVerbose, TEXT("Player %p: Initializing %s (archive = %s, precache = %s)"), this, *Url, Archive.IsValid() ? TEXT("yes") : TEXT("no"), Precache ? TEXT("yes") : TEXT("no"));
 
@@ -362,11 +374,17 @@ bool FMfMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::Thread
 	MediaUrl = Url;
 	SourceReaderCallback = new FMfMediaSourceReaderCallback(*this);
 
+	FMediaPlayerOptions LocalPlayerOptions;
+	if (PlayerOptions)
+	{
+		LocalPlayerOptions = *PlayerOptions;
+	}
+
 	// initialize presentation on a separate thread
 	const EAsyncExecution Execution = Precache ? EAsyncExecution::Thread : EAsyncExecution::ThreadPool;
 
 	Async<void>(Execution, [
-		Archive, Url, Precache,
+		Archive, Url, Precache, LocalPlayerOptions,
 		Callback = TComPtr<FMfMediaSourceReaderCallback>(SourceReaderCallback),
 		SamplesPtr = TWeakPtr<FMediaSamples, ESPMode::ThreadSafe>(Samples),
 		TracksPtr = TWeakPtr<FMfMediaTracks, ESPMode::ThreadSafe>(Tracks)]()
@@ -377,7 +395,7 @@ bool FMfMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::Thread
 		if (PinnedSamples.IsValid() && PinnedTracks.IsValid())
 		{
 			TComPtr<IMFMediaSource> MediaSource = MfMedia::ResolveMediaSource(Archive, Url, Precache);
-			PinnedTracks->Initialize(MediaSource, Callback, PinnedSamples.ToSharedRef());
+			PinnedTracks->Initialize(MediaSource, Callback, PinnedSamples.ToSharedRef(), &LocalPlayerOptions);
 		}
 	});
 
@@ -746,9 +764,9 @@ void FMfMediaPlayer::ReceiveSourceReaderSample(IMFSample* Sample, HRESULT Status
 #undef LOCTEXT_NAMESPACE
 
 #if PLATFORM_WINDOWS
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 #else
-	#include "XboxOneHidePlatformTypes.h"
+	#include "XboxOne/XboxOneHidePlatformTypes.h"
 #endif
 
 #endif //MFMEDIA_SUPPORTED_PLATFORM

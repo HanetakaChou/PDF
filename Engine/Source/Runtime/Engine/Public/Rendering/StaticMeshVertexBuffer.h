@@ -18,20 +18,17 @@ struct TStaticMeshVertexTangentDatum
 
 	FORCEINLINE FVector GetTangentX() const
 	{
-		return TangentX;
+		return TangentX.ToFVector();
 	}
 
 	FORCEINLINE FVector4 GetTangentZ() const
 	{
-		return TangentZ;
+		return TangentZ.ToFVector4();
 	}
 
 	FORCEINLINE FVector GetTangentY() const
 	{
-		FVector  TanX = GetTangentX();
-		FVector4 TanZ = GetTangentZ();
-
-		return (FVector(TanZ) ^ TanX) * TanZ.W;
+		return GenerateYAxis(TangentX, TangentZ);
 	}
 
 	FORCEINLINE void SetTangents(FVector X, FVector Y, FVector Z)
@@ -112,7 +109,7 @@ template<>
 struct TStaticMeshVertexTangentTypeSelector<EStaticMeshVertexTangentBasisType::HighPrecision>
 {
 	typedef FPackedRGBA16N TangentTypeT;
-	static const EVertexElementType VertexElementType = VET_UShort4N;
+	static const EVertexElementType VertexElementType = VET_Short4N;
 };
 
 template<EStaticMeshVertexUVType UVType>
@@ -155,19 +152,21 @@ public:
 	* @param InVertices - The vertices to initialize the buffer with.
 	* @param InNumTexCoords - The number of texture coordinate to store in the buffer.
 	*/
-	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords);
+	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true);
 
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
 	* @param InVertexBuffer - The vertex buffer to initialize from.
 	*/
-	void Init(const FStaticMeshVertexBuffer& InVertexBuffer);
+	void Init(const FStaticMeshVertexBuffer& InVertexBuffer, bool bNeedsCPUAccess = true);
 
 	/**
-	* Removes the cloned vertices used for extruding shadow volumes.
-	* @param NumVertices - The real number of static mesh vertices which should remain in the buffer upon return.
-	*/
-	void RemoveLegacyShadowVolumeVertices(uint32 NumVertices);
+	 * Appends the specified vertices to the end of the buffer
+	 *
+	 * @param	Vertices	The vertex data to be appended.  Must not be nullptr.
+	 * @param	NumVerticesToAppend		How many vertices should be added
+	 */
+	ENGINE_API void AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend );
 
 	/**
 	* Serializer
@@ -216,7 +215,7 @@ public:
 		return ElementData[VertexIndex].GetTangentZ();
 	}
 
-	FORCEINLINE_DEBUGGABLE FVector VertexTangentZ(uint32 VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentZ(uint32 VertexIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 
@@ -463,6 +462,8 @@ private:
 
 	/** If true then RGB10A2 is used to store tangent else RGBA8 */
 	bool bUseHighPrecisionTangentBasis;
+
+	bool NeedsCPUAccess = true;
 
 	/** Allocates the vertex data storage type. */
 	void AllocateData(bool bNeedsCPUAccess = true);

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -83,7 +83,7 @@ class BuildPlugin : BuildCommand
 		FileReference HostProjectPluginFile = CreateHostProject(HostProjectFile, PluginFile);
 
 		// Read the plugin
-		CommandUtils.Log("Reading plugin from {0}...", HostProjectPluginFile);
+		CommandUtils.LogInformation("Reading plugin from {0}...", HostProjectPluginFile);
 		PluginDescriptor Plugin = PluginDescriptor.FromFile(HostProjectPluginFile);
 
 		// Compile the plugin for all the target platforms
@@ -120,42 +120,50 @@ class BuildPlugin : BuildCommand
 
 	FileReference[] CompilePlugin(FileReference HostProjectFile, FileReference HostProjectPluginFile, PluginDescriptor Plugin, List<UnrealTargetPlatform> HostPlatforms, List<UnrealTargetPlatform> TargetPlatforms, string AdditionalArgs)
 	{
-		List<FileReference> ReceiptFileNames = new List<FileReference>();
+		List<FileReference> ManifestFileNames = new List<FileReference>();
 
 		// Build the host platforms
 		if(HostPlatforms.Count > 0)
 		{
-			CommandUtils.Log("Building plugin for host platforms: {0}", String.Join(", ", HostPlatforms));
+			CommandUtils.LogInformation("Building plugin for host platforms: {0}", String.Join(", ", HostPlatforms));
 			foreach (UnrealTargetPlatform HostPlatform in HostPlatforms)
 			{
-				if (Plugin.bCanBeUsedWithUnrealHeaderTool)
+				if (Plugin.SupportedPrograms != null && Plugin.SupportedPrograms.Contains("UnrealHeaderTool"))
 				{
-					CompilePluginWithUBT(null, HostProjectPluginFile, Plugin, "UnrealHeaderTool", TargetType.Program, HostPlatform, UnrealTargetConfiguration.Development, ReceiptFileNames, String.Format("{0} -plugin={1}", AdditionalArgs, CommandUtils.MakePathSafeToUseWithCommandLine(HostProjectPluginFile.FullName)));
+					CompilePluginWithUBT(null, HostProjectPluginFile, Plugin, "UnrealHeaderTool", TargetType.Program, HostPlatform, UnrealTargetConfiguration.Development, ManifestFileNames, String.Format("{0} -plugin={1}", AdditionalArgs, CommandUtils.MakePathSafeToUseWithCommandLine(HostProjectPluginFile.FullName)));
 				}
-				CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Editor", TargetType.Editor, HostPlatform, UnrealTargetConfiguration.Development, ReceiptFileNames, AdditionalArgs);
+				CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Editor", TargetType.Editor, HostPlatform, UnrealTargetConfiguration.Development, ManifestFileNames, AdditionalArgs);
 			}
 		}
 
 		// Add the game targets
 		if(TargetPlatforms.Count > 0)
 		{
-			CommandUtils.Log("Building plugin for target platforms: {0}", String.Join(", ", TargetPlatforms));
+			CommandUtils.LogInformation("Building plugin for target platforms: {0}", String.Join(", ", TargetPlatforms));
 			foreach (UnrealTargetPlatform TargetPlatform in TargetPlatforms)
 			{
-				CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Game", TargetType.Game, TargetPlatform, UnrealTargetConfiguration.Development, ReceiptFileNames, null);
-				CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Game", TargetType.Game, TargetPlatform, UnrealTargetConfiguration.Shipping, ReceiptFileNames, null);
+				if(Plugin.SupportsTargetPlatform(TargetPlatform))
+				{
+					CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Game", TargetType.Game, TargetPlatform, UnrealTargetConfiguration.Development, ManifestFileNames, null);
+					CompilePluginWithUBT(HostProjectFile, HostProjectPluginFile, Plugin, "UE4Game", TargetType.Game, TargetPlatform, UnrealTargetConfiguration.Shipping, ManifestFileNames, null);
+				}
 			}
 		}
 
 		// Package the plugin to the output folder
-		List<BuildProduct> BuildProducts = GetBuildProductsFromReceipts(CommandUtils.EngineDirectory, HostProjectFile.Directory, ReceiptFileNames);
-		return BuildProducts.Select(x => x.Path).ToArray();
+		HashSet<FileReference> BuildProducts = new HashSet<FileReference>();
+		foreach(FileReference ManifestFileName in ManifestFileNames)
+		{
+			BuildManifest Manifest = CommandUtils.ReadManifest(ManifestFileName);
+			BuildProducts.UnionWith(Manifest.BuildProducts.Select(x => new FileReference(x)));
+		}
+		return BuildProducts.ToArray();
 	}
 
-	void CompilePluginWithUBT(FileReference HostProjectFile, FileReference HostProjectPluginFile, PluginDescriptor Plugin, string TargetName, TargetType TargetType, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, List<FileReference> ReceiptFileNames, string InAdditionalArgs)
+	void CompilePluginWithUBT(FileReference HostProjectFile, FileReference HostProjectPluginFile, PluginDescriptor Plugin, string TargetName, TargetType TargetType, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, List<FileReference> ManifestFileNames, string InAdditionalArgs)
 	{
 		// Find a list of modules that need to be built for this plugin
-		List<string> ModuleNames = new List<string>();
+		bool bCompilePlatform = false;
 		if (Plugin.Modules != null)
 		{
 			foreach (ModuleDescriptor Module in Plugin.Modules)
@@ -163,50 +171,27 @@ class BuildPlugin : BuildCommand
 				bool bBuildDeveloperTools = (TargetType == TargetType.Editor || TargetType == TargetType.Program);
 				bool bBuildEditor = (TargetType == TargetType.Editor);
 				bool bBuildRequiresCookedData = (TargetType != TargetType.Editor && TargetType != TargetType.Program);
-				if (Module.IsCompiledInConfiguration(Platform, TargetType, bBuildDeveloperTools, bBuildEditor, bBuildRequiresCookedData))
+				if (Module.IsCompiledInConfiguration(Platform, Configuration, TargetName, TargetType, bBuildDeveloperTools, bBuildEditor, bBuildRequiresCookedData))
 				{
-					ModuleNames.Add(Module.Name);
+					bCompilePlatform = true;
 				}
 			}
 		}
 
 		// Add these modules to the build agenda
-		if(ModuleNames.Count > 0)
+		if(bCompilePlatform)
 		{
-			string Arguments = "-iwyu";// String.Format("-plugin={0}", CommandUtils.MakePathSafeToUseWithCommandLine(PluginFile.FullName));
-			foreach(string ModuleName in ModuleNames)
-			{
-				Arguments += String.Format(" -module={0}", ModuleName);
-			}
-
-			string Architecture = PlatformExports.GetDefaultArchitecture(Platform, HostProjectFile);
-
-			FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(HostProjectPluginFile.Directory, TargetName, Platform, Configuration, Architecture);
-			Arguments += String.Format(" -receipt={0}", CommandUtils.MakePathSafeToUseWithCommandLine(ReceiptFileName.FullName));
-			ReceiptFileNames.Add(ReceiptFileName);
+			FileReference ManifestFileName = FileReference.Combine(HostProjectFile.Directory, "Saved", String.Format("Manifest-{0}-{1}-{2}.xml", TargetName, Platform, Configuration));
+			ManifestFileNames.Add(ManifestFileName);
 			
+			string Arguments = String.Format("-plugin={0} -iwyu -noubtmakefiles -manifest={1}", CommandUtils.MakePathSafeToUseWithCommandLine(HostProjectPluginFile.FullName), CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFileName.FullName));
 			if(!String.IsNullOrEmpty(InAdditionalArgs))
 			{
 				Arguments += InAdditionalArgs;
 			}
 
-			CommandUtils.RunUBT(CmdEnv, UE4Build.GetUBTExecutable(), String.Format("{0} {1} {2}{3} {4}", TargetName, Platform, Configuration, (HostProjectFile == null)? "" : String.Format(" -project=\"{0}\"", HostProjectFile.FullName), Arguments));
+			CommandUtils.RunUBT(CmdEnv, UE4Build.GetUBTExecutable(), String.Format("{0} {1} {2} {3}", TargetName, Platform, Configuration, Arguments));
 		}
-	}
-
-	static List<BuildProduct> GetBuildProductsFromReceipts(DirectoryReference EngineDir, DirectoryReference ProjectDir, List<FileReference> ReceiptFileNames)
-	{
-		List<BuildProduct> BuildProducts = new List<BuildProduct>();
-		foreach(FileReference ReceiptFileName in ReceiptFileNames)
-		{
-			TargetReceipt Receipt;
-			if(!TargetReceipt.TryRead(ReceiptFileName, EngineDir, ProjectDir, out Receipt))
-			{
-				throw new AutomationException("Missing or invalid target receipt ({0})", ReceiptFileName);
-			}
-			BuildProducts.AddRange(Receipt.BuildProducts);
-		}
-		return BuildProducts;
 	}
 
 	static void PackagePlugin(FileReference SourcePluginFile, IEnumerable<FileReference> BuildProducts, DirectoryReference TargetDir, bool bUnversioned)
@@ -248,13 +233,14 @@ class BuildPlugin : BuildCommand
 		Filter.Include("/Resources/...");
 		Filter.Include("/Content/...");
 		Filter.Include("/Intermediate/Build/.../Inc/...");
+		Filter.Include("/Shaders/...");
 		Filter.Include("/Source/...");
 
 		// Add custom rules for each platform
 		FileReference FilterFile = FileReference.Combine(PluginFile.Directory, "Config", "FilterPlugin.ini");
 		if(FileReference.Exists(FilterFile))
 		{
-			CommandUtils.Log("Reading filter rules from {0}", FilterFile);
+			CommandUtils.LogInformation("Reading filter rules from {0}", FilterFile);
 			Filter.ReadRulesFromFile(FilterFile, "FilterPlugin");
 		}
 

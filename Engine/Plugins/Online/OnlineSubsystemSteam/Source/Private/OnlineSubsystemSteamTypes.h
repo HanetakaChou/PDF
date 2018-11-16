@@ -124,6 +124,11 @@ public:
 	{
 	}
 
+	virtual FName GetType() const override
+	{
+		return STEAM_SUBSYSTEM;
+	}
+
 	/**
 	 * Get the raw byte representation of this net id
 	 * This data is platform dependent and shouldn't be manipulated directly
@@ -174,29 +179,31 @@ public:
 	virtual FString ToDebugString() const override
 	{
 		CSteamID SteamID(UniqueNetId);
+
+		const FString UniqueNetIdStr = FString::Printf(TEXT("[0x%llX]"), UniqueNetId);
 		if (SteamID.IsLobby())
 		{
-			return FString::Printf(TEXT("Lobby [0x%llX]"), UniqueNetId);
+			return TEXT("Lobby") + OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr);
 		}
 		else if (SteamID.BAnonGameServerAccount())
 		{
-			return FString::Printf(TEXT("Server [0x%llX]"), UniqueNetId);
+			return TEXT("Server") + OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr);
 		}
 		else if (SteamID.IsValid())
 		{
 			const FString NickName(SteamFriends() ? UTF8_TO_TCHAR(SteamFriends()->GetFriendPersonaName(UniqueNetId)) : TEXT("UNKNOWN"));
-			return FString::Printf(TEXT("%s [0x%llX]"), *NickName, UniqueNetId);
+			return FString::Printf(TEXT("%s [0x%llX]"), *NickName, *OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr));
 		}
 		else
 		{
-			return FString::Printf(TEXT("INVALID [0x%llX]"), UniqueNetId);
+			return TEXT("INVALID") + OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr);
 		}
 	}
 
 	/** Needed for TMap::GetTypeHash() */
 	friend uint32 GetTypeHash(const FUniqueNetIdSteam& A)
 	{
-		return (uint32)(A.UniqueNetId) + ((uint32)((A.UniqueNetId) >> 32 ) * 23);
+		return GetTypeHash(A.UniqueNetId);
 	}
 
 	/** Convenience cast to CSteamID */
@@ -221,6 +228,11 @@ public:
 	operator const CSteamID*() const
 	{
 		return (const CSteamID*)&UniqueNetId;
+	}
+
+	friend FArchive& operator<<(FArchive& Ar, FUniqueNetIdSteam& UserId)
+	{
+		return Ar << UserId.UniqueNetId;
 	}
 };
 

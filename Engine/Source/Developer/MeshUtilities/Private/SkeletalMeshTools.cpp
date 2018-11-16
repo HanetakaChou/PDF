@@ -24,17 +24,17 @@ namespace SkeletalMeshTools
 			}
 		}
 
-		if(!NormalsEqual(V1.TangentX, V2.TangentX, OverlappingThresholds))
+		if(!NormalsEqual(V1.TangentX.ToFVector(), V2.TangentX.ToFVector(), OverlappingThresholds))
 		{
 			return false;
 		}
 
-		if(!NormalsEqual(V1.TangentY, V2.TangentY, OverlappingThresholds))
+		if(!NormalsEqual(V1.TangentY.ToFVector(), V2.TangentY.ToFVector(), OverlappingThresholds))
 		{
 			return false;
 		}
 
-		if(!NormalsEqual(V1.TangentZ, V2.TangentZ, OverlappingThresholds))
+		if(!NormalsEqual(V1.TangentZ.ToFVector(), V2.TangentZ.ToFVector(), OverlappingThresholds))
 		{
 			return false;
 		}
@@ -63,7 +63,7 @@ namespace SkeletalMeshTools
 		return true;
 	}
 
-	void BuildSkeletalMeshChunks( const TArray<FMeshFace>& Faces, const TArray<FSoftSkinBuildVertex>& RawVertices, TArray<FSkeletalMeshVertIndexAndZ>& RawVertIndexAndZ, const FOverlappingThresholds &OverlappingThresholds, TArray<FSkinnedMeshChunk*>& OutChunks, bool& bOutTooManyVerts )
+	void BuildSkeletalMeshChunks( const TArray<SkeletalMeshImportData::FMeshFace>& Faces, const TArray<FSoftSkinBuildVertex>& RawVertices, TArray<FSkeletalMeshVertIndexAndZ>& RawVertIndexAndZ, const FOverlappingThresholds &OverlappingThresholds, TArray<FSkinnedMeshChunk*>& OutChunks, bool& bOutTooManyVerts )
 	{
 		TArray<int32> DupVerts;
 
@@ -112,7 +112,7 @@ namespace SkeletalMeshTools
 		uint32 TriangleIndices[3];
 		for(int32 FaceIndex = 0; FaceIndex < Faces.Num(); FaceIndex++)
 		{
-			const FMeshFace& Face = Faces[FaceIndex];
+			const SkeletalMeshImportData::FMeshFace& Face = Faces[FaceIndex];
 
 			// Find a chunk which matches this triangle.
 			FSkinnedMeshChunk* Chunk = NULL;
@@ -294,32 +294,6 @@ namespace SkeletalMeshTools
 #endif // #if WITH_EDITORONLY_DATA
 	}
 
-	/**
-	 * Copies data out of Model so that the data can be processed in the background.
-	 */
-	void CopySkinnedModelData(FSkinnedModelData& OutData, FSkeletalMeshLODModel& Model)
-	{
-	#if WITH_EDITORONLY_DATA
-		Model.GetVertices(OutData.Vertices);
-		OutData.Indices = Model.IndexBuffer;
-		if (Model.RawPointIndices.GetElementCount() == OutData.Vertices.Num())
-		{
-			OutData.RawPointIndices.Empty(Model.RawPointIndices.GetElementCount());
-			OutData.RawPointIndices.AddUninitialized(Model.RawPointIndices.GetElementCount());
-			void* DestPtr = OutData.RawPointIndices.GetData();
-			Model.RawPointIndices.GetCopy(&DestPtr, /*bDiscardInternalCopy=*/false);
-			check(DestPtr == OutData.RawPointIndices.GetData());
-		}
-		OutData.MeshToImportVertexMap = Model.MeshToImportVertexMap;
-		OutData.Sections = Model.Sections;
-		for (int32 SectionIndex = 0; SectionIndex < Model.Sections.Num(); ++SectionIndex)
-		{
-			TArray<FBoneIndexType>& DestBoneMap = *new(OutData.BoneMaps) TArray<FBoneIndexType>();
-			DestBoneMap = Model.Sections[SectionIndex].BoneMap;
-		}
-		OutData.NumTexCoords = Model.NumTexCoords;
-	#endif // #if WITH_EDITORONLY_DATA
-	};
 	
 	// Find the most dominant bone for each vertex
 	int32 GetDominantBoneIndex(FSoftSkinVertex* SoftVert)

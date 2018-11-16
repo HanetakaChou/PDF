@@ -11,11 +11,15 @@
 #include "Online.h"
 #include "EngineGlobals.h"
 #include "VoipListenerSynthComponent.h"
+#include "Features/IModularFeatures.h"
+
+class UWorld;
+class UAudioComponent;
 
 #ifdef ONLINESUBSYSTEMUTILS_API
 
 /** @return an initialized audio component specifically for use with VoIP */
-ONLINESUBSYSTEMUTILS_API class UAudioComponent* CreateVoiceAudioComponent(uint32 SampleRate, int32 NumChannels);
+ONLINESUBSYSTEMUTILS_API UAudioComponent* CreateVoiceAudioComponent(uint32 SampleRate, int32 NumChannels);
 
 /** @return an initialized Synth component specifically for use with VoIP */
 ONLINESUBSYSTEMUTILS_API UVoipListenerSynthComponent* CreateVoiceSynthComponent(uint32 SampleRate);
@@ -37,12 +41,34 @@ ONLINESUBSYSTEMUTILS_API int32 GetPortFromNetDriver(FName InstanceName);
 
 ONLINESUBSYSTEMUTILS_API int32 GetClientPeerIp(FName InstanceName, const FUniqueNetId& UserId);
 
+#if WITH_ENGINE
+/**
+ * Get a 64bit bit base id for a chat room 
+ * <32bit IP Addr> | <EmptySpace> | <24bit ProcessId>
+ *
+ * @param World world for context
+ *
+ * @return 64bit base id for a voice chat room
+ */
+ONLINESUBSYSTEMUTILS_API uint64 GetBaseVoiceChatTeamId(const UWorld* World);
+/**
+ * Get a 64bit bit final id for a chat room 
+ * <32bit IP Addr> | <8bit team index> | <24bit ProcessId>
+ *
+ * @param VoiceChatIdBase previously retrieved base id
+ * @param TeamIndex index for a given team needing a voice chat id
+ *
+ * @return 64bit id for a voice chat room
+ */
+ONLINESUBSYSTEMUTILS_API uint64 GetVoiceChatTeamId(uint64 VoiceChatIdBase, uint8 TeamIndex);
+#endif
+
 #endif
 
 /**
  * Interface class for various online utility functions
  */
-class IOnlineSubsystemUtils
+class IOnlineSubsystemUtils 
 {
 protected:
 	/** Hidden on purpose */
@@ -59,7 +85,7 @@ public:
 	 * @param Subsystem the name of the subsystem
 	 * @return an FName of format Subsystem:Context_Id in PlayInEditor or Subsystem everywhere else
 	 */
-	virtual FName GetOnlineIdentifier(const FWorldContext& WorldContext, const FName Subsystem = NAME_None) = 0;
+	virtual FName GetOnlineIdentifier(const FWorldContext& WorldContext, const FName Subsystem = NAME_None) const = 0;
 
 	/**
 	 * Gets an FName that uniquely identifies an instance of OSS
@@ -68,7 +94,45 @@ public:
 	 * @param Subsystem the name of the subsystem
 	 * @return an FName of format Subsystem:Context_Id in PlayInEditor or Subsystem everywhere else
 	 */
-	virtual FName GetOnlineIdentifier(UWorld* World, const FName Subsystem = NAME_None) = 0;
+	virtual FName GetOnlineIdentifier(const UWorld* World, const FName Subsystem = NAME_None) const = 0;
+
+	/**
+	 * Create a TRANSPORT LAYER unique id
+	 * NOTE: Do NOT Use this for anything other than replication to non native platforms
+	 * This is NOT a shortcut for creating unique ids
+	 * 
+	 * @param Str string form an opaque unique net id
+	 * @param Type name of the online subsystem this unique id belongs to
+	 *
+	 * @return unique net id in "transport" format
+	 */
+	virtual TSharedPtr<const FUniqueNetId> CreateForeignUniqueNetId(const FString& Str, FName Type) const = 0;
+
+	/** 
+	 * Return the replication hash for a given subsystem
+	 *
+	 * @param InSubsystemName name of subsystem to retrieve hash from
+	 *
+	 * @return replication hash, or 0 if invalid/unknown
+	 */
+	virtual uint8 GetReplicationHashForSubsystem(FName SubsystemName) const = 0;
+
+	/**
+	 * Return the name of the online subsystem associated with this hash
+	 *
+	 * @param InHash replication hash for an online subsystem
+	 *
+	 * @return name of subsystem this hash belongs to
+	 */
+	virtual FName GetSubsystemFromReplicationHash(uint8 InHash) const = 0;
+
+	/**
+	 * Bind a notification delegate when any subsystem external UI is opened/closed
+	 * *NOTE* there is only meant to be one delegate needed for this, game code should bind manually
+	 *
+	 * @param OnExternalUIChangeDelegate delegate fired when the external UI is opened/closed
+	 */
+	virtual void SetEngineExternalUIBinding(const FOnExternalUIChangeDelegate& OnExternalUIChangeDelegate) = 0;
 
 #if WITH_EDITOR
 	/**
@@ -90,7 +154,7 @@ public:
 
 /** Macro to handle the boilerplate of accessing the proper online subsystem and getting the requested interface (UWorld version) */
 #define IMPLEMENT_GET_INTERFACE(InterfaceType) \
-static IOnline##InterfaceType##Ptr Get##InterfaceType##Interface(class UWorld* World, const FName SubsystemName = NAME_None) \
+static IOnline##InterfaceType##Ptr Get##InterfaceType##Interface(const UWorld* World, const FName SubsystemName = NAME_None) \
 { \
 	IOnlineSubsystem* OSS = Online::GetSubsystem(World, SubsystemName); \
 	return (OSS == NULL) ? NULL : OSS->Get##InterfaceType##Interface(); \
@@ -111,6 +175,22 @@ namespace Online
 		return nullptr;
 	}
 
+	/**
+	 * Wrapper for IModularFeatures::IsModularFeatureAvailable and IModularFeatures::GetModularFeature
+	 * @param Type name of the modular feature
+	 * @return pointer to the modular feature if it is available
+	 */
+	template< typename TModularFeature >
+	inline TModularFeature* GetModularFeature( const FName Type )
+	{
+		TModularFeature* Feature = nullptr;
+		if (IModularFeatures::Get().IsModularFeatureAvailable(Type))
+		{
+			Feature = &IModularFeatures::Get().GetModularFeature<TModularFeature>(Type);
+		}
+		return Feature;
+	}
+
 	/** 
 	 * Get the online subsystem for a given service
 	 *
@@ -119,7 +199,7 @@ namespace Online
 	 *
 	 * @return pointer to the appropriate online subsystem
 	 */
-	static IOnlineSubsystem* GetSubsystem(UWorld* World, const FName& SubsystemName = NAME_None)
+	static IOnlineSubsystem* GetSubsystem(const UWorld* World, const FName& SubsystemName = NAME_None)
 	{
 #if UE_EDITOR // at present, multiple worlds are only possible in the editor
 		FName Identifier = SubsystemName; 
@@ -143,7 +223,7 @@ namespace Online
 	 *
 	 * @return true if module for the subsystem is loaded
 	 */
-	static bool IsLoaded(UWorld* World, const FName& SubsystemName = NAME_None)
+	static bool IsLoaded(const UWorld* World, const FName& SubsystemName = NAME_None)
 	{
 #if UE_EDITOR // at present, multiple worlds are only possible in the editor
 		FName Identifier = SubsystemName;

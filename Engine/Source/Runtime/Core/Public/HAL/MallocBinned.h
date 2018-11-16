@@ -8,17 +8,18 @@
 #include "Math/UnrealMathUtility.h"
 #include "Stats/Stats.h"
 #include "HAL/MallocJemalloc.h"
+#include "HAL/LowLevelMemTracker.h"
 
 #define MEM_TIME(st)
 
 //#define USE_LOCKFREE_DELETE
 #define USE_INTERNAL_LOCKS
 #if USE_CACHE_FREED_OS_ALLOCS
-#define CACHE_FREED_OS_ALLOCS
+//#define CACHE_FREED_OS_ALLOCS
 #endif
 
 #ifdef USE_INTERNAL_LOCKS
-//#	define USE_COARSE_GRAIN_LOCKS
+//#   define USE_COARSE_GRAIN_LOCKS
 #endif
 
 #if defined USE_LOCKFREE_DELETE
@@ -284,6 +285,8 @@ public:
 	 * @return true if succeeded
 	 */
 	virtual bool GetAllocationSize(void *Original, SIZE_T &SizeOut) override;
+
+	virtual SIZE_T QuantizeSize(SIZE_T Count, uint32 Alignment) override;
 
 	/**
 	 * Validates the allocator's heap

@@ -18,16 +18,16 @@
 #include "XAudio2Effects.h"
 #include "Interfaces/IAudioFormat.h"
 #include "HAL/PlatformAffinity.h"
-#include "WindowsHWrapper.h"
-#include "AllowWindowsPlatformTypes.h"
-#include "AllowWindowsPlatformAtomics.h"
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformAtomics.h"
 THIRD_PARTY_INCLUDES_START
 	#include <xapobase.h>
 	#include <xapofx.h>
 	#include <xaudio2fx.h>
 THIRD_PARTY_INCLUDES_END
-#include "HideWindowsPlatformAtomics.h"
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformAtomics.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #include "XAudio2Support.h"
 #include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
 
@@ -67,6 +67,11 @@ XAUDIO2_DEVICE_DETAILS FXAudioDeviceProperties::DeviceDetails;
 ------------------------------------------------------------------------------------*/
 
 #define DEBUG_XAUDIO2 0
+
+void FXAudio2Device::UpdateDeviceDeltaTime()
+{
+	DeviceDeltaTime = GetGameDeltaTime();
+}
 
 void FXAudio2Device::GetAudioDeviceList(TArray<FString>& OutAudioDeviceNames) const
 {
@@ -259,9 +264,6 @@ bool FXAudio2Device::InitializeHardware()
 		CommonAudioPoolFreeBytes = 0;
 	}
 
-	// Now initialize the audio clock voice after xaudio2 is initialized
-	DeviceProperties->InitAudioClockVoice();
-
 #if WITH_XMA2
 	FXMAAudioInfo::Initialize();
 #endif
@@ -276,6 +278,10 @@ void FXAudio2Device::TeardownHardware()
 		delete DeviceProperties;
 		DeviceProperties = nullptr;
 	}
+
+#if WITH_XMA2
+	FXMAAudioInfo::Shutdown();
+#endif
 
 #if PLATFORM_WINDOWS
 	if (bComInitialized)
@@ -317,22 +323,6 @@ void FXAudio2Device::UpdateHardware()
 		Sources.Reset();
 
 		InitSoundSources();
-	}
-}
-
-void FXAudio2Device::UpdateAudioClock()
-{
-	// Update the audio clock time
-	const double NewAudioClock = DeviceProperties->GetAudioClockTime();
-
-	// If the device properties failed at getting an audio clock, then fallback to using device delta time
-	if (NewAudioClock == 0.0)
-	{
-		AudioClock += GetDeviceDeltaTime();
-	}
-	else
-	{
-		AudioClock = NewAudioClock + CachedAudioClockStartTime;
 	}
 }
 
@@ -589,7 +579,7 @@ void FXAudio2Device::TestDecompressOggVorbis( USoundWave* Wave )
 	if( OggInfo.ReadCompressedInfo( Wave->ResourceData, Wave->ResourceSize, &QualityInfo ) )
 	{
 		// Extract the data
-		Wave->SampleRate = QualityInfo.SampleRate;
+		Wave->SetSampleRate(QualityInfo.SampleRate);
 		Wave->NumChannels = QualityInfo.NumChannels;
 		Wave->RawPCMDataSize = QualityInfo.SampleDataSize;
 		Wave->Duration = QualityInfo.Duration;

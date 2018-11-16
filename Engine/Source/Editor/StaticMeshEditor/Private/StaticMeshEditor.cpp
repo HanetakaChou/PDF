@@ -25,9 +25,9 @@
 
 #include "StaticMeshResources.h"
 #include "BusyCursor.h"
-#include "Private/GeomFitUtils.h"
+#include "Editor/UnrealEd/Private/GeomFitUtils.h"
 #include "EditorViewportCommands.h"
-#include "Private/ConvexDecompTool.h"
+#include "Editor/UnrealEd/Private/ConvexDecompTool.h"
 
 #include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
@@ -43,6 +43,8 @@
 #include "AdvancedPreviewSceneModule.h"
 
 #include "ConvexDecompositionNotification.h"
+#include "FbxMeshUtils.h"
+#include "RawMesh.h"
 
 #define LOCTEXT_NAMESPACE "StaticMeshEditor"
 
@@ -63,7 +65,8 @@ const FName FStaticMeshEditor::ViewportTabId( TEXT( "StaticMeshEditor_Viewport" 
 const FName FStaticMeshEditor::PropertiesTabId( TEXT( "StaticMeshEditor_Properties" ) );
 const FName FStaticMeshEditor::SocketManagerTabId( TEXT( "StaticMeshEditor_SocketManager" ) );
 const FName FStaticMeshEditor::CollisionTabId( TEXT( "StaticMeshEditor_Collision" ) );
-const FName FStaticMeshEditor::PreviewSceneSettingsTabId(TEXT("StaticMeshEditor_PreviewScene"));
+const FName FStaticMeshEditor::PreviewSceneSettingsTabId( TEXT ("StaticMeshEditor_PreviewScene" ) );
+const FName FStaticMeshEditor::SecondaryToolbarTabId( TEXT( "StaticMeshEditor_SecondaryToolbar" ) );
 
 void FStaticMeshEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
 {
@@ -92,10 +95,19 @@ void FStaticMeshEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>&
 		.SetGroup(WorkspaceMenuCategoryRef)
 		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "StaticMeshEditor.Tabs.ConvexDecomposition"));
 
-	InTabManager->RegisterTabSpawner(PreviewSceneSettingsTabId, FOnSpawnTab::CreateSP(this, &FStaticMeshEditor::SpawnTab_PreviewSceneSettings))
-		.SetDisplayName(LOCTEXT("PreviewSceneTab", "Preview Scene Settings"))
+	InTabManager->RegisterTabSpawner( PreviewSceneSettingsTabId, FOnSpawnTab::CreateSP(this, &FStaticMeshEditor::SpawnTab_PreviewSceneSettings) )
+		.SetDisplayName( LOCTEXT("PreviewSceneTab", "Preview Scene Settings") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));	
+		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+
+	FTabSpawnerEntry& MenuEntry = InTabManager->RegisterTabSpawner( SecondaryToolbarTabId, FOnSpawnTab::CreateSP(this, &FStaticMeshEditor::SpawnTab_SecondaryToolbar) )
+		.SetDisplayName( LOCTEXT("ToolbarTab", "Secondary Toolbar") )
+		.SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Toolbar.Icon"));
+
+	// Hide the menu item by default. It will be enabled only if the secondary toolbar is populated with extensions
+	SecondaryToolbarEntry = &MenuEntry;
+	SecondaryToolbarEntry->SetMenuType( ETabSpawnerMenuType::Hidden );
 }
 
 void FStaticMeshEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -107,6 +119,7 @@ void FStaticMeshEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager
 	InTabManager->UnregisterTabSpawner( SocketManagerTabId );
 	InTabManager->UnregisterTabSpawner( CollisionTabId );
 	InTabManager->UnregisterTabSpawner( PreviewSceneSettingsTabId );
+	InTabManager->UnregisterTabSpawner( SecondaryToolbarTabId );
 }
 
 
@@ -151,7 +164,7 @@ void FStaticMeshEditor::InitStaticMeshEditor( const EToolkitMode::Type Mode, con
 		.ObjectToEdit(ObjectToEdit);
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
-	
+
 	FDetailsViewArgs DetailsViewArgs;
 	DetailsViewArgs.bAllowSearch = true;
 	DetailsViewArgs.bLockable = false;
@@ -168,7 +181,7 @@ void FStaticMeshEditor::InitStaticMeshEditor( const EToolkitMode::Type Mode, con
 
 	BuildSubTools();
 
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_StaticMeshEditor_Layout_v4" )
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_StaticMeshEditor_Layout_v4.1" )
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
@@ -178,6 +191,8 @@ void FStaticMeshEditor::InitStaticMeshEditor( const EToolkitMode::Type Mode, con
 			->SetSizeCoefficient(0.1f)
 			->SetHideTabWell( true )
 			->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
+			// Don't want the secondary toolbar tab to be opened if there's nothing in it
+			->AddTab(SecondaryToolbarTabId, ETabState::ClosedTab)
 		)
 		->Split
 		(
@@ -197,7 +212,7 @@ void FStaticMeshEditor::InitStaticMeshEditor( const EToolkitMode::Type Mode, con
 				->Split
 				(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.7f)					
+					->SetSizeCoefficient(0.7f)
 					->AddTab(PreviewSceneSettingsTabId, ETabState::OpenedTab)
 					->AddTab(PropertiesTabId, ETabState::OpenedTab)
 				)
@@ -215,10 +230,94 @@ void FStaticMeshEditor::InitStaticMeshEditor( const EToolkitMode::Type Mode, con
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor( Mode, InitToolkitHost, StaticMeshEditorAppIdentifier, StandaloneDefaultLayout, bCreateDefaultToolbar, bCreateDefaultStandaloneMenu, ObjectToEdit );
-	
+
 	ExtendMenu();
 	ExtendToolBar();
 	RegenerateMenusAndToolbars();
+	GenerateSecondaryToolbar();
+}
+
+void FStaticMeshEditor::GenerateSecondaryToolbar()
+{
+	// Generate the secondary toolbar only if there are registered extensions
+	TSharedPtr<SDockTab> Tab = TabManager->FindExistingLiveTab(SecondaryToolbarTabId);
+
+	TSharedPtr<FExtender> Extender = FExtender::Combine(SecondaryToolbarExtenders);
+	if (Extender->NumExtensions() == 0)
+	{
+		// If the tab was previously opened, close it since it's now empty
+		if (Tab)
+		{
+			Tab->RemoveTabFromParent();
+		}
+		return;
+	}
+
+	const bool bIsFocusable = true;
+
+	FToolBarBuilder ToolbarBuilder(GetToolkitCommands(), FMultiBoxCustomization::AllowCustomization(GetToolkitFName()), Extender);
+	ToolbarBuilder.SetIsFocusable(bIsFocusable);
+	ToolbarBuilder.BeginSection("Extensions");
+	{
+		// The secondary toolbar itself is empty but will be populated by the extensions when EndSection is called.
+		// The section name helps in the extenders positioning.
+	}
+	ToolbarBuilder.EndSection();
+
+	// Setup the secondary toolbar menu entry
+	SecondaryToolbarEntry->SetMenuType(ETabSpawnerMenuType::Enabled);
+	SecondaryToolbarEntry->SetDisplayName(SecondaryToolbarDisplayName);
+
+	SecondaryToolbar =
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Left)
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.VAlign(VAlign_Bottom)
+			[
+				ToolbarBuilder.MakeWidget()
+			]
+		];
+
+	if (SecondaryToolbarWidgetContent.IsValid())
+	{
+		SecondaryToolbarWidgetContent->SetContent(SecondaryToolbar.ToSharedRef());
+	}
+
+	if (!Tab)
+	{
+		// By default, the tab is closed but we want it to be opened when it is populated
+		Tab = TSharedPtr<SDockTab>(TabManager->InvokeTab(SecondaryToolbarTabId));
+	}
+
+	// Override the display name if it was set
+	if (!SecondaryToolbarDisplayName.IsEmpty())
+	{
+		Tab->SetLabel(SecondaryToolbarDisplayName);
+	}
+
+	// But have the focus on the default toolbar
+	TabManager->InvokeTab(GetToolbarTabId());
+}
+
+void FStaticMeshEditor::AddSecondaryToolbarExtender(TSharedPtr<FExtender> Extender)
+{
+	SecondaryToolbarExtenders.AddUnique(Extender);
+}
+
+void FStaticMeshEditor::RemoveSecondaryToolbarExtender(TSharedPtr<FExtender> Extender)
+{
+	SecondaryToolbarExtenders.Remove(Extender);
+}
+
+void FStaticMeshEditor::SetSecondaryToolbarDisplayName(FText DisplayName)
+{
+	SecondaryToolbarDisplayName = DisplayName;
 }
 
 TSharedRef<IDetailCustomization> FStaticMeshEditor::MakeStaticMeshDetails()
@@ -254,7 +353,7 @@ void FStaticMeshEditor::ExtendMenu()
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().FindSource);
 			}
 			InMenuBuilder.EndSection();
-			
+
 			InMenuBuilder.BeginSection("MeshChange");
 			{
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().ChangeMesh);
@@ -278,7 +377,7 @@ void FStaticMeshEditor::ExtendMenu()
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().CreateDOP10Y);
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().CreateDOP10Z);
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().CreateDOP18);
-				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().CreateDOP26);	
+				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().CreateDOP26);
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().ConvertBoxesToConvex);
 				InMenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().RemoveCollision);
 				InMenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete, "DeleteCollision", LOCTEXT("DeleteCollision", "Delete Selected Collision"), LOCTEXT("DeleteCollisionToolTip", "Deletes the selected Collision from the mesh."));
@@ -314,7 +413,7 @@ void FStaticMeshEditor::ExtendMenu()
 				"Collision");
 		}
 	};
-	
+
 	TSharedPtr<FExtender> MenuExtender = MakeShareable(new FExtender);
 
 	MenuExtender->AddMenuExtension(
@@ -329,9 +428,9 @@ void FStaticMeshEditor::ExtendMenu()
 		GetToolkitCommands(),
 		FMenuBarExtensionDelegate::CreateStatic( &Local::GenerateMeshAndCollisionMenuBars )
 		);
-	
+
 	AddMenuExtender(MenuExtender);
-	
+
 	IStaticMeshEditorModule* StaticMeshEditorModule = &FModuleManager::LoadModuleChecked<IStaticMeshEditorModule>( "StaticMeshEditor" );
 	AddMenuExtender(StaticMeshEditorModule->GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 }
@@ -344,7 +443,7 @@ void FStaticMeshEditor::AddReferencedObjects( FReferenceCollector& Collector )
 TSharedRef<SDockTab> FStaticMeshEditor::SpawnTab_Viewport( const FSpawnTabArgs& Args )
 {
 	check( Args.GetTabId() == ViewportTabId );
-	
+
 	TSharedRef<SDockTab> SpawnedTab =
 	 SNew(SDockTab)
 		.Label( LOCTEXT("StaticMeshViewport_TabTitle", "Viewport") )
@@ -391,14 +490,36 @@ TSharedRef<SDockTab> FStaticMeshEditor::SpawnTab_Collision( const FSpawnTabArgs&
 		];
 }
 
-TSharedRef<SDockTab> FStaticMeshEditor::SpawnTab_PreviewSceneSettings(const FSpawnTabArgs& Args)
+TSharedRef<SDockTab> FStaticMeshEditor::SpawnTab_PreviewSceneSettings( const FSpawnTabArgs& Args )
 {
-	check(Args.GetTabId() == PreviewSceneSettingsTabId);
+	check( Args.GetTabId() == PreviewSceneSettingsTabId );
 	return SNew(SDockTab)
-		.Label(LOCTEXT("StaticMeshPreviewScene_TabTitle", "Preview Scene Settings"))
+		.Label( LOCTEXT("StaticMeshPreviewScene_TabTitle", "Preview Scene Settings") )
 		[
 			AdvancedPreviewSettingsWidget.ToSharedRef()
 		];
+}
+
+TSharedRef<SDockTab> FStaticMeshEditor::SpawnTab_SecondaryToolbar( const FSpawnTabArgs& Args )
+{
+	check( Args.GetTabId() == SecondaryToolbarTabId );
+
+	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
+		.Label( LOCTEXT("SecondaryToolbar_TabTitle", "Secondary Toolbar") )
+		.Icon( FEditorStyle::GetBrush("LevelEditor.Tabs.Toolbar") )
+		.ShouldAutosize( true )
+		[
+			SAssignNew(SecondaryToolbarWidgetContent, SBorder)
+			.Padding(0)
+			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		];
+
+	if ( SecondaryToolbar.IsValid() )
+	{
+		SecondaryToolbarWidgetContent->SetContent( SecondaryToolbar.ToSharedRef() );
+	}
+	
+	return SpawnedTab;
 }
 
 void FStaticMeshEditor::BindCommands()
@@ -411,10 +532,10 @@ void FStaticMeshEditor::BindCommands()
 		FExecuteAction::CreateSP( this, &FStaticMeshEditor::DeleteSelected ),
 		FCanExecuteAction::CreateSP(this, &FStaticMeshEditor::CanDeleteSelected));
 
-	UICommandList->MapAction( FGenericCommands::Get().Undo, 
+	UICommandList->MapAction( FGenericCommands::Get().Undo,
 		FExecuteAction::CreateSP( this, &FStaticMeshEditor::UndoAction ) );
 
-	UICommandList->MapAction( FGenericCommands::Get().Redo, 
+	UICommandList->MapAction( FGenericCommands::Get().Redo,
 		FExecuteAction::CreateSP( this, &FStaticMeshEditor::RedoAction ) );
 
 	UICommandList->MapAction(
@@ -512,11 +633,41 @@ void FStaticMeshEditor::ExtendToolBar()
 {
 	struct Local
 	{
-		static void FillToolbar(FToolBarBuilder& ToolbarBuilder, FStaticMeshEditor* ThisEditor) 
+		static void FillToolbar(FToolBarBuilder& ToolbarBuilder, FStaticMeshEditor* ThisEditor)
 		{
+			auto ConstructReimportContextMenu = [ThisEditor]()
+			{
+				FMenuBuilder MenuBuilder(true, nullptr);
+				MenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().ReimportMesh->GetLabel(),
+					FStaticMeshEditorCommands::Get().ReimportMesh->GetDescription(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateSP(ThisEditor, &FStaticMeshEditor::HandleReimportMesh)));
+				MenuBuilder.AddMenuEntry(FStaticMeshEditorCommands::Get().ReimportAllMesh->GetLabel(),
+					FStaticMeshEditorCommands::Get().ReimportAllMesh->GetDescription(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateSP(ThisEditor, &FStaticMeshEditor::HandleReimportAllMesh)));
+				return MenuBuilder.MakeWidget();
+			};
+
 			ToolbarBuilder.BeginSection("Realtime");
 			{
 				ToolbarBuilder.AddToolBarButton(FEditorViewportCommands::Get().ToggleRealTime);
+			}
+			ToolbarBuilder.EndSection();
+			
+			ToolbarBuilder.BeginSection("Mesh");
+			{
+				ToolbarBuilder.AddToolBarButton(FUIAction(FExecuteAction::CreateSP(ThisEditor, &FStaticMeshEditor::HandleReimportMesh)),
+					NAME_None,
+					FStaticMeshEditorCommands::Get().ReimportMesh->GetLabel(),
+					FStaticMeshEditorCommands::Get().ReimportMesh->GetDescription(),
+					FStaticMeshEditorCommands::Get().ReimportMesh->GetIcon());
+				ToolbarBuilder.AddComboButton(
+					FUIAction(),
+					FOnGetContent::CreateLambda(ConstructReimportContextMenu),
+					TAttribute<FText>(),
+					TAttribute<FText>()
+				);
 			}
 			ToolbarBuilder.EndSection();
 	
@@ -547,15 +698,15 @@ void FStaticMeshEditor::ExtendToolBar()
 				FOnGetContent OnGetUVMenuContent = FOnGetContent::CreateRaw(ThisEditor, &FStaticMeshEditor::GenerateUVChannelComboList);
 
 				ToolbarBuilder.AddComboButton(
-					FUIAction(), 
-					OnGetUVMenuContent, 
-					LOCTEXT("UVToolbarText", "UV"), 
+					FUIAction(),
+					OnGetUVMenuContent,
+					LOCTEXT("UVToolbarText", "UV"),
 					LOCTEXT("UVToolbarTooltip", "Toggles display of the static mesh's UVs for the specified channel."),
 					FSlateIcon(FEditorStyle::GetStyleSetName(), "StaticMeshEditor.SetDrawUVs"));
 			}
 
 			ToolbarBuilder.EndSection();
-	
+
 			ToolbarBuilder.BeginSection("Camera");
 			{
 				ToolbarBuilder.AddToolBarButton(FStaticMeshEditorCommands::Get().ResetCamera);
@@ -576,13 +727,14 @@ void FStaticMeshEditor::ExtendToolBar()
 		"Asset",
 		EExtensionHook::After,
 		Viewport->GetCommandList(),
-		FToolBarExtensionDelegate::CreateStatic(&Local::FillToolbar, ThisEditor) 
+		FToolBarExtensionDelegate::CreateStatic(&Local::FillToolbar, ThisEditor)
 		);
-	
+
 	AddToolbarExtender(ToolbarExtender);
-	
+
 	IStaticMeshEditorModule* StaticMeshEditorModule = &FModuleManager::LoadModuleChecked<IStaticMeshEditorModule>( "StaticMeshEditor" );
 	AddToolbarExtender(StaticMeshEditorModule->GetToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
+	AddSecondaryToolbarExtender(StaticMeshEditorModule->GetSecondaryToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 }
 
 void FStaticMeshEditor::BuildSubTools()
@@ -593,7 +745,7 @@ void FStaticMeshEditor::BuildSubTools()
 
 	SAssignNew( ConvexDecomposition, SConvexDecomposition )
 		.StaticMeshEditorPtr(SharedThis(this));
-	
+
 	FAdvancedPreviewSceneModule& AdvancedPreviewSceneModule = FModuleManager::LoadModuleChecked<FAdvancedPreviewSceneModule>("AdvancedPreviewScene");
 	AdvancedPreviewSettingsWidget = AdvancedPreviewSceneModule.CreateAdvancedPreviewSceneSettingsWidget(Viewport->GetPreviewScene());
 }
@@ -685,7 +837,7 @@ void FStaticMeshEditor::AddSelectedPrim(const FPrimData& InPrimData, bool bClear
 	{
 		ClearSelectedPrims();
 	}
-	SelectedPrims.Add(InPrimData);	
+	SelectedPrims.Add(InPrimData);
 }
 
 void FStaticMeshEditor::RemoveSelectedPrim(const FPrimData& InPrimData)
@@ -738,7 +890,7 @@ void FStaticMeshEditor::DuplicateSelectedPrims(const FVector* InOffset)
 			switch (PrimData.PrimType)
 			{
 			case EAggCollisionShape::Sphere:
-				{					
+				{
 					const FKSphereElem SphereElem = AggGeom->SphereElems[PrimData.PrimIndex];
 					PrimData.PrimIndex = AggGeom->SphereElems.Add(SphereElem);
 				}
@@ -1111,7 +1263,7 @@ TSharedRef<SWidget> FStaticMeshEditor::GenerateUVChannelComboList()
 
 	FUIAction DrawUVsAction;
 
-	FStaticMeshEditorViewportClient& ViewportClient = GetViewportClient();
+	FStaticMeshEditorViewportClient& ViewportClient = Viewport->GetViewportClient();
 
 	DrawUVsAction.ExecuteAction = FExecuteAction::CreateRaw(&ViewportClient, &FStaticMeshEditorViewportClient::SetDrawUVOverlay, false);
 
@@ -1148,17 +1300,35 @@ TSharedRef<SWidget> FStaticMeshEditor::GenerateUVChannelComboList()
 		);
 	}
 
+	// Add UV editing functions
+	{
+		MenuBuilder.AddMenuSeparator();
+
+		FUIAction MenuAction;
+		MenuAction.ExecuteAction.BindSP(this, &FStaticMeshEditor::RemoveCurrentUVChannel);
+		MenuAction.CanExecuteAction.BindSP(this, &FStaticMeshEditor::CanRemoveUVChannel);
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("Remove_UVChannel", "Remove Selected"),
+			LOCTEXT("Remove_UVChannel_ToolTip", "Remove currently selected UV channel from the static mesh"),
+			FSlateIcon(),
+			MenuAction,
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+	}
+
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
 }
 
 
-void FStaticMeshEditor::UpdateLODStats(int32 CurrentLOD) 
+void FStaticMeshEditor::UpdateLODStats(int32 CurrentLOD)
 {
-	NumTriangles[CurrentLOD] = 0;
-	NumVertices[CurrentLOD] = 0;
-	NumUVChannels[CurrentLOD] = 0;
+	NumTriangles[CurrentLOD] = 0; //-V781
+	NumVertices[CurrentLOD] = 0; //-V781
+	NumUVChannels[CurrentLOD] = 0; //-V781
 	int32 NumLODLevels = 0;
 
 	if( StaticMesh->RenderData )
@@ -1177,6 +1347,42 @@ void FStaticMeshEditor::UpdateLODStats(int32 CurrentLOD)
 void FStaticMeshEditor::ComboBoxSelectionChanged( TSharedPtr<FString> NewSelection, ESelectInfo::Type /*SelectInfo*/ )
 {
 	Viewport->RefreshViewport();
+}
+
+void FStaticMeshEditor::HandleReimportMesh()
+{
+	// Reimport the asset
+	if (StaticMesh)
+	{
+		FReimportManager::Instance()->Reimport(StaticMesh, true);
+	}
+}
+
+void FStaticMeshEditor::HandleReimportAllMesh()
+{
+	// Reimport the asset
+	if (StaticMesh)
+	{
+		//Reimport base LOD, generated mesh will be rebuild here, the static mesh is always using the base mesh to reduce LOD
+		if (FReimportManager::Instance()->Reimport(StaticMesh, true))
+		{
+			TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->SourceModels;
+			//Reimport all custom LODs
+			for (int32 LodIndex = 1; LodIndex < StaticMesh->GetNumLODs(); ++LodIndex)
+			{
+				//Skip LOD import in the same file as the base mesh, they are already re-import
+				if (SourceModels[LodIndex].bImportWithBaseMesh)
+				{
+					continue;
+				}
+				bool bHasBeenSimplified = SourceModels[LodIndex].RawMeshBulkData->IsEmpty() || SourceModels[LodIndex].ReductionSettings.PercentTriangles < 1.0f || SourceModels[LodIndex].ReductionSettings.MaxDeviation > 0.0f;
+				if (!bHasBeenSimplified)
+				{
+					FbxMeshUtils::ImportMeshLODDialog(StaticMesh, LodIndex);
+				}
+			}
+		}
+	}
 }
 
 int32 FStaticMeshEditor::GetCurrentUVChannel()
@@ -1198,6 +1404,20 @@ int32 FStaticMeshEditor::GetCurrentLODIndex()
 	int32 Index = GetCurrentLODLevel();
 
 	return Index == 0? 0 : Index - 1;
+}
+
+int32 FStaticMeshEditor::GetCustomData(const int32 Key) const
+{
+	if (!CustomEditorData.Contains(Key))
+	{
+		return INDEX_NONE;
+	}
+	return CustomEditorData[Key];
+}
+
+void FStaticMeshEditor::SetCustomData(const int32 Key, const int32 CustomData)
+{
+	CustomEditorData.FindOrAdd(Key) = CustomData;
 }
 
 void FStaticMeshEditor::GenerateKDop(const FVector* Directions, uint32 NumDirections)
@@ -1441,7 +1661,7 @@ void FStaticMeshEditor::OnCopyCollisionFromSelectedStaticMesh()
 
 	// Invalidate physics data and create new meshes
 	BodySetup->InvalidatePhysicsData();
-	BodySetup->CreatePhysicsMeshes(); 
+	BodySetup->CreatePhysicsMeshes();
 
 	GEditor->EndTransaction();
 
@@ -1513,10 +1733,13 @@ void FStaticMeshEditor::SetEditorMesh(UStaticMesh* InStaticMesh, bool bResetCame
 	NumUVChannels.Empty(ArraySize);
 	NumUVChannels.AddZeroed(ArraySize);
 
-	int32 NumLODs = StaticMesh->GetNumLODs();
-	for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+	if(StaticMesh)
 	{
-		UpdateLODStats(LODIndex);
+		int32 NumLODs = StaticMesh->GetNumLODs();
+		for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+		{
+			UpdateLODStats(LODIndex);
+		}
 	}
 
 	// Set the details view.
@@ -1699,7 +1922,7 @@ void FStaticMeshEditor::DeleteSelected()
 	{
 		DeleteSelectedSockets();
 	}
-	
+
 	if (HasSelectedPrims())
 	{
 		DeleteSelectedPrims();
@@ -1855,12 +2078,7 @@ EViewModeIndex FStaticMeshEditor::GetViewMode() const
 	}
 }
 
-FStaticMeshEditorViewportClient& FStaticMeshEditor::GetViewportClient()
-{
-	return Viewport->GetViewportClient();
-}
-
-const FStaticMeshEditorViewportClient& FStaticMeshEditor::GetViewportClient() const
+FEditorViewportClient& FStaticMeshEditor::GetViewportClient()
 {
 	return Viewport->GetViewportClient();
 }
@@ -1916,6 +2134,11 @@ void FStaticMeshEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyC
 	if(StaticMesh && StaticMesh->BodySetup)
 	{
 		StaticMesh->BodySetup->CreatePhysicsMeshes();
+
+		if (GET_MEMBER_NAME_CHECKED(UStaticMesh, LODGroup) == PropertyChangedEvent.GetPropertyName())
+		{
+			RefreshTool();
+		}
 	}
 }
 
@@ -1972,12 +2195,12 @@ void FStaticMeshEditor::OnPostReimport(UObject* InObject, bool bSuccess)
 void FStaticMeshEditor::SetCurrentViewedUVChannel(int32 InNewUVChannel)
 {
 	CurrentViewedUVChannel = FMath::Clamp(InNewUVChannel, 0, GetNumUVChannels());
-	GetViewportClient().SetDrawUVOverlay(true);
+	Viewport->GetViewportClient().SetDrawUVOverlay(true);
 }
 
 ECheckBoxState FStaticMeshEditor::GetUVChannelCheckState(int32 TestUVChannel) const
 {
-	return CurrentViewedUVChannel == TestUVChannel && GetViewportClient().IsDrawUVOverlayChecked() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return CurrentViewedUVChannel == TestUVChannel && Viewport->GetViewportClient().IsDrawUVOverlayChecked() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 void FStaticMeshEditor::Tick(float DeltaTime)
@@ -2006,5 +2229,51 @@ TStatId FStaticMeshEditor::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FStaticMeshEditor, STATGROUP_TaskGraphTasks);
 }
 
+bool FStaticMeshEditor::CanRemoveUVChannel()
+{
+	// Can remove UV channel if there's one that is currently being selected and displayed
+	return Viewport->GetViewportClient().IsDrawUVOverlayChecked();
+}
+
+void FStaticMeshEditor::RemoveCurrentUVChannel()
+{
+	if (!StaticMesh)
+	{
+		return;
+	}
+
+	int32 UVChannelIndex = GetCurrentUVChannel();
+	int32 LODIndex = GetCurrentLODIndex();
+
+	FText RemoveUVChannelText = FText::Format(LOCTEXT("ConfirmRemoveUVChannel", "Please confirm removal of UV Channel {0} from LOD {1} of {2}?"), UVChannelIndex, LODIndex, FText::FromString(StaticMesh->GetName()));
+	if (FMessageDialog::Open(EAppMsgType::YesNo, RemoveUVChannelText) == EAppReturnType::Yes)
+	{
+		FMeshBuildSettings& LODBuildSettings = StaticMesh->SourceModels[LODIndex].BuildSettings;
+
+		if (LODBuildSettings.bGenerateLightmapUVs)
+		{
+			FText LightmapText;
+			if (UVChannelIndex == LODBuildSettings.SrcLightmapIndex)
+			{
+				LightmapText = FText::Format(LOCTEXT("ConfirmDisableSourceLightmap", "UV Channel {0} is currently used as source for lightmap UVs. Please change the \"Source Lightmap Index\" value or disable \"Generate Lightmap UVs\" in the Build Settings."), UVChannelIndex);
+			}
+			else if (UVChannelIndex == LODBuildSettings.DstLightmapIndex)
+			{
+				LightmapText = FText::Format(LOCTEXT("ConfirmDisableDestLightmap", "UV Channel {0} is currently used as destination for lightmap UVs. Please change the \"Destination Lightmap Index\" value or disable \"Generate Lightmap UVs\" in the Build Settings."), UVChannelIndex);
+			}
+
+			if (!LightmapText.IsEmpty())
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LightmapText);
+				return;
+			}
+		}
+
+		if (StaticMesh->RemoveUVChannel(LODIndex, UVChannelIndex))
+		{
+			RefreshTool();
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

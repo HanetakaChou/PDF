@@ -11,6 +11,8 @@
 #include "UObject/Stack.h"
 #include "UObject/ScriptMacros.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Misc/QualifiedFrameTime.h"
+
 #include "KismetMathLibrary.generated.h"
 
 // Whether to inline functions at all
@@ -313,7 +315,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 Not_Int(int32 A);
 
 	/** Sign (integer, returns -1 if A < 0, 0 if A is zero, and +1 if A > 0) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (int)"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (integer)"), Category="Math|Integer")
 	static int32 SignOfInteger(int32 A);
 
 	/** Returns a uniformly distributed random number between 0 and Max - 1 */
@@ -325,19 +327,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 RandomIntegerInRange(int32 Min, int32 Max);
 
 	/** Returns the minimum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (int)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (integer)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
 	static int32 Min(int32 A, int32 B);
 
 	/** Returns the maximum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (int)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (integer)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
 	static int32 Max(int32 A, int32 B);
 
 	/** Returns Value clamped to be between A and B (inclusive) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (int)"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (integer)"), Category="Math|Integer")
 	static int32 Clamp(int32 Value, int32 Min, int32 Max);
 
 	/** Returns the absolute (positive) value of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (int)", CompactNodeTitle = "ABS"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (integer)", CompactNodeTitle = "ABS"), Category="Math|Integer")
 	static int32 Abs_Int(int32 A);
 
 	//
@@ -1016,7 +1018,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FRotator Multiply_RotatorFloat(FRotator A, float B);
 	
 	/** Returns rotator representing rotator A scaled by B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ScaleRotator (int)", CompactNodeTitle = "*", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ScaleRotator (integer)", CompactNodeTitle = "*", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
 	static FRotator Multiply_RotatorInt(FRotator A, int32 B);
 
 	/** Combine 2 rotations to give you the resulting rotation of first applying A, then B. */
@@ -1068,6 +1070,30 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintPure, Category="Math|Rotator")
 	static float NormalizeAxis(float Angle);
+
+	//
+	// Matrix functions
+	//
+
+	/** Convert a Matrix to a Transform */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToTransform (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FTransform Conv_MatrixToTransform(const FMatrix& InMatrix);
+
+	/** Convert a Matrix to a Rotator */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToRotator (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FRotator Conv_MatrixToRotator(const FMatrix& InMatrix);
+
+	/** Convert Rotator to Transform */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToTransform (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FTransform Conv_RotatorToTransform(const FRotator& InRotator);
+
+	/**
+	 * Get the origin of the co-ordinate system
+	 *
+	 * @return co-ordinate system origin
+	 */
+	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "GetOrigin"), Category = "Math|Matrix")
+	static FVector Matrix_GetOrigin(const FMatrix& InMatrix);
 
 	//
 	//	LinearColor functions
@@ -1395,7 +1421,26 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Timespan")
 	static bool TimespanFromString(FString TimespanString, FTimespan& Result);
 
+	//
+	// Frame Time and Frame Rate Functions
+	//
 
+	/** Creates a FQualifiedFrameTime out of a frame number, frame rate, and optional 0-1 clamped subframe. */
+	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeMakeFunc))
+	static FQualifiedFrameTime MakeQualifiedFrameTime(FFrameNumber Frame, FFrameRate FrameRate, float SubFrame = 0.f);
+
+	/** Breaks a FQualifiedFrameTime into its component parts again. */
+	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeBreakFunc))
+	static void BreakQualifiedFrameTime(const FQualifiedFrameTime& InFrameTime, FFrameNumber& Frame, FFrameRate& FrameRate, float& SubFrame);
+
+	/** Creates a FFrameRate from a Numerator and a Denominator. Enforces that the Denominator is at least one. */
+	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeMakeFunc))
+	static FFrameRate MakeFrameRate(int32 Numerator, int32 Denominator = 1);
+
+	/** Breaks a FFrameRate into a numerator and denominator. */
+	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeBreakFunc))
+	static void BreakFrameRate(const FFrameRate& InFrameRate, int32& Numerator, int32& Denominator);
+	
 	// -- Begin K2 utilities
 
 	/** Converts a byte to a float */
@@ -1403,19 +1448,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static float Conv_ByteToFloat(uint8 InByte);
 
 	/** Converts an integer to a float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToFloat (int)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToFloat (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static float Conv_IntToFloat(int32 InInt);
 
 	/** Converts an integer to a byte (if the integer is too large, returns the low 8 bits) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (int)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_IntToByte(int32 InInt);
 
 	/** Converts an integer to an IntVector*/
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToIntVector (int)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToIntVector (integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FIntVector Conv_IntToIntVector(int32 InInt);
 
 	/** Converts a int to a bool*/
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToBool (int)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToBool (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static bool Conv_IntToBool(int32 InInt);
 
 	/** Converts a bool to an int */
@@ -1606,19 +1651,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Color")
 	static void BreakColor(const FLinearColor InColor, float& R, float& G, float& B, float& A);
 
-	/** Make a color from individual color components (HSV space) */
+	/** Make a color from individual color components (HSV space; Hue is [0..360) while Saturation and Value are 0..1) */
 	UFUNCTION(BlueprintPure, Category="Math|Color", meta=(DisplayName = "HSV to RGB"))
 	static FLinearColor HSVToRGB(float H, float S, float V, float A = 1.0f);
 
-	/** Breaks apart a color into individual HSV components (as well as alpha) */
+	/** Breaks apart a color into individual HSV components (as well as alpha) (Hue is [0..360) while Saturation and Value are 0..1) */
 	UFUNCTION(BlueprintPure, Category="Math|Color", meta=(DisplayName = "RGB to HSV"))
 	static void RGBToHSV(const FLinearColor InColor, float& H, float& S, float& V, float& A);
 
-	/** Converts a HSV linear color (where H is in R, S is in G, and V is in B) to RGB */
+	/** Converts a HSV linear color (where H is in R (0..360), S is in G (0..1), and V is in B (0..1)) to RGB */
 	UFUNCTION(BlueprintPure, Category="Math|Color", meta=(DisplayName = "HSV to RGB (vector)", Keywords="cast convert"))
 	static void HSVToRGB_Vector(const FLinearColor HSV, FLinearColor& RGB);
 
-	/** Converts a RGB linear color to HSV (where H is in R, S is in G, and V is in B) */
+	/** Converts a RGB linear color to HSV (where H is in R (0..360), S is in G (0..1), and V is in B (0..1)) */
 	UFUNCTION(BlueprintPure, Category="Math|Color", meta=(DisplayName = "RGB to HSV (vector)", Keywords="cast convert"))
 	static void RGBToHSV_Vector(const FLinearColor RGB, FLinearColor& HSV);
 
@@ -1822,6 +1867,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Nearly Equal (transform)", Keywords = "== equal"), Category = "Math|Transform")
 	static bool NearlyEqual_TransformTransform(const FTransform& A, const FTransform& B, float LocationTolerance = 1.e-4f, float RotationTolerance = 1.e-4f, float Scale3DTolerance = 1.e-4f);
+
+	/** Calculates the determinant of the transform (converts to FMatrix internally) */
+	UFUNCTION(BlueprintPure, Category="Math|Transform", meta = (DisplayName = "Determinant"))
+	static float Transform_Determinant(const FTransform& Transform);
 
 	//
 	// Vector2D functions
@@ -2099,6 +2148,16 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 		return RandomUnitVectorInEllipticalConeInRadiansFromStream(ConeDir, FMath::DegreesToRadians(MaxYawInDegrees), FMath::DegreesToRadians(MaxPitchInDegrees), Stream);
 	}
 
+	/**
+	 * Generates a 1D Perlin noise from the given value.  Returns a continuous random value between -1.0 and 1.0.
+	 *
+	 * @param	Value	The input value that Perlin noise will be generated from.  This is usually a steadily incrementing time value.
+	 *
+	 * @return	Perlin noise in the range of -1.0 to 1.0
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Random")
+	static float PerlinNoise1D(const float Value);
+
 	//
 	// Geometry
 	//
@@ -2147,6 +2206,18 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintPure, Category = "Math|Geometry")
 	static bool IsPointInBoxWithTransform(FVector Point, const FTransform& BoxWorldTransform, FVector BoxExtent);
+
+	/**
+	* Returns Slope Pitch and Roll angles in degrees based on the following information: 
+	*
+	* @param	MyRightYAxis				Right (Y) direction unit vector of Actor standing on Slope.
+	* @param	FloorNormal					Floor Normal (unit) vector.
+	* @param	UpVector					UpVector of reference frame.
+	* @outparam OutSlopePitchDegreeAngle	Slope Pitch angle (degrees)
+	* @outparam OutSlopeRollDegreeAngle		Slope Roll angle (degrees)
+	*/
+	UFUNCTION(BlueprintPure, Category = "Math|Geometry")
+	static void GetSlopeDegreeAngles(const FVector& MyRightYAxis, const FVector& FloorNormal, const FVector& UpVector, float& OutSlopePitchDegreeAngle, float& OutSlopeRollDegreeAngle);
 
 	//
 	// Intersection

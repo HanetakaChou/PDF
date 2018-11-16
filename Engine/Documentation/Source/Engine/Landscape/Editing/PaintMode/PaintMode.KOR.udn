@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3782314
+INTSourceChangelist:4307010
 Availability: Public
 Title:페인트 모드
 Crumbs: %ROOT%, Engine, Engine/Landscape, Engine/Landscape/Editing
@@ -27,7 +27,7 @@ Version: 4.9
 
 [TOC(start:2 end:3)]
 
-Paint (페인트) 모드의 툴로는 랜드스케이프 부분에 머티리얼 레이어를 선택 적용하여 랜드스케이프의 겉모습을 바꿀 수 있습니다.
+**Paint** (페인트) 모드의 툴로는 랜드스케이프 부분에 머티리얼 레이어를 선택 적용하여 랜드스케이프의 겉모습을 바꿀 수 있습니다.
 
 랜드스케이프 머티리얼 관련 상세 정보는 [](Engine/Landscape\Materials) 문서를 참고하세요.
 
@@ -79,10 +79,10 @@ Smooth (스무드) 툴은 레이어 웨이트를 부드럽게 합니다. 세기�
 
 [OBJECT:ComparisonSlider]
 	[PARAM:before]
-	![Landscape Smooth Layer Before](Landscape_Smooth_Layer_Before.jpg)(w:900 h:500)
+	![랜드스케이프 스무드 레이어 전](Landscape_Smooth_Layer_Before.jpg)(w:900)
 	[/PARAM]
 	[PARAM:after]
-	![Landscape Smooth Layer After](Landscape_Smooth_Layer_After.jpg)(w:900 h:500)
+	![랜드스케이프 스무드 레이어 후](Landscape_Smooth_Layer_After.jpg)(w:900)
 	[/PARAM]
 [/OBJECT]
 
@@ -103,11 +103,9 @@ Flatten (평탄화) 툴은 선택된 레이어의 웨이트 값을 **Tool Streng
 | **Flatten Mode** | 평탄화 모드 - 선택된 레이어의 웨이트 적용을 높일지, 낮출지, 아니면 둘다 가능할지 결정합니다. |
 
 [COMMENT:none]
---
 | **Use Slope Flatten** | 경사면 평탄화 사용 - 체크하면, 수평면이 아닌 랜드스케이프의 기존 경사면을 기준으로 평탄화시킵니다. |
 | **Pick Value Per Apply** | 적용시마다 값 선택 - 체크하면, 처음 클릭한 지점만 사용하는 대신, 평탄화를 진행하면서 계속해서 새 값을 선택합니다. |
 | **Flatten Target** | 평탄화 목표 - 평탄화 목표 높이를 설정합니다. |
---
 [/COMMENT]
 
 
@@ -136,7 +134,7 @@ Flatten (평탄화) 툴은 선택된 레이어의 웨이트 값을 **Tool Streng
 
 선택된 레이어가 무엇이든 페인트 툴로 랜드스케이프에 적용할 수 있으며, 툴의 옵션과 세팅 및 사용중인 브러시도 함께 적용됩니다.
 
-![Landscape_Layers.jpg](Landscape_Layers.jpg)(w:900 h:389)
+![Landscape_Layers.jpg](Landscape_Layers.jpg)(w:900)
 
 [REGION:note]
 다수의 페인트 툴은 조각 툴과 유사하며 사용법도 비슷하지만, 조작 대상이 하이트맵이 아닌 레이어라는 점이 다릅니다.
@@ -193,7 +191,7 @@ Layer Info (레이어 인포) 오브젝트는 랜드스케이프 레이어에 �
 | 옵션 | 설명 |
 | ------ | ----------- |
 | **Phys Material** | 피지컬 머티리얼 - (있는 경우) [피지컬 머티리얼](Engine/Physics/PhysicalMaterials) 을 이 레이어가 우세한 랜드스케이프 영역에 할당합니다. |
-| **Hardness** | 하드니스 - [침식](Engine/Landscape/Editing/SculptMode/#침식) 툴에 사용되는 값입니다. |
+| **Hardness** | 하드니스 - [침식](Engine/Landscape/Editing/SculptMode/Erosion) 툴에 사용되는 값입니다. |
 
 ### 고아 레이어
 

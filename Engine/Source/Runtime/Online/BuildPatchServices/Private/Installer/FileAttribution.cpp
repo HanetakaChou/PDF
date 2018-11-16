@@ -24,8 +24,8 @@ namespace BuildPatchServices
 
 	private:
 		FString SelectFullFilePath(const FString& BuildFile);
-		bool HasSameAttributes(const FFileManifestData* NewFileManifest, const FFileManifestData* OldFileManifest);
-		void SetupFileAttributes(const FString& FilePath, const FFileManifestData& FileManifest, bool bForce);
+		bool HasSameAttributes(const FFileManifest* NewFileManifest, const FFileManifest* OldFileManifest);
+		void SetupFileAttributes(const FString& FilePath, const FFileManifest& FileManifest, bool bForce);
 
 	private:
 		IFileSystem* FileSystem;
@@ -73,8 +73,8 @@ namespace BuildPatchServices
 		for (int32 BuildFileIdx = 0; BuildFileIdx < BuildFileList.Num() && !bShouldAbort; ++BuildFileIdx)
 		{
 			const FString& BuildFile = BuildFileList[BuildFileIdx];
-			const FFileManifestData* NewFileManifest = NewManifest->GetFileManifest(BuildFile);
-			const FFileManifestData* OldFileManifest = OldManifest.IsValid() ? OldManifest->GetFileManifest(BuildFile) : nullptr;
+			const FFileManifest* NewFileManifest = NewManifest->GetFileManifest(BuildFile);
+			const FFileManifest* OldFileManifest = OldManifest.IsValid() ? OldManifest->GetFileManifest(BuildFile) : nullptr;
 			bool bHasChanged = bForce || (TouchedFiles.Contains(BuildFile) && !HasSameAttributes(NewFileManifest, OldFileManifest));
 			if (NewFileManifest != nullptr && bHasChanged)
 			{
@@ -100,7 +100,7 @@ namespace BuildPatchServices
 		{
 			InstallFilename = StagedFileDirectory / BuildFile;
 			int64 FileSize;
-			if (FileSystem->GetFileSize(*InstallFilename, FileSize) && FileSize != INDEX_NONE)
+			if (FileSystem->GetFileSize(*InstallFilename, FileSize))
 			{
 				return InstallFilename;
 			}
@@ -109,7 +109,7 @@ namespace BuildPatchServices
 		return InstallFilename;
 	}
 
-	bool FFileAttribution::HasSameAttributes(const FFileManifestData* NewFileManifest, const FFileManifestData* OldFileManifest)
+	bool FFileAttribution::HasSameAttributes(const FFileManifest* NewFileManifest, const FFileManifest* OldFileManifest)
 	{
 		// Currently it is not supported to rely on this, as the update process always makes new files when a file changes.
 		// This can be reconsidered when the patching process changes.
@@ -121,16 +121,20 @@ namespace BuildPatchServices
 		//     && (NewFileManifest->bIsCompressed == OldFileManifest->bIsCompressed);
 	}
 
-	void FFileAttribution::SetupFileAttributes(const FString& FilePath, const FFileManifestData& FileManifest, bool bForce)
+	void FFileAttribution::SetupFileAttributes(const FString& FilePath, const FFileManifest& FileManifest, bool bForce)
 	{
-		EFileAttributes FileAttributes = EFileAttributes::None;
+		using namespace BuildPatchServices;
+		EAttributeFlags FileAttributes = EAttributeFlags::None;
 
 		// First check file attributes as it's much faster to read and do nothing
-		bool bKnownAttributes = FileSystem->GetFileAttributes(*FilePath, FileAttributes);
-		bool bIsReadOnly = (FileAttributes & EFileAttributes::ReadOnly) != EFileAttributes::None;
-		const bool bFileExists = (FileAttributes & EFileAttributes::Exists) != EFileAttributes::None;
-		const bool bIsCompressed = (FileAttributes & EFileAttributes::Compressed) != EFileAttributes::None;
-		const bool bIsUnixExecutable = (FileAttributes & EFileAttributes::Executable) != EFileAttributes::None;
+		bool bKnownAttributes = FileSystem->GetAttributes(*FilePath, FileAttributes);
+		const bool bFileExists = EnumHasAllFlags(FileAttributes, EAttributeFlags::Exists);
+		bool bIsReadOnly = EnumHasAllFlags(FileAttributes, EAttributeFlags::ReadOnly);
+		const bool bIsCompressed = EnumHasAllFlags(FileAttributes, EAttributeFlags::Compressed);
+		const bool bIsUnixExecutable = EnumHasAllFlags(FileAttributes, EAttributeFlags::Executable);
+		const bool bFileManifestIsReadOnly = EnumHasAllFlags(FileManifest.FileMetaFlags, EFileMetaFlags::ReadOnly);
+		const bool bFileManifestIsCompressed = EnumHasAllFlags(FileManifest.FileMetaFlags, EFileMetaFlags::Compressed);
+		const bool bFileManifestIsUnixExecutable = EnumHasAllFlags(FileManifest.FileMetaFlags, EFileMetaFlags::UnixExecutable);
 
 		// If we know the file is missing, skip out
 		if (bKnownAttributes && !bFileExists)
@@ -145,7 +149,7 @@ namespace BuildPatchServices
 		}
 
 		// Set compression attribute
-		if (!bKnownAttributes || bIsCompressed != FileManifest.bIsCompressed)
+		if (!bKnownAttributes || bIsCompressed != bFileManifestIsCompressed)
 		{
 			// Must make not readonly if required
 			if (!bKnownAttributes || bIsReadOnly)
@@ -153,11 +157,11 @@ namespace BuildPatchServices
 				bIsReadOnly = false;
 				FileSystem->SetReadOnly(*FilePath, false);
 			}
-			FileSystem->SetCompressed(*FilePath, FileManifest.bIsCompressed);
+			FileSystem->SetCompressed(*FilePath, bFileManifestIsCompressed);
 		}
 
 		// Set executable attribute
-		if (!bKnownAttributes || bIsUnixExecutable != FileManifest.bIsUnixExecutable)
+		if (!bKnownAttributes || bIsUnixExecutable != bFileManifestIsUnixExecutable)
 		{
 			// Must make not readonly if required
 			if (!bKnownAttributes || bIsReadOnly)
@@ -165,13 +169,13 @@ namespace BuildPatchServices
 				bIsReadOnly = false;
 				FileSystem->SetReadOnly(*FilePath, false);
 			}
-			FileSystem->SetExecutable(*FilePath, FileManifest.bIsUnixExecutable);
+			FileSystem->SetExecutable(*FilePath, bFileManifestIsUnixExecutable);
 		}
 
 		// Set readonly attribute
-		if (!bKnownAttributes || bIsReadOnly != FileManifest.bIsReadOnly)
+		if (!bKnownAttributes || bIsReadOnly != bFileManifestIsReadOnly)
 		{
-			FileSystem->SetReadOnly(*FilePath, FileManifest.bIsReadOnly);
+			FileSystem->SetReadOnly(*FilePath, bFileManifestIsReadOnly);
 		}
 	}
 

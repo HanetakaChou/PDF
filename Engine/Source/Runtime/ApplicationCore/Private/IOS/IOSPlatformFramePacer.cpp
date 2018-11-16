@@ -1,15 +1,22 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "IOSPlatformFramePacer.h"
+#include "IOS/IOSPlatformFramePacer.h"
 #include "Containers/Array.h"
-#include "ThreadingBase.h"
+#include "HAL/ThreadingBase.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Parse.h"
+#include "Misc/CommandLine.h"
 
 // Collection of events listening for this trigger.
 static TArray<FEvent*> ListeningEvents;
 static FCriticalSection HandlersMutex;
 static NSMutableSet<FIOSFramePacerHandler>* Handlers = [NSMutableSet new];
+
+namespace IOSDisplayConstants
+{
+    const uint32 MaxRefreshRate = 60;
+}
 
 /*******************************************************************
  * FIOSFramePacer implementation
@@ -57,7 +64,7 @@ static NSMutableSet<FIOSFramePacerHandler>* Handlers = [NSMutableSet new];
 #if UE4_HAS_IOS10
 	if ([displayLink respondsToSelector : @selector(preferredFramesPerSecond)] == YES)
 	{
-		displayLink.preferredFramesPerSecond = 60 / FIOSPlatformRHIFramePacer::FrameInterval;
+		displayLink.preferredFramesPerSecond = IOSDisplayConstants::MaxRefreshRate / FIOSPlatformRHIFramePacer::FrameInterval;
 	}
 	else
 #endif
@@ -77,11 +84,60 @@ static NSMutableSet<FIOSFramePacerHandler>* Handlers = [NSMutableSet new];
 
 -(void)signal:(id)param
 {
+	// during shutdown, this can cause crashes (only non-backgrounding apps do this)
+	if (GIsRequestingExit)
+	{
+		return;
+	};
+
 	{
 		FScopeLock Lock(&HandlersMutex);
+		CADisplayLink* displayLink = (CADisplayLink*)param;
+		double OutputSeconds = displayLink.duration + displayLink.timestamp;
+		if (@available(iOS 10.0, tvOS 10.0, *))
+		{
+			OutputSeconds = displayLink.targetTimestamp;
+		}
+		double OutputDuration = displayLink.duration;
 		for (FIOSFramePacerHandler Handler in Handlers)
 		{
-			Handler(0);
+			Handler(0, OutputSeconds, OutputDuration);
+		}
+
+		// If requested, get the latest frame sync interval and clamp to the project setting
+		static TConsoleVariableData<int32>* VSyncCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.vsync"));
+		static TConsoleVariableData<int32>* VSyncIntervalCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("rhi.syncinterval"));
+
+		if (VSyncCVar && VSyncCVar->GetValueOnRenderThread() > 0)
+		{
+			uint32 NewFrameInterval = VSyncIntervalCVar ? VSyncIntervalCVar->GetValueOnRenderThread() : FIOSPlatformRHIFramePacer::FrameInterval;
+			NewFrameInterval = (NewFrameInterval < FIOSPlatformRHIFramePacer::MinFrameInterval) ? FIOSPlatformRHIFramePacer::MinFrameInterval : NewFrameInterval;
+
+			// If changed, update the display link
+			if (NewFrameInterval != FIOSPlatformRHIFramePacer::FrameInterval)
+			{
+				FIOSPlatformRHIFramePacer::FrameInterval = NewFrameInterval;
+	
+#if (UE4_HAS_IOS10 || UE4_TARGET_PRE_IOS10)	
+				CADisplayLink* displayLinkParam = (CADisplayLink*)param;
+#endif
+		
+#if UE4_HAS_IOS10
+				if (displayLinkParam.preferredFramesPerSecond > 0)
+				{
+					displayLinkParam.preferredFramesPerSecond = IOSDisplayConstants::MaxRefreshRate / FIOSPlatformRHIFramePacer::FrameInterval;
+				}
+				else
+#endif
+				{
+#if UE4_TARGET_PRE_IOS10
+					displayLinkParam.frameInterval = FIOSPlatformRHIFramePacer::FrameInterval;
+#endif
+				}
+
+				// Update pacing for present
+				FIOSPlatformRHIFramePacer::Pace = IOSDisplayConstants::MaxRefreshRate / FIOSPlatformRHIFramePacer::FrameInterval;
+			}
 		}
 	}	
     for( auto& NextEvent : ListeningEvents )
@@ -98,14 +154,10 @@ static NSMutableSet<FIOSFramePacerHandler>* Handlers = [NSMutableSet new];
  * FIOSPlatformRHIFramePacer implementation
  *******************************************************************/
 
-
-namespace IOSDisplayConstants
-{
-    const uint32 MaxRefreshRate = 60;
-}
-
 uint32 FIOSPlatformRHIFramePacer::FrameInterval = 1;
+uint32 FIOSPlatformRHIFramePacer::MinFrameInterval = 1;
 FIOSFramePacer* FIOSPlatformRHIFramePacer::FramePacer = nil;
+uint32 FIOSPlatformRHIFramePacer::Pace = 0;
 
 
 bool FIOSPlatformRHIFramePacer::IsEnabled()
@@ -118,19 +170,30 @@ bool FIOSPlatformRHIFramePacer::IsEnabled()
 		FString FrameRateLockAsEnum;
 		GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("FrameRateLock"), FrameRateLockAsEnum, GEngineIni);
 
-		uint32 FrameRateLock = 60;
+		uint32 FrameRateLock = IOSDisplayConstants::MaxRefreshRate;
 		FParse::Value(*FrameRateLockAsEnum, TEXT("PUFRL_"), FrameRateLock);
-		if (FrameRateLock == 0)
-		{
-			FrameRateLock = 60;
-		}
 
-		if (!bIsRHIFramePacerEnabled)
+        const bool bOverridesFrameRate = FParse::Value( FCommandLine::Get(), TEXT( "FrameRateLock=" ), FrameRateLockAsEnum );
+        if (bOverridesFrameRate)
+        {
+            FParse::Value(*FrameRateLockAsEnum, TEXT("PUFRL_"), FrameRateLock);
+        }
+        
+        if (FrameRateLock == 0)
+        {
+            FrameRateLock = IOSDisplayConstants::MaxRefreshRate;
+        }
+
+        if (!bIsRHIFramePacerEnabled)
 		{
 			check((IOSDisplayConstants::MaxRefreshRate % FrameRateLock) == 0);
 			FrameInterval = IOSDisplayConstants::MaxRefreshRate / FrameRateLock;
+			MinFrameInterval = FrameInterval;
 
 			bIsRHIFramePacerEnabled = (FrameInterval > 0);
+			
+			// remember the Pace if we are enabled
+			Pace = bIsRHIFramePacerEnabled ? FrameRateLock : 0;
 		}
 		bInitialized = true;
 	}

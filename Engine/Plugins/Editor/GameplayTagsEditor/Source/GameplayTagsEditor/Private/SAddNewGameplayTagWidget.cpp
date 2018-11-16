@@ -4,10 +4,18 @@
 #include "DetailLayoutBuilder.h"
 #include "GameplayTagsSettings.h"
 #include "GameplayTagsEditorModule.h"
-#include "SGameplayTagWidget.h"
+#include "GameplayTagsModule.h"
 #include "Widgets/Input/SButton.h"
 
 #define LOCTEXT_NAMESPACE "AddNewGameplayTagWidget"
+
+SAddNewGameplayTagWidget::~SAddNewGameplayTagWidget()
+{
+	if (!GExitPurge)
+	{
+		IGameplayTagsModule::OnTagSettingsChanged.RemoveAll(this);
+	}
+}
 
 void SAddNewGameplayTagWidget::Construct(const FArguments& InArgs)
 {
@@ -25,6 +33,8 @@ void SAddNewGameplayTagWidget::Construct(const FArguments& InArgs)
 
 	OnGameplayTagAdded = InArgs._OnGameplayTagAdded;
 	PopulateTagSources();
+
+	IGameplayTagsModule::OnTagSettingsChanged.AddRaw(this, &SAddNewGameplayTagWidget::PopulateTagSources);
 
 	ChildSlot
 	[

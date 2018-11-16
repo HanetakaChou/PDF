@@ -18,6 +18,12 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	static void PlatformInit();
 	static void PlatformTearDown();
 	static void SetEnvironmentVar(const TCHAR* VariableName, const TCHAR* Value);
+
+	FORCEINLINE static int32 GetMaxPathLength()
+	{
+		return MAC_MAX_PATH;
+	}
+
 	static const TCHAR* GetPathVarDelimiter()
 	{
 		return TEXT(":");
@@ -132,6 +138,16 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 		uint32 GPUIndex;
 		bool GPUHeadless;
 	};
+	
+	enum class EMacGPUNotification : uint8
+	{
+		Added,
+		RemovalRequested,
+		Removed
+	};
+	
+	/** Handle GPU change notifications. */
+	static void GPUChangeNotification(uint64_t DeviceRegistryID, EMacGPUNotification Notification);
 	
 	/** Returns the static list of GPUs in the current machine. */
 	static TArray<FGPUDescriptor> const& GetGPUDescriptors();

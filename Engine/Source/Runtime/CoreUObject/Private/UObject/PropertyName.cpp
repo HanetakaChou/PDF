@@ -52,30 +52,27 @@ const TCHAR* UNameProperty::ImportText_Internal( const TCHAR* Buffer, void* Data
 	return Buffer;
 }
 
-bool UNameProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, bool& bOutAdvanceProperty)
+EConvertFromTypeResult UNameProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
 {
 	if (Tag.Type == NAME_StrProperty)
 	{
 		FString str;
-		Ar << str;
+		Slot << str;
 		SetPropertyValue_InContainer(Data, FName(*str), Tag.ArrayIndex);
-		bOutAdvanceProperty = true;
-	}
-	// Convert serialized text to name.
-	else if (Tag.Type == NAME_TextProperty)
-	{ 
-		FText Text;  
-		Ar << Text;
-		const FName Name = FName(*Text.ToString());
-		SetPropertyValue_InContainer(Data, Name, Tag.ArrayIndex);
-		bOutAdvanceProperty = true; 
-	}
-	else
-	{
-		bOutAdvanceProperty = false;
+		return EConvertFromTypeResult::Converted;
 	}
 
-	return bOutAdvanceProperty;
+	// Convert serialized text to name.
+	if (Tag.Type == NAME_TextProperty)
+	{ 
+		FText Text;  
+		Slot << Text;
+		const FName Name = FName(*Text.ToString());
+		SetPropertyValue_InContainer(Data, Name, Tag.ArrayIndex);
+		return EConvertFromTypeResult::Converted;
+	}
+
+	return EConvertFromTypeResult::UseSerializeItem;
 }
 
 FString UNameProperty::GetCPPTypeForwardDeclaration() const

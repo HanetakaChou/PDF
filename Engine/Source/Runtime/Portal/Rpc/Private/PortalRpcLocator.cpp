@@ -59,6 +59,8 @@ private:
 
 	bool HandleTicker(float DeltaTime)
 	{
+        QUICK_SCOPE_CYCLE_COUNTER(STAT_FPortalRpcLocatorImple_HandleTicker);
+
 		if (ServerAddress.IsValid() && ((FDateTime::UtcNow() - LastServerResponse).GetTotalSeconds() > PORTAL_RPC_LOCATE_TIMEOUT))
 		{
 			ServerAddress.Invalidate();
@@ -66,7 +68,9 @@ private:
 		}
 
 		// @todo sarge: implement actual product GUID
-		MessageEndpoint->Publish(new FPortalRpcLocateServer(FGuid(), EngineVersion, MacAddress, UserId), EMessageScope::Network);
+		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
+		void* Memory = FMemory::Malloc(sizeof(FPortalRpcLocateServer));
+		MessageEndpoint->Publish(new(Memory) FPortalRpcLocateServer(FGuid(), EngineVersion, MacAddress, UserId), EMessageScope::Network);
 
 		return true;
 	}

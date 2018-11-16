@@ -6,17 +6,12 @@
 #include "OnlineSubsystemUtils.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Engine/NetConnection.h"
+#include "OnlineSubsystemNames.h"
 
 UOnlineEngineInterfaceImpl::UOnlineEngineInterfaceImpl(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, VoiceSubsystemNameOverride(NAME_None)
-	, DefaultSubsystemName(NAME_None)
 {
-	FString DefaultSubsystemNameString;
-	if (GConfig->GetString(TEXT("OnlineSubsystem"), TEXT("DefaultPlatformService"), DefaultSubsystemNameString, GEngineIni))
-	{
-		DefaultSubsystemName = FName(*DefaultSubsystemNameString);
-	}
 }
 
 bool UOnlineEngineInterfaceImpl::IsLoaded(FName OnlineIdentifier)
@@ -64,12 +59,23 @@ void UOnlineEngineInterfaceImpl::DestroyOnlineSubsystem(FName OnlineIdentifier)
 	IOnlineSubsystem::Destroy(OnlineIdentifier);
 }
 
-#if OSS_DEDICATED_SERVER_VOICECHAT
 FName UOnlineEngineInterfaceImpl::GetDefaultOnlineSubsystemName() const
 {
-	return DefaultSubsystemName;
+	// World context (PIE) isn't necessary here as it's just the name of the default
+	// no matter how many instances actually exist
+	IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get();
+	return OnlineSub ? OnlineSub->GetSubsystemName() : NAME_None;
 }
-#endif
+
+uint8 UOnlineEngineInterfaceImpl::GetReplicationHashForSubsystem(FName InSubsystemName) const
+{
+	return Online::GetUtils()->GetReplicationHashForSubsystem(InSubsystemName);
+}
+
+FName UOnlineEngineInterfaceImpl::GetSubsystemFromReplicationHash(uint8 InHash) const
+{
+	return Online::GetUtils()->GetSubsystemFromReplicationHash(InHash);
+}
 
 FName UOnlineEngineInterfaceImpl::GetDedicatedServerSubsystemNameForSubsystem(const FName Subsystem) const
 {
@@ -95,30 +101,50 @@ FName UOnlineEngineInterfaceImpl::GetDedicatedServerSubsystemNameForSubsystem(co
 	return NAME_None;
 }
 
-TSharedPtr<const FUniqueNetId> UOnlineEngineInterfaceImpl::CreateUniquePlayerId(const FString& Str)
+TSharedPtr<const FUniqueNetId> UOnlineEngineInterfaceImpl::CreateUniquePlayerId(const FString& Str, FName Type)
 {
-	IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface();
-	if (IdentityInt.IsValid())
+	// Foreign types may be passed into this function, do not load OSS modules explicitly here
+	TSharedPtr<const FUniqueNetId> UniqueId = nullptr;
+	if (IsLoaded(Type))
 	{
-		return IdentityInt->CreateUniquePlayerId(Str);
+		// No UWorld here, but ok since this is just a factory
+		UWorld* World = nullptr;
+		IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World, Type);
+		if (IdentityInt.IsValid())
+		{
+			UniqueId = IdentityInt->CreateUniquePlayerId(Str);
+		}
 	}
-	return nullptr;
+	
+	if (!UniqueId.IsValid())
+	{
+		if (IOnlineSubsystemUtils* Utils = Online::GetUtils())
+		{
+			// Create a unique id for other platforms unknown to this instance
+			// Will not compare correctly against native types (do not use on platform where native type is available)
+			// Used to maintain opaque unique id that will compare against other non native types
+			UniqueId = Utils->CreateForeignUniqueNetId(Str, Type);
+		}
+	}
+	return UniqueId;
 }
 
-TSharedPtr<const FUniqueNetId> UOnlineEngineInterfaceImpl::GetUniquePlayerId(UWorld* World, int32 LocalUserNum)
+TSharedPtr<const FUniqueNetId> UOnlineEngineInterfaceImpl::GetUniquePlayerId(UWorld* World, int32 LocalUserNum, FName Type)
 {
-	IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World);
+	IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World, Type);
 	if (IdentityInt.IsValid())
 	{
 		TSharedPtr<const FUniqueNetId> UniqueId = IdentityInt->GetUniquePlayerId(LocalUserNum);
 		return UniqueId;
 	}
+
+	UE_LOG_ONLINE(Verbose, TEXT("GetUniquePlayerId() returning null, can't find OSS of type %s"), *Type.ToString());
 	return nullptr;
 }
 
 FString UOnlineEngineInterfaceImpl::GetPlayerNickname(UWorld* World, const FUniqueNetId& UniqueId)
 {
-	IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World);
+	IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World, UniqueId.GetType());
 	if (IdentityInt.IsValid())
 	{	
 		return IdentityInt->GetPlayerNickname(UniqueId);
@@ -331,6 +357,15 @@ void UOnlineEngineInterfaceImpl::UnregisterPlayer(UWorld* World, FName SessionNa
 	}
 }
 
+void UOnlineEngineInterfaceImpl::UnregisterPlayers(UWorld* World, FName SessionName, const TArray< TSharedRef<const FUniqueNetId> >& Players)
+{
+	IOnlineSessionPtr SessionInt = Online::GetSessionInterface(World);
+	if (SessionInt.IsValid())
+	{
+		SessionInt->UnregisterPlayers(SessionName, Players);
+	}
+}
+
 bool UOnlineEngineInterfaceImpl::GetResolvedConnectString(UWorld* World, FName SessionName, FString& URL)
 {
 	IOnlineSessionPtr SessionInt = Online::GetSessionInterface(World);
@@ -354,7 +389,6 @@ TSharedPtr<FVoicePacket> UOnlineEngineInterfaceImpl::GetLocalPacket(UWorld* Worl
 	return nullptr;
 }
 
-#if OSS_DEDICATED_SERVER_VOICECHAT
 TSharedPtr<FVoicePacket> UOnlineEngineInterfaceImpl::SerializeRemotePacket(UWorld* World, const UNetConnection* const RemoteConnection, FArchive& Ar)
 {
 	FName VoiceSubsystemName = VoiceSubsystemNameOverride;
@@ -375,17 +409,6 @@ TSharedPtr<FVoicePacket> UOnlineEngineInterfaceImpl::SerializeRemotePacket(UWorl
 	}
 	return nullptr;
 }
-#else
-TSharedPtr<FVoicePacket> UOnlineEngineInterfaceImpl::SerializeRemotePacket(UWorld* World, FArchive& Ar)
-{
-	IOnlineVoicePtr VoiceInt = Online::GetVoiceInterface(World, VoiceSubsystemNameOverride);
-	if (VoiceInt.IsValid())
-	{
-		return VoiceInt->SerializeRemotePacket(Ar);
-	}
-	return nullptr;
-}
-#endif
 
 void UOnlineEngineInterfaceImpl::StartNetworkedVoice(UWorld* World, uint8 LocalUserNum)
 {
@@ -505,31 +528,12 @@ bool UOnlineEngineInterfaceImpl::CloseWebURL()
 
 void UOnlineEngineInterfaceImpl::BindToExternalUIOpening(const FOnlineExternalUIChanged& Delegate)
 {
-	IOnlineSubsystem* SubSystem = IOnlineSubsystem::IsLoaded() ? IOnlineSubsystem::Get() : nullptr;
-	if (SubSystem != nullptr)
+	IOnlineSubsystemUtils* Utils = Online::GetUtils();
+	if (Utils)
 	{
-		IOnlineExternalUIPtr ExternalUI = SubSystem->GetExternalUIInterface();
-		if (ExternalUI.IsValid())
-		{
-			FOnExternalUIChangeDelegate OnExternalUIChangeDelegate;
-			OnExternalUIChangeDelegate.BindUObject(this, &ThisClass::OnExternalUIChange, Delegate);
-
-			ExternalUI->AddOnExternalUIChangeDelegate_Handle(OnExternalUIChangeDelegate);
-		}
-	}
-
-	IOnlineSubsystem* PlatformSubSystem = IOnlineSubsystem::GetByPlatform();
-	if (PlatformSubSystem != nullptr &&
-		SubSystem != PlatformSubSystem)
-	{
-		IOnlineExternalUIPtr ExternalUI = PlatformSubSystem->GetExternalUIInterface();
-		if (ExternalUI.IsValid())
-		{
-			FOnExternalUIChangeDelegate OnExternalUIChangeDelegate;
-			OnExternalUIChangeDelegate.BindUObject(this, &ThisClass::OnExternalUIChange, Delegate);
-
-			ExternalUI->AddOnExternalUIChangeDelegate_Handle(OnExternalUIChangeDelegate);
-		}
+		FOnExternalUIChangeDelegate OnExternalUIChangeDelegate;
+		OnExternalUIChangeDelegate.BindUObject(this, &ThisClass::OnExternalUIChange, Delegate);
+		Utils->SetEngineExternalUIBinding(OnExternalUIChangeDelegate);
 	}
 }
 
@@ -561,7 +565,7 @@ void UOnlineEngineInterfaceImpl::DumpVoiceState(UWorld* World)
 	IOnlineVoicePtr VoiceInt = Online::GetVoiceInterface(World);
 	if (VoiceInt.IsValid())
 	{
-		UE_LOG(LogOnline, Verbose, TEXT("\n%s"), *VoiceInt->GetVoiceDebugState());
+		UE_LOG_ONLINE(Verbose, TEXT("\n%s"), *VoiceInt->GetVoiceDebugState());
 	}
 }
 

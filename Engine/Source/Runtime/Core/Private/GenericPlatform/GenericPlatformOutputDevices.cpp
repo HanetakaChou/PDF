@@ -14,7 +14,7 @@
 #include "Misc/App.h"
 #include "HAL/FeedbackContextAnsi.h"
 #include "Misc/OutputDeviceConsole.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 
 TCHAR FGenericPlatformOutputDevices::CachedAbsoluteFilename[1024] = { 0 };
 
@@ -25,6 +25,14 @@ void FGenericPlatformOutputDevices::SetupOutputDevices()
 	CachedAbsoluteFilename[0] = 0;
 
 	GLog->AddOutputDevice(FPlatformOutputDevices::GetLog());
+
+	TArray<FOutputDevice*> ChannelFileOverrides;
+	FPlatformOutputDevices::GetPerChannelFileOverrides(ChannelFileOverrides);
+
+	for (FOutputDevice* ChannelFileOverride : ChannelFileOverrides)
+	{
+		GLog->AddOutputDevice(ChannelFileOverride);
+	}
 
 #if !NO_LOGGING
 	// if console is enabled add an output device, unless the commandline says otherwise...
@@ -101,11 +109,11 @@ class FOutputDevice* FGenericPlatformOutputDevices::GetLog()
 #if !IS_PROGRAM && !WITH_EDITORONLY_DATA
 			if (!LogDevice
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				 && FParse::Param(FCommandLine::Get(), TEXT("LOGTOMEMORY")) 
+				&& FParse::Param(FCommandLine::Get(), TEXT("LOGTOMEMORY"))
 #else
-				 && !FParse::Param(FCommandLine::Get(), TEXT("NOLOGTOMEMORY")) && !FPlatformProperties::IsServerOnly()
+				&& !FParse::Param(FCommandLine::Get(), TEXT("NOLOGTOMEMORY")) && !FPlatformProperties::IsServerOnly()
 #endif
-				 )
+				)
 			{
 				LogDevice = MakeUnique<FOutputDeviceMemory>();
 			}
@@ -113,7 +121,12 @@ class FOutputDevice* FGenericPlatformOutputDevices::GetLog()
 #endif // WITH_LOGGING_TO_MEMORY
 			if (!LogDevice)
 			{
-				LogDevice = MakeUnique<FOutputDeviceFile>();
+#if (!UE_BUILD_SHIPPING) || PRESERVE_LOG_BACKUPS_IN_SHIPPING
+				const bool bDisableBackup = false;
+#else
+				const bool bDisableBackup = true;
+#endif
+				LogDevice = MakeUnique<FOutputDeviceFile>(nullptr, bDisableBackup);
 			}
 		}
 
@@ -122,3 +135,46 @@ class FOutputDevice* FGenericPlatformOutputDevices::GetLog()
 	return Singleton.LogDevice.Get();
 }
 
+void FGenericPlatformOutputDevices::GetPerChannelFileOverrides(TArray<FOutputDevice*>& OutputDevices)
+{
+	FString Commands;
+	if (FParse::Value(FCommandLine::Get(), TEXT("logcategoryfiles="), Commands))
+	{
+		Commands = Commands.TrimQuotes();
+
+		TArray<FString> Parts;
+		Commands.ParseIntoArray(Parts, TEXT(","), true);
+
+		for (FString Part : Parts)
+		{
+			FString Filename, CategoriesString;
+			if (Part.TrimStartAndEnd().Split(TEXT("="), &Filename, &CategoriesString))
+			{
+				// do stuff
+				FOutputDeviceFile* OutputDevice = new FOutputDeviceFile(*Filename);
+
+				TArray<FString> Categories;
+				CategoriesString.ParseIntoArray(Categories, TEXT("+"), true);
+
+				for (FString Category : Categories)
+				{
+					OutputDevice->IncludeCategory(FName(*Category));
+				}
+
+				OutputDevices.Add(OutputDevice);
+			}
+		}
+	}
+}
+
+FOutputDeviceError* FGenericPlatformOutputDevices::GetError()
+{
+	static FOutputDeviceAnsiError Singleton;
+	return &Singleton;
+}
+
+FFeedbackContext* FGenericPlatformOutputDevices::GetFeedbackContext()
+{
+	static FFeedbackContextAnsi Singleton;
+	return &Singleton;
+}

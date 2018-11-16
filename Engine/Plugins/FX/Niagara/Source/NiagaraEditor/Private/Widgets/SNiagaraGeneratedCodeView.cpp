@@ -7,21 +7,21 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SButton.h"
 #include "ISequencer.h"
-#include "NiagaraSystemViewModel.h"
-#include "NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScript.h"
 #include "NiagaraSystemScriptViewModel.h"
 #include "EditorStyleSet.h"
-#include "SScrollBox.h"
-#include "UObjectGlobals.h"
-#include "Class.h"
-#include "Package.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "SequencerSettings.h"
 #include "NiagaraSystem.h"
 #include "NiagaraEditorStyle.h"
-#include "PlatformApplicationMisc.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "NiagaraEditorUtilities.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraGeneratedCodeView"
@@ -131,7 +131,7 @@ void SNiagaraGeneratedCodeView::Construct(const FArguments& InArgs, TSharedRef<F
 					[
 						SAssignNew(ScriptNameCombo, SComboButton)
 						.OnGetMenuContent(this, &SNiagaraGeneratedCodeView::MakeScriptMenu)
-						.ComboButtonStyle(FEditorStyle::Get(), "ContentBrowser.Filters.Style")
+						.ComboButtonStyle(FEditorStyle::Get(), "GenericFilters.ComboButtonStyle")
 						.ForegroundColor(FLinearColor::White)
 						.ContentPadding(0)
 						.ToolTipText(LOCTEXT("ScriptsToolTip", "Select a script to view below."))
@@ -145,7 +145,7 @@ void SNiagaraGeneratedCodeView::Construct(const FArguments& InArgs, TSharedRef<F
 								.Padding(2, 0, 0, 0)
 								[
 									SNew(STextBlock)
-									.TextStyle(FEditorStyle::Get(), "ContentBrowser.Filters.Text")
+									.TextStyle(FEditorStyle::Get(), "GenericFilters.TextStyle")
 									.Text(LOCTEXT("Scripts", "Scripts"))
 								]
 						]
@@ -210,7 +210,7 @@ TSharedRef<SWidget> SNiagaraGeneratedCodeView::MakeScriptMenu()
 	return MenuBuilder.MakeWidget();
 }
 
-FReply SNiagaraGeneratedCodeView::SearchUpClicked()
+FReply SNiagaraGeneratedCodeView::SearchDownClicked()
 {
 	if (ActiveFoundTextEntries.Num() > 0)
 	{
@@ -228,7 +228,7 @@ FReply SNiagaraGeneratedCodeView::SearchUpClicked()
 	return FReply::Handled();
 }
 
-FReply SNiagaraGeneratedCodeView::SearchDownClicked()
+FReply SNiagaraGeneratedCodeView::SearchUpClicked()
 {
 	if (ActiveFoundTextEntries.Num() > 0)
 	{
@@ -261,6 +261,8 @@ void SNiagaraGeneratedCodeView::OnSearchTextChanged(const FText& InFilterText)
 
 void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 {
+	const FText OldText = GeneratedCode[TabState].Text->GetSearchText();
+	GeneratedCode[TabState].Text->SetSearchText(InFilterText);
 	GeneratedCode[TabState].Text->BeginSearch(InFilterText, ESearchCase::IgnoreCase, false);
 	InFilterText.ToString();
 
@@ -273,7 +275,6 @@ void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 	}
 
 	ActiveFoundTextEntries.Empty();
-	CurrentFoundTextEntry = INDEX_NONE;
 	for (int32 i = 0; i < GeneratedCode[TabState].HlslByLines.Num(); i++)
 	{
 		int32 LastPos = INDEX_NONE;
@@ -286,10 +287,14 @@ void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 		}
 	}
 
-	if (ActiveFoundTextEntries.Num() > 0)
+	if (ActiveFoundTextEntries.Num() > 0 && OldText.CompareTo(InFilterText) != 0)
 	{
 		CurrentFoundTextEntry = 0;
 		//GeneratedCode[TabState].Text->ScrollTo(ActiveFoundTextEntries[CurrentFoundTextEntry]);
+	}
+	else if (ActiveFoundTextEntries.Num() == 0)
+	{
+		CurrentFoundTextEntry = INDEX_NONE;
 	}
 
 	SetSearchMofN();
@@ -297,13 +302,25 @@ void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 
 void SNiagaraGeneratedCodeView::SetSearchMofN()
 {
-	SearchFoundMOfNText->SetText(FText::Format(LOCTEXT("MOfN", "{0} of {1}"), FText::AsNumber(CurrentFoundTextEntry), FText::AsNumber(ActiveFoundTextEntries.Num())));
+	SearchFoundMOfNText->SetText(FText::Format(LOCTEXT("MOfN", "{0} of {1}"), FText::AsNumber(CurrentFoundTextEntry + 1), FText::AsNumber(ActiveFoundTextEntries.Num())));
 	//SearchFoundMOfNText->SetText(FText::Format(LOCTEXT("MOfN", "{1} found"), FText::AsNumber(CurrentFoundTextEntry), FText::AsNumber(ActiveFoundTextEntries.Num())));
 }
 
 void SNiagaraGeneratedCodeView::OnSearchTextCommitted(const FText& InFilterText, ETextCommit::Type InCommitType)
 {
 	OnSearchTextChanged(InFilterText);
+	if (ActiveFoundTextEntries.Num() > 0)
+	{
+		CurrentFoundTextEntry++;
+		if (CurrentFoundTextEntry == ActiveFoundTextEntries.Num())
+		{
+			CurrentFoundTextEntry = 0;
+		}
+	}
+
+	GeneratedCode[TabState].Text->AdvanceSearch(true);
+
+	SetSearchMofN();
 }
 
 void SNiagaraGeneratedCodeView::OnCodeCompiled()
@@ -323,14 +340,8 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 	TArray<UNiagaraScript*> Scripts;
 	TArray<uint32> ScriptDisplayTypes;
 	UNiagaraSystem& System = SystemViewModel->GetSystem();
-	Scripts.Add(System.GetSystemSpawnScript(false));
-	ScriptDisplayTypes.Add(0);
-	Scripts.Add(System.GetSystemUpdateScript(false));
-	ScriptDisplayTypes.Add(0);
-	Scripts.Add(System.GetSystemSpawnScript(true));
-	ScriptDisplayTypes.Add(0);
-	Scripts.Add(System.GetSystemUpdateScript(true));
-	ScriptDisplayTypes.Add(0);
+	Scripts.Add(System.GetSystemSpawnScript());
+	Scripts.Add(System.GetSystemUpdateScript());
 
 	TArray<TSharedRef<FNiagaraEmitterHandleViewModel>> SelectedEmitterHandles;
 	SystemViewModel->GetSelectedEmitterHandles(SelectedEmitterHandles);
@@ -342,25 +353,27 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 			TArray<UNiagaraScript*> EmitterScripts;
 			Handle->GetInstance()->GetScripts(EmitterScripts);
 			Scripts.Append(EmitterScripts);
-			ScriptDisplayTypes.AddZeroed(EmitterScripts.Num());
 		}
 	}
 
-	// find the particle spawn script
-	TArray<UNiagaraScript*> DupeScriptsForAssembly;
-	UNiagaraScript *ParticleSpawnScript = nullptr;
-	for (UNiagaraScript *Script : Scripts)
+	// Mark the scripts with the correct display type and copy references for the non-gpu scripts for the assembly view.
+	int32 OriginalScriptCount = Scripts.Num();
+	ScriptDisplayTypes.AddUninitialized(OriginalScriptCount);
+	for (int32 i = 0; i < OriginalScriptCount; i++)
 	{
-		DupeScriptsForAssembly.Add(Script);
-		ScriptDisplayTypes.Add(2);
-		if (Script->Usage == ENiagaraScriptUsage::ParticleSpawnScript || Script->Usage == ENiagaraScriptUsage::ParticleSpawnScriptInterpolated)
+		UNiagaraScript* Script = Scripts[i];
+		if (Script->GetUsage() == ENiagaraScriptUsage::ParticleGPUComputeScript)
 		{
-			ParticleSpawnScript = Script;
+			ScriptDisplayTypes[i] = 1;
+		}
+		else
+		{
+			ScriptDisplayTypes[i] = 0;
+
+			Scripts.Add(Script);
+			ScriptDisplayTypes.Add(2);
 		}
 	}
-	Scripts.Append(DupeScriptsForAssembly);
-	Scripts.Add(ParticleSpawnScript); // add for the GPU update/spawn script
-	ScriptDisplayTypes.Add(1);
 		
 	GeneratedCode.SetNum(Scripts.Num());
 
@@ -384,20 +397,29 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 			// GPU combined spawn / update script
 			if (bIsGPU)
 			{
-				GeneratedCode[i].Usage = ENiagaraScriptUsage::ParticleSpawnScript;
-				ParticleSpawnScript->LastHlslTranslationGPU.ParseIntoArrayLines(OutputByLines, false);
+				GeneratedCode[i].Usage = Scripts[i]->Usage;
+				if (Scripts[i]->GetVMExecutableData().IsValid())
+				{
+					Scripts[i]->GetVMExecutableData().LastHlslTranslationGPU.ParseIntoArrayLines(OutputByLines, false);
+				}
 			}
 			else if (bIsAssembly)
 			{
 				GeneratedCode[i].Usage = Scripts[i]->Usage;
 				GeneratedCode[i].UsageId = Scripts[i]->GetUsageId();
-				Scripts[i]->LastAssemblyTranslation.ParseIntoArrayLines(OutputByLines, false);
+				if (Scripts[i]->GetVMExecutableData().IsValid())
+				{
+					Scripts[i]->GetVMExecutableData().LastAssemblyTranslation.ParseIntoArrayLines(OutputByLines, false);
+				}
 			}
 			else
 			{
 				GeneratedCode[i].Usage = Scripts[i]->Usage;
 				GeneratedCode[i].UsageId = Scripts[i]->GetUsageId();
-				Scripts[i]->LastHlslTranslation.ParseIntoArrayLines(OutputByLines, false);
+				if (Scripts[i]->GetVMExecutableData().IsValid())
+				{
+					Scripts[i]->GetVMExecutableData().LastHlslTranslation.ParseIntoArrayLines(OutputByLines, false);
+				}
 			}
 		}
 		else
@@ -408,9 +430,9 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 		GeneratedCode[i].HlslByLines.SetNum(OutputByLines.Num());
 		if (bIsAssembly)
 		{
-			if (Scripts[i] != nullptr)
+			if (Scripts[i] != nullptr && Scripts[i]->GetVMExecutableData().IsValid())
 			{
-				GeneratedCode[i].Hlsl = FText::FromString(Scripts[i]->LastAssemblyTranslation);
+				GeneratedCode[i].Hlsl = FText::FromString(Scripts[i]->GetVMExecutableData().LastAssemblyTranslation);
 			}
 			GeneratedCode[i].HlslByLines = OutputByLines;
 		}
@@ -439,7 +461,7 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 			GeneratedCode[i].UsageName = FText::Format(LOCTEXT("UsageNameEvent", "{0}-{1}{2}"), ScriptEnum->GetDisplayNameTextByValue((int64)Scripts[i]->Usage), EventName, bIsAssembly ? AssemblyIdText : FText::GetEmpty());
 		}
 		// GPU combined spawn / update script
-		else if (i == GeneratedCode.Num() - 1 && Scripts[i]->Usage == ENiagaraScriptUsage::ParticleSpawnScript)
+		else if (bIsGPU && i == GeneratedCode.Num() - 1 && Scripts[i]->IsParticleSpawnScript())
 		{
 			GeneratedCode[i].UsageName = LOCTEXT("UsageNameGPU", "GPU Spawn/Update");
 		}
@@ -474,22 +496,14 @@ void SNiagaraGeneratedCodeView::UpdateUI()
 					+ SHorizontalBox::Slot()
 					.FillWidth(1.0f)
 					[
-						SNew(SScrollBox)
-						.Orientation(Orient_Horizontal)
-						.ExternalScrollbar(GeneratedCode[i].HorizontalScrollBar)
-						+ SScrollBox::Slot()
-						[
-							SNew(SScrollBox)
-							.Orientation(Orient_Vertical)
-							.ExternalScrollbar(GeneratedCode[i].VerticalScrollBar)
-							+ SScrollBox::Slot()
-							[
-								SAssignNew(GeneratedCode[i].Text, SMultiLineEditableText)
-								.ClearTextSelectionOnFocusLoss(false)
-								.IsReadOnly(true)
-								.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.CodeView.Hlsl.Normal")
-							]
-						]
+						SAssignNew(GeneratedCode[i].Text, SMultiLineEditableTextBox)
+						.ClearTextSelectionOnFocusLoss(false)
+						.IsReadOnly(true)
+						.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.CodeView.Hlsl.Normal")
+						.BackgroundColor(FLinearColor::Black)
+						.SearchText(this, &SNiagaraGeneratedCodeView::GetSearchText)
+						.HScrollBar(GeneratedCode[i].HorizontalScrollBar)
+						.VScrollBar(GeneratedCode[i].VerticalScrollBar)
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
@@ -518,7 +532,10 @@ SNiagaraGeneratedCodeView::~SNiagaraGeneratedCodeView()
 	if (SystemViewModel.IsValid())
 	{
 		SystemViewModel->OnSelectedEmitterHandlesChanged().RemoveAll(this);
-		SystemViewModel->GetSystemScriptViewModel()->OnSystemCompiled().RemoveAll(this);
+		if (SystemViewModel->GetSystemScriptViewModel().IsValid())
+		{
+			SystemViewModel->GetSystemScriptViewModel()->OnSystemCompiled().RemoveAll(this);
+		}
 	}
 	
 }

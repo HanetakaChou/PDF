@@ -11,7 +11,7 @@
 	"MarketplaceURL" : "",
 	"SupportURL" : "",
 	"EnabledByDefault" : false,
-	"CanContainContent" : false,
+	"CanContainContent" : true,
 	"IsBetaVersion" : true,
 	"Installed" : false,
 	"Modules" :
@@ -26,6 +26,16 @@
 				"Linux"
 			]
 		}
+	],
+	"Plugins":
+	[
+		{
+			"Name" : "GeometryCache",
+			"Enabled" : true
+		},
+		{
+			"Name" : "PythonScriptPlugin",
+			"Enabled" : true
+		}
 	]
-
 }

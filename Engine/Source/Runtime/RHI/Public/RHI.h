@@ -135,6 +135,9 @@ RHI_API bool RHISupportsTessellation(const EShaderPlatform Platform);
 // helper to check that the shader platform supports writing to UAVs from pixel shaders.
 RHI_API bool RHISupportsPixelShaderUAVs(const EShaderPlatform Platform);
 
+// helper to check that the shader platform supports creating a UAV off an index buffer.
+RHI_API bool RHISupportsIndexBufferUAVs(const EShaderPlatform Platform);
+
 // helper to check if a preview feature level has been requested.
 RHI_API bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT);
 
@@ -160,7 +163,19 @@ inline bool RHISupportsMSAA(EShaderPlatform Platform)
 		&& IsMetalPlatform(Platform) && (FPlatformMisc::MacOSXVersionCompare(10, 13, 0) >= 0) && (!IsRHIDeviceIntel() || FPlatformMisc::MacOSXVersionCompare(10, 13, 2) >= 0)
 #endif
 		// @todo marksatt iOS Desktop Forward needs more work internally
-		&& Platform != SP_METAL_MRT;
+		&& Platform != SP_METAL_MRT
+		// @todo optimise MSAA for XboxOne, currently uses significant eRAM.
+		&& Platform != SP_XBOXONE_D3D12;
+}
+
+inline bool RHISupportsBufferLoadTypeConversion(EShaderPlatform Platform)
+{
+#if PLATFORM_MAC || PLATFORM_IOS
+	// Fixed from Metal v.2.0 onward.
+	return !IsMetalPlatform(Platform) || RHIGetShaderLanguageVersion(Platform) >= 3;
+#else
+	return true;
+#endif
 }
 
 /** Whether the platform supports reading from volume textures (does not cover rendering to volume textures). */
@@ -169,11 +184,18 @@ inline bool RHISupportsVolumeTextures(ERHIFeatureLevel::Type FeatureLevel)
 	return FeatureLevel >= ERHIFeatureLevel::SM4;
 }
 
+inline bool RHISupports4ComponentUAVReadWrite(EShaderPlatform Platform)
+{
+	// Must match usf PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE
+	// D3D11 does not support multi-component loads from a UAV: "error X3676: typed UAV loads are only allowed for single-component 32-bit element types"
+	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform);
+}
+
 /** Whether Manual Vertex Fetch is supported for the specified shader platform.
-    Shader Platform must not use the mobile renderer, and for Metal, the shader lanugage must be at least 2. */
+	Shader Platform must not use the mobile renderer, and for Metal, the shader language must be at least 2. */
 inline bool RHISupportsManualVertexFetch(EShaderPlatform InShaderPlatform)
 {
-	return !IsMobilePlatform(InShaderPlatform) && (!IsMetalPlatform(InShaderPlatform) || RHIGetShaderLanguageVersion(InShaderPlatform) >= 2);
+	return (!IsOpenGLPlatform(InShaderPlatform) || IsSwitchPlatform(InShaderPlatform)) && !IsMobilePlatform(InShaderPlatform) && (!IsMetalPlatform(InShaderPlatform) || RHIGetShaderLanguageVersion(InShaderPlatform) >= 2);
 }
 
 // Wrapper for GRHI## global variables, allows values to be overridden for mobile preview modes.
@@ -256,11 +278,23 @@ extern RHI_API bool GHardwareHiddenSurfaceRemoval;
 /** true if the RHI supports asynchronous creation of texture resources */
 extern RHI_API bool GRHISupportsAsyncTextureCreation;
 
-/** Can we handle quad primitives? */
-extern RHI_API bool GSupportsQuads;
+/** true if the RHI supports quad topology (PT_QuadList). */
+extern RHI_API bool GRHISupportsQuadTopology;
 
-/** Does the RHI provide a custom way to generate mips? */
-extern RHI_API bool GSupportsGenerateMips;
+/** true if the RHI supports rectangular topology (PT_RectList). */
+extern RHI_API bool GRHISupportsRectTopology;
+
+/** Temporary. When OpenGL is running in a separate thread, it cannot yet do things like initialize shaders that are first discovered in a rendering task. It is doable, it just isn't done. */
+extern RHI_API bool GSupportsParallelRenderingTasksWithSeparateRHIThread;
+
+/** If an RHI is so slow, that it is the limiting factor for the entire frame, we can kick early to try to give it as much as possible. */
+extern RHI_API bool GRHIThreadNeedsKicking;
+
+/** If an RHI cannot do an unlimited number of occlusion queries without stalling and waiting for the GPU, this can be used to tune hte occlusion culler to try not to do that. */
+extern RHI_API int32 GRHIMaximumReccommendedOustandingOcclusionQueries;
+
+/** Some RHIs can only do visible or not occlusion queries. */
+extern RHI_API bool GRHISupportsExactOcclusionQueries;
 
 /** True if and only if the GPU support rendering to volume textures (2D Array, 3D). Some OpenGL 3.3 cards support SM4, but can't render to volume textures. */
 extern RHI_API bool GSupportsVolumeTextureRendering;
@@ -319,6 +353,15 @@ extern RHI_API float GProjectionSignY;
 /** Does this RHI need to wait for deletion of resources due to ref counting. */
 extern RHI_API bool GRHINeedsExtraDeletionLatency;
 
+/** The maximum size allowed for a computeshader dispatch. */
+extern RHI_API TRHIGlobal<int32> GMaxComputeDispatchDimension;
+
+/** If true, then avoiding loading shader code and instead force the "native" path, which sends a library and a hash instead. */
+extern RHI_API bool GRHILazyShaderCodeLoading;
+
+/** If true, then it is possible to turn on GRHILazyShaderCodeLoading. */
+extern RHI_API bool GRHISupportsLazyShaderCodeLoading;
+
 /** The maximum size to allow for the shadow depth buffer in the X dimension.  This must be larger or equal to GMaxShadowDepthBufferSizeY. */
 extern RHI_API TRHIGlobal<int32> GMaxShadowDepthBufferSizeX;
 /** The maximum size to allow for the shadow depth buffer in the Y dimension. */
@@ -369,14 +412,7 @@ extern RHI_API int32 GDrawUPIndexCheckCount;
 /** true for each VET that is supported. One-to-one mapping with EVertexElementType */
 extern RHI_API class FVertexElementTypeSupportInfo GVertexElementTypeSupport;
 
-/** When greater than one, indicates that SLI rendering is enabled */
-#if PLATFORM_DESKTOP
-#define WITH_SLI (1)
-extern RHI_API int32 GNumActiveGPUsForRendering;
-#else
-#define WITH_SLI (0)
-#define GNumActiveGPUsForRendering (1)
-#endif
+#include "MultiGPU.h"
 
 /** Whether the next frame should profile the GPU. */
 extern RHI_API bool GTriggerGPUProfile;
@@ -398,9 +434,15 @@ extern RHI_API int64 GTexturePoolSize;
 /** In percent. If non-zero, the texture pool size is a percentage of GTotalGraphicsMemory. */
 extern RHI_API int32 GPoolSizeVRAMPercentage;
 
-/** Some simple runtime stats, reset on every call to RHIBeginFrame. */
+/** Some simple runtime stats, reset on every call to RHIBeginFrame */
+/** Num draw calls & primitives on previous frame (accurate on any thread)*/
 extern RHI_API int32 GNumDrawCallsRHI;
 extern RHI_API int32 GNumPrimitivesDrawnRHI;
+
+/** Num draw calls and primitives this frame (only accurate on RenderThread) */
+extern RHI_API int32 GCurrentNumDrawCallsRHI;
+extern RHI_API int32 GCurrentNumPrimitivesDrawnRHI;
+
 
 /** Whether or not the RHI can handle a non-zero BaseVertexIndex - extra SetStreamSource calls will be needed if this is false */
 extern RHI_API bool GRHISupportsBaseVertexIndex;
@@ -439,6 +481,9 @@ extern RHI_API bool GRHISupportsParallelRHIExecute;
 /** Whether or not the RHI can perform MSAA sample load. */
 extern RHI_API bool GRHISupportsMSAADepthSampleAccess;
 
+/** Whether or not HDR is currently enabled */
+extern RHI_API bool GRHIIsHDREnabled;
+
 /** Whether the present adapter/display offers HDR output capabilities. */
 extern RHI_API bool GRHISupportsHDROutput;
 
@@ -451,8 +496,10 @@ extern RHI_API uint64 GRHIPresentCounter;
 /** Called once per frame only from within an RHI. */
 extern RHI_API void RHIPrivateBeginFrame();
 
+
 RHI_API FName LegacyShaderPlatformToShaderFormat(EShaderPlatform Platform);
 RHI_API EShaderPlatform ShaderFormatToLegacyShaderPlatform(FName ShaderFormat);
+RHI_API FName ShaderPlatformToPlatformName(EShaderPlatform Platform);
 
 /**
  * Adjusts a projection matrix to output in the correct clip space for the
@@ -491,6 +538,17 @@ inline EShaderPlatform GetFeatureLevelShaderPlatform(ERHIFeatureLevel::Type InFe
 {
 	return GShaderPlatformForFeatureLevel[InFeatureLevel];
 }
+
+
+/** Finds a corresponding ERHIShadingPath::Type given an FName, or returns false if one could not be found. */
+extern RHI_API bool GetShadingPathFromName(FName Name, ERHIShadingPath::Type& OutShadingPath);
+
+/** Creates a string for the given shading path. */
+extern RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FString& OutName);
+
+/** Creates an FName for the given shading path. */
+extern RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FName& OutName);
+
 
 inline FArchive& operator <<(FArchive& Ar, EResourceLockMode& LockMode)
 {
@@ -640,6 +698,8 @@ struct FVertexElement
 		Ar << Element.bUseInstanceIndex;
 		return Ar;
 	}
+	RHI_API FString ToString() const;
+	RHI_API void FromString(const FString& Src);
 };
 
 typedef TArray<FVertexElement,TFixedAllocator<MaxVertexElementCount> > FVertexDeclarationElementList;
@@ -824,6 +884,10 @@ struct FDepthStencilStateInitializerRHI
 		Ar << DepthStencilStateInitializer.StencilWriteMask;
 		return Ar;
 	}
+	RHI_API FString ToString() const;
+	RHI_API void FromString(const FString& Src);
+
+
 };
 
 class FBlendStateInitializerRHI
@@ -832,6 +896,10 @@ public:
 
 	struct FRenderTarget
 	{
+		enum
+		{
+			NUM_STRING_FIELDS = 7
+		};
 		TEnumAsByte<EBlendOperation> ColorBlendOp;
 		TEnumAsByte<EBlendFactor> ColorSrcBlend;
 		TEnumAsByte<EBlendFactor> ColorDestBlend;
@@ -869,6 +937,10 @@ public:
 			Ar << RenderTarget.ColorWriteMask;
 			return Ar;
 		}
+		RHI_API FString ToString() const;
+		RHI_API void FromString(const TArray<FString>& Parts, int32 Index);
+
+
 	};
 
 	FBlendStateInitializerRHI() {}
@@ -900,6 +972,10 @@ public:
 		Ar << BlendStateInitializer.bUseIndependentRenderTargetBlendStates;
 		return Ar;
 	}
+	RHI_API FString ToString() const;
+	RHI_API void FromString(const FString& Src);
+
+
 };
 
 /**
@@ -1172,6 +1248,7 @@ struct FResolveParams
 	ECubeFace CubeFace;
 	/** resolve RECT bounded by [X1,Y1]..[X2,Y2]. Or -1 for fullscreen */
 	FResolveRect Rect;
+	FResolveRect DestRect;
 	/** The mip index to resolve in both source and dest. */
 	int32 MipIndex;
 	/** Array index to resolve in the source. */
@@ -1185,9 +1262,11 @@ struct FResolveParams
 		ECubeFace InCubeFace = CubeFace_PosX,
 		int32 InMipIndex = 0,
 		int32 InSourceArrayIndex = 0,
-		int32 InDestArrayIndex = 0)
+		int32 InDestArrayIndex = 0,
+		const FResolveRect& InDestRect = FResolveRect())
 		:	CubeFace(InCubeFace)
 		,	Rect(InRect)
+		,	DestRect(InDestRect)
 		,	MipIndex(InMipIndex)
 		,	SourceArrayIndex(InSourceArrayIndex)
 		,	DestArrayIndex(InDestArrayIndex)
@@ -1196,10 +1275,46 @@ struct FResolveParams
 	FORCEINLINE FResolveParams(const FResolveParams& Other)
 		: CubeFace(Other.CubeFace)
 		, Rect(Other.Rect)
+		, DestRect(Other.DestRect)
 		, MipIndex(Other.MipIndex)
 		, SourceArrayIndex(Other.SourceArrayIndex)
 		, DestArrayIndex(Other.DestArrayIndex)
 	{}
+};
+
+
+struct FRHICopyTextureInfo
+{
+	// Number of texels to copy. Z Must be always be > 0.
+	FIntVector Size = {0, 0, 1};
+
+	/** The mip index to copy in both source and dest. */
+	int32 MipIndex = 0;
+
+	/** Array index or cube face to resolve in the source. For Cubemap arrays this would be ArraySlice * 6 + FaceIndex. */
+	int32 SourceArraySlice = 0;
+	/** Array index or cube face to resolve in the dest. */
+	int32 DestArraySlice = 0;
+	// How many slices or faces to copy.
+	int32 NumArraySlices = 1;
+
+	// 2D copy
+	FRHICopyTextureInfo(int32 InWidth, int32 InHeight)
+		: Size(InWidth, InHeight, 1)
+	{
+	}
+
+	FRHICopyTextureInfo(const FIntVector& InSize)
+		: Size(InSize)
+	{
+	}
+
+	void AdvanceMip()
+	{
+		++MipIndex;
+		Size.X = FMath::Max(Size.X / 2, 1);
+		Size.Y = FMath::Max(Size.Y / 2, 1);
+	}
 };
 
 enum class EResourceTransitionAccess
@@ -1394,11 +1509,11 @@ struct FTextureMemoryStats
 
 	bool AreHardwareStatsValid() const
 	{
-#if !PLATFORM_HTML5
-		return DedicatedVideoMemory >= 0 && DedicatedSystemMemory >= 0 && SharedSystemMemory >= 0;
-#else 
-		return false; 
-#endif 
+#if !PLATFORM_HTML5 // TODO: should this be tested with GRHISupportsRHIThread instead? -- seems this would be better done in SynthBenchmarkPrivate.cpp
+		return (DedicatedVideoMemory >= 0 && DedicatedSystemMemory >= 0 && SharedSystemMemory >= 0);
+#else
+		return false;
+#endif
 	}
 
 	bool IsUsingLimitedPoolSize() const
@@ -1420,16 +1535,20 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Lines drawn"),STAT_RHILines,STATGROUP_RH
 #if STATS
 	#define RHI_DRAW_CALL_INC() \
 		INC_DWORD_STAT(STAT_RHIDrawPrimitiveCalls); \
-		FPlatformAtomics::InterlockedIncrement(&GNumDrawCallsRHI);
+		FPlatformAtomics::InterlockedIncrement(&GCurrentNumDrawCallsRHI);
 
 	#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives) \
 		RHI_DRAW_CALL_INC(); \
 		INC_DWORD_STAT_BY(STAT_RHITriangles,(uint32)(PrimitiveType != PT_LineList ? (NumPrimitives) : 0)); \
 		INC_DWORD_STAT_BY(STAT_RHILines,(uint32)(PrimitiveType == PT_LineList ? (NumPrimitives) : 0)); \
-		FPlatformAtomics::InterlockedAdd(&GNumPrimitivesDrawnRHI, NumPrimitives);
+		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI, NumPrimitives);
 #else
-	#define RHI_DRAW_CALL_INC()
-	#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives)
+	#define RHI_DRAW_CALL_INC() \
+		FPlatformAtomics::InterlockedIncrement(&GCurrentNumDrawCallsRHI);
+
+	#define RHI_DRAW_CALL_STATS(PrimitiveType,NumPrimitives) \
+		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI, NumPrimitives); \
+		FPlatformAtomics::InterlockedIncrement(&GCurrentNumDrawCallsRHI);
 #endif
 
 // RHI memory stats.
@@ -1469,6 +1588,11 @@ extern RHI_API void RHIExit();
 #define GETSAFERHISHADER_DOMAIN(Shader) ((Shader) ? (Shader)->GetDomainShader() : (FDomainShaderRHIParamRef)FDomainShaderRHIRef())
 #define GETSAFERHISHADER_GEOMETRY(Shader) ((Shader) ? (Shader)->GetGeometryShader() : (FGeometryShaderRHIParamRef)FGeometryShaderRHIRef())
 #define GETSAFERHISHADER_COMPUTE(Shader) ((Shader) ? (Shader)->GetComputeShader() : (FComputeShaderRHIParamRef)FComputeShaderRHIRef())
+
+
+// Panic delegate is called when when a fatal condition is encountered within RHI function.
+DECLARE_DELEGATE_OneParam(FRHIPanicEvent, const FName&);
+extern RHI_API FRHIPanicEvent& RHIGetPanicDelegate();
 
 // RHI utility functions that depend on the RHI definitions.
 #include "RHIUtilities.h"

@@ -198,6 +198,9 @@ namespace ELauncherProfileValidationErrors
 
 		/** The archive step requires a directory to be specified */
 		NoArchiveDirectorySpecified,
+
+		/** Device is unauthorized or is locked */
+		LaunchDeviceIsUnauthorized,
 	};
 }
 
@@ -678,6 +681,15 @@ public:
 	 */
 	virtual FString GetProjectPath( ) const = 0;
 
+	/**
+	 * Gets the additional command line parameters that will be used when the app launches.
+	 * These will be used by all launch roles
+	 *
+	 * @return The additional command line parameters
+	 * @see SetAdditionalCommandLineParameters
+	 */
+	virtual FString GetAdditionalCommandLineParameters() const = 0;
+
     /**
      * Gets the timeout time for the cook on the fly server.
      *
@@ -790,6 +802,14 @@ public:
 	 * @see SetPackageWithUnrealPak
 	 */
 	virtual bool IsPackingWithUnrealPak( ) const = 0;
+
+	/**
+	 * Checks whether to include an installer for prerequisites of packaged games, such as redistributable operating system components, on platforms that support it.
+	 *
+	 * @return true if prerequisites are to be included, false otherwise.
+	 * @see SetIncludePrerequisites
+	 */
+	virtual bool IsIncludingPrerequisites() const = 0;
 
 	/**
 	 * Return whether packaging will generate chunk data.
@@ -1190,12 +1210,29 @@ public:
 	virtual void SetProjectPath( const FString& Path ) = 0;
 
 	/**
+	 * Sets the additional command line parameters for the application to use at launch.
+	 * These will be used by all launch roles
+	 *
+	 * @param	Params	The additional command line parameters to use
+	 * @see GetAdditionalCommandLineParameters
+	 */
+	virtual void SetAdditionalCommandLineParameters(const FString& Params) = 0;
+
+	/**
 	 * Sets whether to use a streaming file server.
 	 *
 	 * @param Streaming Whether a streaming server should be used.
 	 * @see GetStreamingFileServer
 	 */
 	virtual void SetStreamingFileServer( bool Streaming ) = 0;
+
+	/**
+	 * Sets whether to include game prerequisites.
+	 *
+	 * @param Value Whether prerequisites should be used.
+	 * @see IsIncludingPrerequisites
+	 */
+	virtual void SetIncludePrerequisites(bool InValue) = 0;
 
     /**
      * Sets the cook on the fly server timeout

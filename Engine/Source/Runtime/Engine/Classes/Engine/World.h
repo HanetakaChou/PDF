@@ -23,7 +23,8 @@
 #include "Engine/PendingNetGame.h"
 #include "Engine/LatentActionManager.h"
 #include "Engine/GameInstance.h"
-#include "Engine/DemoNetDriver.h"
+#include "Physics/PhysicsInterfaceDeclares.h"
+#include "Particles/WorldPSCPool.h"
 
 #include "World.generated.h"
 
@@ -37,13 +38,13 @@ class APhysicsVolume;
 class APlayerController;
 class AWorldSettings;
 class Error;
-class FPhysScene;
 class FTimerManager;
 class FUniqueNetId;
 class FWorldInGamePerformanceTrackers;
 class IInterface_PostProcessVolume;
 class UAISystemBase;
 class UCanvas;
+class UDemoNetDriver;
 class UGameViewportClient;
 class ULevelStreaming;
 class ULocalPlayer;
@@ -74,7 +75,7 @@ typedef TArray<TWeakObjectPtr<APhysicsVolume> >::TConstIterator FConstPhysicsVol
 DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorSpawned, AActor*);
-
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnFeatureLevelChanged, ERHIFeatureLevel::Type);
 
 /** Proxy class that allows verification on GWorld accesses. */
 class UWorldProxy
@@ -789,23 +790,85 @@ class ENGINE_API UWorld final : public UObject, public FNetworkNotify
 	UPROPERTY(Transient)
 	TArray<UObject*>							PerModuleDataObjects;
 
+private:
 	/** Level collection. ULevels are referenced by FName (Package name) to avoid serialized references. Also contains offsets in world units */
 	UPROPERTY(Transient)
-	TArray<class ULevelStreaming*>				StreamingLevels;
+	TArray<ULevelStreaming*> StreamingLevels;
+
+	/** This is the list of streaming levels that are actively being considered for what their state should be. It will be a subset of StreamingLevels */
+	UPROPERTY(Transient, DuplicateTransient)
+	TSet<ULevelStreaming*> StreamingLevelsToConsider;
+
+public:
+
+	/** Return a const version of the streaming levels array */
+	const TArray<ULevelStreaming*>& GetStreamingLevels() const { return StreamingLevels; }
+
+	bool IsStreamingLevelBeingConsidered(ULevelStreaming* StreamingLevel) const { return StreamingLevelsToConsider.Contains(StreamingLevel); }
+
+	/** Returns the level, if any, in the process of being made visible */
+	ULevel* GetCurrentLevelPendingVisibility() const { return CurrentLevelPendingVisibility; }
+
+	/** Returns the level, if any, in the process of being made invisible */
+	ULevel* GetCurrentLevelPendingInvisibility() const { return CurrentLevelPendingInvisibility; }
+
+	/** Add a streaming level to the list of streamed levels to consider. */
+	void AddStreamingLevel(ULevelStreaming* StreamingLevelToAdd);
+
+	/** Add multiple streaming levels to the list of streamed levels to consider.  */
+	void AddStreamingLevels(TArrayView<ULevelStreaming* const> StreamingLevelsToAdd);
+
+	/** Add a streaming level to the list of streamed levels to consider. If this streaming level is in the array already then it won't be added again. */
+	void AddUniqueStreamingLevel(ULevelStreaming* StreamingLevelToAdd);
+
+	/** Add multiple streaming levels to the list of streamed levels to consider.  If any of these streaming levels are in the array already then they won't be added again.  */
+	void AddUniqueStreamingLevels(TArrayView<ULevelStreaming* const> StreamingLevelsToAdd);
+
+	/** Replace the streaming levels array */
+	void SetStreamingLevels(TArray<ULevelStreaming*>&& StreamingLevels);
+
+	/** Replace the streaming levels array */
+	void SetStreamingLevels(TArrayView<ULevelStreaming* const> StreamingLevels);
+
+	/** Remove a streaming level to the list of streamed levels to consider.
+	 *  Returns true if the specified level was in the streaming levels list.
+	 */
+	bool RemoveStreamingLevel(ULevelStreaming* StreamingLevelToRemove);
+
+	/** Remove a streaming level to the list of streamed levels to consider.
+	*  Returns true if the specified index was a valid index for removal.
+	*/
+	bool RemoveStreamingLevelAt(int32 IndexToRemove);
+
+	/** Remove multiple streaming levels to the list of streamed levels to consider. 
+	 * Returns a count of how many of the specified levels were in the streaming levels list
+	 */
+	int32 RemoveStreamingLevels(TArrayView<ULevelStreaming* const> StreamingLevelsToRemove);
+
+	/** Reset the streaming levels array */
+	void ClearStreamingLevels();
+
+	/** Inform the world that a streaming level has had a potentially state changing modification made to it so that it needs to be in the StreamingLevelsToConsider list. */
+	void UpdateStreamingLevelShouldBeConsidered(ULevelStreaming* StreamingLevelToConsider);
+
+	/** Examine all streaming levels and determine which ones should be considered. */
+	void PopulateStreamingLevelsToConsider();
 
 	/** Prefix we used to rename streaming levels, non empty in PIE and standalone preview */
 	UPROPERTY()
 	FString										StreamingLevelsPrefix;
-	
-	/** Pointer to the current level in the queue to be made visible, NULL if none are pending.					*/
+
+private:
+	/** Pointer to the current level in the queue to be made visible, NULL if none are pending. */
 	UPROPERTY(Transient)
 	class ULevel*								CurrentLevelPendingVisibility;
 
-	/** Pointer to the current level in the queue to be made invisible, NULL if none are pending.					*/
+	/** Pointer to the current level in the queue to be made invisible, NULL if none are pending. */
 	UPROPERTY(Transient)
 	class ULevel*								CurrentLevelPendingInvisibility;
-	
-	/** Fake NetDriver for capturing network traffic to record demos															*/
+
+public:
+	/** Fake NetDriver for capturing network traffic to record demos */
 	UPROPERTY()
 	class UDemoNetDriver*						DemoNetDriver;
 
@@ -834,9 +897,9 @@ public:
 	uint32 bTriggerPostLoadMap:1;
 
 private:
-	/** The world's navmesh */
+	/** The world's navigation data manager */
 	UPROPERTY(Transient)
-	class UNavigationSystem*					NavigationSystem;
+	class UNavigationSystemBase*				NavigationSystem;
 
 	/** The current GameMode, valid only on the server */
 	UPROPERTY(Transient)
@@ -875,6 +938,10 @@ public:
 	struct FHierarchicalLODBuilder*						HierarchicalLODBuilder;
 #endif // WITH_EDITOR
 
+	/** Called from DemoNetDriver when playing back a replay and the timeline is successfully scrubbed */
+	UFUNCTION()
+	void HandleTimelineScrubbed();
+
 private:
 
 	/** Pointer to the current level being edited. Level has to be in the Levels array and == PersistentLevel in the game.		*/
@@ -899,8 +966,8 @@ private:
 	UCanvas* CanvasForDrawMaterialToRenderTarget;
 
 public:
-	/** Set the pointer to the Navgation system. */
-	void SetNavigationSystem( UNavigationSystem* InNavigationSystem);
+	/** Set the pointer to the Navigation System instance. */
+	void SetNavigationSystem(UNavigationSystemBase* InNavigationSystem);
 
 	/** The interface to the scene manager for this world. */
 	class FSceneInterface*						Scene;
@@ -1025,6 +1092,9 @@ private:
 	/** Event to gather up all net drivers and call TickDispatch at once */
 	FOnNetTickEvent TickDispatchEvent;
 
+	/** Event to gather up all net drivers and call PostTickDispatch at once */
+	FOnTickFlushEvent PostTickDispatchEvent;
+
 	/** Event to gather up all net drivers and call TickFlush at once */
 	FOnNetTickEvent TickFlushEvent;
 	
@@ -1032,9 +1102,14 @@ private:
 	FOnTickFlushEvent PostTickFlushEvent;
 
 	/** All registered net drivers TickDispatch() */
-	void BroadcastTickDispatch(float DeltaTime)
+	void BroadcastTickDispatch(float DeltaTime)	
 	{
 		TickDispatchEvent.Broadcast(DeltaTime);
+	}
+	/** All registered net drivers PostTickDispatch() */
+	void BroadcastPostTickDispatch()
+	{
+		PostTickDispatchEvent.Broadcast();
 	}
 	/** All registered net drivers TickFlush() */
 	void BroadcastTickFlush(float DeltaTime)
@@ -1073,6 +1148,10 @@ private:
 
 	/** Disables the broadcasting of level selection change. Internal use only. */
 	uint32 bBroadcastSelectionChange:1;
+
+	/** a delegate that broadcasts a notification whenever the current feautre level is changed */
+	FOnFeatureLevelChanged OnFeatureLevelChanged;
+
 #endif //WITH_EDITORONLY_DATA
 public:
 	/** The URL that was used when loading this World.																			*/
@@ -1122,11 +1201,23 @@ public:
 	/** Is level streaming currently frozen?																					*/
 	bool										bIsLevelStreamingFrozen;
 
+private:
 	/** Is forcibly unloading streaming levels?																					*/
 	bool										bShouldForceUnloadStreamingLevels;
 
 	/** Is forcibly making streaming levels visible?																			*/
 	bool										bShouldForceVisibleStreamingLevels;
+
+	/** Is there at least one material parameter collection instance waiting for a deferred update?								*/
+	uint8										bMaterialParameterCollectionInstanceNeedsDeferredUpdate : 1;
+
+public:
+
+	bool GetShouldForceUnloadStreamingLevels() const { return bShouldForceUnloadStreamingLevels; }
+	void SetShouldForceUnloadStreamingLevels(bool bInShouldForceUnloadStreamingLevels);
+
+	bool GetShouldForceVisibleStreamingLevels() const { return bShouldForceVisibleStreamingLevels; }
+	void SetShouldForceVisibleStreamingLevels(bool bInShouldForceVisibleStreamingLevels);
 
 	/** True we want to execute a call to UpdateCulledTriggerVolumes during Tick */
 	bool										bDoDelayedUpdateCullDistanceVolumes;
@@ -1303,6 +1394,14 @@ public:
 	UPROPERTY(transient)
 	uint32 bAreConstraintsDirty:1;
 
+	/** Indicates that the world has marked contained objects as pending kill */
+	bool HasMarkedObjectsPendingKill() const { return bMarkedObjectsPendingKill; }
+private:
+	uint32 bCleanedUpWorld:1;
+
+	uint32 bMarkedObjectsPendingKill:1;
+
+public:
 #if WITH_EDITORONLY_DATA
 	/** List of DDC async requests we need to wait on before we register components. Game thread only. */
 	TArray<TSharedPtr<FAsyncPreRegisterDDCRequest>> AsyncPreRegisterDDCRequests;
@@ -1863,9 +1962,9 @@ public:
 	bool IsTraceHandleValid(const FTraceHandle& Handle, bool bOverlapTrace);
 
 	/** NavigationSystem getter */
-	FORCEINLINE UNavigationSystem* GetNavigationSystem() { return NavigationSystem; }
+	FORCEINLINE UNavigationSystemBase* GetNavigationSystem() { return NavigationSystem; }
 	/** NavigationSystem const getter */
-	FORCEINLINE const UNavigationSystem* GetNavigationSystem() const { return NavigationSystem; }
+	FORCEINLINE const UNavigationSystemBase* GetNavigationSystem() const { return NavigationSystem; }
 
 	/** AISystem getter. if AISystem is missing it tries to create one and returns the result.
 	 *	@NOTE the result can be NULL, for example on client games or if no AI module or AISystem class have not been specified
@@ -1876,7 +1975,7 @@ public:
 	FORCEINLINE UAISystemBase* GetAISystem() { return AISystem; }
 	/** AISystem const getter */
 	FORCEINLINE const UAISystemBase* GetAISystem() const { return AISystem; }
-
+	
 	/** Avoidance manager getter */
 	FORCEINLINE class UAvoidanceManager* GetAvoidanceManager() { return AvoidanceManager; }
 	/** Avoidance manager getter */
@@ -1894,8 +1993,32 @@ public:
 	/** @return Returns an iterator for the player controller list. */
 	FConstPlayerControllerIterator GetPlayerControllerIterator() const;
 	
+	/** 
+	 * @return Returns the first player controller cast to the template type, or NULL if there is not one.
+	 *
+	 * May return NULL if the cast fails.
+	 */
+	template< class T >
+	T* GetFirstPlayerController() const
+	{
+		return Cast<T>(GetFirstPlayerController());
+	}
+	
 	/** @return Returns the first player controller, or NULL if there is not one. */	
 	APlayerController* GetFirstPlayerController() const;
+	
+	/*
+	 *	Get the first valid local player via the first player controller.
+	 *
+	 *  @return Pointer to the first valid ULocalPlayer cast to the template type, or NULL if there is not one.
+	 *
+	 *  May Return NULL if the cast fails.
+	 */	
+	template< class T >
+	T* GetFirstLocalPlayerFromController() const
+	{
+		return Cast<T>(GetFirstLocalPlayerFromController());
+	}
 
 	/*
 	 *	Get the first valid local player via the first player controller.
@@ -1929,6 +2052,16 @@ public:
 
 	/** Returns true if the actors have been initialized and are ready to start play */
 	bool AreActorsInitialized() const;
+
+	struct FActorsInitializedParams
+	{
+		FActorsInitializedParams(UWorld* InWorld, bool InResetTime) : World(InWorld), ResetTime(InResetTime) {}
+		UWorld* World;
+		bool ResetTime;
+	};
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldInitializedActors, const FActorsInitializedParams&);
+	FOnWorldInitializedActors OnActorsInitialized;
 
 	/** Returns true if gameplay has already started, false otherwise. */
 	bool HasBegunPlay() const;
@@ -1975,7 +2108,7 @@ public:
 	float GetMonoFarFieldCullingDistance() const;
 
 	/** Creates a new physics scene for this world. */
-	void CreatePhysicsScene();
+	void CreatePhysicsScene(const AWorldSettings* Settings = nullptr);
 
 	/** Returns a pointer to the physics scene for this world. */
 	FPhysScene* GetPhysicsScene() const { return PhysicsScene; }
@@ -1988,7 +2121,7 @@ public:
 	 * 
 	 * @return default physics volume
 	 */
-	APhysicsVolume* GetDefaultPhysicsVolume() const;
+	APhysicsVolume* GetDefaultPhysicsVolume() const { return DefaultPhysicsVolume ? DefaultPhysicsVolume : InternalGetDefaultPhysicsVolume(); }
 
 	/** Returns true if a DefaultPhysicsVolume has been created. */
 	bool HasDefaultPhysicsVolume() const { return DefaultPhysicsVolume != nullptr; }
@@ -2123,6 +2256,7 @@ public:
 
 	//~ Begin UObject Interface
 	virtual void Serialize( FArchive& Ar ) override;
+	virtual void BeginDestroy() override;
 	virtual void FinishDestroy() override;
 	virtual void PostLoad() override;
 	virtual bool PreSaveRoot(const TCHAR* Filename) override;
@@ -2201,7 +2335,7 @@ public:
 	 * @param Level				Level object we should add
 	 * @param LevelTransform	Transformation to apply to each actor in the level
 	 */
-	void AddToWorld( ULevel* Level, const FTransform& LevelTransform = FTransform::Identity );
+	void AddToWorld( ULevel* Level, const FTransform& LevelTransform = FTransform::Identity, bool bConsiderTimeLimit = true );
 
 	/** 
 	 * Dissociates the passed in level from the world. The removal is blocking.
@@ -2214,9 +2348,6 @@ public:
 	 * Updates sub-levels (load/unload/show/hide) using streaming levels current state
 	 */
 	void UpdateLevelStreaming();
-
-private:
-	void UpdateLevelStreamingInner( ULevelStreaming* StreamingLevel );
 
 public:
 	/**
@@ -2389,11 +2520,10 @@ public:
 
 public:
 
-	/** Get the event that broadcasts TickDispatch */
+	/** Network Tick events */
 	FOnNetTickEvent& OnTickDispatch() { return TickDispatchEvent; }
-	/** Get the event that broadcasts TickFlush */
+	FOnTickFlushEvent& OnPostTickDispatch() { return PostTickDispatchEvent; }	
 	FOnNetTickEvent& OnTickFlush() { return TickFlushEvent; }
-	/** Get the event that broadcasts TickFlush */
 	FOnTickFlushEvent& OnPostTickFlush() { return PostTickFlushEvent; }
 
 	/**
@@ -2434,7 +2564,15 @@ public:
 	 */
 	void UpdateActorComponentEndOfFrameUpdateState(UActorComponent* Component) const;
 
-	bool HasEndOfFrameUpdates();
+	/** 
+	 * Used to indicate a UMaterialParameterCollectionInstance needs a deferred update 
+	 */
+	void SetMaterialParameterCollectionInstanceNeedsUpdate();
+
+	/** 
+	 * Returns true if we have any updates that have been deferred to the end of the current frame.
+	 */
+	bool HasEndOfFrameUpdates() const;
 
 	/**
 	 * Send all render updates to the rendering thread.
@@ -2505,6 +2643,12 @@ public:
 
 	/** Shrink level elements to their minimum size. */
 	void ShrinkLevel();
+
+	/** Add a listener for OnFeatureLevelChanged events */
+	FDelegateHandle AddOnFeatureLevelChangedHandler(const FOnFeatureLevelChanged::FDelegate& InHandler);
+
+	/** Remove a listener for OnFeatureLevelChanged events */
+	void RemoveOnFeatureLevelChangedHandler(FDelegateHandle InHandle);
 #endif // WITH_EDITOR
 	
 	/**
@@ -2620,7 +2764,7 @@ public:
 	void DestroyDemoNetDriver();
 
 	/** Returns true if we are currently playing a replay */
-	bool IsPlayingReplay() const { return (DemoNetDriver ? DemoNetDriver->IsPlaying() : false); }
+	bool IsPlayingReplay() const;
 
 	// Start listening for connections.
 	bool Listen( FURL& InURL );
@@ -2832,11 +2976,15 @@ public:
 	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const FUniqueNetIdRepl& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	
-	/** Try to find an acceptable position to place TestActor as close to possible to PlaceLocation.  Expects PlaceLocation to be a valid location inside the level. */
-	bool FindTeleportSpot( AActor* TestActor, FVector& PlaceLocation, FRotator PlaceRotation );
+	/**
+	 * Try to find an acceptable non-colliding location to place TestActor as close to possible to PlaceLocation. Expects PlaceLocation to be a valid location inside the level.
+	 * Returns true if a location without blocking collision is found, in which case PlaceLocation is overwritten with the new clear location.
+	 * Returns false if no suitable location could be found, in which case PlaceLocation is unmodified.
+	 */
+	bool FindTeleportSpot( const AActor* TestActor, FVector& PlaceLocation, FRotator PlaceRotation );
 
 	/** @Return true if Actor would encroach at TestLocation on something that blocks it.  Returns a ProposedAdjustment that might result in an unblocked TestLocation. */
-	bool EncroachingBlockingGeometry( AActor* TestActor, FVector TestLocation, FRotator TestRotation, FVector* ProposedAdjustment = NULL );
+	bool EncroachingBlockingGeometry( const AActor* TestActor, FVector TestLocation, FRotator TestRotation, FVector* ProposedAdjustment = NULL );
 
 	/** Begin physics simulation */ 
 	void StartPhysicsSim();
@@ -2878,9 +3026,8 @@ public:
 	void WelcomePlayer(UNetConnection* Connection);
 
 	/**
-	 * Used to get a net driver object by name. Default name is the game net driver
-	 * @param NetDriverName the name of the net driver being asked for
-	 * @return a pointer to the net driver or NULL if the named driver is not found
+	 * Used to get a net driver object.
+	 * @return a pointer to the net driver or NULL if no driver is available.
 	 */
 	FORCEINLINE_DEBUGGABLE UNetDriver* GetNetDriver() const
 	{
@@ -2905,12 +3052,6 @@ private:
 	/** Private version without inlining that does *not* check Dedicated server build flags (which should already have been done). */
 	ENetMode InternalGetNetMode() const;
 
-	// Sends the NMT_Challenge message to Connection.
-	void SendChallengeControlMessage(UNetConnection* Connection);
-	void SendChallengeControlMessage(const FEncryptionKeyResponse& Response, TWeakObjectPtr<UNetConnection> WeakConnection);
-
-public:
-
 #if WITH_EDITOR
 	/** Attempts to derive the net mode from PlayInSettings for PIE*/
 	ENetMode AttemptDeriveFromPlayInSettings() const;
@@ -2918,6 +3059,14 @@ public:
 
 	/** Attempts to derive the net mode from URL */
 	ENetMode AttemptDeriveFromURL() const;
+
+	APhysicsVolume* InternalGetDefaultPhysicsVolume() const;
+
+	// Sends the NMT_Challenge message to Connection.
+	void SendChallengeControlMessage(UNetConnection* Connection);
+	void SendChallengeControlMessage(const FEncryptionKeyResponse& Response, TWeakObjectPtr<UNetConnection> WeakConnection);
+
+public:
 
 	/**
 	 * Sets the net driver to use for this world
@@ -2932,6 +3081,11 @@ public:
 	 * Returns true if the game net driver exists and is a client and the demo net driver exists and is a server.
 	 */
 	bool IsRecordingClientReplay() const;
+
+	/**
+	* Returns true if the demo net driver exists and is playing a client recorded replay.
+	*/
+	bool IsPlayingClientReplay() const;
 
 	/**
 	 * Sets the number of frames to delay Streaming Volume updating, 
@@ -3031,7 +3185,7 @@ public:
 	 *
 	 * @param bForce	If true, load the levels even is a commandlet
 	 */
-	void LoadSecondaryLevels(bool bForce = false, TSet<FString>* CookedPackages = NULL);
+	void LoadSecondaryLevels(bool bForce = false, TSet<FName>* FilenamesToSkip = NULL);
 
 	/** Utility for returning the ULevelStreaming object for a particular sub-level, specified by package name */
 	ULevelStreaming* GetLevelStreamingForPackageName(FName PackageName);
@@ -3048,6 +3202,13 @@ public:
 	 * @param LevelsToRefresh A TArray<ULevelStreaming*> containing pointers to the levels to refresh
 	 */
 	void RefreshStreamingLevels( const TArray<class ULevelStreaming*>& InLevelsToRefresh );
+		
+private:
+	bool bIsRefreshingStreamingLevels;
+
+public:
+
+	bool IsRefreshingStreamingLevels() const { return bIsRefreshingStreamingLevels; }
 
 	void IssueEditorLoadWarnings();
 
@@ -3215,6 +3376,15 @@ public:
 
 	/** If the specified package contains a redirector to a UWorld, that UWorld is returned. Otherwise, nullptr is returned. */
 	static UWorld* FollowWorldRedirectorInPackage(UPackage* Package, UObjectRedirector** OptionalOutRedirector = nullptr);
+
+	FORCEINLINE FWorldPSCPool& GetPSCPool() { return PSCPool; }
+
+	private:
+
+	UPROPERTY()
+	FWorldPSCPool PSCPool;
+
+	//PSC Pooling END
 };
 
 /** Global UWorld pointer. Use of this pointer should be avoided whenever possible. */
@@ -3303,6 +3473,9 @@ public:
 	// Called when changes in the levels require blueprint actions to be refreshed.
 	static FRefreshLevelScriptActionsEvent RefreshLevelScriptActions;
 #endif
+	
+	// Global Callback after actors have been initialized (on any world)
+	static UWorld::FOnWorldInitializedActors OnWorldInitializedActors;
 
 private:
 	FWorldDelegates() {}
@@ -3341,6 +3514,17 @@ FORCEINLINE_DEBUGGABLE float UWorld::GetDeltaSeconds() const
 FORCEINLINE_DEBUGGABLE float UWorld::TimeSince(float Time) const
 {
 	return GetTimeSeconds() - Time;
+}
+
+FORCEINLINE_DEBUGGABLE FConstPhysicsVolumeIterator UWorld::GetNonDefaultPhysicsVolumeIterator() const
+{
+	auto Result = NonDefaultPhysicsVolumeList.CreateConstIterator();
+	return (const FConstPhysicsVolumeIterator&)Result;
+}
+
+FORCEINLINE_DEBUGGABLE int32 UWorld::GetNonDefaultPhysicsVolumeCount() const
+{
+	return NonDefaultPhysicsVolumeList.Num();
 }
 
 FORCEINLINE_DEBUGGABLE bool UWorld::ComponentOverlapMulti(TArray<struct FOverlapResult>& OutOverlaps, const class UPrimitiveComponent* PrimComp, const FVector& Pos, const FRotator& Rot, const FComponentQueryParams& Params, const FCollisionObjectQueryParams& ObjectQueryParams) const

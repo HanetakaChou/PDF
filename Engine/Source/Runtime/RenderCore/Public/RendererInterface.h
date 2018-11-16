@@ -13,7 +13,8 @@
 #include "RHI.h"
 #include "RenderResource.h"
 #include "RenderUtils.h"
-#include "EnumClassFlags.h"
+#include "Misc/EnumClassFlags.h"
+#include "UniformBuffer.h"
 
 class FCanvas;
 class FMaterial;
@@ -21,8 +22,11 @@ class FSceneInterface;
 class FSceneRenderTargets;
 class FSceneView;
 class FSceneViewFamily;
+class FSceneTexturesUniformParameters;
 struct FMeshBatch;
 struct FSynthBenchmarkResults;
+class IVirtualTextureSpace;
+struct FVirtualTextureSpaceDesc;
 
 enum class EShowMaterialDrawEventTypes
 {
@@ -401,6 +405,10 @@ struct FSceneRenderTargetItem
 		TargetableTexture.SafeRelease();
 		ShaderResourceTexture.SafeRelease();
 		UAV.SafeRelease();
+		for (int32 i = 0; i < MipUAVs.Num(); i++)
+		{
+			MipUAVs[i].SafeRelease();
+		}
 		for( int32 i = 0; i < MipSRVs.Num(); i++ )
 		{
 			MipSRVs[i].SafeRelease();
@@ -418,8 +426,11 @@ struct FSceneRenderTargetItem
 	FTextureRHIRef TargetableTexture;
 	/** The 2D or cubemap shader-resource 2D texture that the targetable textures may be resolved to. */
 	FTextureRHIRef ShaderResourceTexture;
-	/** only created if requested through the flag  */
+	/** only created if requested through the flag, same as MipUAVs[0] */
+	// TODO: refactor all the code to only use MipUAVs?
 	FUnorderedAccessViewRHIRef UAV;
+	/** only created if requested through the flag  */
+	TArray< FUnorderedAccessViewRHIRef, TInlineAllocator<1> > MipUAVs;
 	/** only created if requested through the flag  */
 	TArray< FShaderResourceViewRHIRef > MipSRVs;
 
@@ -538,8 +549,11 @@ class FPostOpaqueRenderParameters
 		FMatrix ViewMatrix;
 		FMatrix ProjMatrix;
 		FRHITexture2D* DepthTexture;
+		FRHITexture2D* NormalTexture;
 		FRHITexture2D* SmallDepthTexture;
 		FRHICommandListImmediate* RHICmdList;
+		FUniformBufferRHIParamRef ViewUniformBuffer;
+		TUniformBufferRef<FSceneTexturesUniformParameters> SceneTexturesUniformParams;
 		void* Uid; // A unique identifier for the view.
 };
 DECLARE_DELEGATE_OneParam(FPostOpaqueRenderDelegate, class FPostOpaqueRenderParameters&);
@@ -548,7 +562,7 @@ DECLARE_DELEGATE_OneParam(FPostOpaqueRenderDelegate, class FPostOpaqueRenderPara
 class FComputeDispatcher
 {
 public:
-	virtual void Execute(FRHICommandList &RHICmdList) = 0;
+	virtual void Execute(FRHICommandList &RHICmdList, FUniformBufferRHIParamRef ViewUniformBuffer) = 0;
 };
 
 
@@ -591,9 +605,10 @@ public:
 		AllowStaticLighting = true;
 		FrameCountAfterRenderingCommandSend = 0;
 		RequestTickSinceCreation = 0;
+		PreExposure = 1;
 	}
 
-	void SetRequestData(FVector2D SrcViewportUV, int32 TargetBufferIndex, int32 ViewUniqueId, int32 GBufferFormat, bool StaticLightingEnable)
+	void SetRequestData(FVector2D SrcViewportUV, int32 TargetBufferIndex, int32 ViewUniqueId, int32 GBufferFormat, bool StaticLightingEnable, float InPreExposure)
 	{
 		SourceViewportUV = SrcViewportUV;
 		BufferIndex = TargetBufferIndex;
@@ -602,6 +617,7 @@ public:
 		ViewId = ViewUniqueId;
 		GBufferPrecision = GBufferFormat;
 		AllowStaticLighting = StaticLightingEnable;
+		PreExposure = InPreExposure;
 		FrameCountAfterRenderingCommandSend = 0;
 		RequestTickSinceCreation = 0;
 	}
@@ -623,6 +639,70 @@ public:
 	//GPU state at capture time
 	int32 GBufferPrecision;
 	bool AllowStaticLighting;
+	float PreExposure;
+};
+
+#define VIRTUALTEXTURESPACE_MAXLAYERS 4
+struct FVirtualTextureSpaceDesc
+{
+	uint32 Size;
+	uint8 Dimensions;
+	EPixelFormat PageTableFormat;
+
+	uint32 PhysicalTileSize;
+	uint32 Poolsize;
+	EPixelFormat PhysicalTextureFormats[VIRTUALTEXTURESPACE_MAXLAYERS];
+};
+
+class IVirtualTextureProducer
+{
+public:
+	virtual void Finalize() = 0;
+};
+
+/**
+* Interface of a virtual texture
+*/
+class IVirtualTexture
+{
+public:
+	inline IVirtualTexture(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ)
+		: SizeX(InSizeX)
+		, SizeY(InSizeY)
+		, SizeZ(InSizeZ)
+	{
+		static FThreadSafeCounter IVirtualTexture_UniqueID;
+		UniqueId = IVirtualTexture_UniqueID.Increment();
+	}
+
+	virtual	~IVirtualTexture() {}
+
+	/**
+	* Locates page and returns if page data can be provided at this moment.
+	* @param vLevel The mipmap level of the data
+	* @param vAddress Bit-interleaved x,y page indexes
+	* @param Location A pointer to the data will be returned in this variable
+	* @return True if the data is available
+	*/
+	virtual bool	LocatePageData(uint8 vLevel, uint64 vAddress, void* RESTRICT& Location) /*const*/ = 0;
+
+	/**
+	* Upload page data to the cache!?
+	* @param vLevel The mipmap level of the data
+	* @param vAddress Bit-interleaved x,y page indexes
+	* @param pAddress Bit-interleaved x,y location to store in the cache
+	* @param Location The pointer previously returned by LocatePageData for the same vLevel and vAddress
+	* @return True if the data is available
+	*/
+	virtual IVirtualTextureProducer* ProducePageData(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, uint8 vLevel, uint64 vAddress, uint16 pAddress, void* RESTRICT Location) /*const*/ = 0;
+
+	virtual void DumpToConsole() {}
+
+	// Size in pages
+	uint32	SizeX;
+	uint32	SizeY;
+	uint32	SizeZ;
+	uint32  UniqueId : 24; // 24 because of TileID (TODO custom type ?)
 };
 
 /**
@@ -728,10 +808,13 @@ public:
 
 	virtual void RegisterPostOpaqueRenderDelegate(const FPostOpaqueRenderDelegate& PostOpaqueRenderDelegate) = 0;
 	virtual void RegisterOverlayRenderDelegate(const FPostOpaqueRenderDelegate& OverlayRenderDelegate) = 0;
+	virtual void RenderPostOpaqueExtensions(const class FViewInfo& View, FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext, TUniformBufferRef<FSceneTexturesUniformParameters>& SceneTextureUniformParams) = 0;
+	virtual void RenderOverlayExtensions(const class FViewInfo& View, FRHICommandListImmediate& RHICmdList, FSceneRenderTargets& SceneContext) = 0;
+	virtual bool HasPostOpaqueExtentions() const = 0;
 
 	virtual void RegisterPostOpaqueComputeDispatcher(FComputeDispatcher *Dispatcher) = 0;
 	virtual void UnRegisterPostOpaqueComputeDispatcher(FComputeDispatcher *Dispatcher) = 0;
-	virtual void DispatchPostOpaqueCompute(FRHICommandList &CmdList) = 0;
+	virtual void DispatchPostOpaqueCompute(FRHICommandList &CmdList, FUniformBufferRHIParamRef ViewUniformBuffer) = 0;
 
 	/** Delegate that is called upon resolving scene color. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnResolvedSceneColor, FRHICommandListImmediate& /*RHICmdList*/, class FSceneRenderTargets& /*SceneContext*/);
@@ -743,5 +826,10 @@ public:
 	virtual void RenderPostResolvedSceneColorExtension(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext) = 0;
 
 	virtual void PostRenderAllViewports() = 0;
+
+	/** Create/Destroy renderer virtual texture objects */
+	virtual IVirtualTextureSpace *CreateVirtualTextureSpace(const FVirtualTextureSpaceDesc &Desc) = 0;
+	virtual void DestroyVirtualTextureSpace(IVirtualTextureSpace *Space) = 0;
+
 };
 

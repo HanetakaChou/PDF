@@ -6,7 +6,7 @@
 #include "SocketSubsystem.h"
 
 #if PLATFORM_HAS_BSD_SOCKET_FEATURE_WINSOCKETS
-	#include "WindowsHWrapper.h"
+	#include "Windows/WindowsHWrapper.h"
 	#include "Windows/AllowWindowsPlatformTypes.h"
 
 	#include <winsock2.h>
@@ -75,7 +75,7 @@ inline int TranslateFlags(ESocketReceiveFlags::Type Flags)
 /**
  * Standard BSD specific socket subsystem implementation (common to both IPv4 and IPv6)
  */
-class FSocketSubsystemBSDCommon
+class DEPRECATED(4.21, "Use FSocketSubsystemBSD.") FSocketSubsystemBSDCommon
 	: public ISocketSubsystem
 {
 protected:

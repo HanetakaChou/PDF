@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2017 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2018 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -68,6 +68,7 @@
 #include "SDL_x11mouse.h"
 #include "SDL_x11opengl.h"
 #include "SDL_x11window.h"
+#include "SDL_x11vulkan.h"
 
 /* Private display data */
 
@@ -83,6 +84,14 @@ typedef struct SDL_VideoData
     int windowlistlength;
     XID window_group;
     Window clipboard_window;
+
+/* EG BEGIN */
+#ifdef SDL_WITH_EPIC_EXTENSIONS
+#if SDL_VIDEO_DRIVER_X11_XFIXES
+    SDL_Window *active_cursor_confined_window;
+#endif
+#endif // SDL_WITH_EPIC_EXTENSIONS
+/* EG END */
 
     /* This is true for ICCCM2.0-compliant window managers */
     SDL_bool net_wm;
@@ -139,6 +148,12 @@ typedef struct SDL_VideoData
 
     KeyCode filter_code;
     Time    filter_time;
+
+#if SDL_VIDEO_VULKAN
+    /* Vulkan variables only valid if _this->vulkan_config.loader_handle is not NULL */
+    void *vulkan_xlib_xcb_library;
+    PFN_XGetXCBConnection vulkan_XGetXCBConnection;
+#endif
 
 } SDL_VideoData;
 

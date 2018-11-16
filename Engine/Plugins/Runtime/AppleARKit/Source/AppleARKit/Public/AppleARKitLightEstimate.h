@@ -5,11 +5,12 @@
 // UE4
 #include "CoreMinimal.h"
 #include "Math/SHMath.h"
+#include "AppleARKitAvailability.h"
 
 // ARKit
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-#import <ARKit/ARKit.h>
-#endif // ARKIT_SUPPORT
+#if SUPPORTS_ARKIT_1_0
+	#import <ARKit/ARKit.h>
+#endif
 
 // AppleARKit
 #include "AppleARKitLightEstimate.generated.h"
@@ -23,9 +24,13 @@ struct APPLEARKIT_API FAppleARKitLightEstimate
 	GENERATED_BODY()
 
 	// Default constructor
-	FAppleARKitLightEstimate() {};
+	FAppleARKitLightEstimate()
+		: bIsValid(false)
+		, AmbientIntensity(0.f)
+		, AmbientColorTemperatureKelvin(0.f)
+	{};
 
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
+#if SUPPORTS_ARKIT_1_0
 
 	/** 
 	 * This is a conversion copy-constructor that takes a raw ARLightEstimate and fills this structs 
@@ -33,7 +38,7 @@ struct APPLEARKIT_API FAppleARKitLightEstimate
 	 */ 
 	FAppleARKitLightEstimate( ARLightEstimate* InARLightEstimate );
 
-#endif // #ARKIT_SUPPORT
+#endif
 
 	/** True if light estimation was enabled for the session and light estimation was successful */
 	UPROPERTY( BlueprintReadOnly, Category="AppleARKit|Light Estimate" )

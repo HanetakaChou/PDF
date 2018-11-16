@@ -5,14 +5,6 @@
 #include "Misc/ScopeLock.h"
 #include "AudioMixer.h"
 
-static int32 DisableSubmixEffectEQCvar = 0;
-FAutoConsoleVariableRef CVarDisableSubmixEQ(
-	TEXT("au.DisableSubmixEffectEQ"),
-	DisableSubmixEffectEQCvar,
-	TEXT("Disables the eq submix.\n")
-	TEXT("0: Not Disabled, 1: Disabled"),
-	ECVF_Default);
-
 
 static bool IsEqual(const FSubmixEffectSubmixEQSettings& Left, const FSubmixEffectSubmixEQSettings& Right)
 {
@@ -81,6 +73,8 @@ void FSubmixEffectSubmixEQ::Init(const FSoundEffectSubmixInitData& InitData)
 // Called when an audio effect preset is changed
 void FSubmixEffectSubmixEQ::OnPresetChanged()
 {
+	LLM_SCOPE(ELLMTag::AudioMixer);
+
 	GET_EFFECT_SETTINGS(SubmixEffectSubmixEQ);
 
 	// Don't make any changes if this is the exact same parameters
@@ -93,6 +87,8 @@ void FSubmixEffectSubmixEQ::OnPresetChanged()
 
 void FSubmixEffectSubmixEQ::OnProcessAudio(const FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData)
 {
+	LLM_SCOPE(ELLMTag::AudioMixer);
+
  	SCOPE_CYCLE_COUNTER(STAT_AudioMixerMasterEQ);
 
 	// Update parameters that may have been set from game thread
@@ -101,7 +97,7 @@ void FSubmixEffectSubmixEQ::OnProcessAudio(const FSoundEffectSubmixInputData& In
 	Audio::AlignedFloatBuffer& InAudioBuffer = *InData.AudioBuffer;
 	Audio::AlignedFloatBuffer& OutAudioBuffer = *OutData.AudioBuffer;
 
-	if (bEQSettingsSet && !DisableSubmixEffectEQCvar && RenderThreadEQSettings.EQBands.Num() > 0)
+	if (bEQSettingsSet && RenderThreadEQSettings.EQBands.Num() > 0)
 	{
 		// Feed every other channel through the EQ filters
 		int32 NumFilters = InData.NumChannels / 2;

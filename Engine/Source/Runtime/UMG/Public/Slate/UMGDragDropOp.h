@@ -21,7 +21,7 @@ class FUMGDragDropOp : public FGameDragDropOperation, public FGCObject
 public:
 	DRAG_DROP_OPERATOR_TYPE(FUMGDragDropOp, FGameDragDropOperation)
 	
-	static TSharedRef<FUMGDragDropOp> New(UDragDropOperation* Operation, const FVector2D &CursorPosition, const FVector2D &ScreenPositionOfNode, float DPIScale, TSharedPtr<SObjectWidget> SourceUserWidget);
+	static TSharedRef<FUMGDragDropOp> New(UDragDropOperation* Operation, const int32 PointerIndex, const FVector2D &CursorPosition, const FVector2D &ScreenPositionOfNode, float DPIScale, TSharedPtr<SObjectWidget> SourceUserWidget);
 
 	FUMGDragDropOp();
 
@@ -29,6 +29,7 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	// End FGCObject
 
+	virtual bool AffectedByPointerEvent(const FPointerEvent& PointerEvent) override;
 	virtual void OnDrop( bool bDropWasHandled, const FPointerEvent& MouseEvent ) override;
 	virtual void OnDragged( const class FDragDropEvent& DragDropEvent ) override;
 	virtual FCursorReply OnCursorQuery() override;
@@ -58,6 +59,8 @@ private:
 
 	/** The starting screen location where the drag operation started. */
 	FVector2D StartingScreenPos;
+
+	int32 PointerIndex;
 
 	/** Allows smooth interpolation of the dragged visual over a few frames. */
 	double StartTime;

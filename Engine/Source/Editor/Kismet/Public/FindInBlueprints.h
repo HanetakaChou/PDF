@@ -25,7 +25,7 @@ class FUICommandList;
 
 typedef STreeView<FSearchResult>  STreeViewType;
 
-DECLARE_DELEGATE_OneParam(FOnSearchComplete, TArray<TSharedPtr<class FImaginaryFiBData>>&);
+DECLARE_DELEGATE_OneParam(FOnSearchComplete, TArray<FImaginaryFiBDataSharedPtr>&);
 
 /** Some utility functions to help with Find-in-Blueprint functionality */
 namespace FindInBlueprintsHelpers
@@ -285,7 +285,7 @@ private:
 	FReply OnRemoveCacheBar();
 
 	/** Callback to return the cache bar's display text, informing the user of the situation */
-	FText GetUncachedBlueprintWarningText() const;
+	FText GetUncachedAssetWarningText() const;
 
 	/** Callback to return the cache bar's current indexing Blueprint name */
 	FText GetCurrentCacheBlueprintName() const;

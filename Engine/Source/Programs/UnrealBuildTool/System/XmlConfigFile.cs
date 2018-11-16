@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -86,7 +86,7 @@ namespace UnrealBuildTool
 				{
 					if (!ConfigFile.bHasErrors)
 					{
-						Log.TraceError("{0}", Ex.Message);
+						Log.TraceError(File, Ex.LineNumber, "{0}", Ex.Message);
 						ConfigFile.bHasErrors = true;
 					}
 				}
@@ -124,15 +124,7 @@ namespace UnrealBuildTool
 		/// <param name="Args">Standard argument for ValidationEventHandler</param>
 		void ValidationEvent(object Sender, ValidationEventArgs Args)
 		{
-			if (Args.Severity == XmlSeverityType.Warning)
-			{
-				Log.TraceWarning("{0}({1}): {2}", File.FullName, Args.Exception.LineNumber, Args.Message);
-			}
-			else
-			{
-				Log.TraceError("{0}({1}): {2}", File.FullName, Args.Exception.LineNumber, Args.Message);
-				bHasErrors = true;
-			}
+			Log.TraceWarning(File, Args.Exception.LineNumber, "{0}", Args.Message);
 		}
 	}
 

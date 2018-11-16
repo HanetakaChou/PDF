@@ -20,6 +20,11 @@ FOnlineError::FOnlineError(bool bSucceededIn)
 {
 }
 
+FOnlineError::FOnlineError(const TCHAR* const ErrorCodeIn)
+	: FOnlineError(FString(ErrorCodeIn))
+{
+}
+
 FOnlineError::FOnlineError(const FString& ErrorCodeIn)
 	: bSucceeded(false)
 	, HttpResult(0)
@@ -97,6 +102,10 @@ const TCHAR* FOnlineError::ToLogString() const
 	else if (!ErrorRaw.IsEmpty())
 	{
 		return *ErrorRaw;
+	}
+	else if (bSucceeded)
+	{
+		return TEXT("Succeeded");
 	}
 	else
 	{

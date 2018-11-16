@@ -17,6 +17,7 @@
 #include "AssetToolsModule.h"
 #include "EditorClassUtils.h"
 #include "AutomatedAssetImportData.h"
+#include "AssetImportTask.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogFactory, Log, All);
 
@@ -52,6 +53,18 @@ void UFactory::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collec
 
 UObject* UFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, const FString& Filename, const TCHAR* Parms, FFeedbackContext* Warn, bool& bOutOperationCanceled)
 {
+	UAssetImportTask* Task = AssetImportTask;
+	if (Task == nullptr)
+	{
+		Task = NewObject<UAssetImportTask>();
+		Task->Filename = Filename;
+	}
+
+	if (ScriptFactoryCreateFile(Task))
+	{
+		return Task->Result;
+	}
+
 	FString FileExtension = FPaths::GetExtension(Filename);
 
 	// load as text
@@ -67,7 +80,7 @@ UObject* UFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName I
 		ParseParms(Parms);
 		const TCHAR* Ptr = *Data;
 			
-		return FactoryCreateText(InClass, InParent, InName, Flags, nullptr, *FileExtension, Ptr, Ptr + Data.Len(), Warn);
+		return FactoryCreateText(InClass, InParent, InName, Flags, nullptr, *FileExtension, Ptr, Ptr + Data.Len(), Warn, bOutOperationCanceled);
 	}
 
 	// load as binary
@@ -90,6 +103,11 @@ UObject* UFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName I
 
 bool UFactory::FactoryCanImport( const FString& Filename )
 {
+	if (ScriptFactoryCanImport(Filename))
+	{
+		return true;
+	}
+
 	// only T3D is supported
 	if (FPaths::GetExtension(Filename) != TEXT("t3d"))
 	{
@@ -295,6 +313,10 @@ void UFactory::DisplayOverwriteOptionsDialog(const FText& Message)
 	{
 		OverwriteYesOrNoToAllState =  AutomatedImportData->bReplaceExisting ? EAppReturnType::YesAll : EAppReturnType::NoAll;
 	}
+	else if (AssetImportTask && AssetImportTask->bAutomated)
+	{
+		OverwriteYesOrNoToAllState = AssetImportTask->bReplaceExisting ? EAppReturnType::YesAll : EAppReturnType::NoAll;
+	}
 	else if (OverwriteYesOrNoToAllState != EAppReturnType::YesAll && OverwriteYesOrNoToAllState != EAppReturnType::NoAll)
 	{
 		OverwriteYesOrNoToAllState = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAllCancel, FText::Format(
@@ -423,7 +445,7 @@ UObject* UFactory::StaticImportObject
 
 	if ((Result == nullptr) && !bOutOperationCanceled)
 	{
-		Warn->Logf(*FText::Format(NSLOCTEXT("UnrealEd", "ImportFailed", "Failed to import file '{0}'"), FText::FromString(FString(Filename))).ToString());
+		Warn->Log(*FText::Format(NSLOCTEXT("UnrealEd", "ImportFailed", "Failed to import file '{0}'"), FText::FromString(FString(Filename))).ToString());
 	}
 
 	return Result;
@@ -515,7 +537,7 @@ bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkD
 								ParseStr +=2;
 							}
 							Value = FParse::HexDigit(ParseStr[0]) * 16 + FParse::HexDigit(ParseStr[1]);
-							*BulkDataPointer = (uint8)Value;
+							*BulkDataPointer = (uint8)Value; //-V522
 							BulkDataPointer++;
 							ParseStr += 2;
 							ParseStr++;
@@ -606,4 +628,14 @@ FString UFactory::GetDefaultNewAssetName() const
 void UFactory::SetAutomatedAssetImportData(const UAutomatedAssetImportData* Data)
 {
 	AutomatedImportData = Data;
+}
+
+void UFactory::SetAssetImportTask(class UAssetImportTask* Task)
+{
+	AssetImportTask = Task;
+}
+
+bool UFactory::IsAutomatedImport() const
+{
+	return GIsAutomationTesting || AutomatedImportData || (AssetImportTask && AssetImportTask->bAutomated);
 }

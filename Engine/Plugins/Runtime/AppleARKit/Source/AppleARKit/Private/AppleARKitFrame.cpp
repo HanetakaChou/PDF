@@ -3,22 +3,49 @@
 // AppleARKit
 #include "AppleARKitFrame.h"
 #include "AppleARKitModule.h"
-#include "ScopeLock.h"
+#include "Misc/ScopeLock.h"
 
 // Default constructor
 FAppleARKitFrame::FAppleARKitFrame()
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-	: CapturedYImage(nullptr)
-	, CapturedCbCrImage( nullptr )
+	: Timestamp(0.0)
+#if SUPPORTS_ARKIT_1_0
+	, CapturedYImage(nullptr)
+	, CapturedCbCrImage(nullptr)
+	, CameraImage(nullptr)
+	, CameraDepth(nullptr)
+	, NativeFrame(nullptr)
 #endif
+	, CapturedYImageWidth(0)
+	, CapturedYImageHeight(0)
+	, CapturedCbCrImageWidth(0)
+	, CapturedCbCrImageHeight(0)
+	, WorldMappingState(EARWorldMappingState::NotAvailable)
 {
 };
 
-#if ARKIT_SUPPORT && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
+#if SUPPORTS_ARKIT_2_0
+EARWorldMappingState ToEARWorldMappingState(ARWorldMappingStatus MapStatus)
+{
+	switch (MapStatus)
+	{
+		// These both mean more data is needed
+		case ARWorldMappingStatusLimited:
+		case ARWorldMappingStatusExtending:
+			return EARWorldMappingState::StillMappingNotRelocalizable;
+
+		case ARWorldMappingStatusMapped:
+			return EARWorldMappingState::Mapped;
+	}
+	return EARWorldMappingState::NotAvailable;
+}
+#endif
+
+#if SUPPORTS_ARKIT_1_0
 
 FAppleARKitFrame::FAppleARKitFrame( ARFrame* InARFrame, CVMetalTextureCacheRef MetalTextureCache )
-  : Camera( InARFrame.camera )
-  , LightEstimate( InARFrame.lightEstimate )
+	: Camera( InARFrame.camera )
+	, LightEstimate( InARFrame.lightEstimate )
+	, WorldMappingState(EARWorldMappingState::NotAvailable)
 {
 	// Sanity check
 	check( InARFrame );
@@ -26,7 +53,10 @@ FAppleARKitFrame::FAppleARKitFrame( ARFrame* InARFrame, CVMetalTextureCacheRef M
 
 	// Copy timestamp
 	Timestamp = InARFrame.timestamp;
-	
+
+	CameraImage = nullptr;
+	CameraDepth = nullptr;
+
 	// Copy / convert pass-through camera image's CVPixelBuffer to an MTLTexture so we can pass it
 	// directly to FTextureResource's.
 	// @see AppleARKitCameraTextureResource.cpp
@@ -40,6 +70,8 @@ FAppleARKitFrame::FAppleARKitFrame( ARFrame* InARFrame, CVMetalTextureCacheRef M
 	
 	if ( InARFrame.capturedImage )
 	{
+		CameraImage = InARFrame.capturedImage;
+		CFRetain(CameraImage);
 		// Update SizeX & Y
 		CapturedYImageWidth = CVPixelBufferGetWidthOfPlane( InARFrame.capturedImage, 0 );
 		CapturedYImageHeight = CVPixelBufferGetHeightOfPlane( InARFrame.capturedImage, 0 );
@@ -61,19 +93,42 @@ FAppleARKitFrame::FAppleARKitFrame( ARFrame* InARFrame, CVMetalTextureCacheRef M
 		check( CapturedCbCrImage );
 		check( CFGetRetainCount(CapturedCbCrImage) == 1);
 	}
+	// @todo JoeG -- finsih the depth capture
+//@joeg -- Disabled due to crashing when accessing
+	if (0 && InARFrame.capturedDepthData)
+	{
+		CameraDepth = InARFrame.capturedDepthData;
+		CFRetain(CameraDepth);
+	}
+
+	NativeFrame = (void*)CFRetain(InARFrame);
+
+#if SUPPORTS_ARKIT_2_0
+	if (FAppleARKitAvailability::SupportsARKit20())
+	{
+		WorldMappingState = ToEARWorldMappingState(InARFrame.worldMappingStatus);
+	}
+#endif
 }
 
 FAppleARKitFrame::FAppleARKitFrame( const FAppleARKitFrame& Other )
-  : Timestamp( Other.Timestamp )
-  , CapturedYImage( nullptr )
-  , CapturedCbCrImage( nullptr )
-  , CapturedYImageWidth( Other.CapturedYImageWidth )
-  , CapturedYImageHeight( Other.CapturedYImageHeight )
-  , CapturedCbCrImageWidth( Other.CapturedCbCrImageWidth )
-  , CapturedCbCrImageHeight( Other.CapturedCbCrImageHeight )
-  , Camera( Other.Camera )
-  , LightEstimate( Other.LightEstimate )
+	: Timestamp( Other.Timestamp )
+	, CapturedYImage( nullptr )
+	, CapturedCbCrImage( nullptr )
+	, CameraImage( nullptr )
+	, CameraDepth( nullptr )
+	, CapturedYImageWidth( Other.CapturedYImageWidth )
+	, CapturedYImageHeight( Other.CapturedYImageHeight )
+	, CapturedCbCrImageWidth( Other.CapturedCbCrImageWidth )
+	, CapturedCbCrImageHeight( Other.CapturedCbCrImageHeight )
+	, Camera( Other.Camera )
+	, LightEstimate( Other.LightEstimate )
+	, WorldMappingState(Other.WorldMappingState)
 {
+	if(Other.NativeFrame != nullptr)
+	{
+		NativeFrame = (void*)CFRetain((CFTypeRef)Other.NativeFrame);
+	}
 }
 
 FAppleARKitFrame::~FAppleARKitFrame()
@@ -87,11 +142,27 @@ FAppleARKitFrame::~FAppleARKitFrame()
 	{
 		CFRelease( CapturedCbCrImage );
 	}
-	
+	if (CameraImage != nullptr)
+	{
+		CFRelease(CameraImage);
+	}
+	if (CameraDepth != nullptr)
+	{
+		CFRelease(CameraDepth);
+	}
+	if(NativeFrame != nullptr)
+	{
+		CFRelease((CFTypeRef)NativeFrame);
+	}
 }
 
 FAppleARKitFrame& FAppleARKitFrame::operator=( const FAppleARKitFrame& Other )
 {
+	if (&Other == this)
+	{
+		return *this;
+	}
+
 	// Release outgoing image
 	if ( CapturedYImage != nullptr )
 	{
@@ -100,6 +171,17 @@ FAppleARKitFrame& FAppleARKitFrame::operator=( const FAppleARKitFrame& Other )
 	if ( CapturedCbCrImage != nullptr )
 	{
 		CFRelease( CapturedCbCrImage );
+	}
+
+	if(NativeFrame != nullptr)
+	{
+		CFRelease((CFTypeRef)NativeFrame);
+		NativeFrame = nullptr;
+	}
+
+	if(Other.NativeFrame != nullptr)
+	{
+		NativeFrame = (void*)CFRetain((CFTypeRef)Other.NativeFrame);
 	}
 	
 	// Member-wise copy
@@ -112,8 +194,11 @@ FAppleARKitFrame& FAppleARKitFrame::operator=( const FAppleARKitFrame& Other )
 	CapturedCbCrImageHeight = Other.CapturedCbCrImageHeight;
 	Camera = Other.Camera;
 	LightEstimate = Other.LightEstimate;
+	WorldMappingState = Other.WorldMappingState;
+
+	NativeFrame = Other.NativeFrame;
 
 	return *this;
 }
 
-#endif // ARKIT_SUPPORT
+#endif

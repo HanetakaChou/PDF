@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "TypeHash.h" 
+#include "Templates/TypeHash.h" 
 #include "UObject/NameTypes.h"
 #include "Delegates/DelegateSettings.h"
 
@@ -91,6 +91,13 @@ public:
 	 * @return Pointer to the UObject, or nullptr if not bound to a UObject.
 	 */
 	virtual UObject* GetUObject( ) const = 0;
+
+	/**
+	 * Returns a pointer to an object bound to this delegate instance, intended for quick lookup in the timer manager,
+	 *
+	 * @return A pointer to an object referenced by the delegate instance.
+	 */
+	virtual const void* GetObjectForTimerManager() const = 0;
 
 	/**
 	 * Returns true if this delegate is bound to the specified UserObject,

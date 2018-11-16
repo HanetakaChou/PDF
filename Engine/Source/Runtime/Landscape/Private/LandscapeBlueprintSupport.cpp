@@ -12,6 +12,7 @@
 #include "Components/SplineComponent.h"
 #include "LandscapeComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "LandscapeProxy.h"
 
 void ALandscapeProxy::EditorApplySpline(USplineComponent* InSplineComponent, float StartWidth, float EndWidth, float StartSideFalloff, float EndSideFalloff, float StartRoll, float EndRoll, int32 NumSubdivisions, bool bRaiseHeights, bool bLowerHeights, ULandscapeLayerInfoObject* PaintLayer)
 {
@@ -76,4 +77,16 @@ void ALandscapeProxy::SetLandscapeMaterialScalarParameterValue(FName ParameterNa
 			}
 		}			
 	}
+}
+
+void ALandscapeProxy::EditorSetLandscapeMaterial(UMaterialInterface* NewLandscapeMaterial)
+{
+#if WITH_EDITOR
+	if (!GetWorld()->IsGameWorld())
+	{
+		LandscapeMaterial = NewLandscapeMaterial;
+		FPropertyChangedEvent PropertyChangedEvent(FindFieldChecked<UProperty>(GetClass(), FName("LandscapeMaterial")));
+		PostEditChangeProperty(PropertyChangedEvent);
+	}
+#endif
 }

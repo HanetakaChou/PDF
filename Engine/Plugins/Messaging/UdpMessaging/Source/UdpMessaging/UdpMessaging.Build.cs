@@ -21,6 +21,7 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"CoreUObject",
 					"Json",
+					"Cbor",
 					"Networking",
 					"Serialization",
 					"Sockets",
@@ -37,7 +38,6 @@ namespace UnrealBuildTool.Rules
 					"UdpMessaging/Private",
 					"UdpMessaging/Private/Shared",
 					"UdpMessaging/Private/Transport",
-					"UdpMessaging/Private/Transport/Tests",
 					"UdpMessaging/Private/Tunnel",
 				});
 

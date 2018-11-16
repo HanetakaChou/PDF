@@ -31,6 +31,16 @@ class USoundNodeRandom : public USoundNode
 	UPROPERTY(EditAnywhere, Category=Random)
 	int32 PreselectAtLevelLoad;
 
+	/** If set to true, this random node will not be culled on load for platforms with a maximum amount of preloaded random branches
+	*   set in project settings
+	*/
+	UPROPERTY(EditAnywhere, Category = Random)
+	uint8 bShouldExcludeFromBranchCulling : 1;
+
+	/** Exclusion for branch culling set by the sound cue. */
+	UPROPERTY()
+	uint8 bSoundCueExcludedFromBranchCulling : 1;
+
 	/** 
 	 * Determines whether or not this SoundNodeRandom should randomize with or without
 	 * replacement.  
@@ -95,6 +105,16 @@ public:
 #endif //WITH_EDITOR
 
 	int32 ChooseNodeIndex(FActiveSound& ActiveSound);
+
+private:
+
+	/*
+	 * Determines the amount of branches to use on this random node, so that we can cull the rest.
+	 * Based on the au.MaxRandomBranches CVar, the MaxNumRandomBranches project setting
+	 * available for some platforms, and this node's PreselectAtLevelLoad UProperty.
+	 * @return 0 if we do not want cull any branches.
+	 */
+	int32 DetermineAmountOfBranchesToPreselect();
 
 };
 

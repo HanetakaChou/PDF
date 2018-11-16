@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 #include "Containers/UnrealString.h"
 #include "Misc/Timespan.h"
+#include "Templates/TypeHash.h"
 
 class FArchive;
 class FOutputDevice;
@@ -707,6 +708,17 @@ public:
 	}
 
 	/**
+	 * Serializes the given date and time from or into the specified structured archive slot.
+	 *
+	 * @param Slot The structured archive slot to serialize from or into.
+	 * @param DateTime The date and time value to serialize.
+	 */
+	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FDateTime& DateTime)
+	{
+		return Slot << DateTime.Ticks;
+	}
+
+	/**
 	 * Gets the hash for the specified date and time.
 	 *
 	 * @param DateTime The date and time to get the hash for.
@@ -726,11 +738,7 @@ protected:
 	static const int32 DaysToMonth[];
 
 private:
-#ifdef COREUOBJECT_API
-	friend COREUOBJECT_API class UScriptStruct* Z_Construct_UScriptStruct_FDateTime();
-#else
-	friend class UScriptStruct* Z_Construct_UScriptStruct_FDateTime();
-#endif
+	friend struct Z_Construct_UScriptStruct_FDateTime_Statics;
 
 private:
 

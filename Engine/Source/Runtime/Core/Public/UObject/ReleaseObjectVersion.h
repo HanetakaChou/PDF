@@ -4,7 +4,8 @@
 #include "CoreTypes.h"
 #include "Misc/Guid.h"
 
-// Custom serialization version for changes made in Dev-Core stream
+// Custom serialization version for changes made in Release streams.
+// NOTE: Beware of patch releases - do not bump this except in the latest Release stream!
 struct CORE_API FReleaseObjectVersion
 {
 	enum Type
@@ -51,6 +52,27 @@ struct CORE_API FReleaseObjectVersion
 
 		// Removed objects that were serialized as part of this material feature
 		RemovedMaterialSharedInputCollection,
+
+		// HISMC Cluster Tree migration to add new data
+		HISMCClusterTreeMigration,
+
+		// Default values on pins in blueprints could be saved incoherently
+		PinDefaultValuesVerified,
+
+		// During copy and paste transition getters could end up with broken state machine references
+		FixBrokenStateMachineReferencesInTransitionGetters,
+
+		// Change to MeshDescription serialization
+		MeshDescriptionNewSerialization,
+
+		// Change to not clamp RGB values > 1 on linear color curves
+		UnclampRGBColorCurves,
+
+		// Bugfix for FAnimObjectVersion::LinkTimeAnimBlueprintRootDiscovery.
+		LinkTimeAnimBlueprintRootDiscoveryBugFix,
+
+		// Change trail anim node variable deprecation
+		TrailNodeBlendVariableNameChange,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

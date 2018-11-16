@@ -114,33 +114,12 @@ namespace UnrealBuildTool
 		
 		private static string ConvertPath(string InPath)
 		{
-			if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
-			{
-				if (InPath[1] != ':')
-				{
-					throw new BuildException("Can only convert full paths ({0})", InPath);
-				}
-
-				string MacPath = string.Format("{0}/{1}/{2}/{3}",
-					RemoteToolChain.UserDevRootMac,
-					Environment.MachineName,
-					InPath[0].ToString().ToUpper(),
-					InPath.Substring(3));
-
-				// clean the path
-				MacPath = MacPath.Replace("\\", "/");
-
-				return MacPath;
-			}
-			else
-			{
-				return InPath.Replace("\\", "/");
-			}
+			return InPath.Replace("\\", "/");
 		}
 		
 		private void ParseSourceFilesIntoGroups()
 		{
-			foreach (var CurSourceFile in SourceFiles)
+			foreach (SourceFile CurSourceFile in SourceFiles)
 			{
 				EddieSourceFile SourceFile = CurSourceFile as EddieSourceFile;
 				string FileName = SourceFile.Reference.GetFileName();
@@ -148,7 +127,7 @@ namespace UnrealBuildTool
 				string FilePath = SourceFile.Reference.MakeRelativeTo(ProjectFilePath.Directory);
 				string FilePathMac = Utils.CleanDirectorySeparators(FilePath, '/');
 				
-				var ProjectRelativeSourceFile = CurSourceFile.Reference.MakeRelativeTo(ProjectFilePath.Directory);
+				string ProjectRelativeSourceFile = CurSourceFile.Reference.MakeRelativeTo(ProjectFilePath.Directory);
 				string RelativeSourceDirectory = Path.GetDirectoryName(ProjectRelativeSourceFile);
 				// Use the specified relative base folder
 				if (CurSourceFile.BaseFolder != null)	// NOTE: We are looking for null strings, not empty strings!
@@ -172,7 +151,7 @@ namespace UnrealBuildTool
 		
 		private void EmitProject(StringBuilder Content, Dictionary<string, EddieFolder> Folders)
 		{
-			foreach (var CurGroup in Folders)
+			foreach (KeyValuePair<string, EddieFolder> CurGroup in Folders)
 			{
                 if (Path.GetFileName(CurGroup.Key) != "Documentation")
                 {
@@ -180,7 +159,7 @@ namespace UnrealBuildTool
                 
                     if (CurGroup.Value.bIsModuleFolder)
                     {
-                        var ProjectFileContent = new StringBuilder();
+                        StringBuilder ProjectFileContent = new StringBuilder();
                 
                         ProjectFileContent.Append("# @Eddie Workset@" + ProjectFileGenerator.NewLine);
                         ProjectFileContent.Append("AddWorkset \"" + Path.GetFileName(CurGroup.Key) + ".wkst\" \"" + CurGroup.Value.WorksetPath + "\"" + ProjectFileGenerator.NewLine);
@@ -220,7 +199,7 @@ namespace UnrealBuildTool
 		{
 			bool bSuccess = false;
 			
-			var TargetName = ProjectFilePath.GetFileNameWithoutExtension();
+			string TargetName = ProjectFilePath.GetFileNameWithoutExtension();
 			
 			FileReference GameProjectPath = null;
 			foreach(ProjectTarget Target in ProjectTargets)
@@ -232,7 +211,7 @@ namespace UnrealBuildTool
 				}
 			}
 			
-			var ProjectFileContent = new StringBuilder();
+			StringBuilder ProjectFileContent = new StringBuilder();
 			
 			ProjectFileContent.Append("# @Eddie Workset@" + ProjectFileGenerator.NewLine);
 			ProjectFileContent.Append("AddWorkset \"" + this.ToString() + ".wkst\" \"" + ProjectFilePath.FullName + "\"" + ProjectFileGenerator.NewLine);

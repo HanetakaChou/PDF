@@ -7,33 +7,12 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CommandLine.h"
 
-FOnlineSubsystemGoogleCommon::FOnlineSubsystemGoogleCommon()
-	: GoogleIdentity(nullptr)
-	, GoogleExternalUI(nullptr)
-{
-	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle"), TEXT("ClientId"), ClientId, GEngineIni))
-	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ClientId= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
-	}
-
-	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle"), TEXT("ServerClientId"), ServerClientId, GEngineIni))
-	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ServerClientId= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
-	}
-}
+#define GOOGLE_CLIENTAUTH_ID TEXT("ClientId")
+#define GOOGLE_SERVERAUTH_ID TEXT("ServerClientId")
 
 FOnlineSubsystemGoogleCommon::FOnlineSubsystemGoogleCommon(FName InInstanceName)
 	: FOnlineSubsystemImpl(GOOGLE_SUBSYSTEM, InInstanceName)
 {
-	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle"), TEXT("ClientId"), ClientId, GEngineIni))
-	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ClientId= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
-	}
-
-	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle"), TEXT("ServerClientId"), ServerClientId, GEngineIni))
-	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ServerClientId= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
-	}
 }
 
 FOnlineSubsystemGoogleCommon::~FOnlineSubsystemGoogleCommon()
@@ -42,12 +21,52 @@ FOnlineSubsystemGoogleCommon::~FOnlineSubsystemGoogleCommon()
 
 bool FOnlineSubsystemGoogleCommon::Init()
 {
+	static FString ConfigSection(TEXT("OnlineSubsystemGoogle"));
+	if (!GConfig->GetString(*ConfigSection, GOOGLE_CLIENTAUTH_ID, ClientId, GEngineIni))
+	{
+		UE_LOG_ONLINE(Warning, TEXT("Missing ClientId= in [%s] of DefaultEngine.ini"), *ConfigSection);
+	}
+
+	if (!GConfig->GetString(*ConfigSection, GOOGLE_SERVERAUTH_ID, ServerClientId, GEngineIni))
+	{
+		UE_LOG_ONLINE(Warning, TEXT("Missing ServerClientId= in [%s] of DefaultEngine.ini"), *ConfigSection);
+	}
+
+	FString ConfigOverride;
+	FGoogleAuthConfig NewConfig;
+	if (GetConfigurationDelegate().ExecuteIfBound(ConfigOverride, NewConfig))
+	{
+		if (!NewConfig.Backend.IsEmpty())
+		{
+			FString IniSection = ConfigSection + FString(TEXT(" ")) + NewConfig.Backend;
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FOnlineSubsystemGoogleCommon::Init IniSection:%s"), *IniSection);
+
+			FString NewClientAuthId;
+			if (GConfig->GetString(*IniSection, GOOGLE_CLIENTAUTH_ID, NewClientAuthId, GEngineIni) && !NewClientAuthId.IsEmpty())
+			{
+				FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FOnlineSubsystemGoogleCommon::Init ClientId:%s"), *NewClientAuthId);
+				ClientId = NewClientAuthId;
+			}
+
+			FString NewServerAuthId;
+			if (GConfig->GetString(*IniSection, GOOGLE_SERVERAUTH_ID, NewServerAuthId, GEngineIni) && !NewServerAuthId.IsEmpty())
+			{
+				FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FOnlineSubsystemGoogleCommon::Init ServerClientId:%s"), *NewServerAuthId);
+				ServerClientId = NewServerAuthId;
+			}
+		}
+	}
+	else
+	{
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("GetConfigurationDelegate was not bound!"));
+	}
+
 	return true;
 }
 
 bool FOnlineSubsystemGoogleCommon::Shutdown()
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineSubsystemGoogleCommon::Shutdown()"));
+	UE_LOG_ONLINE(Display, TEXT("FOnlineSubsystemGoogleCommon::Shutdown()"));
 
 	FOnlineSubsystemImpl::Shutdown();
 
@@ -64,6 +83,12 @@ bool FOnlineSubsystemGoogleCommon::Shutdown()
 #undef DESTRUCT_INTERFACE
 
 	return true;
+}
+
+FOnlineSubsystemGoogleCommon::FGoogleConfigurationDelegate& FOnlineSubsystemGoogleCommon::GetConfigurationDelegate()
+{
+	static FGoogleConfigurationDelegate Delegate;
+	return Delegate;
 }
 
 bool FOnlineSubsystemGoogleCommon::Tick(float DeltaTime)
@@ -196,6 +221,11 @@ IOnlineChatPtr FOnlineSubsystemGoogleCommon::GetChatInterface() const
 }
 
 IOnlineTurnBasedPtr FOnlineSubsystemGoogleCommon::GetTurnBasedInterface() const
+{
+	return nullptr;
+}
+
+IOnlineTournamentPtr FOnlineSubsystemGoogleCommon::GetTournamentInterface() const
 {
 	return nullptr;
 }

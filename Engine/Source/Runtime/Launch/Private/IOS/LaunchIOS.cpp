@@ -7,28 +7,87 @@
 #include "Misc/OutputDeviceError.h"
 #include "LaunchEngineLoop.h"
 #include "IMessagingModule.h"
-#include "IOSAppDelegate.h"
-#include "IOSView.h"
-#include "IOSCommandLineHelper.h"
+#include "IOS/IOSAppDelegate.h"
+#include "IOS/IOSView.h"
+#include "IOS/IOSCommandLineHelper.h"
 #include "GameLaunchDaemonMessageHandler.h"
 #include "AudioDevice.h"
-#include "GenericPlatformChunkInstall.h"
+#include "GenericPlatform/GenericPlatformChunkInstall.h"
 #include "IOSAudioDevice.h"
 #include "LocalNotification.h"
-#include "ModuleManager.h"
+#include "Modules/ModuleManager.h"
 #include "RenderingThread.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "Misc/ConfigCacheIni.h"
-
+#include "MoviePlayer.h"
 
 FEngineLoop GEngineLoop;
 FGameLaunchDaemonMessageHandler GCommandSystem;
 
-void FAppEntry::Suspend()
+static const double cMaxThreadWaitTime = 2.0;    // Setting this to be 2 seconds
+
+static int32 DisableAudioSuspendOnAudioInterruptCvar = 1;
+FAutoConsoleVariableRef CVarDisableAudioSuspendOnAudioInterrupt(
+    TEXT("au.DisableAudioSuspendOnAudioInterrupt"),
+    DisableAudioSuspendOnAudioInterruptCvar,
+    TEXT("Disables callback for suspending the audio device when we are notified that the audio session has been interrupted.\n")
+    TEXT("0: Not Disabled, 1: Disabled"),
+    ECVF_Default);
+
+void FAppEntry::Suspend(bool bIsInterrupt)
 {
 	if (GEngine && GEngine->GetMainAudioDevice())
 	{
-		GEngine->GetMainAudioDevice()->SuspendContext();
+        FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
+        if (bIsInterrupt && DisableAudioSuspendOnAudioInterruptCvar)
+        {
+            if (FTaskGraphInterface::IsRunning())
+            {
+                FFunctionGraphTask::CreateAndDispatchWhenReady([AudioDevice]()
+                {
+                    FAudioThread::RunCommandOnAudioThread([AudioDevice]()
+                    {
+                        AudioDevice->SetTransientMasterVolume(0.0f);
+                    }, TStatId());
+                }, TStatId(), NULL, ENamedThreads::GameThread);
+            }
+            else
+            {
+                AudioDevice->SetTransientMasterVolume(0.0f);
+            }
+        }
+        else
+        {
+            if (FTaskGraphInterface::IsRunning())
+            {
+                FGraphEventRef ResignTask = FFunctionGraphTask::CreateAndDispatchWhenReady([AudioDevice]()
+                {
+                    FAudioThread::RunCommandOnAudioThread([AudioDevice]()
+                    {
+                        AudioDevice->SuspendContext();
+                    }, TStatId());
+                
+                    FAudioCommandFence AudioCommandFence;
+                    AudioCommandFence.BeginFence();
+                    AudioCommandFence.Wait();
+                }, TStatId(), NULL, ENamedThreads::GameThread);
+            
+                // Do not wait forever for this task to complete since the game thread may be stuck on waiting for user input from a modal dialog box
+                double    startTime = FPlatformTime::Seconds();
+                while((FPlatformTime::Seconds() - startTime) < cMaxThreadWaitTime)
+                {
+                    FPlatformProcess::Sleep(0.05f);
+                    if(ResignTask->IsComplete())
+                    {
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                AudioDevice->SuspendContext();
+            }
+        }
 	}
 	else
 	{
@@ -40,11 +99,46 @@ void FAppEntry::Suspend()
 	}
 }
 
-void FAppEntry::Resume()
+void FAppEntry::Resume(bool bIsInterrupt)
 {
 	if (GEngine && GEngine->GetMainAudioDevice())
 	{
-		GEngine->GetMainAudioDevice()->ResumeContext();
+        FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
+        
+        if (bIsInterrupt && DisableAudioSuspendOnAudioInterruptCvar)
+        {
+            if (FTaskGraphInterface::IsRunning())
+            {
+                FFunctionGraphTask::CreateAndDispatchWhenReady([AudioDevice]()
+                {
+                    FAudioThread::RunCommandOnAudioThread([AudioDevice]()
+                    {
+                        AudioDevice->SetTransientMasterVolume(1.0f);
+                    }, TStatId());
+                }, TStatId(), NULL, ENamedThreads::GameThread);
+            }
+            else
+            {
+                AudioDevice->SetTransientMasterVolume(1.0f);
+            }
+        }
+        else
+        {
+            if (FTaskGraphInterface::IsRunning())
+            {
+                FFunctionGraphTask::CreateAndDispatchWhenReady([AudioDevice]()
+                {
+                    FAudioThread::RunCommandOnAudioThread([AudioDevice]()
+                    {
+                        AudioDevice->ResumeContext();
+                    }, TStatId());
+                }, TStatId(), NULL, ENamedThreads::GameThread);
+            }
+            else
+            {
+                AudioDevice->ResumeContext();
+            }
+        }
 	}
 	else
 	{
@@ -138,6 +232,11 @@ static void MainThreadInit()
 }
 
 
+bool FAppEntry::IsStartupMoviePlaying()
+{
+	return GEngine && GEngine->IsInitialized() && GetMoviePlayer() && GetMoviePlayer()->IsStartupMoviePlaying();
+}
+
 
 void FAppEntry::PlatformInit()
 {
@@ -158,7 +257,7 @@ void FAppEntry::PlatformInit()
 
 	// Set GSystemResolution now that we have the size.
 	FDisplayMetrics DisplayMetrics;
-	FDisplayMetrics::GetDisplayMetrics(DisplayMetrics);
+	FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
 	FSystemResolution::RequestResolutionChange(DisplayMetrics.PrimaryDisplayWidth, DisplayMetrics.PrimaryDisplayHeight, EWindowMode::Fullscreen);
 	IConsoleManager::Get().CallAllConsoleVariableSinks();
 }
@@ -256,6 +355,9 @@ int main(int argc, char *argv[])
 		GSavedCommandLine += TEXT(" ");
 		GSavedCommandLine += UTF8_TO_TCHAR(argv[Option]);
 	}
+
+	// convert $'s to " because Xcode swallows the " and this will allow -execcmds= to be usable from xcode
+	GSavedCommandLine = GSavedCommandLine.Replace(TEXT("$"), TEXT("\""));
 
 	FIOSCommandLineHelper::InitCommandArgs(FString());
 	

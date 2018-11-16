@@ -10,13 +10,14 @@
 #include "Stats/Stats.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
+#include "HAL/LowLevelMemTracker.h"
 
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("STAT_UObjectsStatGroupTester"), STAT_UObjectsStatGroupTester, STATGROUP_UObjects, COREUOBJECT_API);
 
 class COREUOBJECT_API UObjectBase
 {
 	friend class UObjectBaseUtility;
-	friend COREUOBJECT_API class UClass* Z_Construct_UClass_UObject();
+	friend struct Z_Construct_UClass_UObject_Statics;
 	friend class FUObjectArray; // for access to InternalIndex without revealing it to anyone else
 	friend class FUObjectAllocator; // for access to destructor without revealing it to anyone else
 	friend COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object);
@@ -30,7 +31,7 @@ class COREUOBJECT_API UObjectBase
 protected:
 	UObjectBase() :
 		 NamePrivate(NoInit)  // screwy, but the name was already set and we don't want to set it again
-#if ENABLE_STATNAMEDEVENTS
+#if ENABLE_STATNAMEDEVENTS_UOBJECT
 		, StatIDStringStorage(nullptr)
 #endif
 	{
@@ -143,7 +144,7 @@ public:
 			}
 			return StatID;
 		}
-#elif ENABLE_STATNAMEDEVENTS
+#elif ENABLE_STATNAMEDEVENTS_UOBJECT
 		if (!StatID.IsValidStat() && (bForDeferredUse || GCycleStatsShouldEmitNamedEvents))
 		{
 			CreateStatID();
@@ -159,7 +160,7 @@ private:
 	/** 
 	 * Creates this stat ID for the object...and handle a null this pointer
 	**/
-#if STATS || ENABLE_STATNAMEDEVENTS
+#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
 	void CreateStatID() const;
 #endif
 
@@ -238,11 +239,11 @@ private:
 	UObject*						OuterPrivate;
 
 
-#if STATS || ENABLE_STATNAMEDEVENTS
+#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
 	/** Stat id of this object, 0 if nobody asked for it yet */
 	mutable TStatId				StatID;
 
-#if ENABLE_STATNAMEDEVENTS
+#if ENABLE_STATNAMEDEVENTS_UOBJECT
 	mutable PROFILER_CHAR* StatIDStringStorage;
 #endif
 #endif // STATS || ENABLE_STATNAMEDEVENTS
@@ -324,6 +325,7 @@ struct TClassCompiledInDefer : public FFieldCompiledInInfo
 	}
 	virtual UClass* Register() const override
 	{
+        LLM_SCOPE(ELLMTag::UObject);
 		return TClass::StaticClass();
 	}
 	virtual const TCHAR* ClassPackage() const override
@@ -352,7 +354,7 @@ struct FCompiledInDefer
 /**
  * Stashes the singleton function that builds a compiled in struct (StaticStruct). Later, this is executed.
  */
-COREUOBJECT_API void UObjectCompiledInDeferStruct(class UScriptStruct *(*InRegister)(), const TCHAR* PackageName, const FName ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
+COREUOBJECT_API void UObjectCompiledInDeferStruct(class UScriptStruct *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
 
 struct FCompiledInDeferStruct
 {
@@ -374,7 +376,7 @@ COREUOBJECT_API class UScriptStruct *GetStaticStruct(class UScriptStruct *(*InRe
 /**
  * Stashes the singleton function that builds a compiled in enum. Later, this is executed.
  */
-COREUOBJECT_API void UObjectCompiledInDeferEnum(class UEnum *(*InRegister)(), const TCHAR* PackageName, const FName ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
+COREUOBJECT_API void UObjectCompiledInDeferEnum(class UEnum *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
 
 struct FCompiledInDeferEnum
 {

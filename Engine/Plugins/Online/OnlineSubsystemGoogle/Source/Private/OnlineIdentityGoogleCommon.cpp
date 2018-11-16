@@ -1,7 +1,11 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineIdentityGoogleCommon.h"
+#if USES_RESTFUL_GOOGLE
+#include "OnlineIdentityGoogleRest.h"
+#else
 #include "OnlineIdentityGoogle.h"
+#endif
 #include "OnlineSubsystemGooglePrivate.h"
 #include "OnlineSubsystemGoogleTypes.h"
 #include "OnlineSubsystemGoogle.h"
@@ -54,71 +58,78 @@ bool FJsonWebTokenGoogle::Parse(const FString& InJWTStr)
 							{
 								// Verify that the value of aud in the ID token is equal to your app's client ID.
 								FOnlineSubsystemGoogle* GoogleSubsystem = static_cast<FOnlineSubsystemGoogle*>(IOnlineSubsystem::Get(GOOGLE_SUBSYSTEM));
-								if (Payload.Aud == GoogleSubsystem->GetAppId() ||
-									Payload.Aud == GoogleSubsystem->GetServerClientId())
+								if (ensure(GoogleSubsystem))
 								{
-									//https://www.codescience.com/blog/2016/oauth2-server-to-server-authentication-from-salesforce-to-google-apis
-									// exp	Required	The expiration time of the assertion, specified as seconds since 00:00:00 UTC, January 1, 1970. This value has a maximum of 1 hour after the issued time.
-									// iat	Required	The time the assertion was issued, specified as seconds since 00:00:00 UTC, January 1, 1970.
-
-									//Verify that the expiry time(exp) of the ID token has not passed.
-									FDateTime ExpiryTime = FDateTime::FromUnixTimestamp(Payload.EXP);
-									FDateTime IssueTime = FDateTime::FromUnixTimestamp(Payload.IAT);
-									if ((ExpiryTime - IssueTime) <= FTimespan(ETimespan::TicksPerHour) && ExpiryTime > FDateTime::UtcNow())
+									if (Payload.Aud == GoogleSubsystem->GetAppId() ||
+										Payload.Aud == GoogleSubsystem->GetServerClientId())
 									{
-										bSuccess = true;
-#if 0
-										TArray<uint8> Signature;
-										if (FBase64::Decode(Tokens[2], Signature))
+										//https://www.codescience.com/blog/2016/oauth2-server-to-server-authentication-from-salesforce-to-google-apis
+										// exp	Required	The expiration time of the assertion, specified as seconds since 00:00:00 UTC, January 1, 1970. This value has a maximum of 1 hour after the issued time.
+										// iat	Required	The time the assertion was issued, specified as seconds since 00:00:00 UTC, January 1, 1970.
+
+										//Verify that the expiry time(exp) of the ID token has not passed.
+										FDateTime ExpiryTime = FDateTime::FromUnixTimestamp(Payload.EXP);
+										FDateTime IssueTime = FDateTime::FromUnixTimestamp(Payload.IAT);
+										if ((ExpiryTime - IssueTime) <= FTimespan(ETimespan::TicksPerHour) && ExpiryTime > FDateTime::UtcNow())
 										{
 											bSuccess = true;
-										}
+#if 0
+											TArray<uint8> Signature;
+											if (FBase64::Decode(Tokens[2], Signature))
+											{
+												bSuccess = true;
+											}
 #endif
+										}
+										else
+										{
+											UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Expiry Time inconsistency"));
+											UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	Expiry: %s"), *ExpiryTime.ToString());
+											UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	Issue: %s"), *IssueTime.ToString());
+										}
 									}
 									else
 									{
-										UE_LOG(LogOnline, Warning, TEXT("Google auth: Expiry Time inconsistency"));
-										UE_LOG(LogOnline, Warning, TEXT("	Expiry: %s"), *ExpiryTime.ToString());
-										UE_LOG(LogOnline, Warning, TEXT("	Issue: %s"), *IssueTime.ToString());
+										UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Audience inconsistency"));
+										UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	Payload: %s"), *Payload.Aud);
+										UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	ClientId: %s"), *GoogleSubsystem->GetAppId());
+										UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	ServerClientId: %s"), *GoogleSubsystem->GetServerClientId());
 									}
 								}
 								else
 								{
-									UE_LOG(LogOnline, Warning, TEXT("Google auth: Audience inconsistency"));
-									UE_LOG(LogOnline, Warning, TEXT("	Payload: %s"), *Payload.Aud); 
-									UE_LOG(LogOnline, Warning, TEXT("	ClientId: %s"), *GoogleSubsystem->GetAppId());
-									UE_LOG(LogOnline, Warning, TEXT("	ServerClientId: %s"), *GoogleSubsystem->GetServerClientId());
+									UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: missing OSS"));
 								}
 							}
 							else
 							{
-								UE_LOG(LogOnline, Warning, TEXT("Google auth: Issuer inconsistency"));
-								UE_LOG(LogOnline, Warning, TEXT("	ISS: %s"), *Payload.ISS);
+								UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Issuer inconsistency"));
+								UE_LOG_ONLINE_IDENTITY(Warning, TEXT("	ISS: %s"), *Payload.ISS);
 							}
 						}
 						else
 						{
-							UE_LOG(LogOnline, Warning, TEXT("Google auth: Payload data inconsistency"));
+							UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Payload data inconsistency"));
 						}
 					}
 					else
 					{
-						UE_LOG(LogOnline, Warning, TEXT("Google auth: Payload format inconsistency"));
+						UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Payload format inconsistency"));
 					}
 				}
 				else
 				{
-					UE_LOG(LogOnline, Warning, TEXT("Google auth: Header data inconsistency"));
+					UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Header data inconsistency"));
 				}
 			}
 			else
 			{
-				UE_LOG(LogOnline, Warning, TEXT("Google auth: Header format inconsistency"));
+				UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: Header format inconsistency"));
 			}
 		}
 		else
 		{
-			UE_LOG(LogOnline, Warning, TEXT("Google auth: JWT format inconsistency"));
+			UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google auth: JWT format inconsistency"));
 		}
 	}
 
@@ -177,7 +188,7 @@ bool FAuthTokenGoogle::Parse(const FString& InJsonStr)
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("FAuthTokenGoogle: Empty Json string"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("FAuthTokenGoogle: Empty Json string"));
 	}
 
 	return bSuccess;
@@ -205,7 +216,7 @@ bool FAuthTokenGoogle::Parse(TSharedPtr<FJsonObject> InJsonObject)
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("FAuthTokenGoogle: Invalid Json pointer"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("FAuthTokenGoogle: Invalid Json pointer"));
 	}
 
 	return bSuccess;
@@ -216,13 +227,13 @@ FOnlineIdentityGoogleCommon::FOnlineIdentityGoogleCommon(FOnlineSubsystemGoogle*
 {
 	if (!GConfig->GetString(TEXT("OnlineSubsystemGoogle"), TEXT("ClientSecret"), ClientSecret, GEngineIni))
 	{
-		UE_LOG(LogOnline, Warning, TEXT("Missing ClientSecret= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Missing ClientSecret= in [OnlineSubsystemGoogle] of DefaultEngine.ini"));
 	}
 }
 
 const FUniqueNetId& FOnlineIdentityGoogleCommon::GetEmptyUniqueId()
 {
-	static TSharedRef<const FUniqueNetIdString> EmptyUniqueId = MakeShared<const FUniqueNetIdString>(FString());
+	static TSharedRef<const FUniqueNetIdGoogle> EmptyUniqueId = MakeShared<const FUniqueNetIdGoogle>(FString());
 	return *EmptyUniqueId;
 }
 
@@ -289,21 +300,21 @@ void FOnlineIdentityGoogleCommon::DiscoveryRequest_HttpRequestComplete(FHttpRequ
 		FString ResponseStr = HttpResponse->GetContentAsString();
 		if (EHttpResponseCodes::IsOk(HttpResponse->GetResponseCode()))
 		{
-			UE_LOG(LogOnline, Verbose, TEXT("Discovery request complete. url=%s code=%d response=%s"),
+			UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("Discovery request complete. url=%s code=%d response=%s"),
 				*HttpRequest->GetURL(), HttpResponse->GetResponseCode(), *ResponseStr);
 			if (!Endpoints.Parse(ResponseStr))
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Failed to parse Google discovery endpoint"));
+				UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Failed to parse Google discovery endpoint"));
 			}
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Bad response from Google discovery endpoint"));
+			UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Bad response from Google discovery endpoint"));
 		}
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("Google discovery endpoint failure"));
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Google discovery endpoint failure"));
 	}
 
 	LoginCb(Endpoints.IsValid());
@@ -366,7 +377,7 @@ void FOnlineIdentityGoogleCommon::MeUser_HttpRequestComplete(FHttpRequestPtr Htt
 		ResponseStr = HttpResponse->GetContentAsString();
 		if (EHttpResponseCodes::IsOk(HttpResponse->GetResponseCode()))
 		{
-			UE_LOG(LogOnline, Verbose, TEXT("RegisterUser request complete. url=%s code=%d response=%s"),
+			UE_LOG_ONLINE_IDENTITY(Verbose, TEXT("RegisterUser request complete. url=%s code=%d response=%s"),
 				*HttpRequest->GetURL(), HttpResponse->GetResponseCode(), *ResponseStr);
 
 			TSharedRef<FUserOnlineAccountGoogle> User = MakeShared<FUserOnlineAccountGoogle>();
@@ -405,7 +416,7 @@ void FOnlineIdentityGoogleCommon::MeUser_HttpRequestComplete(FHttpRequestPtr Htt
 
 	if (!ErrorStr.IsEmpty())
 	{
-		UE_LOG_ONLINE(Warning, TEXT("RegisterUser request failed. %s"), *ErrorStr);
+		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("RegisterUser request failed. %s"), *ErrorStr);
 	}
 
 	InCompletionDelegate.ExecuteIfBound(InLocalUserNum, bResult, ErrorStr);
@@ -416,14 +427,14 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityGoogleCommon::CreateUniquePlayerId
 	if (Bytes != nullptr && Size > 0)
 	{
 		FString StrId(Size, (TCHAR*)Bytes);
-		return MakeShareable(new FUniqueNetIdString(StrId));
+		return MakeShareable(new FUniqueNetIdGoogle(StrId));
 	}
 	return nullptr;
 }
 
 TSharedPtr<const FUniqueNetId> FOnlineIdentityGoogleCommon::CreateUniquePlayerId(const FString& Str)
 {
-	return MakeShareable(new FUniqueNetIdString(Str));
+	return MakeShareable(new FUniqueNetIdGoogle(Str));
 }
 
 bool FOnlineIdentityGoogleCommon::AutoLogin(int32 LocalUserNum)
@@ -509,12 +520,12 @@ FPlatformUserId FOnlineIdentityGoogleCommon::GetPlatformUserIdFromUniqueNetId(co
 
 FString FOnlineIdentityGoogleCommon::GetAuthType() const
 {
-	return TEXT("Google");
+	return AUTH_TYPE_GOOGLE;
 }
 
 void FOnlineIdentityGoogleCommon::RevokeAuthToken(const FUniqueNetId& UserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate)
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityGoogleCommon::RevokeAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityGoogleCommon::RevokeAuthToken not implemented"));
 	TSharedRef<const FUniqueNetId> UserIdRef(UserId.AsShared());
 	GoogleSubsystem->ExecuteNextTick([UserIdRef, Delegate]()
 	{

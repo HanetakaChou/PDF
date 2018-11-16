@@ -4,7 +4,7 @@
 
 #include "Misc/Char.h"
 #include "GenericPlatform/GenericPlatformString.h"
-#include "GenericPlatformStricmp.h"
+#include "GenericPlatform/GenericPlatformStricmp.h"
 
 /**
 * Microsoft specific implementation 
@@ -142,7 +142,7 @@ struct FMicrosoftPlatformString : public FGenericPlatformString
 #if USE_SECURE_CRT
 		int32 Result = _vsntprintf_s( Dest, DestSize, Count, Fmt, ArgPtr );
 #else
-		int32 Result = _vsntprintf( Dest, Count, Fmt, ArgPtr );
+		int32 Result = vswprintf(Dest, Count, Fmt, ArgPtr);
 #endif // USE_SECURE_CRT
 		va_end( ArgPtr );
 		return Result;
@@ -187,7 +187,7 @@ struct FMicrosoftPlatformString : public FGenericPlatformString
 		_strupr_s(Dest, DestCount);
 		return Dest;
 #else
-		return (ANSICHAR*)strupr(Dest);
+		return (ANSICHAR*)_strupr(Dest);
 #endif // USE_SECURE_CRT
 	}
 
@@ -304,7 +304,7 @@ struct FMicrosoftPlatformString : public FGenericPlatformString
 #if USE_SECURE_CRT
 		int32 Result = _vsnprintf_s( Dest, DestSize, Count, Fmt, ArgPtr );
 #else
-		int32 Result = _vsnprintf( Dest, Count, Fmt, ArgPtr );
+		int32 Result = vsnprintf( Dest, Count, Fmt, ArgPtr );
 #endif // USE_SECURE_CRT
 		va_end( ArgPtr );
 		return Result;
@@ -318,13 +318,6 @@ struct FMicrosoftPlatformString : public FGenericPlatformString
 	{
 		return _tcslen( (const WIDECHAR*)String );
 	}
-
-	static const ANSICHAR* GetEncodingName()
-	{
-		return "UTF-16LE";
-	}
-
-	static const bool IsUnicodeEncoded = true;
 };
 
 #if !USE_SECURE_CRT

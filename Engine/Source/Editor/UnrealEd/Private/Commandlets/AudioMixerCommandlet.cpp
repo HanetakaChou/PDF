@@ -17,8 +17,8 @@
 
 #include "AudioDevice.h"
 #include "AudioMixerModule.h"
-#include "Classes/Components/AudioComponent.h"
-#include "Classes/Sound/AudioSettings.h"
+#include "Components/AudioComponent.h"
+#include "Sound/AudioSettings.h"
 
 DEFINE_LOG_CATEGORY_STATIC(AudioMixerCommandlet, Log, All);
 
@@ -209,8 +209,8 @@ public:
 	FAudioMixerCommand(const FString& InName, const FString& InDescription = FString(), int32 InNumArgs = 0, const FString& InArgDescription = FString())
 		: Name(InName)
 		, Description(InDescription)
-		, NumArgs(InNumArgs)
 		, ArgDescription(InArgDescription)
+		, NumArgs(InNumArgs)
 	{
 		Commands.Add(this);
 	}

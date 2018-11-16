@@ -1,4 +1,4 @@
-﻿INTSourceChangelist:3112291
+﻿INTSourceChangelist:3807090
 Availability:Public
 Title:언리얼 엔진 4.13 릴리즈 노트
 Crumbs:%ROOT%, Engine
@@ -31,7 +31,7 @@ alk3ovation, Allegorithmic (Allegorithmic), Alwin Tom (alwintom), Andreas Axelss
 
 **언리얼 엔진 4.13** 버전이 출시되었습니다! 이번 버전은 다양한 분야에 걸친 여러가지 기능이 개선되었습니다.
 
-**렌더링 기능** 다수가 추가되었습니다. 이제 메시 데칼, 블루프린트로 렌더 타겟에 그리기, GPU 모프 타겟, 굴절 효과 향상, 고품질 최적화된 노이즈 함수를 머티리얼에 사용할 수 있습니다. 섀도 맵 캐시를 통해 한 씬에 그림자를 드리우는 다이내믹 라이트를 전보다 많이 둘 수 있게 되었습니다!
+**렌더링 기능** 다수가 추가되었습니다. 이제 메시 데칼, 블루프린트로 렌더 타깃에 그리기, GPU 모프 타깃, 굴절 효과 향상, 고품질 최적화된 노이즈 함수를 머티리얼에 사용할 수 있습니다. 섀도 맵 캐시를 통해 한 씬에 그림자를 드리우는 다이내믹 라이트를 전보다 많이 둘 수 있게 되었습니다!
 
 새로운 비선형 시네마틱 에디터인 **시퀀서** 에, 고사양 영화 촬영 기법에 사용되는 여러가지 신기능이 업데이트되었습니다. 게임플레이에서의 라이브 녹화 기능이 크게 향상되었습니다. 또 이제 샷과 애니메이션을 외부 어플리케이션과 자유롭게 공유할 수 있습니다. 이 기능은 [시그라프 리얼타임 라이브! 2016 데모 영상](http://www.unrealengine.com/blog/unreal-engine-4-powers-real-time-cinematography-at-siggraph) 에서 참고하실 수 있습니다.
 
@@ -41,7 +41,7 @@ alk3ovation, Allegorithmic (Allegorithmic), Alwin Tom (alwintom), Andreas Axelss
 
 **VR 게임** 에서 이제 캡슐 그림자를 사용할 수 있으며, 스테레오 인스턴싱 기능이 최적화되었습니다. 새로운 VR 템플릿 프로젝트도 확인해 보세요! 모션 컨트롤러를 사용하여 VR 게임에서 조작과 이동하는 법을 확인하기에 좋은 예제입니다.
 
-가상현실 레벨 제작은 가상현실에서? 언리얼의 **VR 에디터** 에 메시와 폴리지 페인팅이 지원되고, 새로운 트랜스폼 기즈모와 VR 색 선택기가 업데이트되었습니다. 마지막으로, VR 에서 바로 게임을 즉시 플레이해 볼 수도 있습니다! 에디터 개인설정에서 실험단계 기능 부분의 'Enable VR Editing' (VR 편집 활성화) 옵션을 켜면 됩니다.
+가상현실 레벨 제작은 가상현실에서? 언리얼의 **VR 에디터** 에 메시와 폴리지 페인팅이 지원되고, 새로운 트랜스폼 기즈모와 VR 색 선택 툴이 업데이트되었습니다. 마지막으로, VR 에서 바로 게임을 즉시 플레이해 볼 수도 있습니다! 에디터 개인설정에서 실험단계 기능 부분의 'Enable VR Editing' (VR 편집 활성화) 옵션을 켜면 됩니다.
 
 # 주요 기능
 
@@ -49,7 +49,7 @@ alk3ovation, Allegorithmic (Allegorithmic), Alwin Tom (alwintom), Andreas Axelss
 
 시퀀서의 라이브 녹화 기능이 향상되었습니다. 시그라프 실시간 라이브! 2016 영상을 확인해 보세요.
 
-![image alt text](image_1.jpg)(h:674 w:929 convert:false)
+![image alt text](image_1.jpg)(w:929 convert:false)
 
 시퀀서 녹화기에서는 모든 애니메이션, 오디오, 이펙트 전부가 포함된 라이브 게임플레이를 독립형 애셋에 캡처하여, 시퀀서에서 바로 편집할 수 있습니다. 이번 버전에 새로 추가된 기능은 다음과 같습니다:
 
@@ -65,7 +65,7 @@ alk3ovation, Allegorithmic (Allegorithmic), Alwin Tom (alwintom), Andreas Axelss
 
 포인트 또는 스포트 라이트가 움직이지 않으면, 그 라이트에 대한 섀도 맵을 저장한 뒤 다음 프레임에 재사용할 수 있습니다. 이 기능은 이제 자동으로 이루어져 배경이 잘 움직이지 않는 게임에서는 그림자를 드리우는 무버블 포인트 / 스포트 라이트 비용 부담이 크게 줄어듭니다.
 
-![image alt text](image_2.jpg)(h:541 w:929 convert:false)
+![image alt text](image_2.jpg)(w:929 convert:false)
 
 위 그림은 다이내믹 섀도를 드리우는 포인트 라이트가 33 개나 되는데, 부하가 매우 적게 걸리고 있습니다:
 
@@ -97,15 +97,15 @@ alk3ovation, Allegorithmic (Allegorithmic), Alwin Tom (alwintom), Andreas Axelss
 
 Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이즈 옵션을 추가했습니다. 보로노이 노이즈는 Worley (월리) 또는 Cellular (셀룰러) 노이즈라고도 하는데, 머티리얼 자동 생성에 유용할 수 있습니다.
 
-![image alt text](image_3.jpg)(h:333 w:624 convert:false)
+![image alt text](image_3.jpg)(w:624 convert:false)
 
 보로노이 노이즈는 아래 석상에서 보이는 것처럼 대리석과 같은 친숙한 피지컬 머티리얼의 패턴을 생성하는 데 사용할 수 있습니다.
 
-![image alt text](image_4.jpg)(h:377 w:624 convert:false)
+![image alt text](image_4.jpg)(w:624 convert:false)
 
 이 예제는 보로노이 노이즈에 "그레디언트 매핑" 이라는 기법을 같이 써서 대리석 모양을 낸 것입니다.
 
-![image alt text](image_5.jpg)(h:233 w:929 convert:false)
+![image alt text](image_5.jpg)(w:929 convert:false)
 
 왼쪽에서 오른쪽으로:
 
@@ -121,9 +121,9 @@ Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이�
 
 또한, 여러가지 노이즈 머티리얼 노드의 퍼포먼스가 향상되었으며, 함수 선택 툴팁에서 보다 자세한 퍼포먼스 증감 내용을 확인할 수 있습니다. 대부분 실행시간에 사용하기는 느릴 수 있으니, 결과를 텍스처에 구워 넣는 것이 좋습니다.
 
-## 블루프린트로 렌더 타겟에 그리기
+## 블루프린트로 렌더 타깃에 그리기
 
-이제 블루프린트 함수를 사용하여 머티리얼을 렌더 타겟에 그릴 수 있습니다. 이를 통해 소스 코드 수정 없이도 엄청나게 다양한 게임 전용 렌더링 이펙트들을 구현할 수 있습니다.
+이제 블루프린트 함수를 사용하여 머티리얼을 렌더 타깃에 그릴 수 있습니다. 이를 통해 소스 코드 수정 없이도 엄청나게 다양한 게임 전용 렌더링 이펙트들을 구현할 수 있습니다.
 
 [REGION:asyncgif]
 ![image alt text](image_6.gif)
@@ -137,25 +137,25 @@ Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이�
 
 위는 블루프린트로만 만든 간단한 하이트필드 페인터인데, 발사체에 맞은 곳의 높이 값을 누적시킵니다.
 
-새로운 블루프린트 함수 Draw Material to Render Target (렌더 타겟에 머티리얼 그리기)는 대상 렌터 타겟을 머티리얼의 이미시브 컬러 입력 색으로 채워 쿼드를 그립니다.
+새로운 블루프린트 함수 Draw Material to Render Target (렌더 타깃에 머티리얼 그리기)는 대상 렌터 타깃을 머티리얼의 이미시브 컬러 입력 색으로 채워 쿼드를 그립니다.
 
-![image alt text](image_8.jpg)(h:149 w:661 convert:false)
+![image alt text](image_8.jpg)(w:661 convert:false)
 
-게임을 시작하면, Begin Play 가 호출되어 렌더 타겟을 파랑으로 채웁니다. 그런 다음 렌더 타겟에 우클릭한 후 스태틱 텍스처로 저장하여 압축할 수 있습니다.
+게임을 시작하면, Begin Play 가 호출되어 렌더 타깃을 파랑으로 채웁니다. 그런 다음 렌더 타깃에 우클릭한 후 스태틱 텍스처로 저장하여 압축할 수 있습니다.
 
-![image alt text](image_9.jpg)(h:164 w:500 convert:false)
+![image alt text](image_9.jpg)(w:500 convert:false)
 
-렌더 타겟에 그리기 고급 기능은, Begin Draw Canvas to Render Target 과 End Draw Canvas to Render Target (렌더 타겟에 캔버스 그리기 시작/끝)입니다. 이를 통해 다수의 드로를 렌더 타겟의 부분집합에 효율적으로 그려넣을 수 있을 뿐만 아니라, 캔버스 오브젝트를 통한 폰트 그리기 메소드도 가능합니다.
+렌더 타깃에 그리기 고급 기능은, Begin Draw Canvas to Render Target 과 End Draw Canvas to Render Target (렌더 타깃에 캔버스 그리기 시작/끝)입니다. 이를 통해 다수의 드로를 렌더 타깃의 부분집합에 효율적으로 그려넣을 수 있을 뿐만 아니라, 캔버스 오브젝트를 통한 폰트 그리기 메서드도 가능합니다.
 
-![image alt text](image_10.jpg)(h:517 w:896 convert:false)
+![image alt text](image_10.jpg)(w:896 convert:false)
 
-블루프린트에서 화면 밖 부분을 렌더링할 수 있다는 것은, 엄청나게 많은 렌더링 기능들을 그래픽 프로그래머 없이도 빠르게 구현할 수 있다는 뜻입니다. 여러 패스로 이루어진 다수의 픽셀 셰이더 작업을 커다란 렌더 타겟에 해냄으로써 GPU 를 확보하기도 매우 쉽습니다. 이러한 드로 콜은 디버그 콘솔에 'ProfileGPU' 를 치면 (WorldTick 이벤트 아래에) 나타납니다.
+블루프린트에서 화면 밖 부분을 렌더링할 수 있다는 것은, 엄청나게 많은 렌더링 기능들을 그래픽 프로그래머 없이도 빠르게 구현할 수 있다는 뜻입니다. 여러 패스로 이루어진 다수의 픽셀 셰이더 작업을 커다란 렌더 타깃에 해냄으로써 GPU 를 확보하기도 매우 쉽습니다. 이러한 드로 콜은 디버그 콘솔에 'ProfileGPU' 를 치면 (WorldTick 이벤트 아래에) 나타납니다.
 
 한계
 
-* 지정한 머티리얼에 의해 텍스처로 샘플링되고 있는 렌더 타겟에는 그릴 수 없습니다. 알파 블렌딩을 사용하여 그 렌더 타겟을 변경하거나, 두 개의 다른 렌더 타겟을 왔다갔다 하거나 해야 합니다.
+* 지정한 머티리얼에 의해 텍스처로 샘플링되고 있는 렌더 타깃에는 그릴 수 없습니다. 알파 블렌딩을 사용하여 그 렌더 타깃을 변경하거나, 두 개의 다른 렌더 타깃을 왔다갔다 하거나 해야 합니다.
 
-* 렌더 타겟에 그리기는 머티리얼의 이미시브 컬러와 오파시티 출력만 사용 가능합니다. 라이팅은 지원되지 않으며, WorldPosition 같은 노드는 예상치 못한 결과를 낼 수 있습니다.
+* 렌더 타깃에 그리기는 머티리얼의 이미시브 컬러와 오파시티 출력만 사용 가능합니다. 라이팅은 지원되지 않으며, WorldPosition 같은 노드는 예상치 못한 결과를 낼 수 있습니다.
 
 * 이미시브 컬러는 기본적으로 양수 범위로 제한되나, "AllowNegativeEmissiveColor" 머티리얼 프로퍼티를 켜는 것으로 음수 값을 출력할 수 있습니다.
 
@@ -181,7 +181,7 @@ Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이�
 
 스태틱 / 스켈레탈 메시를 미리보는 데 사용되는 씬을 구성할 수 있는 기능이 새로 추가되었습니다.
 
-![image alt text](image_12.jpg)(h:232 w:929 convert:false)
+![image alt text](image_12.jpg)(w:929 convert:false)
 
 스태틱 메시와 스켈레탈 메시 에디터에 프리뷰 씬 세팅 패널이 새로 추가되었습니다. 여기서 메시를 미리보는 데 사용되는 프로파일(씬)을 여럿 구성할 수 있으며, 프로파일에서는 다음과 같은 변경이 가능합니다:
 
@@ -191,7 +191,7 @@ Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이�
 
 * 포스트 프로세싱 세팅 (포스트 프로세스 볼륨과 동일)
 
-![image alt text](image_13.jpg)(h:494 w:766 convert:false)
+![image alt text](image_13.jpg)(w:766 convert:false)
 
 쇼케이스 함수성도 몇 가지 추가했습니다:
 
@@ -205,11 +205,11 @@ Noise 머티리얼 노드에 사용할 수 있는 Voronoi (보로노이) 노이�
 
 새로운 메시 데칼 기능을 통해 스태틱 메시 위에 머티리얼을 효율적으로 바를 수 있어, 한 머티리얼 위에 다른 머티리얼을 부드럽게 겹쳐놓을 수 있습니다. 바탕이 되는 지오메트리의 프로파일 위에 별도의 형태적 특징과 머티리얼을 지닌 이차 메시를 얹어 놓는 것이라 생각하면 됩니다.
 
-![image alt text](image_14.jpg)(h:326 w:428 convert:false)
+![image alt text](image_14.jpg)(w:428 convert:false)
 
 위의 기둥은 각각 바탕 메시에 깨진 메시 디테일을 하나씩 겹쳐놓은 것으로, 아래 와이어프레임에서 확인할 수 있습니다. 왼쪽 기둥은 메시 데칼을 사용하여 컬러, 노멀, 러프니스를 부드럽게 블렌딩한 것입니다. 가장 오른쪽의 기둥은 비교용 마스크드 머티리얼입니다.
 
-![image alt text](image_15.jpg)(h:220 w:165 convert:false)![image alt text](image_16.jpg)(h:220 w:169 convert:false)
+![image alt text](image_15.jpg)(w:165 convert:false)![image alt text](image_16.jpg)(w:169 convert:false)
 
 디퍼드 데칼과 달리 프로젝션이 포함되어 있지 않아서, 바탕이 되는 표면에 강 결합되어 있는 전형적인 데칼 메시는 머티리얼에서 표면 오프셋을 포함시켜줘야 할 것입니다. 또한 LOD 가 있는 경우 메시 데칼 지오메트리가 LOD 메시와 상호 관통될 수 있으니 주의하시기 바랍니다.
 
@@ -227,7 +227,7 @@ Widget Interaction Component (위젯 인터랙션 컴포넌트)를 사용하면,
 
 ## VR 프로젝트 템플릿
 
-데스크탑과 콘솔에서의 가상 현실용으로 디자인된 프로젝트 템플릿을 새로 추가했습니다.
+데스크톱과 콘솔에서의 가상 현실용으로 디자인된 프로젝트 템플릿을 새로 추가했습니다.
 
 [REGION:asyncgif]![image alt text](image_18.gif)(h:380)[/REGION] [REGION:asyncgif]![image alt text](image_19.gif)(h:380)[/REGION]
 
@@ -255,7 +255,7 @@ Widget Interaction Component (위젯 인터랙션 컴포넌트)를 사용하면,
 
 이제 모바일 렌더러에서 라이팅 채널이 작동합니다. 이를 통해 특정 라이트가 영향을 끼치는 오브젝트를 선택할 수 있습니다. 고급 라이팅 릭을 사용하는 시네마틱에 좋습니다.
 
-![image alt text](image_21.jpg)(h:224 w:793 convert:false)
+![image alt text](image_21.jpg)(w:793 convert:false)
 
 * 다중 채널에 복수의 디렉셔널 라이트가 지원됩니다.
 
@@ -269,7 +269,7 @@ Widget Interaction Component (위젯 인터랙션 컴포넌트)를 사용하면,
 
 이제 맥 메탈에 기본적으로 셰이더 모델 5 가 지원됩니다. 언리얼 엔진 4 에 적용되는 Mac OS X 10.11.6 에서 쓸 수 있는 메탈 기능이 전부 노출됩니다.
 
-![image alt text](image_22.jpg)(h:521 w:925 convert:false)
+![image alt text](image_22.jpg)(w:925 convert:false)
 
 * RHI 스레드 & 병렬 트랜지션을 구현하여 렌더 커맨드 디스패치를 병렬 처리합니다.
 
@@ -281,7 +281,7 @@ Widget Interaction Component (위젯 인터랙션 컴포넌트)를 사용하면,
 
 	* 고품질 동적 노출 (소위 눈 순응 효과).
 
-	* 컴퓨트 셰이더 리플렉션 인바이언먼트 - 4.13 별개의 GPU 에서만 가능.
+	* 컴퓨트 셰이더 리플렉션 인바이런먼트 - 4.13 별개의 GPU 에서만 가능.
 
 	* 디스턴스 필드 앰비언트 오클루전 - 4.13 별개의 GPU 에서만 가능.
 
@@ -329,9 +329,9 @@ Procedural Mesh Component (프로시저럴 메시 컴포넌트)에 새로 생긴
 
 폴리지 유형을 선택하고, 레이저를 조준한 뒤 트리거를 당기면 폴리지를 칠합니다! 다른 동작 버튼을 쥔 상태에서는 폴리지를 벗겨냅니다. 트리거 압력 감지도 지원됩니다. 추가적으로 VR 상태의 폴리지 에디터에서 아직 올가미나 선택 툴과 같은 것은 안되지만, 보다 많은 기능을 사용할 수 있게 되었습니다.
 
-## VR 모드 색 선택기
+## VR 모드 색 선택 툴
 
-이제 VR 모드에서 색 선택기 창을 사용할 수 있어, 라이트의 컬러 프로퍼티나 레벨의 다른 액터를 변경할 수 있습니다. 색 선택기를 사용해서 VR 모드 버텍스 페인팅이나 텍스처 페인팅 색을 선택할 수도 있습니다.
+이제 VR 모드에서 색 선택 툴 창을 사용할 수 있어, 라이트의 컬러 프로퍼티나 레벨의 다른 액터를 변경할 수 있습니다. 색 선택 툴을 사용해서 VR 모드 버텍스 페인팅이나 텍스처 페인팅 색을 선택할 수도 있습니다.
 
 [REGION:asyncgif]
 ![image alt text](image_28.gif)
@@ -349,7 +349,7 @@ Procedural Mesh Component (프로시저럴 메시 컴포넌트)에 새로 생긴
 
 VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사용하기 쉽도록 개선되었습니다!
 
-![image alt text](image_30.jpg)(h:442 w:466 convert:false)
+![image alt text](image_30.jpg)(w:466 convert:false)
 
 오브젝트 이동과 회전 느낌이 훨씬 자연스러워졌으며, 이제 VR 안에서 한 2D 면을 기준으로 한 오브젝트 균등 스케일 및 이동 작업이 가능합니다. 계속해서 VR 기즈모를 발전시켜 나가도록 할 것입니다.
 
@@ -357,13 +357,13 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 
 이제 퀵 메뉴를 사용하여 컨트롤러에 손전등을 달아 씬의 어두운 구석을 밝히거나 다양한 머티리얼이 빛에 어떻게 반응하는지를 확인할 수 있습니다.
 
-![image alt text](image_31.jpg)(h:333 w:466 convert:false)
+![image alt text](image_31.jpg)(w:466 convert:false)
 
 ## VR 에디터에서 스크린샷
 
 이제 VR 에서 바로 스크린샷을 찍을 수 있습니다!
 
-![image alt text](image_32.jpg)(h:392 w:604 convert:false)
+![image alt text](image_32.jpg)(w:604 convert:false)
 
 ## VR 편집 모드 자동 전환
 
@@ -375,21 +375,21 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 
 에디터 세팅 실험단계 부분의 VR 아래 VR 모드 자동 전환을 선택할 수 있는 세팅이 있습니다.
 
-![image alt text](image_34.jpg)(h:84 w:384 convert:false)
+![image alt text](image_34.jpg)(w:384 convert:false)
 
 ## 시퀀서 임포트/익스포트
 
 이제 시퀀서에서 비선형 동영상 편집 프로그램 공용 파일인 CMS EDL 파일을 임포트/익스포트할 수 있습니다.
 
 [REGION:raw]
-![image alt text](image_35.jpg)(h:529 w:869 convert:false)
+![image alt text](image_35.jpg)(w:869 convert:false)
 [/REGION]
 
 위의 샷은 시퀀스를 Adobe Premiere Pro 에 익스포트한 것입니다. 시퀀스 내 각 샷은 별도의 무비 파일로 작성되고, 이것을 EDL 파일이 레퍼런싱합니다. Premiere 에서 시퀀스에 가한 변경사항을 다시 UE4 시퀀서에 임포트해 올 수 있습니다!
 
 시퀀서에서 OpenEXR 파일로 HDR 데이터를 익스포트하는 기능을 확장시켜 HDR 데이터 인코딩에 사용되는 색 공간을 선택할 수 있도록 했습니다.
 
-![image alt text](image_36.jpg)(h:220 w:492 convert:false)
+![image alt text](image_36.jpg)(w:492 convert:false)
 
 마지막으로, 이제 시퀀서에 오브젝트나 트랙으로 FBX 애니메이션을 바로 익스포트하는 기능이 지원됩니다. 애니메이션 트랙을 FBX 로 익스포트할 수도 있습니다!
 
@@ -398,7 +398,7 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 무비 시퀀스를 렌더링할 때, 익스포트된 이미지에 대한 '번 인' 환경설정이 가능합니다. 샷 식별이나 기록을 유지하는 일상 작업에 매우 유용합니다.
 
 [REGION:raw]
-![image alt text](image_37.jpg)(h:458 w:865 convert:false)
+![image alt text](image_37.jpg)(w:865 convert:false)
 [/REGION]
 
 ## 미디어 프레임워크 개조
@@ -469,7 +469,7 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 
 새로운 버전이 나올 때마다 플랫폼 파트너의 최신 SDK 릴리즈 버전을 지원하도록 엔진을 업데이트하고 있습니다. 또 이번 릴리즈 버전에서는, UE4 바이너리 버전의 윈도우에서 iOS/tvOS 프로젝트를 원격 컴파일할 수 있습니다!
 
-![image alt text](image_39.jpg)(h:377 w:888 convert:false)
+![image alt text](image_39.jpg)(w:888 convert:false)
 
 * iOs/tvOS: 이제 언리얼 엔진 런처로 실행되는 UE4 바이너리 버전의 윈도우 버전에서 코드 프로젝트가 지원됩니다 (원격 컴파일할 맥이 필요합니다).
 
@@ -501,7 +501,7 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 
 랜드스케이프의 하드웨어 테셀레이션이 훨씬 빨라졌습니다! 랜드스케이프는 이제 최상위 레벨 오브 디테일(LOD) 에서만 하드웨어 테셀레이션을 렌더링하며, 랜드스케이프가 두 번째 LOD 로 접어들면서 페이드 아웃 됩니다. 그 이후의 LOD 에는 더이상 테셀레이션이 활성화되지 않습니다. 이를 통해 카메라에 매우 가까운 경우 디스플레이스먼트나 디테일 추가를 위해 테셀레이션을 켜는 경우의 퍼포먼스가 크게 향상됩니다.
 
-![image alt text](image_40.jpg)(h:429 w:593 convert:false)
+![image alt text](image_40.jpg)(w:593 convert:false)
 
 위 시각화에서, 최상위 LOD (흰색)은 테셀레이션을 켜고 렌더링한 반면, 다른 LOD (유색)은 테셀레이션 없이 렌더링되었습니다.
 
@@ -519,23 +519,23 @@ VR 에디터의 트랜스폼 기즈모에 신기능이 추가되고 보다 사�
 
 포즈는 일반 애니메이션 커브로 구동됩니다. 애니메이션에 존재하는 한 커브를 확인할 수 있습니다. 페르소나에서 커브로 구동되는 포즈를 미리보려면, 현재 프리뷰 포즈 애셋을 설정해야 합니다.
 
-![image alt text](image_42.jpg)(h:152 w:348 convert:false)
+![image alt text](image_42.jpg)(w:348 convert:false)
 
 애님 그래프에서 Pose Blender (또는 Pose By Name) 노드를 사용하여 들어오는 커브에 따른 포즈를 출력할 수 있습니다.
 
-![image alt text](image_43.jpg)(h:146 w:422 convert:false)
+![image alt text](image_43.jpg)(w:422 convert:false)
 
-이 시스템을 지원하기 위해 애디티브 블렌딩 관련 스케일 처리 방식을 개선시켰습니다. 앞으로 (사운드 웨이브와 같은) 다른 애셋의 커브도 지원하여 포즈 애셋과 모프 타겟을 구동시키는 데도 쓸 수 있도록 할 것입니다.
+이 시스템을 지원하기 위해 애디티브 블렌딩 관련 스케일 처리 방식을 개선시켰습니다. 앞으로 (사운드 웨이브와 같은) 다른 애셋의 커브도 지원하여 포즈 애셋과 모프 타깃을 구동시키는 데도 쓸 수 있도록 할 것입니다.
 
 ## 포즈 드라이버 애니메이션 노드 (실험단계)
 
-Pose Driver 노드를 새로 추가, 본의 이동에 따라 (모프 타겟 웨이트와 같은) 커브 값을 구동시킬 수 있습니다.
+Pose Driver 노드를 새로 추가, 본의 이동에 따라 (모프 타깃 웨이트와 같은) 커브 값을 구동시킬 수 있습니다.
 
 [REGION:asyncgif]
 ![image alt text](image_44.gif)
 [/REGION]
 
-이는 RBF (Radial Basis Function, 레이디얼 기저함수)를 사용하여 대상 본의 오리엔테이션에 따라 구동되는 값을 보간시킵니다. 포즈 애셋을 사용하여 본에 대한 타겟 포즈와, 각 포즈에서 원하는 커브 값을 정의합니다. 이 노드는 Pose Space Deformer (포즈 스페이스 디포머)로 사용하여, 본의 오리엔테이션에 따라 교정형 블렌드 셰이프를 구동시킬 수 있습니다.
+이는 RBF (Radial Basis Function, 레이디얼 기저함수)를 사용하여 대상 본의 오리엔테이션에 따라 구동되는 값을 보간시킵니다. 포즈 애셋을 사용하여 본에 대한 타깃 포즈와, 각 포즈에서 원하는 커브 값을 정의합니다. 이 노드는 Pose Space Deformer (포즈 스페이스 디포머)로 사용하여, 본의 오리엔테이션에 따라 교정형 블렌드 셰이프를 구동시킬 수 있습니다.
 
 ## 애니메이션 노드 포즈 감시
 
@@ -549,9 +549,9 @@ Pose Driver 노드를 새로 추가, 본의 이동에 따라 (모프 타겟 웨�
 
 ## 씬 캡처 개선
 
-씬 캡처가 새로운 Blueprint Drawing to Render Targets (블루프린트로 렌더 타겟에 그리기) 기능으로 유용해 졌습니다!
+씬 캡처가 새로운 Blueprint Drawing to Render Targets (블루프린트로 렌더 타깃에 그리기) 기능으로 유용해 졌습니다!
 
-![image alt text](image_46.jpg)(h:173 w:929 convert:false)
+![image alt text](image_46.jpg)(w:929 convert:false)
 
 * 이제 정투영도법이 지원됩니다.
 
@@ -563,7 +563,7 @@ Pose Driver 노드를 새로 추가, 본의 이동에 따라 (모프 타겟 웨�
 
 * Hidden Actors (숨겨진 액터)와 Show Only Actors (액터만 표시) 배열을 추가, 씬 캡처에다 무엇을 렌더링할지 쉽게 제어할 수 있습니다.
 
-![image alt text](image_47.jpg)(h:312 w:364 convert:false)
+![image alt text](image_47.jpg)(w:364 convert:false)
 
 전장의 안개같은 게임 전용 이펙트도 메시를 정투영 씬 캡처에다 보이는 셰이프로 렌더링한 뒤, Draw Material To Render Target 를 통해 이미지 처리를 하는 것으로 쉽게 구현할 수 있습니다.
 
@@ -571,21 +571,21 @@ Pose Driver 노드를 새로 추가, 본의 이동에 따라 (모프 타겟 웨�
 
 Pixel Normal Offset (픽셀 노멀 오프셋) 이라는 새로운 굴절 모드가 생겼습니다. 버텍스 노멀을 기준으로 사용하여, 버텍스 노멀과 픽셀별 노멀의 차이를 통해 굴절 오프셋을 계산합니다. 이는 물리가 아니지만, 평평한 수면에 굴절 효과를 적용시킬 수 있습니다.
 
-![image alt text](image_48.jpg)(h:153 w:929 convert:false)
+![image alt text](image_48.jpg)(w:929 convert:false)
 
 왼쪽: 굴절 없는 단순한 씬
 
-가운데: 수면에 적합치 않은 상수 오프셋이 나오는 기본 굴절 메소드
+가운데: 수면에 적합치 않은 상수 오프셋이 나오는 기본 굴절 메서드
 
-오른쪽: 노멀맵 차를 기반으로 왜곡시키는 픽셀 노멀 오프셋 굴절 메소드
+오른쪽: 노멀맵 차를 기반으로 왜곡시키는 픽셀 노멀 오프셋 굴절 메서드
 
-![image alt text](image_49.jpg)(h:78 w:344 convert:false)
+![image alt text](image_49.jpg)(w:344 convert:false)
 
 ## 라인 트레이스에서의 텍스처 좌표
 
 라인 트레이스로부터 텍스처 좌표(UV)를 얻어낼 수 있는 프로젝트 세팅을 추가했습니다.
 
-![image alt text](image_50.jpg)(h:330 w:297 convert:false)
+![image alt text](image_50.jpg)(w:297 convert:false)
 
 이 옵션은 프로젝트 세팅 - 피직스 - 최적화 아래에 있습니다. 켜면 Find Collision UV 함수를 사용하여 Hit Result 를 취한 뒤 충격 지점에서의 UV 채널에 대한 UV 정보를 알아낼 수 있습니다. 이 기능에는 메모리 비용이 추가로 들지 않는데, UV 정보 사본은 CPU 메모리에 저장되어 있기 때문입니다.
 
@@ -595,7 +595,7 @@ Pixel Normal Offset (픽셀 노멀 오프셋) 이라는 새로운 굴절 모드�
 
 이제 블루프린트 에디터에서 표준 스플라인 비주얼라이저 편집 기능을 사용하여 스플라인 컴포넌트 점을 설정할 수 있습니다. 이 기본값으로 블루프린트의 새 인스턴스가 생성되나, 배치되고나면 이 역시도 인스턴스 단위로 덮어쓸 수 있습니다.
 
-![image alt text](image_51.jpg)(h:445 w:929 convert:false)
+![image alt text](image_51.jpg)(w:929 convert:false)
 
 스플라인 비주얼라이저의 맥락 메뉴 중 Reset to Default (기본값으로 리셋) 으로 인스턴스를 블루프린트 기본으로 다시 설정합니다. 블루프린트 기본값을 변경하면 추후 스플라인 지점을 따로 편집하지 않은 모든 인스턴스에 전파됩니다.
 
@@ -607,7 +607,7 @@ Pixel Normal Offset (픽셀 노멀 오프셋) 이라는 새로운 굴절 모드�
 
 예전에는 스플라인 점을 정확히 배치하거나 거기에 스케일, 롤, 탄젠트를 적용할 수 있는 방법이 없었습니다. 이제 그 프로퍼티가 스플라인 점을 선택한 경우 디테일 패널에 노출됩니다:
 
-![image alt text](image_53.jpg)(h:190 w:449 convert:false)
+![image alt text](image_53.jpg)(w:449 convert:false)
 
 **새로운 스플라인 점 프로퍼티**
 
@@ -615,11 +615,11 @@ Pixel Normal Offset (픽셀 노멀 오프셋) 이라는 새로운 굴절 모드�
 
 스플라인 비주얼라이저의 스플라인 컴포넌트 디테일에 보면, 맥락 메뉴에 도착/출발 탄젠트를 고정시키지 않고 별도로 편집할 수 있는 옵션이 있습니다.
 
-![image alt text](image_54.jpg)(h:220 w:190 convert:false)
+![image alt text](image_54.jpg)(w:190 convert:false)
 
 점마다 임의의 입력 키를 설정할 수 있게 됨에 따라, 닫힌 스플라인의 경우 루프 위치 입력 키를 지정할 수 있는 방법도 생겼습니다:
 
-![image alt text](image_55.jpg)(h:192 w:454 convert:false)
+![image alt text](image_55.jpg)(w:454 convert:false)
 
 입력 키 또는 루프 위치가 지정되지 않은 경우, 기본값은 전과 같이 0.0 에서 시작하여 점마다 1.0 씩 증가합니다.
 
@@ -627,23 +627,23 @@ Pixel Normal Offset (픽셀 노멀 오프셋) 이라는 새로운 굴절 모드�
 
 가끔 블루프린트 컨스트럭션 스크립트에서 스플라인을 절차적 생성 방식으로 만들면 좋을 때가 있습니다. 기존에 스플라인 점에 어떤 작업을 할 때마다 스플라인이 다시 빌드되었으나, 이제 최적화의 한 방편으로, 스플라인 점 작업을 한 뒤 스플라인을 다시 빌드할지를 지정할 수가 있게 되었습니다. 명시적으로 Update Spline 노드를 통해 업데이트시킬 수도 있습니다.
 
-![image alt text](image_56.jpg)(h:413 w:918 convert:false)
+![image alt text](image_56.jpg)(w:918 convert:false)
 
 **컨스트럭션 스크립트에 스플라인 점 입력**
 
 가끔 스플라인 비주얼라이저로 스플라인을 수동 편집한 뒤, 블루프린트 컨스트럭션 스크립트로 정돈해 둘 수 있으면 좋을 때가 있습니다. 예로 편집된 모든 점을 구체의 표면에 고정시키는 블루프린트를 들 수 있습니다:
 
-![image alt text](image_57.jpg)(h:456 w:929 convert:false)
+![image alt text](image_57.jpg)(w:929 convert:false)
 
 Input Spline Points to Construction Script 프로퍼티만 체크하면 이런 효과를 낼 수 있습니다:
 
-![image alt text](image_58.jpg)(h:196 w:452 convert:false)
+![image alt text](image_58.jpg)(w:452 convert:false)
 
 ## 서브 애니메이션 블루프린트
 
 이제 애니메이션 블루프린트 안에서 Sub Anim Instance 노드를 사용하여 다른 서브 애니메이션 블루프린트를 레퍼런싱하는 것으로 애니메이션 로직을 공유할 수 있습니다. 또한 이를 통해 큰 애니메이션 블루프린트를 별개의 애셋들로, 예를 들면 '보행'과 '물리' 부분으로 나눌 수 있습니다.
 
-![image alt text](image_59.jpg)(h:149 w:644 convert:false)
+![image alt text](image_59.jpg)(w:644 convert:false)
 
 서브 블루프린트의 멤버 변수는 노드의 입력 핀으로 노출시킬 수 있습니다. 서브 애니메이션 블루프린트는 반드시 같은 스켈레톤을 아우터 애니메이션 블루프린트로 사용해야 합니다.
 
@@ -651,7 +651,7 @@ Input Spline Points to Construction Script 프로퍼티만 체크하면 이런 �
 
 페르소나에서 스켈레톤 커브 탭을 제거하고, 그 기능을 개선된 애니메이션 커브 탭으로 옮겼습니다. 이제 여기서 커브 이름변경이나 삭제는 물론, 커브 데이터를 미리보는 것도 가능합니다.
 
-![image alt text](image_60.jpg)(h:381 w:622 convert:false)
+![image alt text](image_60.jpg)(w:622 convert:false)
 
 현재 스켈레톤에 속하는 모든 커브 또는 프리뷰 애셋에서 현재 활성화된 커브를 확인할 수 있습니다. 또 활성화된 커브만 보고자 하는 경우 특정 유형 커브만 필터링할 수도 있습니다. 참고로 기본 커브 이름은 Attribute (특성)이니, 어떤 애니메이션 커브도 기본으로 특성 커브가 될 것입니다.
 
@@ -661,17 +661,17 @@ Input Spline Points to Construction Script 프로퍼티만 체크하면 이런 �
 
 이제 Paper2D 스프라이트를 UMG 나 슬레이트 위젯의 브러시 입력으로 사용할 수 있습니다. 스프라이트 시트로 개발되었을 수도 있는 UI 아트를 레퍼런싱 가능한 것은 물론, 드로 콜 수 예산이 빡빡한 플랫폼에서 위젯 렌더링 효율을 높이는 데도 도움이 됩니다. 같은 텍스처 아틀라스의 일부인 스프라이트는, 렌더링되었을 때 모두 같은 레이어를 공유하기만 한다면 슬레이트에서 같이 일괄 처리시킬 수 있습니다.
 
-![image alt text](image_61.jpg)(h:257 w:460 convert:false)![image alt text](image_62.jpg)(h:258 w:460 convert:false)
+![image alt text](image_61.jpg)(w:460 convert:false)![image alt text](image_62.jpg)(w:460 convert:false)
 
 ## VR 용 인스턴스드 스테레오 렌더링 최적화
 
 인스턴스드 스테레오 렌더링이 여러모로 개선되었는데, 그 중에는 벨로시티 패스를 인스턴스드 스테레오 렌더링을 사용하도록 이동시킨 것도 포함됩니다. PS4 에서의 멀티 뷰 지원도 활성화되어, ISR 경로 사용시 퍼포먼스가 크게 향상되었습니다.
 
-## GPU 모프 타겟
+## GPU 모프 타깃
 
-이제 셰이더 모델 5 수준 하드웨어에서 모프 타겟 계산을 GPU 에서 하도록 하는 기능을 프로젝트 단에서 설정하여, 그만큼 CPU 부하를 줄일 수 있게 되었습니다:
+이제 셰이더 모델 5 수준 하드웨어에서 모프 타깃 계산을 GPU 에서 하도록 하는 기능을 프로젝트 단에서 설정하여, 그만큼 CPU 부하를 줄일 수 있게 되었습니다:
 
-![image alt text](image_63.jpg)(h:194 w:520 convert:false)
+![image alt text](image_63.jpg)(w:520 convert:false)
 
 ## 랜드스케이프 셰이더 메모리 최적화
 
@@ -691,21 +691,21 @@ Input Spline Points to Construction Script 프로퍼티만 체크하면 이런 �
 
 그 후 모든 디바이스에서 자동화 테스트를 실행시키고 세션 프론트엔드에서 결과를 확인할 수 있습니다.
 
-![image alt text](image_64.jpg)(h:542 w:838 convert:false)
+![image alt text](image_64.jpg)(w:838 convert:false)
 
 ## 안드로이드에 OpenGL ES 3.1 지원
 
-UE4 가 안드로에드에 다수의 OpenGL ES 2.0 과 3.1 기능을 지원한지도 오래 되었지만, 이제 안드로이드에서 ES 3.1 을 전용 타겟으로 삼을 수 있습니다. 이로써 고사양 안드로이드 디바이스가 메탈이나 불칸과 기능적으로 호환되게 되었으며, 사용할 수 있는 텍스처 샘플러 갯수도 16 개로 늘어날 뿐만 아니라 유니폼 버퍼를 사용하여 퍼포먼스도 향상됩니다.
+UE4 가 안드로에드에 다수의 OpenGL ES 2.0 과 3.1 기능을 지원한지도 오래 되었지만, 이제 안드로이드에서 ES 3.1 을 전용 타깃으로 삼을 수 있습니다. 이로써 고사양 안드로이드 디바이스가 메탈이나 불칸과 기능적으로 호환되게 되었으며, 사용할 수 있는 텍스처 샘플러 갯수도 16 개로 늘어날 뿐만 아니라 유니폼 버퍼를 사용하여 퍼포먼스도 향상됩니다.
 
 프로젝트를 패키징할 때 ES 2.0 과 ES 3.1 셰이더를 모두 패키징해 두고, 디바이스 성능에 따라 최적의 셰이더 플랫폼을 선택하도록 할 수도 있습니다.
 
-![image alt text](image_65.jpg)(h:220 w:582 convert:false)
+![image alt text](image_65.jpg)(w:582 convert:false)
 
 ## 모바일 패키지 마법사
 
 콘텐츠 없이 최소 앱만 앱 스토어에 올리고 나머지 콘텐츠는 클라우드에서 내려받도록 하는 모바일용 패키징을 지원하는 모바일 패키지 마법사를 추가했습니다.
 
-![image alt text](image_66.jpg)(h:484 w:800 convert:false)
+![image alt text](image_66.jpg)(w:800 convert:false)
 
 * 주기적인 DLC 업데이트가 있는 대규모 게임에서는 흔한 패키징 방식입니다.
 
@@ -717,7 +717,7 @@ UE4 가 안드로에드에 다수의 OpenGL ES 2.0 과 3.1 기능을 지원한�
 
 모바일 디바이스에서 사용되는 픽셀 셰이더에 (기본값은 중간 정밀도이지만) 최대 정밀도를 사용하도록 하는 옵션이 머티리얼에 생겼습니다. 머티리얼에서 월드 좌표를 계산하는 경우 도움이 됩니다.
 
-![image alt text](image_67.jpg)(h:92 w:260 convert:false)
+![image alt text](image_67.jpg)(w:260 convert:false)
 
 ## 안드로이드용 바이너리 셰이더 캐시
 
@@ -730,14 +730,6 @@ UE4 가 안드로에드에 다수의 OpenGL ES 2.0 과 3.1 기능을 지원한�
 ## 현지화 텍스트 포맷 개선
 
 번역 정확도 향상을 위해 현지화 텍스트 포맷을 개선시켰습니다.
-
-**한글 조사 변환:**
-
-* hpp(Hangul Post-Positions)는 한국어에서 선행하는 낱말 끝 글자의 종성 유무에 따라 바뀌는 조사를 자동으로 처리해 줍니다.
-
-* 문법: {변수}|hpp(은,는) - {변수}가 종성으로 끝나면 조사는 "은", 아니면 "는" 이 됩니다. 지원되는 조사 목록은 다음과 같습니다: (은,는) (이,가) (을,를) (과,와) (아,야) (이어,여) (이에,예) (이었,였) (으로,로)
-
-* 포맷 예제: "{Arg}|hpp(은,는)", {Arg}="사람" 이면 결과는 "사람은", {Arg}="사자" 면 결과는 "사자는"
 
 **복수에 따른 변환:**
 
@@ -757,13 +749,21 @@ UE4 가 안드로에드에 다수의 OpenGL ES 2.0 과 3.1 기능을 지원한�
 
 * 포맷 예제: "{Gender}|gender(Le,La) {Gender}|gender(guerrier,guerrière) est {Gender}|gender(fort,forte)"
 
-* 복수/성별 포맷 지원에 필요한 수치/성별 값 전달을 위해, FText::Format(...) 함수군 모두 이제 FText 가 아닌 FFormatArgumentValue 를 값으로 받습니다. 이는 어떠한 수치 유형이나 ETextGender 또는 FText 에서도 묵시적 생성이 가능합니다.
+**한글 조사 변환:**
+
+* hpp(Hangul Post-Positions)는 한국어에서 선행하는 낱말 끝 글자의 종성 유무에 따라 바뀌는 조사를 자동으로 처리해 줍니다.
+
+* 문법: {변수}|hpp(은,는) - {변수}가 종성으로 끝나면 조사는 "은", 아니면 "는" 이 됩니다. 지원되는 조사 목록은 다음과 같습니다: (은,는) (이,가) (을,를) (과,와) (아,야) (이어,여) (이에,예) (이었,였) (으로,로)
+
+* 포맷 예제: "{Arg}|hpp(은,는)", {Arg}="사람" 이면 결과는 "사람은", {Arg}="사자" 면 결과는 "사자는"
+
+복수/성별 포맷 지원에 필요한 수치/성별 값 전달을 위해, FText::Format(...) 함수군 모두 이제 FText 가 아닌 FFormatArgumentValue 를 값으로 받습니다. 이는 어떠한 수치 유형이나 ETextGender 또는 FText 에서도 묵시적 생성이 가능합니다.
 
 블루프린트에서 이러한 값 유형을 설정하는 방법은 Format Text 노드에 와일드카드 핀으로 노출시키는 것입니다:
 
-![image alt text](image_68.jpg)(h:166 w:564 convert:false)
+![image alt text](image_68.jpg)(w:564 convert:false)
 
-![image alt text](image_69.jpg)(h:168 w:820 convert:false)
+![image alt text](image_69.jpg)(w:820 convert:false)
 
 FText::Format(...) 를 여러번 호출하기 위해 재사용할 때는 포맷 패턴을 미리 컴파일해둘 수도 있습니다. FTextFormat 인스턴스를 만들어 저장한 다음 FText::Format(...) 에 패턴으로 전달해 주기만 하면 됩니다.
 
@@ -785,7 +785,7 @@ FText::Format(...) 를 여러번 호출하기 위해 재사용할 때는 포맷 
 
 BuildGraph (빌드 그래프) 스크립트를 통해 UE4 빌드 명령 커스텀 시퀀스를 만들어 빌드를 자동화시킬 수 있습니다. 그래프는 MSBuild 나 ANT 나 NAnt 와 비슷한 문법을 사용하는 XML 스크립트를 사용하여 선언하며, '태스크'로 이루어진 종속 '노드' 망으로 구성됩니다.
 
-![image alt text](image_70.jpg)(h:382 w:677 convert:false)
+![image alt text](image_70.jpg)(w:677 convert:false)
 
 Engine/Build/Graph/Examples/… 에서 몇 가지 BuildGraph 스크립트 예제를 확인하실 수 있습니다.
 
@@ -805,7 +805,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 ## TSet 의 언리얼 프로퍼티화
 
-이제 TSet 를 UPROPERTY 로 사용하여 자동 시리얼라이즈, 가비지 콜렉션, ini 세팅, 디테일 패널을 통한 (입력은 "(1,2,3)" 식의 스트링으로 제한된) 편집에 사용할 수 있습니다. TMap 과 비슷하게 TSet 프로퍼티의 경우 아직은 리플리케이트되는 멤버나 블루프린트에서 사용할 수 없습니다.
+이제 TSet 를 UPROPERTY 로 사용하여 자동 시리얼라이즈, 가비지 컬렉션, ini 세팅, 디테일 패널을 통한 (입력은 "(1,2,3)" 식의 스트링으로 제한된) 편집에 사용할 수 있습니다. TMap 과 비슷하게 TSet 프로퍼티의 경우 아직은 리플리케이트되는 멤버나 블루프린트에서 사용할 수 없습니다.
 
 # Release Notes
 
@@ -813,7 +813,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added two appropriately named functions to the AI Perception Component
 
-    * The functions for "Get Currently Perceived Actors" and “Get Known Perceived Actors” have replaced the ambiguously named “Get Perceived Actors”.
+    * The functions for "Get Currently Perceived Actors" and "Get Known Perceived Actors" have replaced the ambiguously named "Get Perceived Actors".
 
 * New: Made AI Sight sense's collision channel configurable via the AI System's settings.
 
@@ -887,13 +887,13 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Crash fix for path update processing.
 
-* Bugfix: Fixed an issue where auto-repathing to world location where the path’s end was being erroneously used to perform pathfinding rather than the original move goal location. 
+* Bugfix: Fixed an issue where auto-repathing to world location where the path's end was being erroneously used to perform pathfinding rather than the original move goal location. 
 
 * Bugfix: Fixed an issue with Meta NavMesh Path doing navmesh path update without checking navigation agent if the path finding should be postponed (eg. when falling). 
 
 * Bugfix: RVO avoidance updated for vehicles.
 
-* Bugfix: Fixed an issue where Navmesh obstacles were cutting corners too close when using string pulling in detour’s crowd simulation.
+* Bugfix: Fixed an issue where Navmesh obstacles were cutting corners too close when using string pulling in detour's crowd simulation.
 
 * Bugfix: Fixed an issue where navigation mesh streaming was not correctly handling criss-crossed sub-levels.
 
@@ -973,7 +973,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Exposed source indices for transition to runtime code so we can better identify which transitions are currently running when trying to determine elapsed times for anim getter nodes.
 
-* Bugfix: Fixed a crash when opening a skeleton when its assigned preview mesh doesn’t use that skeleton.
+* Bugfix: Fixed a crash when opening a skeleton when its assigned preview mesh doesn't use that skeleton.
 
 * Bugfix: Fixed a crash when a Skeletal Mesh component gets destroyed while triggering a notify.
 
@@ -991,7 +991,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Prevented an animation from restarting each time a new section is selected/inspected in the montage editor. 
 
-* Bugfix: Updated animation initialization to now verify the mesh’s hierarchy matches with the skeleton.
+* Bugfix: Updated animation initialization to now verify the mesh's hierarchy matches with the skeleton.
 
 * Bugfix: Animation Retargeting:
 
@@ -1013,7 +1013,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed Additive Animation scale to apply correctly. 
 
-* Bugfix: Fixed Animation ‘fast path’ to now work with various corner cases (e.g. multiple inputs to array properties from structs).
+* Bugfix: Fixed Animation 'fast path' to now work with various corner cases (e.g. multiple inputs to array properties from structs).
 
 * Bugfix: Fixed Blend Spaces to no longer produce bad data when degenerate spaces are present.
 
@@ -1175,7 +1175,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed a crash that could occur while updating Blueprint instances on compile.
 
-* Bugfix: Fixed a crash that was possible when removing a corrupted Blueprint component node if it’s found to have no parent attachment. 
+* Bugfix: Fixed a crash that was possible when removing a corrupted Blueprint component node if it's found to have no parent attachment. 
 
 * Bugfix: Fixed a crash when using the Blueprint Documentation commandlet.
 
@@ -1233,11 +1233,11 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Compiled Blueprint class assets in the Content Browser would give an invalid ensure (warning) when force-deleting.
 
-* Bugfix: Phantom asset being created when ‘Accept Source’ was used in the Blueprint Merge Tool.
+* Bugfix: Phantom asset being created when 'Accept Source' was used in the Blueprint Merge Tool.
 
 * Bugfix: Child Blueprints inherited variables would not display the replication settings set in the parent Blueprint.
 
-* Bugfix: The Details panel Macro where the tooltip for the "Keywords" and “Compact Node Title” was displaying the same “Category” rather than their respective tooltips.
+* Bugfix: The Details panel Macro where the tooltip for the "Keywords" and "Compact Node Title" was displaying the same "Category" rather than their respective tooltips.
 
 * Bugfix: The Structure editor would collapse all values in the Default Value panel after undoing any changes.
 
@@ -1397,7 +1397,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed a crash occurring in serialization when signed paks are used with compressed packages. 
 
-* Bugfix: Fixed a crash when editing UObject’s in a Map property box.
+* Bugfix: Fixed a crash when editing UObject's in a Map property box.
 
 * Bugfix: Fixed a crash for Automation Tool when deploying to a default PS4 devkit.
 
@@ -1589,7 +1589,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue with Decal Visibility so that its behavior matches other visible actors with regard to the "Actor hidden in game" flag. This also makes it possible to animate it's visibility correctly with sequencer.
 
-* Bugfix: Updated nodes in folders to be filtered so that other unfiltered children aren’t visible.
+* Bugfix: Updated nodes in folders to be filtered so that other unfiltered children aren't visible.
 
 * Bugfix: Fixed an issue when parsing LOD in a Static Mesh component when importing custom properties.
 
@@ -1615,7 +1615,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue where the transform gizmo would prevent a user from dragging a material onto a mesh.
 
-* Bugfix: Fixed an issue where stopping ‘Cancel’ from correctly ‘Cancelled’ resulted in P4 asynchronous ops.
+* Bugfix: Fixed an issue where stopping 'Cancel' from correctly 'Cancelled' resulted in P4 asynchronous ops.
 
 * Bugfix: Fixed an issue importing an array inside a JSON Data Table.
 
@@ -1769,7 +1769,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed Global Illumination textures being visible in the content browser when r.GenerateLandscapeGIData is enabled.
 
-* Bugfix: Fixed that the "Rebuilding Hierarchical Instanced mesh component, please resave map" error wouldn’t go away after a resave.
+* Bugfix: Fixed that the "Rebuilding Hierarchical Instanced mesh component, please resave map" error wouldn't go away after a resave.
 
 * Bugfix: Fixed an issue with foliage being placed on top of Blocking Volumes.
 
@@ -1789,7 +1789,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue where Navmesh generation would use Landscape simple collision issues with Landscape Holes.
 
-* Bugfix: Fixed an issue where new Landscapes would render with the material’s layer preview weights instead of using the actual (all 0) weights.
+* Bugfix: Fixed an issue where new Landscapes would render with the material's layer preview weights instead of using the actual (all 0) weights.
 
 * Bugfix: Fixed an issue where Landscape Splines were not able to be extended if the current level was different to the selected spline.
 
@@ -1897,9 +1897,9 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added more options to the Cooker for selecting Garbage Collection frequency:
 
-    * The new Cook Settings’ Max Memory Allowance setting is a percentage value which will trigger Garbage Collection if exceeded.
+    * The new Cook Settings' Max Memory Allowance setting is a percentage value which will trigger Garbage Collection if exceeded.
 
-    * The new Cook Settings’ Min Free Memory setting allows you to set a minimum free memory value which will trigger Garbage Collection.
+    * The new Cook Settings' Min Free Memory setting allows you to set a minimum free memory value which will trigger Garbage Collection.
 
 * New: Added -skipcompile flag for running from Visual Studio.
 
@@ -1941,7 +1941,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added play/pause/stop events to Level Sequence player as it was with the Matinee actor.
 
-* New: Added "Reverse Play" and “Change Playback Direction” functions.
+* New: Added "Reverse Play" and "Change Playback Direction" functions.
 
 * New: Added support for exporting the scene and animation to FBX. This functionality should match the Matinee FBX export.
 
@@ -2067,13 +2067,13 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue where the Mesh Paint tool was not showing the Brush Preview.
 
-* Bugfix: Fixed an issue where Foliage tools were active even without the controller’s trigger being pressed. 
+* Bugfix: Fixed an issue where Foliage tools were active even without the controller's trigger being pressed. 
 
     * Foliage reapply tool.
 
     * Foliage Lasso tool.
 
-* Bugfix: Fixed an issue where the laser’s hover point in the VR Editor actor wasn’t projected onto the corrected plan while rotating, translating, and scaling using gizmo.
+* Bugfix: Fixed an issue where the laser's hover point in the VR Editor actor wasn't projected onto the corrected plan while rotating, translating, and scaling using gizmo.
 
     * This fix snaps the hover point to the nearest line or plane according to the transformation.
 
@@ -2093,7 +2093,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added Activate and Deactivate events to the Actor Component.
 
-* New: Added arc-tracing functions "Predict Projectile Path" and “Suggest Projectile Velocity Medium Arc” to Gameplay Statics.
+* New: Added arc-tracing functions "Predict Projectile Path" and "Suggest Projectile Velocity Medium Arc" to Gameplay Statics.
 
 * New: Added "Relative To Initial FOV" option to Camera Anim, defaulting to true.
 
@@ -2109,7 +2109,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added new "Load Level Instance" Blueprint node, which allows to create multiple transformed instances of a .umap without having to include in persistent level's list. 
 
-* New: Added new Blueprint library math/vector functions: "Find Closest Point On Segment", “Find Closest Point On Line”, “Get Point Distance To Segment”, and “Get Point Distance To Line”.
+* New: Added new Blueprint library math/vector functions: "Find Closest Point On Segment", "Find Closest Point On Line", "Get Point Distance To Segment", and "Get Point Distance To Line".
 
     * Fixed comments on "Find Nearest Points On Line Segments".
 
@@ -2125,11 +2125,11 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Updated Cheat Manager so it can now be subclassed via Blueprints and properties can be set for the Player Controller and Debug Camera Controller.
 
-* New: Exposed "Override With" and “Copy Properties” in Player State to Blueprint Children.
+* New: Exposed "Override With" and "Copy Properties" in Player State to Blueprint Children.
 
 * New: Made minimum quadtree size configurable in the Procedural Foliage Spawner.
 
-* New: Added "Is Player Controller" function to Controller. The variable already existed, but wasn’t exposed.
+* New: Added "Is Player Controller" function to Controller. The variable already existed, but wasn't exposed.
 
 * New: Added check to Post Actor Construction to avoid a Begin Play call on an Actor that is Pending Kill.
 
@@ -2139,7 +2139,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed a crash when cancelling PIE while in the middle of a seamless travel as a client.
 
-* Bugfix: Fixed a crash in Game Session if the GameMode’s Player State Class has become null.
+* Bugfix: Fixed a crash in Game Session if the GameMode's Player State Class has become null.
 
 * Bugfix: Updated Character movement to make sure the Last Update Location, Rotation, and Velocity are updated on client and server error corrections. The Force Position Update function calls Perform Movement regardless of velocity (there may be root motion or gravity effects).
 
@@ -2153,7 +2153,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue with Model Component replication in client/server PIE if BSP has been rebuilt.
 
-* Bugfix: Updated comments on "Load Game From Slot" and “Delete Game in Slot”.
+* Bugfix: Updated comments on "Load Game From Slot" and "Delete Game in Slot".
 
 * Bugfix: Fixed an issue where Mesh smoothing on clients was causing a popping briefly when crouching. 
 
@@ -2173,7 +2173,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Removed GWorld from the Timer Manager.
 
-* Updated "Remove Instances" on a Hierarchical Instanced Static Mesh Component to now properly rebuild the cluster tree, allowing “Get Instances Overlapping Box” to return correct results.
+* Updated "Remove Instances" on a Hierarchical Instanced Static Mesh Component to now properly rebuild the cluster tree, allowing "Get Instances Overlapping Box" to return correct results.
 
 * Updated significance to now be correctly calculated when there are multiple viewpoints and significance is being sorted descending.
 
@@ -2197,7 +2197,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Updated multi-arg console commands to now accept string commands with or without quotes.
 
-* Optimized NaN and Infinite checks for FVector, FQuat, FRotator, FMatrix, FTransform. SIMD version "Vector Contains NaN Or Infinite" function also optimized on relevant platforms. Added startup tests for “Vector Contains NaN Or Infinite”.
+* Optimized NaN and Infinite checks for FVector, FQuat, FRotator, FMatrix, FTransform. SIMD version "Vector Contains NaN Or Infinite" function also optimized on relevant platforms. Added startup tests for "Vector Contains NaN Or Infinite".
 
     * All our "Contains NaN" tests are in fact "Is NaN or Is Infinite", which is the same as "not Is Finite", so exploited this to simplify the tests. Both NaN and +/-Inf are not finite (http://en.cppreference.com/w/cpp/numeric/math/isfinite). In the future we should rename "Contains NaN".
 
@@ -2213,7 +2213,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Also, exported dialogue scripts now include a column that says whether they have a localized recording of that line of dialogue.
 
-* Bugfix: Fixed a crash caused by bad access of shared ‘this’ when closing an active IME context.
+* Bugfix: Fixed a crash caused by bad access of shared 'this' when closing an active IME context.
 
 * Bugfix: Improved changing the loading phase of a target in the localization dashboard to now write to the default config.
 
@@ -2223,7 +2223,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Bytecode in Blueprints is very volatile, and can only be safely gathered after it's been compiled (which is not guaranteed to have happened by the time we save the package). This change avoids caching any assets that contain scripts (non-data-only Blueprints), and instead will always load them to perform a gather (which will ensure the Blueprint bytecode is up-to-date due to compile-on-load).
 
-* Bugfix: Fixed an issue with Unicode string handling in the web browser widget’s Execute Javascript method.
+* Bugfix: Fixed an issue with Unicode string handling in the web browser widget's Execute Javascript method.
 
 * Updated Localization compilation to now specify an Archive Name to use.
 
@@ -2301,7 +2301,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed several issues and playback artifacts with character positions in replays.
 
-* Deprecated the  "Engine Net Version", “Engine Min Net Version”, and “Engine Negotiation Version” (use the Network Version struct instead).
+* Deprecated the  "Engine Net Version", "Engine Min Net Version", and "Engine Negotiation Version" (use the Network Version struct instead).
 
 * Disabled the ability to use hot-reload while PIE windows are open.
 
@@ -2405,7 +2405,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Updated physics blend weights to now only affect rendering data.
 
-* Bugfix: Fixed crash that could occur when the Phys Scene pointer was null (the world has no Physics Scene) in the Skeletal Mesh Component’s Term Articulated function. That could happen when loading a world without fully instantiating it, such as when right-clicking a world in the context browser rather than opening the world directly.
+* Bugfix: Fixed crash that could occur when the Phys Scene pointer was null (the world has no Physics Scene) in the Skeletal Mesh Component's Term Articulated function. That could happen when loading a world without fully instantiating it, such as when right-clicking a world in the context browser rather than opening the world directly.
 
 * Bugfix: Fixed crash when using very large simulation meshes for clothing - limits have been increased and it is no longer possible to import a simulation mesh that is too large.
 
@@ -2485,7 +2485,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Movies that are not multiple of 16 will report a runtime error.
 
-* Bugfix: Issue where a movie wasn’t played on iOS occasionally. 
+* Bugfix: Issue where a movie wasn't played on iOS occasionally. 
 
 * Bugfix: Error Message displays as Unknown Error when failing to supply a Remote Build server for iOS on Windows has been fixed.
 
@@ -2737,7 +2737,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Assert fix in Metal caused by releasing a shader resource view or unordered access view and the source object within a single command-buffer.
 
-* Bugfix: Crash fix in Metal due to race condition in Metal Blend States’ constructor.
+* Bugfix: Crash fix in Metal due to race condition in Metal Blend States' constructor.
 
 * Bugfix: Crash fix when deallocating textures in Metal RHI by explicitly retaining and releasing the MTL Texture objects rather than making assumptions about whether they are the same object.
 
@@ -2781,7 +2781,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed the command-line script used to get the number of parallel tasks to use when invoking builds with distcc from Unreal Frontend.
 
-* Bugfix: Fixed the tiled reflections pass on Nvidia GPUs using Metal by removing Max & Min LOD overrides from our calls to "set Sampler State" and “set Sampler States”.
+* Bugfix: Fixed the tiled reflections pass on Nvidia GPUs using Metal by removing Max & Min LOD overrides from our calls to "set Sampler State" and "set Sampler States".
 
 * Flush writable file handles on close on Apple platforms to ensure that they reach the disk prior to program termination.
 
@@ -2799,7 +2799,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Change the Metal buffer pool used inside Metal RHI to better match Apple's internal memory management behaviour to avoid hidden performance problems.
 
-* Disabled "r.DFShadowScatterTileCulling" as well as “r.AOScatterTileCulling” on Mac because we don't have the necessary RW textures on Metal in Mac OS X El Capitan.
+* Disabled "r.DFShadowScatterTileCulling" as well as "r.AOScatterTileCulling" on Mac because we don't have the necessary RW textures on Metal in Mac OS X El Capitan.
 
 * Disabled the Shader Cache by default on Mac to match other platforms as it was not designed to support the new RHI Thread & Parallel Execution features of Unreal Engine 4.
 
@@ -3069,7 +3069,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Scene capture components set to "Capture Every Frame" were only capturing every second frame.
 
-* Bugfix: Fixed an issue where particles using Spherical Particle Opacity wouldn’t render. 
+* Bugfix: Fixed an issue where particles using Spherical Particle Opacity wouldn't render. 
 
     * This now allows a smoother appearance when particles are intersecting geometry.
 
@@ -3127,11 +3127,11 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Renamed some cvars for consistency: 
 
-    * "r.SkinCacheShaders" -> “r.SkinCache.CompileShaders”
+    * "r.SkinCacheShaders" -> "r.SkinCache.CompileShaders"
 
-    * "r.SkinCaching" -> “r.SkinCache.Mode”
+    * "r.SkinCaching" -> "r.SkinCache.Mode"
 
-    * "r.MaxGPUSkinCacheElementsPerFrame" -> “r.SkinCache.MaxGPUElementsPerFrame”
+    * "r.MaxGPUSkinCacheElementsPerFrame" -> "r.SkinCache.MaxGPUElementsPerFrame"
 
 * Shader compile error logs are now unsuppressed - shows the cause for materials that fail to compile in cooks.
 
@@ -3153,7 +3153,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Fix DT allows for a more consistent particle behavior when running at different game speed (like slomo) and at different frame rates.
 
-* New: The transforms of individual mesh particles are now available in materials via the "Transform Vector" and “Transform Position” nodes for advanced material effects on mesh particles.
+* New: The transforms of individual mesh particles are now available in materials via the "Transform Vector" and "Transform Position" nodes for advanced material effects on mesh particles.
 
 * New: Quality level spawn rate scaling now works on GPU emitters.
 
@@ -3223,7 +3223,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Added "Render Scene Two Sided" to planar reflections, which can be useful to limit leaking.
 
-    * Added "Show Only Actors" and “Hidden Actors” to Scene Capture Component for easy use without having to call BP functions.
+    * Added "Show Only Actors" and "Hidden Actors" to Scene Capture Component for easy use without having to call BP functions.
 
     * Added "Show Preview Plane" to Planar Reflection actors
 
@@ -3263,7 +3263,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed an issue where light shapes were not showing up in reflection captures.
 
-* Bugfix: Fixed an issue with NaNs resulting from 0 Roughness materials if the light’s "Min Roughness" was also set to 0.
+* Bugfix: Fixed an issue with NaNs resulting from 0 Roughness materials if the light's "Min Roughness" was also set to 0.
 
 * Bugfix: Fixed an issue with Single Sample Shadow From Stationary Lights which had been broken from selective GBuffer outputs optimization.
 
@@ -3291,7 +3291,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Unlike texture-based noise, this one will never repeat.
 
-* New: Added material property "Allow Negative Emissive Color” which is useful when rendering to an offscreen render target.
+* New: Added material property "Allow Negative Emissive Color" which is useful when rendering to an offscreen render target.
 
 * New: New material functions available. These were incorrectly listed in the previous release but are available now.
 
@@ -3383,7 +3383,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Added triangle and draw call summaries to Profile GPU output, broken up by asset and material.
 
-    * This is controlled by "r.ProfileGPU.PrintAssetSummary", which defaults to 1, but you really need “r.ShowMaterialDrawEvents 1” enabled as well for a complete picture.
+    * This is controlled by "r.ProfileGPU.PrintAssetSummary", which defaults to 1, but you really need "r.ShowMaterialDrawEvents 1" enabled as well for a complete picture.
 
     * It can also output a summary line for specific asset names using a comma separated list in "r.ProfileGPU.AssetSummaryCallOuts" (e.g., "LOD,HeroName").
 
@@ -3435,7 +3435,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * New: Enabled quality level overrides for iOS Metal, Android ES3.1 and Android Vulkan shader platforms.
 
-* New: Renamed "ANDROIDES31" and “OpenGLES31” to “ANDROIDESDEFERRED” and “OpenGLESDeferred” to avoid confusion with mobile renderer supporting ES3.1.
+* New: Renamed "ANDROIDES31" and "OpenGLES31" to "ANDROIDESDEFERRED" and "OpenGLESDeferred" to avoid confusion with mobile renderer supporting ES3.1.
 
 * Bugfix: Fixed an issue in which changing mobile preview device type in editor would not rebuild materials.
 
@@ -3521,9 +3521,9 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * For reference you can look at "Paper Sprite" which implements this interface allowing Paper 2D Sprites to be used on Slate Brushes.
 
-* New: Added "Get Url" method and “On Url Changed” property to the Web Browser widget.
+* New: Added "Get Url" method and "On Url Changed" property to the Web Browser widget.
 
-* New: Added meta flags for "Determines Output Type" and “Dynamic Output Param” to “Get All Widgets Of Class” in the Widget Blueprint Library, removing the need for the extra cast. 
+* New: Added meta flags for "Determines Output Type" and "Dynamic Output Param" to "Get All Widgets Of Class" in the Widget Blueprint Library, removing the need for the extra cast. 
 
     * The output pin now becomes the same as the type requested.
 
@@ -3545,7 +3545,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed a bug where audio track from UMG doesn't play correctly in PIE.
 
-* Bugfix: Fixed "Is Hovered" on “User Widgets”. The Object Widget did not properly call the super for Mouse Enter/Mouse Leave preventing the Widget's implementation from setting the correct state.
+* Bugfix: Fixed "Is Hovered" on "User Widgets". The Object Widget did not properly call the super for Mouse Enter/Mouse Leave preventing the Widget's implementation from setting the correct state.
 
 * Bugfix: Fixed the "Designer Rebuild" flag detection so that we can just refresh the slate widget without recreating the preview UObject, which causes the destruction of the details panel, and the slate widget recreation was the only part that was required.
 
@@ -4061,7 +4061,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 * Bugfix: Fixed issue wherein replicated actors destroyed on the server would not always be properly destroyed on the client when used in conjunction with network dormancy and queued bunches.
 
-* Any actors that are set not to load on the client (bNetLoadOnClient = false) will be force deleted when initializing a level’s actors on a client.
+* Any actors that are set not to load on the client (bNetLoadOnClient = false) will be force deleted when initializing a level's actors on a client.
 
 * Fixed misspelling in comment in NetworkVersion.h.
 
@@ -4439,25 +4439,25 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
     * Remove any usage of SAFE_BOOL_OPERATORS.
 
-* Specializations of Type Traits which override its "Needs Copy Constructor", “Needs Move Constructor”, “Needs Copy Assignment”, “Needs Move Assignment”, and “Needs Destructor” traits will be ignored and compiler-based traits will be used instead.
+* Specializations of Type Traits which override its "Needs Copy Constructor", "Needs Move Constructor", "Needs Copy Assignment", "Needs Move Assignment", and "Needs Destructor" traits will be ignored and compiler-based traits will be used instead.
 
     * HAS_TRIVIAL_ASSIGN(T), HAS_TRIVIAL_COPY(T) and HAS_TRIVIAL_DESTRUCTOR(T) should be replaced with TIsTriviallyCopyAssignable<T>::Value, TIsTriviallyCopyConstructible<T>::Value and TIsTriviallyDestructible<T>::Value respectively.
 
-    * "TIsFloatType" should be replaced with “TIsFloatingPoint”.
+    * "TIsFloatType" should be replaced with "TIsFloatingPoint".
 
-    * "TIsIntegralType" should be replaced with “TIsIntegral”.
+    * "TIsIntegralType" should be replaced with "TIsIntegral".
 
-    * "TIsSignedIntegralType" should be replaced with “TIsSigned”.
+    * "TIsSignedIntegralType" should be replaced with "TIsSigned".
 
-    * "TIsArithmeticType" should be replaced with “TIsArithmetic”.
+    * "TIsArithmeticType" should be replaced with "TIsArithmetic".
 
-    * "TIsPointerType" should be replaced with “TIsPointer”.
+    * "TIsPointerType" should be replaced with "TIsPointer".
 
-    * "TNoDestructorType" should be replaced with “TIsTriviallyDestructible”.
+    * "TNoDestructorType" should be replaced with "TIsTriviallyDestructible".
 
 * Use of variables inside a DO_CHECK-only block will not compile if the check() is outside a DO_CHECK-only block. Either both or neither should be inside the block.
 
-* When "Unload Or Abandon Module With Callback" in the Module Manager would be called with a third bool argument, that argument should be removed (if the bool is 'false') or replaced by a call to “Abandon Module With Callback”, passing only the module name argument (if the bool is 'true').
+* When "Unload Or Abandon Module With Callback" in the Module Manager would be called with a third bool argument, that argument should be removed (if the bool is 'false') or replaced by a call to "Abandon Module With Callback", passing only the module name argument (if the bool is 'true').
 
 * You may get errors about a skipped UFUNCTION, UPROPERTY etc. when upgrading. This is an indication that these elements are not reflected and so may be an indication of a bug (e.g. a skipped UPROPERTY which is a UObject pointer will not be tracked by the garbage collector). The usage should be reviewed and fixed, perhaps by removing the markup, moving the element outside of the skipped preprocessor block or some other form of refactoring.
 
@@ -4497,7 +4497,7 @@ BuildGraph -target="Make Installed Build Mac" -script=Engine/Build/InstalledEngi
 
 #### Optimizations
 
-* The console command "r.Tonemapper.ScreenPercentage" has been renamed to “r.Tonemapper.MergeWithUpscale.Mode”, and offers additional modes (see the main release notes or cvar help for more information).
+* The console command "r.Tonemapper.ScreenPercentage" has been renamed to "r.Tonemapper.MergeWithUpscale.Mode", and offers additional modes (see the main release notes or cvar help for more information).
 
 #### Mobile Rendering
 

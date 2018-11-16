@@ -15,14 +15,19 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Toolkits/SimpleAssetEditor.h"
 #include "LevelEditor.h"
-#include "PackageReload.h"
+#include "UObject/PackageReload.h"
 #include "EngineAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "ContentBrowserModule.h"
+#include "MRUFavoritesList.h"
+#include "Engine/MapBuildDataRegistry.h"
 
 #define LOCTEXT_NAMESPACE "AssetEditorManager"
+
+DEFINE_LOG_CATEGORY_STATIC(LogAssetEditorManager, Log, All);
 
 FAssetEditorManager* FAssetEditorManager::Instance = NULL;
 
@@ -158,7 +163,7 @@ TArray<IAssetEditorInstance*> FAssetEditorManager::FindEditorsForAsset(UObject* 
 }
 
 
-void FAssetEditorManager::CloseAllEditorsForAsset(UObject* Asset)
+int32 FAssetEditorManager::CloseAllEditorsForAsset(UObject* Asset)
 {
 	TArray<IAssetEditorInstance*> EditorInstances = FindEditorsForAsset(Asset);
 
@@ -166,6 +171,10 @@ void FAssetEditorManager::CloseAllEditorsForAsset(UObject* Asset)
 	{
 		EditorIter->CloseWindow();
 	}
+
+	AssetEditorRequestCloseEvent.Broadcast(Asset, EAssetEditorCloseReason::CloseAllEditorsForAsset);
+
+	return EditorInstances.Num();
 }
 
 void FAssetEditorManager::RemoveAssetFromAllEditors(UObject* Asset)
@@ -176,6 +185,8 @@ void FAssetEditorManager::RemoveAssetFromAllEditors(UObject* Asset)
 	{
 		EditorIter->RemoveEditingAsset(Asset);
 	}
+
+	AssetEditorRequestCloseEvent.Broadcast(Asset, EAssetEditorCloseReason::RemoveAssetFromAllEditors);
 }
 
 
@@ -190,6 +201,8 @@ void FAssetEditorManager::CloseOtherEditors( UObject* Asset, IAssetEditorInstanc
 			Editor->CloseWindow();
 		}
 	}
+
+	AssetEditorRequestCloseEvent.Broadcast(Asset, EAssetEditorCloseReason::CloseOtherEditors);
 }
 
 
@@ -284,11 +297,13 @@ bool FAssetEditorManager::CloseAllAssetEditors()
 		}
 	}
 
+	AssetEditorRequestCloseEvent.Broadcast(nullptr, EAssetEditorCloseReason::CloseAllAssetEditors);
+
 	return bAllEditorsClosed;
 }
 
 
-bool FAssetEditorManager::OpenEditorForAsset(UObject* Asset, const EToolkitMode::Type ToolkitMode, TSharedPtr< IToolkitHost > OpenedFromLevelEditor )
+bool FAssetEditorManager::OpenEditorForAsset(UObject* Asset, const EToolkitMode::Type ToolkitMode, TSharedPtr< IToolkitHost > OpenedFromLevelEditor, const bool bShowProgressWindow)
 {
 	check(Asset);
 	// @todo toolkit minor: When "Edit Here" happens in a different level editor from the one that an asset is already
@@ -315,9 +330,13 @@ bool FAssetEditorManager::OpenEditorForAsset(UObject* Asset, const EToolkitMode:
 	}
 	else
 	{
-		GWarn->BeginSlowTask( LOCTEXT("OpenEditor", "Opening Editor..."), true);
+		if (bShowProgressWindow)
+		{
+			GWarn->BeginSlowTask(LOCTEXT("OpenEditor", "Opening Editor..."), true);
+		}
 	}
 
+	UE_LOG(LogAssetEditorManager, Log, TEXT("Opening Asset editor for %s"), *Asset->GetFullName());
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
 
@@ -374,7 +393,21 @@ bool FAssetEditorManager::OpenEditorForAsset(UObject* Asset, const EToolkitMode:
 		FSimpleAssetEditor::CreateEditor(ActualToolkitMode, ActualToolkitMode == EToolkitMode::WorldCentric ? OpenedFromLevelEditor : TSharedPtr<IToolkitHost>(), Asset);
 	}
 
-	GWarn->EndSlowTask();
+	if (bShowProgressWindow)
+	{
+		GWarn->EndSlowTask();
+	}
+	// Do not add to recently opened asset list if this is a level-associated asset like Level Blueprint or Built Data. Their naming is not compatible
+	if (Asset->IsAsset() && !Asset->IsA(UMapBuildDataRegistry::StaticClass()))
+	{
+		FString AssetPath = Asset->GetOuter()->GetPathName();
+		FContentBrowserModule& CBModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+		FMainMRUFavoritesList* RecentlyOpenedAssets = CBModule.GetRecentlyOpenedAssets();
+		if (RecentlyOpenedAssets && FPackageName::IsValidLongPackageName(AssetPath))
+		{
+			RecentlyOpenedAssets->AddMRUItem(AssetPath);
+		}
+	}
 	return true;
 }
 
@@ -529,6 +562,8 @@ void FAssetEditorManager::OpenEditorForAsset(const FString& AssetPathName)
 
 bool FAssetEditorManager::HandleTicker( float DeltaTime )
 {
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FAssetEditorManager_HandleTicker);
+
 	if (bRequestRestorePreviouslyOpenAssets)
 	{
 		RestorePreviouslyOpenAssets();
@@ -729,13 +764,24 @@ void FAssetEditorManager::HandlePackageReloaded(const EPackageReloadPhase InPack
 
 	if (InPackageReloadPhase == EPackageReloadPhase::PrePackageFixup)
 	{
+		/** Call close for all old assets even if not open, so global callback will go off */
 		TArray<UObject*> OldAssets;
-		for (auto AssetEditorPair : OpenedAssets)
+		const TMap<UObject*, UObject*>& RepointedMap = InPackageReloadedEvent->GetRepointedObjects();
+
+		for (const TPair<UObject*, UObject*> RepointPair : RepointedMap)
+		{
+			if (RepointPair.Key->IsAsset())
+			{
+				OldAssets.Add(RepointPair.Key);
+			}
+		}
+
+		/** Look for replacement for assets that are open now so we can reopen */
+		for (TPair<UObject*, IAssetEditorInstance*>& AssetEditorPair : OpenedAssets)
 		{
 			UObject* NewAsset = nullptr;
 			if (InPackageReloadedEvent->GetRepointedObject(AssetEditorPair.Key, NewAsset))
 			{
-				OldAssets.Add(AssetEditorPair.Key);
 				if (NewAsset)
 				{
 					PendingAssetsToOpen.AddUnique(NewAsset);
@@ -743,9 +789,17 @@ void FAssetEditorManager::HandlePackageReloaded(const EPackageReloadPhase InPack
 			}
 		}
 
+		int32 NumAssetEditorsClosed = 0;
 		for (UObject* OldAsset : OldAssets)
 		{
-			CloseAllEditorsForAsset(OldAsset);
+			NumAssetEditorsClosed += CloseAllEditorsForAsset(OldAsset);
+		}
+
+		if (NumAssetEditorsClosed > 0)
+		{
+			// Closing asset editors might have have left objects pending GC that still reference the asset we're about to reload
+			// Run a GC now to ensure those are cleaned up before the fix-up phase happens
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 		}
 	}
 

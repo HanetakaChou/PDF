@@ -30,14 +30,12 @@ public class LoginFlow : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[]
 			{
-				"Runtime/LoginFlow/Private",
 			}
 		);
 
 		PublicIncludePaths.AddRange(
 			new string[]
 			{
-				"Runtime/LoginFlow/Public",
 			}
 		);
 
@@ -54,5 +52,10 @@ public class LoginFlow : ModuleRules
 				"AnalyticsET",
 			}
 		);
+
+		if (Target.Platform == UnrealTargetPlatform.Lumin)
+		{
+			PrecompileForTargets = PrecompileTargetsType.None;
+		}
 	}
 }

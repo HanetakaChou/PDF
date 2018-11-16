@@ -9,7 +9,6 @@
 
 #include <stdint.h>
 #include <assert.h>
-#include <functional>
 
 #ifndef __has_feature
 #   define __has_feature(x) 0
@@ -17,6 +16,10 @@
 
 #ifndef MTLPP_CONFIG_RVALUE_REFERENCES
 #   define MTLPP_CONFIG_RVALUE_REFERENCES __has_feature(cxx_rvalue_references)
+#endif
+
+#ifndef MTLPP_CONFIG_IMP_CACHE
+#   define MTLPP_CONFIG_IMP_CACHE 1
 #endif
 
 #ifndef MTLPP_CONFIG_VALIDATE
@@ -45,6 +48,10 @@
 
 #ifndef MTLPP_PLATFORM_AX
 #define MTLPP_PLATFORM_AX (MTLPP_PLATFORM_IOS || MTLPP_PLATFORM_TVOS)
+#endif
+
+#ifndef MTLPP_EXPORT
+#define MTLPP_EXPORT __attribute__ ((visibility("default")))
 #endif
 
 #if MTLPP_CONFIG_USE_AVAILABILITY
@@ -99,6 +106,9 @@
 #ifndef __DARWIN_ALIAS_STARTING_MAC___MAC_10_13
 #   define __DARWIN_ALIAS_STARTING_MAC___MAC_10_13(x)
 #endif
+#ifndef __DARWIN_ALIAS_STARTING_MAC___MAC_10_14
+#   define __DARWIN_ALIAS_STARTING_MAC___MAC_10_14(x)
+#endif
 #ifndef __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_8_0
 #   define __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_8_0(x)
 #endif
@@ -114,6 +124,15 @@
 #ifndef __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_11_0
 #   define __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_11_0(x)
 #endif
+#ifndef __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_12_0
+#   define __DARWIN_ALIAS_STARTING_IPHONE___IPHONE_12_0(x)
+#endif
+
+// tvOS doesn't have versions less than 9.0
+#define __TVOS_8_0      80000
+#define __TVOS_8_1      80100
+#define __TVOS_8_2      80200
+#define __TVOS_8_3      80300
 
 #if MTLPP_CONFIG_USE_SDK_AVAILABILITY
 #	define MTLPP_IS_AVAILABLE_MAC(mac)  (0 || (defined(__MAC_##mac) && MTLPP_PLATFORM_MAC && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_##mac))
@@ -155,6 +174,23 @@
 #define MTLPP_CHECK_AVAILABLE_AX(vers) false
 #endif
 
+#if MTLPP_CONFIG_VALIDATE
+#define MTLPP_VALIDATED virtual
+#define MTLPP_VALIDATE(Type, Resource, bEnable, ...) mtlpp::Validator<Type>(Resource, bEnable)->__VA_ARGS__
+#define MTLPP_VALIDATE_ONLY(Type, Resource, bEnable, ...) if (bEnable) (*mtlpp::Validator<Type>(Resource, bEnable)).__VA_ARGS__
+#else
+#define MTLPP_VALIDATED
+#define MTLPP_VALIDATE(Type, Resource, bEnable, ...) Resource.__VA_ARGS__
+#define MTLPP_VALIDATE_ONLY(Type, Resource, bEnable, ...)
+#endif
+
+#if __has_extension(blocks) && (!__cplusplus || __OBJC__)
+#define MTLPP_CLOSURE(Name, Return, ...) typedef Return (^Name)(__VA_ARGS__)
+#else
+#include <functional>
+#define MTLPP_CLOSURE(Name, Return, ...) typedef std::function<Return (__VA_ARGS__)> Name
+#endif
+
 #if __clang__
 #define MTLPP_BEGIN \
 	_Pragma ("clang diagnostic push")	\
@@ -173,5 +209,11 @@
 #define MTLPP_EXTERN extern "C"
 #else
 #define MTLPP_EXTERN extern
+#endif
+
+#if MTLPP_CONFIG_VALIDATE
+#define MTLPP_VALIDATION(Code) Code
+#else
+#define MTLPP_VALIDATION(Code)
 #endif
 

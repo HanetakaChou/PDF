@@ -8,7 +8,33 @@
 MTLPP_BEGIN
 
 template<>
-struct IMPTable<id<MTLHeap>, void> : public IMPTableBase<id<MTLHeap>>
+struct MTLPP_EXPORT IMPTable<MTLHeapDescriptor*, void> : public IMPTableBase<MTLHeapDescriptor*>
+{
+	IMPTable()
+	{
+	}
+	
+	IMPTable(Class C)
+	: IMPTableBase<MTLHeapDescriptor*>(C)
+	, INTERPOSE_CONSTRUCTOR(StorageMode, C)
+	, INTERPOSE_CONSTRUCTOR(CpuCacheMode, C)
+	, INTERPOSE_CONSTRUCTOR(Size, C)
+	, INTERPOSE_CONSTRUCTOR(setStorageMode, C)
+	, INTERPOSE_CONSTRUCTOR(setCpuCacheMode, C)
+	, INTERPOSE_CONSTRUCTOR(setSize, C)
+	{
+	}
+	
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, storageMode, StorageMode, MTLStorageMode);
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, cpuCacheMode, CpuCacheMode, MTLCPUCacheMode);
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, size, Size, NSUInteger);
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, setStorageMode:, setStorageMode, void, MTLStorageMode);
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, setCpuCacheMode:, setCpuCacheMode, void, MTLCPUCacheMode);
+	INTERPOSE_SELECTOR(MTLHeapDescriptor*, setSize:, setSize, void, NSUInteger);
+};
+
+template<>
+struct MTLPP_EXPORT IMPTable<id<MTLHeap>, void> : public IMPTableBase<id<MTLHeap>>
 {
 	IMPTable()
 	{
@@ -47,7 +73,7 @@ struct IMPTable<id<MTLHeap>, void> : public IMPTableBase<id<MTLHeap>>
 };
 
 template<typename InterposeClass>
-struct IMPTable<id<MTLHeap>, InterposeClass> : public IMPTable<id<MTLHeap>, void>
+struct MTLPP_EXPORT IMPTable<id<MTLHeap>, InterposeClass> : public IMPTable<id<MTLHeap>, void>
 {
 	IMPTable()
 	{

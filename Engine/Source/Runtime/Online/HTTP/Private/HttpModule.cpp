@@ -7,6 +7,8 @@
 #include "Http.h"
 #include "NullHttp.h"
 #include "HttpTests.h"
+#include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 
 DEFINE_LOG_CATEGORY(LogHttp);
 
@@ -16,47 +18,70 @@ IMPLEMENT_MODULE(FHttpModule, HTTP);
 
 FHttpModule* FHttpModule::Singleton = NULL;
 
+static bool ShouldLaunchUrl(const TCHAR* Url)
+{
+	FString SchemeName;
+	if (FParse::SchemeNameFromURI(Url, SchemeName) && (SchemeName == TEXT("http") || SchemeName == TEXT("https")))
+	{
+		FHttpManager& HttpManager = FHttpModule::Get().GetHttpManager();
+		return HttpManager.IsDomainAllowed(Url);
+	}
+
+	return true;
+}
+
+void FHttpModule::UpdateConfigs()
+{
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpTimeout"), HttpTimeout, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpConnectionTimeout"), HttpConnectionTimeout, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpReceiveTimeout"), HttpReceiveTimeout, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpSendTimeout"), HttpSendTimeout, GEngineIni);
+	GConfig->GetInt(TEXT("HTTP"), TEXT("HttpMaxConnectionsPerServer"), HttpMaxConnectionsPerServer, GEngineIni);
+	GConfig->GetBool(TEXT("HTTP"), TEXT("bEnableHttp"), bEnableHttp, GEngineIni);
+	GConfig->GetBool(TEXT("HTTP"), TEXT("bUseNullHttp"), bUseNullHttp, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpDelayTime"), HttpDelayTime, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadActiveFrameTimeInSeconds"), HttpThreadActiveFrameTimeInSeconds, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadActiveMinimumSleepTimeInSeconds"), HttpThreadActiveMinimumSleepTimeInSeconds, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleFrameTimeInSeconds"), HttpThreadIdleFrameTimeInSeconds, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleMinimumSleepTimeInSeconds"), HttpThreadIdleMinimumSleepTimeInSeconds, GEngineIni);
+
+	AllowedDomains.Empty();
+	GConfig->GetArray(TEXT("HTTP"), TEXT("AllowedDomains"), AllowedDomains, GEngineIni);
+}
+
 void FHttpModule::StartupModule()
 {	
 	Singleton = this;
+
 	MaxReadBufferSize = 256 * 1024;
-
 	HttpTimeout = 300.0f;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpTimeout"), HttpTimeout, GEngineIni);
-
 	HttpConnectionTimeout = -1;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpConnectionTimeout"), HttpConnectionTimeout, GEngineIni);
-
 	HttpReceiveTimeout = HttpConnectionTimeout;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpReceiveTimeout"), HttpReceiveTimeout, GEngineIni);
-
 	HttpSendTimeout = HttpConnectionTimeout;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpSendTimeout"), HttpSendTimeout, GEngineIni);
-
 	HttpMaxConnectionsPerServer = 16;
-	GConfig->GetInt(TEXT("HTTP"), TEXT("HttpMaxConnectionsPerServer"), HttpMaxConnectionsPerServer, GEngineIni);
-	
 	bEnableHttp = true;
-	GConfig->GetBool(TEXT("HTTP"), TEXT("bEnableHttp"), bEnableHttp, GEngineIni);
-
 	bUseNullHttp = false;
-	GConfig->GetBool(TEXT("HTTP"), TEXT("bUseNullHttp"), bUseNullHttp, GEngineIni);
-
 	HttpDelayTime = 0;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpDelayTime"), HttpDelayTime, GEngineIni);
-
 	HttpThreadActiveFrameTimeInSeconds = 1.0f / 200.0f; // 200Hz
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadActiveFrameTimeInSeconds"), HttpThreadActiveFrameTimeInSeconds, GEngineIni);
-
 	HttpThreadActiveMinimumSleepTimeInSeconds = 0.0f;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadActiveMinimumSleepTimeInSeconds"), HttpThreadActiveMinimumSleepTimeInSeconds, GEngineIni);
-
 	HttpThreadIdleFrameTimeInSeconds = 1.0f / 30.0f; // 30Hz
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleFrameTimeInSeconds"), HttpThreadIdleFrameTimeInSeconds, GEngineIni);
+	HttpThreadIdleMinimumSleepTimeInSeconds = 0.0f;	
 
-	HttpThreadIdleMinimumSleepTimeInSeconds = 0.0f;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleMinimumSleepTimeInSeconds"), HttpThreadIdleMinimumSleepTimeInSeconds, GEngineIni);
+	// override the above defaults from configs
+	UpdateConfigs();
 
+	if (!FParse::Value(FCommandLine::Get(), TEXT("httpproxy="), ProxyAddress))
+	{
+		if (!GConfig->GetString(TEXT("HTTP"), TEXT("HttpProxyAddress"), ProxyAddress, GEngineIni))
+		{
+			if (TOptional<FString> OperatingSystemProxyAddress = FPlatformHttp::GetOperatingSystemProxyAddress())
+			{
+				ProxyAddress = MoveTemp(OperatingSystemProxyAddress.GetValue());
+			}
+		}
+	}
+
+	// Initialize FPlatformHttp after we have read config values
 	FPlatformHttp::Init();
 
 	HttpManager = FPlatformHttp::CreatePlatformHttpManager();
@@ -66,6 +91,10 @@ void FHttpModule::StartupModule()
 		HttpManager = new FHttpManager();
 	}
 	HttpManager->Initialize();
+
+	bSupportsDynamicProxy = HttpManager->SupportsDynamicProxy();
+
+	FCoreDelegates::ShouldLaunchUrl.BindStatic(ShouldLaunchUrl);
 }
 
 void FHttpModule::PostLoadCallback()
@@ -79,32 +108,18 @@ void FHttpModule::PreUnloadCallback()
 
 void FHttpModule::ShutdownModule()
 {
+	FCoreDelegates::ShouldLaunchUrl.Unbind();
+
 	if (HttpManager != nullptr)
 	{
 		// block on any http requests that have already been queued up
 		HttpManager->Flush(true);
 	}
 
-#if PLATFORM_WINDOWS
+	// at least on Linux, the code in HTTP manager (e.g. request destructors) expects platform to be initialized yet
+	delete HttpManager;	// can be passed NULLs
 
-	extern bool bUseCurl;
-	if (!bUseCurl)
-	{
-		// due to peculiarities of some platforms (notably Windows with WinInet implementation) we need to shutdown platform http first,
-		// then delete the manager. It is more logical to have reverse order of their creation though. Proper fix
-		// would be refactoring HTTP platform abstraction to make HttpManager a proper part of it.
-		FPlatformHttp::Shutdown();
-
-		delete HttpManager;	// can be passed NULLs
-	}
-	else
-#endif	// PLATFORM_WINDOWS
-	{
-		// at least on Linux, the code in HTTP manager (e.g. request destructors) expects platform to be initialized yet
-		delete HttpManager;	// can be passed NULLs
-
-		FPlatformHttp::Shutdown();
-	}
+	FPlatformHttp::Shutdown();
 
 	HttpManager = nullptr;
 	Singleton = nullptr;
@@ -133,6 +148,10 @@ bool FHttpModule::HandleHTTPCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 	else if (FParse::Command(&Cmd, TEXT("DUMPREQ")))
 	{
 		GetHttpManager().DumpRequests(Ar);
+	}
+	else if (FParse::Command(&Cmd, TEXT("FLUSH")))
+	{
+		GetHttpManager().Flush(false);
 	}
 	return true;	
 }
@@ -170,4 +189,3 @@ TSharedRef<IHttpRequest> FHttpModule::CreateRequest()
 		return TSharedRef<IHttpRequest>(FPlatformHttp::ConstructRequest());
 	}
 }
-

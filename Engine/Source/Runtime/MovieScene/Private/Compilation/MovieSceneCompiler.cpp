@@ -1,26 +1,31 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "MovieSceneCompiler.h"
+#include "Compilation/MovieSceneCompiler.h"
 
 #include "IMovieSceneModule.h"
-#include "MovieSceneEvaluationTemplate.h"
-#include "MovieSceneEvaluationTemplateInstance.h"
+#include "Evaluation/MovieSceneEvaluationTemplate.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Compilation/MovieSceneEvaluationTemplateGenerator.h"
 
 #include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "Tracks/MovieSceneSubTrack.h"
+#include "MovieSceneCommonHelpers.h"
+#include "MovieSceneTimeHelpers.h"
+
+DECLARE_CYCLE_STAT(TEXT("Full Compile"),  MovieSceneEval_CompileFull,  STATGROUP_MovieSceneEval);
+DECLARE_CYCLE_STAT(TEXT("Compile Range"), MovieSceneEval_CompileRange, STATGROUP_MovieSceneEval);
 
 /** Parameter structure used for gathering entities for a given time or range */
 struct FGatherParameters
 {
-	FGatherParameters(FMovieSceneRootOverridePath& InRootPath, FMovieSceneSequenceHierarchy& InRootHierarchy, IMovieSceneSequenceTemplateStore& InTemplateStore, TRange<float> InCompileRange)
+	FGatherParameters(FMovieSceneRootOverridePath& InRootPath, FMovieSceneSequenceHierarchy& InRootHierarchy, IMovieSceneSequenceTemplateStore& InTemplateStore, TRange<FFrameNumber> InCompileRange)
 		: RootPath(InRootPath)
 		, RootHierarchy(InRootHierarchy)
 		, TemplateStore(InTemplateStore)
 		, RootCompileRange(InCompileRange)
-		, RootClampRange(TRange<float>::All())
+		, RootClampRange(TRange<FFrameNumber>::All())
 		, LocalCompileRange(RootCompileRange)
 		, LocalClampRange(RootClampRange)
 		, Flags(ESectionEvaluationFlags::None)
@@ -40,10 +45,16 @@ struct FGatherParameters
 		return SubParams;
 	}
 
-	void SetClampRange(TRange<float> InNewRootClampRange)
+	void SetClampRange(TRange<FFrameNumber> InNewRootClampRange)
 	{
 		RootClampRange  = InNewRootClampRange;
 		LocalClampRange = InNewRootClampRange * RootToSequenceTransform;
+	}
+
+	/** Clamp the specified range to the current clamp range (in root space) */
+	TRange<FFrameNumber> ClampRoot(const TRange<FFrameNumber>& InRootRange) const
+	{
+		return TRange<FFrameNumber>::Intersection(RootClampRange, InRootRange);
 	}
 
 	/** Path from root to current sequence */
@@ -54,14 +65,14 @@ struct FGatherParameters
 	IMovieSceneSequenceTemplateStore& TemplateStore;
 
 	/** The range that is being compiled in the root's time-space */
-	TRange<float> RootCompileRange;
+	TRange<FFrameNumber> RootCompileRange;
 	/** A range to clamp compilation to in the root's time-space */
-	TRange<float> RootClampRange;
+	TRange<FFrameNumber> RootClampRange;
 
 	/** The range that is being compiled in the current sequence's time-space */
-	TRange<float> LocalCompileRange;
+	TRange<FFrameNumber> LocalCompileRange;
 	/** A range to clamp compilation to in the current sequence's time-space */
-	TRange<float> LocalClampRange;
+	TRange<FFrameNumber> LocalClampRange;
 
 	/** Evaluation flags for the current sequence */
 	ESectionEvaluationFlags Flags;
@@ -94,12 +105,44 @@ struct FCompileOnTheFlyData
 struct FMovieSceneGatheredCompilerData
 {
 	/** Intersection of any empty space that overlaps the currently evaluating time range */
-	TRange<float> EmptyOverlappingRange;
+	FMovieSceneEvaluationTree EmptySpace;
 	/** Tree of tracks to evaluate */
 	TMovieSceneEvaluationTree<FCompileOnTheFlyData> Tracks;
 	/** Tree of active sequences */
 	TMovieSceneEvaluationTree<FMovieSceneSequenceID> Sequences;
 };
+
+/**
+ * Populate the specified tree with all the ranges from the specified array that fully encompass the specified range
+ * This is specifically used when compiling a specific range of an evaluation field in FMovieSceneCompiler::CompileRange()
+ * The desire is to have the first range-entry that exists before TestRange, the last entry-range that exists
+ * after TestRange, and all those in between. With this information we can quickly iterate the relevant gaps in
+ * the field along with the compiled data.
+ */
+void PopulateIterableTreeWithEncompassingRanges(const TRange<FFrameNumber>& TestRange, TArrayView<const FMovieSceneFrameRange> Ranges, TMovieSceneEvaluationTree<int32>& OutFieldTree)
+{
+	// Add the first range that's before the input range
+	int32 FirstIndex = Algo::LowerBoundBy(Ranges, TestRange.GetLowerBound(), &FMovieSceneFrameRange::GetLowerBound, MovieSceneHelpers::SortLowerBounds);
+	if (FirstIndex - 1 >= 0)
+	{
+		--FirstIndex;
+	}
+
+	TRangeBound<FFrameNumber> StopAfterBound = TRangeBound<FFrameNumber>::FlipInclusion(TestRange.GetUpperBound());
+
+	// Add all ranges that overlap the input range, and the first subsequent range
+	for (int32 Index = FirstIndex; Index < Ranges.Num(); ++Index)
+	{
+		OutFieldTree.Add(Ranges[Index].Value, Index);
+
+		// If this range's lower bound is >= the end of TestRange, we have enough information now to perform the compile
+		TRangeBound<FFrameNumber> ThisLowerBound = Ranges[Index].Value.GetLowerBound();
+		if (StopAfterBound.IsClosed() && ThisLowerBound.IsClosed() && TRangeBound<FFrameNumber>::MaxLower(ThisLowerBound, StopAfterBound) == ThisLowerBound)
+		{
+			break;
+		}
+	}
+}
 
 IMovieSceneModule& GetMovieSceneModule()
 {
@@ -118,6 +161,8 @@ IMovieSceneModule& GetMovieSceneModule()
 
 void FMovieSceneCompiler::Compile(UMovieSceneSequence& InCompileSequence, IMovieSceneSequenceTemplateStore& InTemplateStore)
 {
+	SCOPE_CYCLE_COUNTER(MovieSceneEval_CompileFull)
+
 	FMovieSceneEvaluationTemplate& CompileTemplate = InTemplateStore.AccessTemplate(InCompileSequence);
 
 	// Pass down a mutable path to the gather functions
@@ -125,7 +170,7 @@ void FMovieSceneCompiler::Compile(UMovieSceneSequence& InCompileSequence, IMovie
 
 	// Gather everything that happens, recursively
 	FMovieSceneGatheredCompilerData GatherData;
-	FGatherParameters GatherParams(RootPath, CompileTemplate.Hierarchy, InTemplateStore, TRange<float>::All());
+	FGatherParameters GatherParams(RootPath, CompileTemplate.Hierarchy, InTemplateStore, TRange<FFrameNumber>::All());
 	GatherCompileOnTheFlyData(InCompileSequence, GatherParams, GatherData);
 
 	// Wipe the current evaluation field for the template
@@ -156,42 +201,89 @@ void FMovieSceneCompiler::Compile(UMovieSceneSequence& InCompileSequence, IMovie
 
 		// Compute meta data for this segment
 		TMovieSceneEvaluationTreeDataIterator<FMovieSceneSequenceID> SubSequences = GatherData.Sequences.GetAllData(GatherData.Sequences.IterateFromLowerBound(It.Range().GetLowerBound()).Node());
-		PopulateMetaData(Result, CompileTemplate.Hierarchy, CompileData, SubSequences);
+		PopulateMetaData(Result, CompileTemplate.Hierarchy, InTemplateStore, CompileData, SubSequences);
 
 		CompileTemplate.EvaluationField.Add(Result.Range, MoveTemp(Result.Group), MoveTemp(Result.MetaData));
 	}
 }
 
-TOptional<FCompiledGroupResult> FMovieSceneCompiler::CompileTime(float InGlobalTime, UMovieSceneSequence& InCompileSequence, IMovieSceneSequenceTemplateStore& InTemplateStore)
+void FMovieSceneCompiler::CompileRange(TRange<FFrameNumber> InGlobalRange, UMovieSceneSequence& InCompileSequence, IMovieSceneSequenceTemplateStore& InTemplateStore)
 {
-	FMovieSceneEvaluationTemplate& CompileTemplate = InTemplateStore.AccessTemplate(InCompileSequence);
+	SCOPE_CYCLE_COUNTER(MovieSceneEval_CompileRange)
 
-	TRange<float> CompileRange = TRange<float>::Inclusive(InGlobalTime, InGlobalTime);
+	FMovieSceneEvaluationTemplate& CompileTemplate = InTemplateStore.AccessTemplate(InCompileSequence);
 
 	// Pass down a mutable path to the gather functions
 	FMovieSceneRootOverridePath RootPath;
 
-	// Gather everything that happens at this time, recursively
+	// Gather everything that happens over this range, recursively throughout the entire sequence
 	FMovieSceneGatheredCompilerData GatherData;
-	FGatherParameters GatherParams(RootPath, CompileTemplate.Hierarchy, InTemplateStore, CompileRange);
+	FGatherParameters GatherParams(RootPath, CompileTemplate.Hierarchy, InTemplateStore, InGlobalRange);
 	GatherCompileOnTheFlyData(InCompileSequence, GatherParams, GatherData);
 
-	FMovieSceneEvaluationTreeRangeIterator NodeAtTime = GatherData.Tracks.IterateFromTime(InGlobalTime);
-	if (ensure(NodeAtTime))
+	// --------------------------------------------------------------------------------------------------------------------
+	// When compiling a range we want to compile *at least* the range specified by InGlobalRange
+	// We may compile outside of this range if a gap in the evaluation field overlaps either bound, and the actual
+	// unique sequence state defines sections outside of the range.
+	// The general idea here is to iterate over any empty gaps in the evaluation field, populating it with the compiled
+	// result for each lower bound. Note that there will be one or more new field entries added for each gap, depending on
+	// whether any tracks or sections begin or end during the range of the gap.
+	// --------------------------------------------------------------------------------------------------------------------
+
+	// Populate an iterable tree with the ranges that at least encompass the range we want to comile,
+	// plus one either side of InGlobalRange if they exist. This allows us to fully understand which gaps we want to fill in
+	TMovieSceneEvaluationTree<int32> EvaluationFieldAsTree;
+	PopulateIterableTreeWithEncompassingRanges(InGlobalRange, CompileTemplate.EvaluationField.GetRanges(), EvaluationFieldAsTree);
+
+	// Start adding new field entries from the lower bound of the desired global range.
+	// IterFromBound should be <= InGlobalRange.GetLowerBound at this point
+	TRangeBound<FFrameNumber> IterFromBound = InGlobalRange.GetLowerBound();
+	FMovieSceneEvaluationTreeRangeIterator ExistingEvaluationFieldIter = EvaluationFieldAsTree.IterateFromLowerBound(IterFromBound);
+
+	// Now keep iterating the empty spaces in the field until we have nothing left to do.
+	// We only increment ExistingEvaluationFieldIter when it is at an already populated range,
+	// or if we've just compiled a range that has the same upper bound as the current gap (empty space)
+	TArray<FCompileOnTheFlyData> SortedCompileData;
+	for ( ; ExistingEvaluationFieldIter && !IterFromBound.IsOpen(); )
 	{
-		TRange<float> CompiledRange = TRange<float>::Intersection(
-			TRange<float>::Intersection(
-				GatherData.EmptyOverlappingRange,
-				GatherData.Sequences.IterateFromLowerBound(CompileRange.GetLowerBound()).Range()
-			),
-			NodeAtTime.Range());
+		// If EvaluationFieldAsTree has any data at the current iterator position for it,
+		// the evaluation field is already populated for that node
+		if (EvaluationFieldAsTree.GetAllData(ExistingEvaluationFieldIter.Node()))
+		{
+			IterFromBound = TRangeBound<FFrameNumber>::FlipInclusion(ExistingEvaluationFieldIter.Range().GetUpperBound());
+			++ExistingEvaluationFieldIter;
+			continue;
+		}
 
-		// Always include the global time in the compiled range - this is necessary when floating point rounding
-		// introduced during sub sequence transformations shift the range to just outside the current time
-		CompiledRange = TRange<float>::Hull(CompiledRange, CompileRange);
+		TRange<FFrameNumber> EmptySpaceRange = ExistingEvaluationFieldIter.Range();
 
-		TArray<FCompileOnTheFlyData> SortedCompileData;
-		for (const FCompileOnTheFlyData& TrackData : GatherData.Tracks.GetAllData(NodeAtTime.Node()))
+		// Find the intersection of all the current ranges (the gap in the evaluation field, the track field, sub sequence field, and empty space)
+		FMovieSceneEvaluationTreeRangeIterator TrackIteratorFromHere       = GatherData.Tracks.IterateFromLowerBound(IterFromBound);
+		FMovieSceneEvaluationTreeRangeIterator SubSequenceIteratorFromHere = GatherData.Sequences.IterateFromLowerBound(IterFromBound);
+		FMovieSceneEvaluationTreeRangeIterator EmptySpaceIteratorFromHere  = GatherData.EmptySpace.IterateFromLowerBound(IterFromBound);
+
+		// Find the intersection of all the compiled data
+		TRange<FFrameNumber> CompiledRange = TRange<FFrameNumber>::Intersection(
+			EmptySpaceRange,
+			TRange<FFrameNumber>::Intersection(
+				TrackIteratorFromHere.Range(),
+				TRange<FFrameNumber>::Intersection(
+					EmptySpaceIteratorFromHere.Range(),
+					SubSequenceIteratorFromHere.Range()
+				)
+			)
+		);
+
+		// If the range we just compiled no longer overlaps the range we were asked to compile,
+		// Break out of the loop as all of our work is done. This will happen if there is a gap
+		// in the evaluation field that overlaps with the upper bound of InGlobalRange.
+		if (!CompiledRange.Overlaps(InGlobalRange))
+		{
+			break;
+		}
+
+		SortedCompileData.Reset();
+		for (const FCompileOnTheFlyData& TrackData : GatherData.Tracks.GetAllData(TrackIteratorFromHere.Node()))
 		{
 			SortedCompileData.Add(TrackData);
 		}
@@ -209,13 +301,22 @@ TOptional<FCompiledGroupResult> FMovieSceneCompiler::CompileTime(float InGlobalT
 		PopulateEvaluationGroup(Result, SortedCompileData);
 
 		// Compute meta data for this segment
-		TMovieSceneEvaluationTreeDataIterator<FMovieSceneSequenceID> SubSequences = GatherData.Sequences.GetAllData(GatherData.Sequences.IterateFromLowerBound(CompileRange.GetLowerBound()).Node());
-		PopulateMetaData(Result, CompileTemplate.Hierarchy, SortedCompileData, SubSequences);
+		TMovieSceneEvaluationTreeDataIterator<FMovieSceneSequenceID> SubSequences = GatherData.Sequences.GetAllData(SubSequenceIteratorFromHere.Node());
+		PopulateMetaData(Result, CompileTemplate.Hierarchy, InTemplateStore, SortedCompileData, SubSequences);
 
-		return Result;
+		// Add the results to the evaluation field and continue iterating starting from the end of the compiled range
+		CompileTemplate.EvaluationField.Insert(Result.Range, MoveTemp(Result.Group), MoveTemp(Result.MetaData));
+
+		// We may still have some to compile
+		IterFromBound = TRangeBound<FFrameNumber>::FlipInclusion(CompiledRange.GetUpperBound());
+
+		// If the range that we just compiled goes right up to the end of the gap, increment onto the
+		// next entry in the evaluation field iterator (which should be a populated range)
+		if (CompiledRange.GetUpperBound() == EmptySpaceRange.GetUpperBound())
+		{
+			++ExistingEvaluationFieldIter;
+		}
 	}
-
-	return TOptional<FCompiledGroupResult>();
 }
 
 void FMovieSceneCompiler::CompileHierarchy(const UMovieSceneSequence& InRootSequence, FMovieSceneSequenceHierarchy& OutHierarchy, FMovieSceneSequenceID RootSequenceID, int32 MaxDepth)
@@ -307,7 +408,7 @@ void FMovieSceneCompiler::GatherCompileOnTheFlyData(UMovieSceneSequence& InSeque
 		}
 	}
 
-	TRange<float> CompileClampIntersection = TRange<float>::Intersection(Params.LocalCompileRange, Params.LocalClampRange);
+	TRange<FFrameNumber> CompileClampIntersection = TRange<FFrameNumber>::Intersection(Params.LocalCompileRange, Params.LocalClampRange);
 
 	// Iterate sub section ranges that overlap with the compile range
 	FGatherParameters SubSectionGatherParams = Params;
@@ -317,18 +418,17 @@ void FMovieSceneCompiler::GatherCompileOnTheFlyData(UMovieSceneSequence& InSeque
 	// Start iterating the field from the lower bound of the compile range
 	FMovieSceneEvaluationTreeRangeIterator SubSectionIt(SubSectionField.IterateFromLowerBound(CompileClampIntersection.GetLowerBound()));
 
-	// Intersect the unique range in the tree with the current overlapping empty range to constrict the resulting compile range in the case where this is a gap between sub sections
-	OutData.EmptyOverlappingRange = TRange<float>::Intersection(OutData.EmptyOverlappingRange, SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse());
-
 	for ( ; SubSectionIt && SubSectionIt.Range().Overlaps(CompileClampIntersection); ++SubSectionIt)
 	{
-		TRange<float> ThisSegmentRange = SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse();
-		if (ThisSegmentRange.IsEmpty())
+		TRange<FFrameNumber> ThisSegmentRangeRoot = Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse());
+		if (ThisSegmentRangeRoot.IsEmpty())
 		{
 			continue;
 		}
 
-		SubSectionGatherParams.SetClampRange(ThisSegmentRange);
+		SubSectionGatherParams.SetClampRange(ThisSegmentRangeRoot);
+
+		bool bAnySubSections = false;
 
 		// Iterate all sub sections in the current range
 		for (const FMovieSceneSubSectionData& SubSectionData : SubSectionField.GetAllData(SubSectionIt.Node()))
@@ -347,10 +447,18 @@ void FMovieSceneCompiler::GatherCompileOnTheFlyData(UMovieSceneSequence& InSeque
 
 			if (bTrackMatchesFlags && SubSection)
 			{
+				bAnySubSections = true;
+
 				SubSectionGatherParams.Flags = SubSectionData.Flags;
 
 				GatherCompileDataForSubSection(*SubSection, SubSectionData.ObjectBindingId, SubSectionGatherParams, OutData);
 			}
+		}
+
+		if (!bAnySubSections)
+		{
+			// Intersect the unique range in the tree with the current overlapping empty range to constrict the resulting compile range in the case where this is a gap between sub sections
+			OutData.EmptySpace.AddTimeRange(Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse()));
 		}
 	}
 }
@@ -396,11 +504,16 @@ const FMovieSceneSubSequenceData* FMovieSceneCompiler::GetOrCreateSubSequenceDat
 {
 	// Find/add sub data in the root template
 	const FMovieSceneSubSequenceData* SubData = InOutHierarchy.FindSubData(InnerSequenceID);
-	if (SubData)
+	if (SubData && !SubData->IsDirty(SubSection))
 	{
 		return SubData;
 	}
-	
+
+	// Ensure that any ((great)grand)child sub sequences have their sub data regenerated
+	// by removing this whole sequence branch from the hierarchy (if it exists). This is
+	// necessary as all children will depend on this sequences's transform
+	InOutHierarchy.Remove(MakeArrayView(&InnerSequenceID, 1));
+
 	FSubSequenceInstanceDataParams InstanceParams{ InnerSequenceID, FMovieSceneEvaluationOperand(ParentSequenceID, InObjectBindingId) };
 	FMovieSceneSubSequenceData NewSubData = SubSection.GenerateSubSequenceData(InstanceParams);
 
@@ -408,8 +521,8 @@ const FMovieSceneSubSequenceData* FMovieSceneCompiler::GetOrCreateSubSequenceDat
 	const FMovieSceneSubSequenceData* ParentSubData = ParentSequenceID != MovieSceneSequenceID::Root ? InOutHierarchy.FindSubData(ParentSequenceID) : nullptr;
 	if (ParentSubData)
 	{
-		TRange<float> ParentPlayRangeChildSpace = ParentSubData->PlayRange * NewSubData.RootToSequenceTransform;
-		NewSubData.PlayRange = TRange<float>::Intersection(ParentPlayRangeChildSpace, NewSubData.PlayRange);
+		TRange<FFrameNumber> ParentPlayRangeChildSpace = ParentSubData->PlayRange.Value * NewSubData.RootToSequenceTransform;
+		NewSubData.PlayRange = TRange<FFrameNumber>::Intersection(ParentPlayRangeChildSpace, NewSubData.PlayRange.Value);
 
 		// Accumulate parent transform
 		NewSubData.RootToSequenceTransform = NewSubData.RootToSequenceTransform * ParentSubData->RootToSequenceTransform;
@@ -431,39 +544,43 @@ void FMovieSceneCompiler::GatherCompileDataForTrack(FMovieSceneEvaluationTrack& 
 		return Track.HasChildTemplate(EvalData.ImplIndex) && Track.GetChildTemplate(EvalData.ImplIndex).RequiresInitialization();
 	};
 
-	FMovieSceneSequenceTransform SequenceToRootTransform = Params.RootToSequenceTransform.Inverse();
-	FMovieSceneSequenceID CurrentSequenceID              = Params.RootPath.Remap(MovieSceneSequenceID::Root);
+	FMovieSceneSequenceTransform SequenceToRootTransform  = Params.RootToSequenceTransform.Inverse();
+	FMovieSceneSequenceID        CurrentSequenceID        = Params.RootPath.Remap(MovieSceneSequenceID::Root);
+	TRange<FFrameNumber>         CompileClampIntersection = TRange<FFrameNumber>::Intersection(Params.LocalCompileRange, Params.LocalClampRange);
 
-	TArray<FMovieSceneSegmentIdentifier> SegmentIDs      = Track.GetSegmentsInRange(Params.LocalCompileRange);
-	if (SegmentIDs.Num() == 0)
+	FMovieSceneEvaluationTreeRangeIterator TrackIter = Track.IterateFrom(CompileClampIntersection.GetLowerBound());
+	for ( ; TrackIter && TrackIter.Range().Overlaps(CompileClampIntersection); ++TrackIter)
 	{
-		// No segment at this time, so just report the time range of the empty space.
-		TRange<float> EmptyTrackSpace = Track.GetUniqueRangeFromLowerBound(Params.LocalCompileRange.GetLowerBound());
-		TRange<float> ClampedEmptyTrackSpaceRoot = TRange<float>::Intersection(Params.LocalClampRange, EmptyTrackSpace) * SequenceToRootTransform;
-
-		OutData.EmptyOverlappingRange = TRange<float>::Intersection(ClampedEmptyTrackSpaceRoot, OutData.EmptyOverlappingRange);
-	}
-	else for (FMovieSceneSegmentIdentifier SegmentID : SegmentIDs)
-	{
-		const FMovieSceneSegment& ThisSegment = Track.GetSegment(SegmentID);
-
-		FCompileOnTheFlyData Data;
-		Data.Segment = FMovieSceneEvaluationFieldSegmentPtr(CurrentSequenceID, TrackID, SegmentID);
-		Data.GroupEvaluationPriority = GetMovieSceneModule().GetEvaluationGroupParameters(Track.GetEvaluationGroup()).EvaluationPriority;
-		Data.HierarchicalBias = Params.HierarchicalBias;
-		Data.EvaluationPriority = Track.GetEvaluationPriority();
-		Data.Track = &Track;
-		Data.bRequiresInit = ThisSegment.Impls.ContainsByPredicate(RequiresInit);
-
-		TRange<float> IntersectionRange = TRange<float>::Intersection(Params.LocalClampRange, ThisSegment.Range) * SequenceToRootTransform;
-		if (!IntersectionRange.IsEmpty())
+		FMovieSceneSegmentIdentifier SegmentID = Track.GetSegmentFromIterator(TrackIter);
+		if (!SegmentID.IsValid())
 		{
-			OutData.Tracks.Add(IntersectionRange, Data);
+			// No segment at this time, so just report the time range of the empty space.
+			TRange<FFrameNumber> ClampedEmptyTrackSpaceRoot = Params.ClampRoot(TrackIter.Range() * SequenceToRootTransform);
+			OutData.EmptySpace.AddTimeRange(ClampedEmptyTrackSpaceRoot);
+		}
+		else
+		{
+			const FMovieSceneSegment& ThisSegment = Track.GetSegment(SegmentID);
+
+			FCompileOnTheFlyData Data;
+			Data.Segment = FMovieSceneEvaluationFieldSegmentPtr(CurrentSequenceID, TrackID, SegmentID);
+			Data.GroupEvaluationPriority = GetMovieSceneModule().GetEvaluationGroupParameters(Track.GetEvaluationGroup()).EvaluationPriority;
+			Data.HierarchicalBias = Params.HierarchicalBias;
+			Data.EvaluationPriority = Track.GetEvaluationPriority();
+			Data.Track = &Track;
+			Data.bRequiresInit = ThisSegment.Impls.ContainsByPredicate(RequiresInit);
+
+			TRange<FFrameNumber> SegmentTrackIntersection = TRange<FFrameNumber>::Intersection(ThisSegment.Range, TrackIter.Range());
+			TRange<FFrameNumber> IntersectionRange        = Params.ClampRoot(SegmentTrackIntersection * SequenceToRootTransform);
+			if (!IntersectionRange.IsEmpty())
+			{
+				OutData.Tracks.Add(IntersectionRange, Data);
+			}
 		}
 	}
 }
 
-void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, const FMovieSceneSequenceHierarchy& RootHierarchy, const TArray<FCompileOnTheFlyData>& SortedCompileData, TMovieSceneEvaluationTreeDataIterator<FMovieSceneSequenceID> SubSequences)
+void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, const FMovieSceneSequenceHierarchy& RootHierarchy, IMovieSceneSequenceTemplateStore& TemplateStore, const TArray<FCompileOnTheFlyData>& SortedCompileData, TMovieSceneEvaluationTreeDataIterator<FMovieSceneSequenceID> SubSequences)
 {
 	OutResult.MetaData.Reset();
 
@@ -523,8 +640,10 @@ void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, cons
 
 			UMovieSceneSequence* Sequence = SubData->GetSequence();
 
+			uint32 TemplateSerialNumber = Sequence ? TemplateStore.AccessTemplate(*Sequence).TemplateSerialNumber.GetValue() : 0;
+
 			OutResult.MetaData.ActiveSequences.Add(SequenceID);
-			OutResult.MetaData.SubSequenceSignatures.Add(SequenceID, Sequence ? Sequence->GetSignature() : FGuid());
+			OutResult.MetaData.SubTemplateSerialNumbers.Add(SequenceID, TemplateSerialNumber);
 		}
 
 		OutResult.MetaData.ActiveSequences.Sort();

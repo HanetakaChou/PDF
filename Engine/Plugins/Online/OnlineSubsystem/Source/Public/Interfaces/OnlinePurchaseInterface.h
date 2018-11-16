@@ -5,8 +5,20 @@
 #include "CoreMinimal.h"
 #include "Interfaces/OnlineEntitlementsInterface.h"
 #include "Interfaces/OnlineStoreInterfaceV2.h"
+#include "OnlineJsonSerializer.h"
+#include "OnlineError.h"
 
-struct FOnlineError;
+ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlinePurchase, Log, All);
+
+#define UE_LOG_ONLINE_PURCHASE(Verbosity, Format, ...) \
+{ \
+	UE_LOG(LogOnlinePurchase, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
+
+#define UE_CLOG_ONLINE_PURCHASE(Conditional, Verbosity, Format, ...) \
+{ \
+	UE_CLOG(Conditional, LogOnlinePurchase, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
 
 /**
  * Info needed for checkout
@@ -77,6 +89,7 @@ enum class EPurchaseTransactionState : uint8
  * Receipt result from checkout
  */
 class FPurchaseReceipt
+	: public FOnlineJsonSerializable
 {
 public:
 	FPurchaseReceipt()
@@ -85,6 +98,7 @@ public:
 	}
 
 	struct FLineItemInfo
+		: public FOnlineJsonSerializable
 	{
 		/** The platform identifier of this purchase type */
 		FString ItemName;
@@ -96,18 +110,31 @@ public:
 		FString ValidationInfo;
 
 		inline bool IsRedeemable() const { return !ValidationInfo.IsEmpty(); }
+
+		BEGIN_ONLINE_JSON_SERIALIZER
+			ONLINE_JSON_SERIALIZE("itemName", ItemName);
+			ONLINE_JSON_SERIALIZE("uniqueItemId", UniqueId);
+			ONLINE_JSON_SERIALIZE("validationInfo", ValidationInfo);
+		END_ONLINE_JSON_SERIALIZER
 	};
 
 	/**
 	 * Single purchased offer offer
 	 */
 	struct FReceiptOfferEntry
+		: public FOnlineJsonSerializable
 	{
+		FReceiptOfferEntry()
+			: Quantity(0)
+		{
+		}
+
 		FReceiptOfferEntry(const FOfferNamespace& InNamespace, const FUniqueOfferId& InOfferId, int32 InQuantity)
 			: Namespace(InNamespace)
 			, OfferId(InOfferId)
 			, Quantity(InQuantity)
-		{ }
+		{
+		}
 
 		FOfferNamespace Namespace;
 		FUniqueOfferId OfferId;
@@ -115,6 +142,13 @@ public:
 
 		/** Information about the individual items purchased */
 		TArray<FLineItemInfo> LineItems;
+
+		BEGIN_ONLINE_JSON_SERIALIZER
+			ONLINE_JSON_SERIALIZE("items", Namespace);
+			ONLINE_JSON_SERIALIZE("offerId", OfferId);
+			ONLINE_JSON_SERIALIZE("quantity", Quantity);
+			ONLINE_JSON_SERIALIZE_ARRAY_SERIALIZABLE("items", LineItems, FLineItemInfo);
+		END_ONLINE_JSON_SERIALIZER
 	};
 
 	/**
@@ -125,14 +159,19 @@ public:
 	 * @param InQuantity number purchased
 	 */
 	void AddReceiptOffer(const FOfferNamespace& InNamespace, const FUniqueOfferId& InOfferId, int32 InQuantity)
-	{ 
-		ReceiptOffers.Add(FReceiptOfferEntry(InNamespace, InOfferId, InQuantity)); 
+	{
+		ReceiptOffers.Add(FReceiptOfferEntry(InNamespace, InOfferId, InQuantity));
 	}
 
 	void AddReceiptOffer(const FReceiptOfferEntry& ReceiptOffer)
-	{ 
-		ReceiptOffers.Add(ReceiptOffer); 
+	{
+		ReceiptOffers.Add(ReceiptOffer);
 	}
+
+	BEGIN_ONLINE_JSON_SERIALIZER
+		ONLINE_JSON_SERIALIZE("transactionId", TransactionId);
+		ONLINE_JSON_SERIALIZE_ARRAY_SERIALIZABLE("receiptList", ReceiptOffers, FReceiptOfferEntry);
+	END_ONLINE_JSON_SERIALIZER
 
 public:
 	/** Unique Id for this transaction/order */
@@ -174,6 +213,11 @@ DECLARE_DELEGATE_TwoParams(FOnPurchaseRedeemCodeComplete, const FOnlineError& /*
  * Delegate called when query receipt process completes
  */
 DECLARE_DELEGATE_OneParam(FOnQueryReceiptsComplete, const FOnlineError& /*Result*/);
+
+/**
+* Delegate called when receipt validation completes
+*/
+DECLARE_DELEGATE_TwoParams(FOnFinalizeReceiptValidationInfoComplete, const FOnlineError& /*Result*/, const FString& /*ValidationInfo*/);
 
 /**
  * Delegate called when we are informed of a new receipt we did not initiate in-game
@@ -241,6 +285,8 @@ public:
 	 * @param OutReceipts [out] list of receipts for the user 
 	 */
 	virtual void GetReceipts(const FUniqueNetId& UserId, TArray<FPurchaseReceipt>& OutReceipts) const = 0;
+
+	virtual void FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, FString& InReceiptValidationInfo, const FOnFinalizeReceiptValidationInfoComplete& Delegate) = 0;
 
 	/**
 	 * Delegate fired when the local system tells us of a new completed purchase we may not have initiated in-game.

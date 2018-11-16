@@ -198,6 +198,14 @@ public:
 	FVector2D PasteDropLocation;
 
 protected:
+	virtual void InitalizeExtenders() override;
+	TSharedPtr<FExtender> CreateMenuExtender();
+	void FillFileMenu(FMenuBuilder& MenuBuilder);
+	void BindToolkitCommands();
+
+	void OpenCreateNativeBaseClassDialog();
+	void OnCreateNativeBaseClassSuccessfully(const FString& InClassName, const FString& InClassPath, const FString& InModuleName);
+
 	// Begin FBlueprintEditor
 	virtual void RegisterApplicationModes(const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode, bool bNewlyCreated = false) override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
@@ -218,6 +226,9 @@ private:
 	bool CanCutSelectedWidgets();
 	void CutSelectedWidgets();
 
+	bool CanDuplicateSelectedWidgets();
+	void DuplicateSelectedWidgets();
+
 private:
 	/** Called whenever the blueprint is structurally changed. */
 	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled = false ) override;
@@ -234,6 +245,10 @@ private:
 	/** Populates the sequencer add menu. */
 	void OnGetAnimationAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
 
+	/** Populates sequencer menu when added with objects. Used to handle case where widget is deleted so it's 
+	    Object * is null.*/
+	void OnBuildCustomContextMenuForGuid(FMenuBuilder& MenuBuilder,FGuid ObjectBinding);
+
 	/** Populates the sequencer add submenu for the big list of widgets. */
 	void OnGetAnimationAddMenuContentAllWidgets(FMenuBuilder& MenuBuilder);
 
@@ -243,13 +258,11 @@ private:
 	/** Gets the extender to use for sequencers context sensitive menus and toolbars. */
 	TSharedRef<FExtender> GetAddTrackSequencerExtender(const TSharedRef<FUICommandList> CommandList, const TArray<UObject*> ContextSensitiveObjects);
 
-	TSharedRef<FExtender> GetObjectBindingContextMenuExtender(const TSharedRef<FUICommandList> CommandList, const TArray<UObject*> ContextSensitiveObjects);
-
 	/** Extends the sequencer add track menu. */
 	void ExtendSequencerAddTrackMenu( FMenuBuilder& AddTrackMenuBuilder, const TArray<UObject*> ContextObjects );
 
 	/** Replace track with selected widget function */
-	void ReplaceTrackWithSelectedWidget(FWidgetReference SelectedWidget, UWidget* BoundWidget);
+	void ReplaceTrackWithSelectedWidget(FWidgetReference SelectedWidget, UWidget* BoundWidget, FGuid ObjectBinding);
 
 	/** Extends the sequencer add track menu. */
 	void ExtendSequencerObjectBindingMenu(FMenuBuilder& ObjectBindingMenuBuilder, const TArray<UObject*> ContextObjects);
@@ -342,8 +355,6 @@ private:
 	TWeakObjectPtr<UWidgetAnimation> CurrentAnimation;
 
 	FDelegateHandle SequencerAddTrackExtenderHandle;
-
-	FDelegateHandle SequencerObjectBindingExtenderHandle;
 
 	/** Messages we want to append to the compiler results. */
 	TArray< TSharedRef<class FTokenizedMessage> > DesignerCompilerMessages;

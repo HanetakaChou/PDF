@@ -1,10 +1,10 @@
 // Copyright 2017 Google Inc.
 
-#include "Classes/GoogleVRMotionControllerComponent.h"
+#include "GoogleVRMotionControllerComponent.h"
 #include "GoogleVRController.h"
 #include "GoogleVRLaserPlaneComponent.h"
-#include "Classes/GoogleVRLaserVisualComponent.h"
-#include "Classes/GoogleVRControllerFunctionLibrary.h"
+#include "GoogleVRLaserVisualComponent.h"
+#include "GoogleVRControllerFunctionLibrary.h"
 #include "MotionControllerComponent.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
@@ -217,7 +217,7 @@ void UGoogleVRMotionControllerComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	TArray<UGoogleVRPointerInputComponent*> PointerInputComponents;
+	TInlineComponentArray<UGoogleVRPointerInputComponent*> PointerInputComponents;
 	GetOwner()->GetComponents(PointerInputComponents);
 
 	if (PointerInputComponents.Num() == 0)

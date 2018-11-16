@@ -22,7 +22,7 @@ public:
 
 	virtual bool CanRecordObject(class UObject* InObjectToRecord) const override;
 
-	TSharedPtr<class FMovieSceneAnimationSectionRecorder> CreateSectionRecorder(UAnimSequence* InAnimSequence, const FAnimationRecordingSettings& InAnimationSettings) const;
+	TSharedPtr<class FMovieSceneAnimationSectionRecorder> CreateSectionRecorder(UAnimSequence* InAnimSequence, const FAnimationRecordingSettings& InAnimationSettings, const FString& InAnimAssetPath = FString(), const FString& InAnimAssetName = FString()) const;
 
 private:
 	virtual TSharedPtr<IMovieSceneSectionRecorder> CreateSectionRecorder(const FActorRecordingSettings& InActorRecordingSettings) const override;
@@ -31,11 +31,11 @@ private:
 class FMovieSceneAnimationSectionRecorder : public IMovieSceneSectionRecorder
 {
 public:
-	FMovieSceneAnimationSectionRecorder(const FAnimationRecordingSettings& InAnimationSettings, UAnimSequence* InSpecifiedSequence);
+	FMovieSceneAnimationSectionRecorder(const FAnimationRecordingSettings& InAnimationSettings, UAnimSequence* InSpecifiedSequence, const FString& InAnimAssetPath = FString(), const FString& InAnimAssetName = FString());
 	virtual ~FMovieSceneAnimationSectionRecorder() {}
 
 	virtual void CreateSection(UObject* InObjectToRecord, class UMovieScene* MovieScene, const FGuid& Guid, float Time) override;
-	virtual void FinalizeSection() override;
+	virtual void FinalizeSection(float CurrentTime) override;
 	virtual void Record(float CurrentTime) override;
 	virtual void InvalidateObjectToRecord() override
 	{
@@ -56,6 +56,8 @@ public:
 
 	const FTransform& GetComponentTransform() const { return ComponentTransform; }
 
+	FAnimationRecordingSettings AnimationSettings;
+
 private:
 	/** Object to record from */
 	TLazyObjectPtr<UObject> ObjectToRecord;
@@ -74,5 +76,7 @@ private:
 	/** Local transform of the component we are recording */
 	FTransform ComponentTransform;
 
-	FAnimationRecordingSettings AnimationSettings;
+	FString AnimAssetPath;
+
+	FString AnimAssetName;
 };

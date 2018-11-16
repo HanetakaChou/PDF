@@ -14,6 +14,11 @@ private:
 protected:
 	bool Compare(const FUniqueNetId& Other) const override
 	{
+		if (Other.GetType() != GetType())
+		{
+			return false;
+		}
+
 		if (Other.GetSize() != sizeof(ovrID))
 		{
 			return false;
@@ -52,6 +57,11 @@ public:
 		}
 	}
 
+	virtual FName GetType() const override
+	{
+		return OCULUS_SUBSYSTEM;
+	}
+
 	// IOnlinePlatformData
 
 	virtual const uint8* GetBytes() const override
@@ -82,7 +92,8 @@ public:
 
 	virtual FString ToDebugString() const override
 	{
-		return FString::Printf(TEXT("ovrID: %llu"), ID);
+		const FString UniqueNetIdStr = FString::Printf(TEXT("%llu"), ID);
+		return TEXT("ovrID:") + OSS_UNIQUEID_REDACT(*this, UniqueNetIdStr);
 	}
 
 	/** Needed for TMap::GetTypeHash() */

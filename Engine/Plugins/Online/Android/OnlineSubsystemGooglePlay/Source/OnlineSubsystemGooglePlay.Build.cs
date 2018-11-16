@@ -1,5 +1,6 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 public class OnlineSubsystemGooglePlay : ModuleRules
@@ -12,7 +13,6 @@ public class OnlineSubsystemGooglePlay : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				"Private",    
-				"Runtime/Launch/Private"
 			}
 			);
 
@@ -35,5 +35,11 @@ public class OnlineSubsystemGooglePlay : ModuleRules
 				"AndroidPermission"
 			}
 			);
-	}
+
+        if (Target.Platform == UnrealTargetPlatform.Android)
+        {
+            string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+            AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "OnlineSubsystemGooglePlay_UPL.xml"));
+        }
+    }
 }

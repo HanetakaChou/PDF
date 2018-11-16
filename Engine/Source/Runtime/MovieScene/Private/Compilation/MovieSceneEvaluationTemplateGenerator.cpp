@@ -6,9 +6,10 @@
 #include "Algo/Sort.h"
 #include "UObject/ObjectKey.h"
 #include "IMovieSceneModule.h"
-#include "MovieSceneSubTrack.h"
-#include "MovieSceneSubSection.h"
-#include "MovieSceneSegmentCompiler.h"
+#include "Tracks/MovieSceneSubTrack.h"
+#include "Sections/MovieSceneSubSection.h"
+#include "MovieSceneTimeHelpers.h"
+#include "Compilation/MovieSceneSegmentCompiler.h"
 
 FMovieSceneEvaluationTemplateGenerator::FMovieSceneEvaluationTemplateGenerator(UMovieSceneSequence& InSequence, FMovieSceneEvaluationTemplate& OutTemplate)
 	: SourceSequence(InSequence), Template(OutTemplate)
@@ -53,6 +54,7 @@ void FMovieSceneEvaluationTemplateGenerator::Generate()
 	Template.RemoveStaleData(CompiledSignatures);
 
 	Template.SequenceSignature = SourceSequence.GetSignature();
+	Template.TemplateSerialNumber.Increment();
 }
 
 void FMovieSceneEvaluationTemplateGenerator::ProcessTrack(const UMovieSceneTrack& Track, const FGuid& ObjectBindingId)
@@ -107,50 +109,51 @@ void FMovieSceneEvaluationTemplateGenerator::ProcessSubTrack(const UMovieSceneSu
 			continue;
 		}
 
+		const TRange<FFrameNumber> SectionRange = SubSection->GetTrueRange();
+		if (SectionRange.IsEmpty())
+		{
+			continue;
+		}
+
 		CompiledSignatures.Add(SubSection->GetSignature());
 
+		// Process the actual section range
 		if (bRequiresSegmentBlending)
 		{
-			const TRange<float> SectionRange = SubSection->GetRange();
+			SubSectionBlendTree.Add(SectionRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::None));
+		}
+		else
+		{
+			Template.AddSubSectionRange(*SubSection, ObjectBindingId, SectionRange, ESectionEvaluationFlags::None);
+		}
 
-			// Process the actual section range
+		// Process the section preroll range
+		if (!SectionRange.GetLowerBound().IsOpen() && SubSection->GetPreRollFrames() > 0)
+		{
+			TRange<FFrameNumber> PreRollRange(SectionRange.GetLowerBoundValue() - SubSection->GetPreRollFrames(), TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetLowerBoundValue()));
+
 			if (bRequiresSegmentBlending)
 			{
-				SubSectionBlendTree.Add(SectionRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::None));
+				SubSectionBlendTree.Add(PreRollRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::PreRoll));
 			}
 			else
 			{
-				Template.AddSubSectionRange(*SubSection, ObjectBindingId, SectionRange, ESectionEvaluationFlags::None);
+				Template.AddSubSectionRange(*SubSection, ObjectBindingId, PreRollRange, ESectionEvaluationFlags::PreRoll);
 			}
+		}
 
-			// Process the section preroll range
-			if (!SectionRange.GetLowerBound().IsOpen() && SubSection->GetPreRollTime() > 0)
+		// Process the section postroll range
+		if (!SectionRange.GetUpperBound().IsOpen() && SubSection->GetPostRollFrames() > 0)
+		{
+			TRange<FFrameNumber> PostRollRange(TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetUpperBoundValue()), SectionRange.GetUpperBoundValue() + SubSection->GetPostRollFrames());
+
+			if (bRequiresSegmentBlending)
 			{
-				TRange<float> PreRollRange(SectionRange.GetLowerBoundValue() - SubSection->GetPreRollTime(), TRangeBound<float>::FlipInclusion(SectionRange.GetLowerBoundValue()));
-
-				if (bRequiresSegmentBlending)
-				{
-					SubSectionBlendTree.Add(PreRollRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::PreRoll));
-				}
-				else
-				{
-					Template.AddSubSectionRange(*SubSection, ObjectBindingId, PreRollRange, ESectionEvaluationFlags::PreRoll);
-				}
+				SubSectionBlendTree.Add(PostRollRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::PostRoll));
 			}
-
-			// Process the section postroll range
-			if (!SectionRange.GetUpperBound().IsOpen() && SubSection->GetPostRollTime() > 0)
+			else
 			{
-				TRange<float> PostRollRange(TRangeBound<float>::FlipInclusion(SectionRange.GetUpperBoundValue()), SectionRange.GetUpperBoundValue() + SubSection->GetPostRollTime());
-
-				if (bRequiresSegmentBlending)
-				{
-					SubSectionBlendTree.Add(PostRollRange, FSectionEvaluationData(SectionIndex, ESectionEvaluationFlags::PostRoll));
-				}
-				else
-				{
-					Template.AddSubSectionRange(*SubSection, ObjectBindingId, PostRollRange, ESectionEvaluationFlags::PostRoll);
-				}
+				Template.AddSubSectionRange(*SubSection, ObjectBindingId, PostRollRange, ESectionEvaluationFlags::PostRoll);
 			}
 		}
 	}

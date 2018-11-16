@@ -33,7 +33,7 @@
 #include "MeshUtilities.h"
 #include "MeshRendering.h"
 #include "MeshMergeData.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 
 
 #include "IMaterialBakingModule.h"
@@ -419,7 +419,7 @@ public:
 
 			// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
 			// This is necessary as we change FMaterial attributes like GetShadingModel(), which factor into the ShouldCache functions that determine dependent shader types
-			ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes);
+			ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, GMaxRHIShaderPlatform);
 		}
 
 		// Override with a special usage so we won't re-use the shader map used by the material for rendering
@@ -471,15 +471,16 @@ public:
 
 	////////////////
 	// FMaterialRenderProxy interface.
-	virtual const FMaterial* GetMaterial(ERHIFeatureLevel::Type FeatureLevel) const override
+	virtual void GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial) const override
 	{
 		if(GetRenderingThreadShaderMap())
 		{
-			return this;
+			OutMaterialRenderProxy = this;
+			OutMaterial = this;
 		}
 		else
 		{
-			return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterial(FeatureLevel);
+			UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterialWithFallback(FeatureLevel, OutMaterialRenderProxy, OutMaterial);
 		}
 	}
 
@@ -1425,7 +1426,7 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 	return Material;
 }
 
-UMaterialInstanceConstant* FMaterialUtilities::CreateInstancedMaterial(UMaterial* BaseMaterial, UPackage* InOuter, const FString& BaseName, EObjectFlags Flags)
+UMaterialInstanceConstant* FMaterialUtilities::CreateInstancedMaterial(UMaterialInterface* BaseMaterial, UPackage* InOuter, const FString& BaseName, EObjectFlags Flags)
 {
 	// Base name for a new assets
 	// In case outer is null BaseName has to be long package name
@@ -1461,7 +1462,7 @@ UMaterialInstanceConstant* FMaterialUtilities::CreateInstancedMaterial(UMaterial
 
 	UMaterialInstanceConstant* MaterialInstance = NewObject<UMaterialInstanceConstant>(MaterialOuter, FName(*MaterialAssetName), Flags);
 	checkf(MaterialInstance, TEXT("Failed to create instanced material"));
-	MaterialInstance->Parent = BaseMaterial;	
+	MaterialInstance->Parent = BaseMaterial;
 	
 	return MaterialInstance;
 }

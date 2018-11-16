@@ -16,17 +16,17 @@
 #include "Factories/PreviewMeshCollectionFactory.h"
 #include "IPropertyUtilities.h"
 #include "Preferences/PersonaOptions.h"
-#include "SButton.h"
-#include "STextBlock.h"
-#include "SCheckBox.h"
-#include "SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Images/SImage.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "Animation/AnimBlueprint.h"
 #include "UObject/UObjectIterator.h"
-#include "SComboBox.h"
+#include "Widgets/Input/SComboBox.h"
 #include "PhysicsEngine/PhysicsAsset.h"
-#include "Containers/Algo/Sort.h"
+#include "Algo/Sort.h"
 
 #define LOCTEXT_NAMESPACE "PreviewSceneCustomizations"
 
@@ -136,8 +136,10 @@ void FPreviewSceneDescriptionCustomization::CustomizeDetails(IDetailLayoutBuilde
 			const EPropertyLocation::Type PropertyLocation = bAdvancedDisplay ? EPropertyLocation::Advanced : EPropertyLocation::Common;
 
 			IDetailPropertyRow* NewRow = PersonaPreviewSceneDescription->PreviewControllerInstance->AddPreviewControllerPropertyToDetails(PersonaToolkit.Pin().ToSharedRef(), DetailBuilder, AnimCategory, TestProperty, PropertyLocation);
-			
-			NewRow->GetPropertyHandle()->SetOnPropertyValueChanged(PropertyChangedDelegate);
+			if (NewRow)
+			{
+				NewRow->GetPropertyHandle()->SetOnPropertyValueChanged(PropertyChangedDelegate);
+			}
 		}
 	}
 
@@ -156,9 +158,13 @@ void FPreviewSceneDescriptionCustomization::CustomizeDetails(IDetailLayoutBuilde
 		{
 			PreviewMeshName = FText::Format(LOCTEXT("PreviewMeshPhysicsAsset", "{0}\n(Physics Asset)"), SkeletalMeshProperty->GetPropertyDisplayName());
 		}
-		else
+		else if(PersonaToolkit.Pin()->GetContext() == USkeleton::StaticClass()->GetFName())
 		{
 			PreviewMeshName = FText::Format(LOCTEXT("PreviewMeshSkeleton", "{0}\n(Skeleton)"), SkeletalMeshProperty->GetPropertyDisplayName());
+		}
+		else
+		{
+			PreviewMeshName = SkeletalMeshProperty->GetPropertyDisplayName();
 		}
 
 		DetailBuilder.EditCategory("Mesh")
@@ -185,7 +191,7 @@ void FPreviewSceneDescriptionCustomization::CustomizeDetails(IDetailLayoutBuilde
 					USkeletalMesh* SkeletalMesh = PinnedPersonaToolkit->GetPreviewMesh();
 					if(SkeletalMesh == nullptr)
 					{
-						SkeletalMesh = EditableSkeleton.Pin()->GetSkeleton().GetPreviewMesh();
+						SkeletalMesh = EditableSkeleton.IsValid() ? EditableSkeleton.Pin()->GetSkeleton().GetPreviewMesh() : nullptr;
 					}
 					return (SkeletalMesh != PinnedPersonaToolkit->GetPreviewScene()->GetPreviewMesh()) ? EVisibility::Visible : EVisibility::Collapsed;
 				})
@@ -215,7 +221,7 @@ void FPreviewSceneDescriptionCustomization::CustomizeDetails(IDetailLayoutBuilde
 	}
 
 	// set the skeleton to use in our factory as we shouldn't be picking one here
-	FactoryToUse->CurrentSkeleton = MakeWeakObjectPtr(const_cast<USkeleton*>(&EditableSkeleton.Pin()->GetSkeleton()));
+	FactoryToUse->CurrentSkeleton = EditableSkeleton.IsValid() ? MakeWeakObjectPtr(const_cast<USkeleton*>(&EditableSkeleton.Pin()->GetSkeleton())) : nullptr;
 	TArray<UFactory*> FactoriesToUse({ FactoryToUse });
 
 	FAssetData AdditionalMeshesAsset;
@@ -223,19 +229,36 @@ void FPreviewSceneDescriptionCustomization::CustomizeDetails(IDetailLayoutBuilde
 
 	// bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons option
 	DetailBuilder.EditCategory("Additional Meshes")
-	.AddCustomRow(LOCTEXT("AdditvesMeshOption", "Additional Mesh Selection Option"))
+	.AddCustomRow(LOCTEXT("AdditionalMeshOption", "Additional Mesh Selection Option"))
 	.NameContent()
 	[
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(LOCTEXT("AdditvesMeshSelectionFromDifferentSkeletons", "Allow Different Skeletons"))
-		.ToolTipText(LOCTEXT("AdditvesMeshSelectionFromDifferentSkeletons_ToolTip", "When selecting additional mesh, whether or not filter by the current skeleton."))
+		.Text(LOCTEXT("AdditionalMeshSelectionFromDifferentSkeletons", "Allow Different Skeletons"))
+		.ToolTipText(LOCTEXT("AdditionalMeshSelectionFromDifferentSkeletons_ToolTip", "When selecting additional mesh, whether or not filter by the current skeleton."))
 	]
 	.ValueContent()
 	[
 		SNew(SCheckBox)
 		.IsChecked(this, &FPreviewSceneDescriptionCustomization::HandleAllowDifferentSkeletonsIsChecked)
 		.OnCheckStateChanged(this, &FPreviewSceneDescriptionCustomization::HandleAllowDifferentSkeletonsCheckedStateChanged)
+	];
+	
+	// bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons option
+	DetailBuilder.EditCategory("Additional Meshes")
+	.AddCustomRow(LOCTEXT("AdditionalMeshOption_AnimBP", "Additional Mesh Anim Selection Option"))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Text(LOCTEXT("UseCustomAnimBP", "Allow Custom AnimBP Override"))
+		.ToolTipText(LOCTEXT("UseCustomAnimBP_ToolTip", "When using preview collection, allow it to override custom AnimBP also."))
+	]
+	.ValueContent()
+	[
+		SNew(SCheckBox)
+		.IsChecked(this, &FPreviewSceneDescriptionCustomization::HandleUseCustomAnimBPIsChecked)
+		.OnCheckStateChanged(this, &FPreviewSceneDescriptionCustomization::HandleUseCustomAnimBPCheckedStateChanged)
 	];
 
 	DetailBuilder.EditCategory("Additional Meshes")
@@ -361,7 +384,7 @@ bool FPreviewSceneDescriptionCustomization::HandleShouldFilterAsset(const FAsset
 	}
 
 	FString SkeletonTag = InAssetData.GetTagValueRef<FString>("Skeleton");
-	if (SkeletonTag == SkeletonName)
+	if (SkeletonName.IsEmpty() || SkeletonTag == SkeletonName)
 	{
 		return false;
 	}
@@ -415,6 +438,7 @@ void FPreviewSceneDescriptionCustomization::HandleAdditionalMeshesChanged(const 
 		PreviewScene.Pin()->SetAdditionalMeshes(MeshCollection);
 	}
 
+	DataAssetToDisplay = MeshCollection;
 	DetailLayoutBuilder->ForceRefreshDetails();
 }
 
@@ -427,6 +451,22 @@ ECheckBoxState FPreviewSceneDescriptionCustomization::HandleAllowDifferentSkelet
 {
 	return GetDefault<UPersonaOptions>()->bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
+
+void FPreviewSceneDescriptionCustomization::HandleUseCustomAnimBPCheckedStateChanged(ECheckBoxState CheckState)
+{
+	GetMutableDefault<UPersonaOptions>()->bAllowPreviewMeshCollectionsToUseCustomAnimBP = (CheckState == ECheckBoxState::Checked);
+
+	if (PreviewScene.IsValid())
+	{
+		PreviewScene.Pin()->RefreshAdditionalMeshes();
+	}
+}
+
+ECheckBoxState FPreviewSceneDescriptionCustomization::HandleUseCustomAnimBPIsChecked() const
+{
+	return GetDefault<UPersonaOptions>()->bAllowPreviewMeshCollectionsToUseCustomAnimBP? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
 // FPreviewMeshCollectionEntryCustomization

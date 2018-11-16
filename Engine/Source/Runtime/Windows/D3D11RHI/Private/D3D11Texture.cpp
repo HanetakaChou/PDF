@@ -8,10 +8,10 @@
 
 #if PLATFORM_DESKTOP
 // For Depth Bounds Test interface
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include "nvapi.h"
 #include "amd_ags.h"
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 #include "HAL/LowLevelMemTracker.h"
@@ -467,6 +467,14 @@ void SafeCreateTexture2D(ID3D11Device* Direct3DDevice, const D3D11_TEXTURE2D_DES
 			TextureDesc->Format,
 			TextureDesc->MipLevels,
 			TextureDesc->BindFlags,
+			TextureDesc->Usage,
+			TextureDesc->CPUAccessFlags,
+			TextureDesc->MiscFlags,			
+			TextureDesc->SampleDesc.Count,
+			TextureDesc->SampleDesc.Quality,
+			SubResourceData ? SubResourceData->pSysMem : nullptr,
+			SubResourceData ? SubResourceData->SysMemPitch : 0,
+			SubResourceData ? SubResourceData->SysMemSlicePitch : 0,
 			Direct3DDevice
 			);
 #if GUARDED_TEXTURE_CREATES
@@ -498,18 +506,18 @@ TD3D11Texture2D<BaseResourceType>* FD3D11DynamicRHI::CreateD3D11Texture2D(uint32
 
 	if (bCubeTexture)
 	{
-		check(SizeX <= GetMaxCubeTextureDimension());
+		checkf(SizeX <= GetMaxCubeTextureDimension(), TEXT("Requested cube texture size too large: %i, %i"), SizeX, GetMaxCubeTextureDimension());
 		check(SizeX == SizeY);
 	}
 	else
 	{
-		check(SizeX <= GetMax2DTextureDimension());
-		check(SizeY <= GetMax2DTextureDimension());
+		checkf(SizeX <= GetMax2DTextureDimension(), TEXT("Requested texture2d x size too large: %i, %i"), SizeX, GetMax2DTextureDimension());
+		checkf(SizeY <= GetMax2DTextureDimension(), TEXT("Requested texture2d y size too large: %i, %i"), SizeY, GetMax2DTextureDimension());
 	}
 
 	if (bTextureArray)
 	{
-		check(SizeZ <= GetMaxTextureArrayLayers());
+		checkf(SizeZ <= GetMaxTextureArrayLayers(), TEXT("Requested texture array size too large: %i, %i"), SizeZ, GetMaxTextureArrayLayers());
 	}
 
 	// Render target allocation with UAV flag will silently fail in feature level 10
@@ -572,6 +580,14 @@ TD3D11Texture2D<BaseResourceType>* FD3D11DynamicRHI::CreateD3D11Texture2D(uint32
 		check(!(Flags & TexCreate_ShaderResource));
 
 		CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		TextureUsage = D3D11_USAGE_STAGING;
+		BindFlags = 0;
+		bCreateShaderResource = false;
+	}
+
+	if (Flags & TexCreate_CPUWritable)
+	{
+		CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		TextureUsage = D3D11_USAGE_STAGING;
 		BindFlags = 0;
 		bCreateShaderResource = false;
@@ -1007,14 +1023,23 @@ FD3D11Texture3D* FD3D11DynamicRHI::CreateD3D11Texture3D(uint32 SizeX,uint32 Size
 	}
 
 	TRefCountPtr<ID3D11Texture3D> TextureResource;
+	const D3D11_SUBRESOURCE_DATA* SubResData = CreateInfo.BulkData != nullptr ? (const D3D11_SUBRESOURCE_DATA*)SubResourceData.GetData() : nullptr;
 	VERIFYD3D11CREATETEXTURERESULT(
-		Direct3DDevice->CreateTexture3D(&TextureDesc,CreateInfo.BulkData != NULL ? (const D3D11_SUBRESOURCE_DATA*)SubResourceData.GetData() : NULL,TextureResource.GetInitReference()),
+		Direct3DDevice->CreateTexture3D(&TextureDesc, SubResData,TextureResource.GetInitReference()),
 		SizeX,
 		SizeY,
 		SizeZ,
 		PlatformShaderResourceFormat,
 		NumMips,
 		TextureDesc.BindFlags,
+		TextureDesc.Usage,
+		TextureDesc.CPUAccessFlags,
+		TextureDesc.MiscFlags,
+		0,
+		0,
+		SubResData ? SubResData->pSysMem : nullptr,
+		SubResData ? SubResData->SysMemPitch : 0,
+		SubResData ? SubResData->SysMemSlicePitch : 0,
 		Direct3DDevice
 		);
 
@@ -1520,9 +1545,19 @@ void* TD3D11Texture2D<RHIResourceType>::Lock(uint32 MipIndex,uint32 ArrayIndex,E
 #endif
 	if( LockMode == RLM_WriteOnly )
 	{
-		// If we're writing to the texture, allocate a system memory buffer to receive the new contents.
-		LockedData.AllocData(MipBytes);
-		LockedData.Pitch = DestStride = NumBlocksX * BlockBytes;
+		if (Flags & TexCreate_CPUWritable)
+		{
+			D3D11_MAPPED_SUBRESOURCE MappedTexture;
+			VERIFYD3D11RESULT_EX(D3DRHI->GetDeviceContext()->Map(GetResource(), Subresource, D3D11_MAP_WRITE, 0, &MappedTexture), D3DRHI->GetDevice());
+			LockedData.SetData(MappedTexture.pData);
+			LockedData.Pitch = DestStride = MappedTexture.RowPitch;
+		}
+		else
+		{
+			// If we're writing to the texture, allocate a system memory buffer to receive the new contents.
+			LockedData.AllocData(MipBytes);
+			LockedData.Pitch = DestStride = NumBlocksX * BlockBytes;
+		}
 	}
 	else
 	{
@@ -1547,6 +1582,14 @@ void* TD3D11Texture2D<RHIResourceType>::Lock(uint32 MipIndex,uint32 ArrayIndex,E
 			this->GetSizeZ(),
 			StagingTextureDesc.Format,
 			1,
+			0,
+			StagingTextureDesc.Usage,
+			StagingTextureDesc.CPUAccessFlags,
+			StagingTextureDesc.MiscFlags,
+			StagingTextureDesc.SampleDesc.Count,
+			StagingTextureDesc.SampleDesc.Quality,
+			nullptr,
+			0,
 			0,
 			D3DRHI->GetDevice()
 			);
@@ -1588,7 +1631,11 @@ void TD3D11Texture2D<RHIResourceType>::Unlock(uint32 MipIndex,uint32 ArrayIndex)
 	}
 	else
 #endif
-	if(!LockedData->StagingResource)
+	if (Flags & TexCreate_CPUWritable)
+	{
+		D3DRHI->GetDeviceContext()->Unmap(GetResource(), 0);
+	}
+	else if(!LockedData->StagingResource)
 	{
 		// If we're writing, we need to update the subresource
 		D3DRHI->GetDeviceContext()->UpdateSubresource(GetResource(),Subresource,NULL,LockedData->GetData(),LockedData->Pitch,0);
@@ -1637,8 +1684,12 @@ void FD3D11DynamicRHI::RHIUpdateTexture2D(FTexture2DRHIParamRef TextureRHI,uint3
         UpdateRegion.DestX + UpdateRegion.Width, UpdateRegion.DestY + UpdateRegion.Height, 1
 	};
 
-	check(GPixelFormats[Texture->GetFormat()].BlockSizeX == 1);
-	check(GPixelFormats[Texture->GetFormat()].BlockSizeY == 1);
+	check(UpdateRegion.Width % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+	check(UpdateRegion.Height % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+	check(UpdateRegion.DestX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+	check(UpdateRegion.DestY % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+	check(UpdateRegion.SrcX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+	check(UpdateRegion.SrcY % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
 
 	Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourcePitch, 0);
 }
@@ -1647,14 +1698,17 @@ void FD3D11DynamicRHI::RHIUpdateTexture3D(FTexture3DRHIParamRef TextureRHI,uint3
 {
 	FD3D11Texture3D* Texture = ResourceCast(TextureRHI);
 
+	// The engine calls this with the texture size in the region. 
+	// Some platforms like D3D11 needs that to be rounded up to the block size.
+	const FPixelFormatInfo& Format = GPixelFormats[Texture->GetFormat()];
+	const int32 NumBlockX = FMath::DivideAndRoundUp<int32>(UpdateRegion.Width, Format.BlockSizeX);
+	const int32 NumBlockY = FMath::DivideAndRoundUp<int32>(UpdateRegion.Height, Format.BlockSizeY);
+
 	D3D11_BOX DestBox =
 	{
 		UpdateRegion.DestX,                      UpdateRegion.DestY,                       UpdateRegion.DestZ,
-		UpdateRegion.DestX + UpdateRegion.Width, UpdateRegion.DestY + UpdateRegion.Height, UpdateRegion.DestZ + UpdateRegion.Depth
+		UpdateRegion.DestX + NumBlockX * Format.BlockSizeX, UpdateRegion.DestY + NumBlockY * Format.BlockSizeY, UpdateRegion.DestZ + UpdateRegion.Depth
 	};
-
-	check(GPixelFormats[Texture->GetFormat()].BlockSizeX == 1);
-	check(GPixelFormats[Texture->GetFormat()].BlockSizeY == 1);
 
 	Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourceRowPitch, SourceDepthPitch);
 }
@@ -1790,10 +1844,13 @@ void FD3D11DynamicRHI::RHICopySubTextureRegion(FTexture2DRHIParamRef SourceTextu
 		return;
 	}
 
-	check(GPixelFormats[SourceTexture->GetFormat()].BlockSizeX == 1);
-	check(GPixelFormats[SourceTexture->GetFormat()].BlockSizeY == 1);
-	check(GPixelFormats[DestinationTexture->GetFormat()].BlockSizeX == 1);
-	check(GPixelFormats[DestinationTexture->GetFormat()].BlockSizeY == 1);
+	check(SourceBoxAdjust.left % GPixelFormats[SourceTexture->GetFormat()].BlockSizeX == 0);
+	check(SourceBoxAdjust.top % GPixelFormats[SourceTexture->GetFormat()].BlockSizeY == 0);
+	check((SourceBoxAdjust.right - SourceBoxAdjust.left) % GPixelFormats[SourceTexture->GetFormat()].BlockSizeX == 0);
+	check((SourceBoxAdjust.bottom - SourceBoxAdjust.top) % GPixelFormats[SourceTexture->GetFormat()].BlockSizeY == 0);
+	check(uint32(DestinationBox.Min.X + DestinationOffsetX) % GPixelFormats[DestinationTexture->GetFormat()].BlockSizeX == 0);
+	check(uint32(DestinationBox.Min.Y + DestinationOffsetY) % GPixelFormats[DestinationTexture->GetFormat()].BlockSizeY == 0);
+
 	ID3D11Texture2D* DestinationRessource = DestinationTexture->GetResource();
 	Direct3DDeviceIMContext->CopySubresourceRegion(DestinationRessource, 0, DestinationBox.Min.X + DestinationOffsetX, DestinationBox.Min.Y + DestinationOffsetY, 0, SourceTexture->GetResource(), 0, &SourceBoxAdjust);
 }

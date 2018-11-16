@@ -6,6 +6,18 @@
 #include "UObject/CoreOnline.h"
 #include "OnlineDelegateMacros.h"
 
+ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineChat, Log, All);
+
+#define UE_LOG_ONLINE_CHAT(Verbosity, Format, ...) \
+{ \
+	UE_LOG(LogOnlineChat, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
+
+#define UE_CLOG_ONLINE_CHAT(Conditional, Verbosity, Format, ...) \
+{ \
+	UE_CLOG(Conditional, LogOnlineChat, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
+}
+
 /**
  * Id of a chat room
  */
@@ -38,7 +50,6 @@ public:
 	FChatRoomConfig()
 		: bRejoinOnDisconnect(false)
 		, bPasswordRequired(false)
-		, Password(TEXT(""))
 	{}
 
 	/** Should this room be rejoined on disconnection */

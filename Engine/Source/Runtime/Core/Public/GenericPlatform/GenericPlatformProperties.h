@@ -32,7 +32,7 @@ struct FGenericPlatformProperties
 	 */
 	static FORCEINLINE bool HasEditorOnlyData()
 	{
-		return true;
+		return WITH_EDITORONLY_DATA;
 	}
 
 	/**
@@ -51,7 +51,7 @@ struct FGenericPlatformProperties
 	 */
 	static FORCEINLINE bool IsGameOnly()
 	{
-		return false;
+		return UE_GAME;
 	}
 
 	/**
@@ -61,7 +61,7 @@ struct FGenericPlatformProperties
 	 */
 	static FORCEINLINE bool IsServerOnly()
 	{
-		return false;
+		return UE_SERVER;
 	}
 
 	/**
@@ -71,7 +71,7 @@ struct FGenericPlatformProperties
 	 */
 	static FORCEINLINE bool IsClientOnly()
 	{
-		return false;
+		return !WITH_SERVER_CODE;
 	}
 
 	/**
@@ -115,6 +115,16 @@ struct FGenericPlatformProperties
 	 * @return true if cooked data is required, false otherwise.
 	 */
 	static FORCEINLINE bool RequiresCookedData()
+	{
+		return !HasEditorOnlyData();
+	}
+
+	/**
+	* Checks whether shipped data on this platform is secure, and doesn't require extra encryption/signing to protect it.
+	*
+	* @return true if packaged data is considered secure, false otherwise.
+	*/
+	static FORCEINLINE bool HasSecurePackageFormat()
 	{
 		return false;
 	}
@@ -215,6 +225,11 @@ struct FGenericPlatformProperties
 	}
 
 	static FORCEINLINE bool SupportsDistanceFieldShadows()
+	{
+		return true;
+	}
+
+	static FORCEINLINE bool SupportsDistanceFieldAO()
 	{
 		return true;
 	}

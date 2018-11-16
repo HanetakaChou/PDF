@@ -1,11 +1,14 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "USDImporterPrivatePCH.h"
-#include "Paths.h"
+#include "Misc/Paths.h"
 #include "UObject/ObjectMacros.h"
-#include "GCObject.h"
+#include "UObject/GCObject.h"
 #include "USDImporter.h"
 #include "ISettingsModule.h"
+#include "PropertyEditorModule.h"
+#include "USDLevelInfoDetails.h"
+#include "Modules/ModuleManager.h"
 #include "USDImporterProjectSettings.h"
 
 #define LOCTEXT_NAMESPACE "USDImportPlugin"
@@ -43,10 +46,21 @@ public:
 		UnrealUSDWrapper::Initialize(PluginPaths);
 
 		USDImporter = NewObject<UUSDImporter>();
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.RegisterCustomClassLayout(TEXT("USDLevelInfo"), FOnGetDetailCustomizationInstance::CreateStatic(&FUSDLevelInfoDetails::MakeInstance));
+		PropertyModule.NotifyCustomizationModuleChanged();
 	}
 
 	virtual void ShutdownModule() override
 	{
+		FPropertyEditorModule* PropertyEditorModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
+		if (PropertyEditorModule)
+		{
+			PropertyEditorModule->UnregisterCustomClassLayout(TEXT("USDLevelInfo"));
+			PropertyEditorModule->NotifyCustomizationModuleChanged();
+		}
+
 		USDImporter = nullptr;
 	}
 

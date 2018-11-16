@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "IPlatformTextField.h"
+#include "Framework/Application/IPlatformTextField.h"
 #include "Internationalization/Text.h"
 
 #import <UIKit/UIKit.h>
@@ -30,7 +30,7 @@ typedef FIOSPlatformTextField FPlatformTextField;
 #if !PLATFORM_TVOS
 @interface SlateTextField : NSObject<UIAlertViewDelegate>
 {
-	TSharedPtr<IVirtualKeyboardEntry> TextWidget;
+	TWeakPtr<IVirtualKeyboardEntry> TextWidget;
 	FText TextEntry;
     
 #ifdef __IPHONE_8_0
@@ -43,6 +43,7 @@ typedef FIOSPlatformTextField FPlatformTextField;
 
 -(void)show:(TSharedPtr<IVirtualKeyboardEntry>)InTextWidget;
 -(void)hide;
+-(bool)hasTextWidget;
 
 @end
 #endif

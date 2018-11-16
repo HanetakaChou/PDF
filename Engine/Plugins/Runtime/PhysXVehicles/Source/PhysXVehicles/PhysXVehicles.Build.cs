@@ -6,15 +6,13 @@ namespace UnrealBuildTool.Rules
 	{
         public PhysXVehicles(ReadOnlyTargetRules Target) : base(Target)
 		{
-            PublicIncludePaths.Add("PhysXVehicles/Public");
-            PrivateIncludePaths.Add("PhysXVehicles/Private");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
 					"CoreUObject",
                     "Engine",
+                    "EngineSettings",
                     "RenderCore",
                     "ShaderCore",
                     "AnimGraphRuntime",
@@ -23,7 +21,7 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-            SetupModulePhysXAPEXSupport(Target);
+            SetupModulePhysicsSupport(Target);
         }
     }
 }

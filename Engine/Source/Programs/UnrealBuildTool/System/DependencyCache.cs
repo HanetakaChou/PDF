@@ -34,14 +34,6 @@ namespace UnrealBuildTool
 		/// <param name="InIncludeName"></param>
 		public DependencyInclude(string InIncludeName)
 		{
-            if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
-            {
-                if (InIncludeName.StartsWith("/Users") || InIncludeName.StartsWith("\\Users"))
-                {
-                    // convert the path back to Windows
-                    InIncludeName = RemoteExports.UnconvertPath(InIncludeName);
-                }
-            }
 			IncludeName = InIncludeName;
 		}
 	}
@@ -157,7 +149,7 @@ namespace UnrealBuildTool
 			}
 			catch (Exception Ex)
 			{
-				Console.Error.WriteLine("Failed to read dependency cache: {0}", Ex.Message);
+				Log.TraceError("Failed to read dependency cache: {0}", Ex.Message);
 				FileReference.Delete(CacheFile);
 			}
 			return Result;
@@ -264,7 +256,7 @@ namespace UnrealBuildTool
 				}
 				catch (Exception Ex)
 				{
-					Console.Error.WriteLine("Failed to write dependency cache: {0}", Ex.Message);
+					Log.TraceError("Failed to write dependency cache: {0}", Ex.Message);
 				}
 
 				if (UnrealBuildTool.bPrintPerformanceInfo)
@@ -303,7 +295,7 @@ namespace UnrealBuildTool
 		{
 			// Check whether File is in cache.
 			List<DependencyInclude> Includes;
-			if (!DependencyMap.TryGetValue(File.Reference, out Includes))
+			if (!DependencyMap.TryGetValue(File.Location, out Includes))
 			{
 				return null;
 			}
@@ -312,7 +304,7 @@ namespace UnrealBuildTool
 			if (File.LastWriteTime.ToUniversalTime() >= CreationTimeUtc)
 			{
 				// Remove entry from cache as it's stale.
-				DependencyMap.Remove(File.Reference);
+				DependencyMap.Remove(File.Location);
 				bIsDirty = true;
 				return null;
 			}
@@ -333,7 +325,7 @@ namespace UnrealBuildTool
 					{
 						// Remove entry from cache as it's stale, as well as the include which no longer exists
 						DependencyMap.Remove(Include.IncludeResolvedNameIfSuccessful);
-						DependencyMap.Remove(File.Reference);
+						DependencyMap.Remove(File.Location);
 						bIsDirty = true;
 						return null;
 					}
@@ -351,7 +343,7 @@ namespace UnrealBuildTool
 		/// <param name="Info">List of dependencies to cache for passed in file</param>
 		public void SetDependencyInfo(FileItem File, List<DependencyInclude> Info)
 		{
-			DependencyMap[File.Reference] = Info;
+			DependencyMap[File.Location] = Info;
 			bIsDirty = true;
 		}
 
@@ -396,7 +388,7 @@ namespace UnrealBuildTool
 		{
 			if (bUseIncludeDependencyResolveCache)
 			{
-				List<DependencyInclude> Includes = DependencyMap[File.Reference];
+				List<DependencyInclude> Includes = DependencyMap[File.Location];
 				DependencyInclude IncludeToResolve = Includes[DirectlyIncludedFileNameIndex];
 				if (bTestIncludeDependencyResolveCache)
 				{

@@ -35,12 +35,13 @@ ActorFactory.cpp:
 #include "ActorFactories/ActorFactoryPlaneReflectionCapture.h"
 #include "ActorFactories/ActorFactoryPlayerStart.h"
 #include "ActorFactories/ActorFactoryPointLight.h"
+#include "ActorFactories/ActorFactorySpotLight.h"
+#include "ActorFactories/ActorFactoryRectLight.h"
+#include "ActorFactories/ActorFactorySkyLight.h"
 #include "ActorFactories/ActorFactorySkeletalMesh.h"
 #include "ActorFactories/ActorFactoryAnimationAsset.h"
-#include "ActorFactories/ActorFactorySkyLight.h"
 #include "ActorFactories/ActorFactorySphereReflectionCapture.h"
 #include "ActorFactories/ActorFactorySphereVolume.h"
-#include "ActorFactories/ActorFactorySpotLight.h"
 #include "ActorFactories/ActorFactoryStaticMesh.h"
 #include "ActorFactories/ActorFactoryBasicShape.h"
 #include "ActorFactories/ActorFactoryInteractiveFoliage.h"
@@ -80,6 +81,7 @@ ActorFactory.cpp:
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
+#include "Engine/RectLight.h"
 #include "Engine/Note.h"
 #include "Engine/BoxReflectionCapture.h"
 #include "Engine/PlaneReflectionCapture.h"
@@ -373,7 +375,10 @@ void UActorFactoryStaticMesh::PostSpawnActor( UObject* Asset, AActor* NewActor)
 	StaticMeshComponent->UnregisterComponent();
 
 	StaticMeshComponent->SetStaticMesh(StaticMesh);
-	StaticMeshComponent->StaticMeshDerivedDataKey = StaticMesh->RenderData->DerivedDataKey;
+	if (StaticMesh->RenderData)
+	{
+		StaticMeshComponent->StaticMeshDerivedDataKey = StaticMesh->RenderData->DerivedDataKey;
+	}
 
 	// Init Component
 	StaticMeshComponent->RegisterComponent();
@@ -563,16 +568,17 @@ void UActorFactoryDeferredDecal::PostSpawnActor(UObject* Asset, AActor* NewActor
 
 	UMaterialInterface* Material = GetMaterial( Asset );
 
-	if ( Material != NULL )
+	if (Material != NULL )
 	{
 		// Change properties
-		TInlineComponentArray<UDecalComponent*> DecalComponents;
-		NewActor->GetComponents(DecalComponents);
-
-		UDecalComponent* DecalComponent = NULL;
-		for (int32 Idx = 0; Idx < DecalComponents.Num() && DecalComponent == NULL; Idx++)
+		UDecalComponent* DecalComponent = nullptr;
+		for (UActorComponent* Component : NewActor->GetComponents())
 		{
-			DecalComponent = DecalComponents[Idx];
+			if (UDecalComponent* DecalComp = Cast<UDecalComponent>(Component))
+			{
+				DecalComponent = DecalComp;
+				break;
+			}
 		}
 
 		check(DecalComponent);
@@ -594,13 +600,14 @@ void UActorFactoryDeferredDecal::PostCreateBlueprint( UObject* Asset, AActor* CD
 
 		if (Material != NULL)
 		{
-			TInlineComponentArray<UDecalComponent*> DecalComponents;
-			CDO->GetComponents(DecalComponents);
-
-			UDecalComponent* DecalComponent = NULL;
-			for (int32 Idx = 0; Idx < DecalComponents.Num() && DecalComponent == NULL; Idx++)
+			UDecalComponent* DecalComponent = nullptr;
+			for (UActorComponent* Component : CDO->GetComponents())
 			{
-				DecalComponent = DecalComponents[Idx];
+				if (UDecalComponent* DecalComp = Cast<UDecalComponent>(Component))
+				{
+					DecalComponent = DecalComp;
+					break;
+				}
 			}
 
 			check(DecalComponent);
@@ -1156,21 +1163,6 @@ UActorFactoryCameraActor::UActorFactoryCameraActor(const FObjectInitializer& Obj
 	NewActorClass = ACameraActor::StaticClass();
 }
 
-static UBillboardComponent* CreateEditorOnlyBillboardComponent(AActor* ActorOwner, USceneComponent* AttachParent)
-{
-	// Create a new billboard component to serve as a visualization of the actor until there is another primitive component
-	UBillboardComponent* BillboardComponent = NewObject<UBillboardComponent>(ActorOwner, NAME_None, RF_Transactional);
-
-	BillboardComponent->Sprite = LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorResources/EmptyActor.EmptyActor"));
-	BillboardComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
-	BillboardComponent->Mobility = EComponentMobility::Movable;
-	BillboardComponent->bIsEditorOnly = true;
-
-	BillboardComponent->SetupAttachment(AttachParent);
-
-	return BillboardComponent;
-}
-
 /*-----------------------------------------------------------------------------
 UActorFactoryEmptyActor
 -----------------------------------------------------------------------------*/
@@ -1389,7 +1381,7 @@ bool UActorFactoryBlueprint::CanCreateActorFrom( const FAssetData& AssetData, FT
 		return false;
 	}
 
-	const FString ParentClassPath = AssetData.GetTagValueRef<FString>( "ParentClass" );
+	const FString ParentClassPath = AssetData.GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
 	if ( ParentClassPath.IsEmpty() )
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoBlueprint", "No Blueprint was specified, or the specified Blueprint needs to be compiled.");
@@ -1435,7 +1427,7 @@ AActor* UActorFactoryBlueprint::GetDefaultActor( const FAssetData& AssetData )
 		return NULL;
 	}
 
-	const FString GeneratedClassPath = AssetData.GetTagValueRef<FString>("GeneratedClass");
+	const FString GeneratedClassPath = AssetData.GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
 	if ( GeneratedClassPath.IsEmpty() )
 	{
 		return NULL;
@@ -1559,6 +1551,18 @@ UActorFactoryPointLight::UActorFactoryPointLight(const FObjectInitializer& Objec
 {
 	DisplayName = LOCTEXT("PointLightDisplayName", "Point Light");
 	NewActorClass = APointLight::StaticClass();
+	SpawnPositionOffset = FVector(50, 0, 0);
+	bUseSurfaceOrientation = true;
+}
+
+/*-----------------------------------------------------------------------------
+UActorFactoryRectLight
+-----------------------------------------------------------------------------*/
+UActorFactoryRectLight::UActorFactoryRectLight(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DisplayName = LOCTEXT("RectLightDisplayName", "Rect Light");
+	NewActorClass = ARectLight::StaticClass();
 	SpawnPositionOffset = FVector(50, 0, 0);
 	bUseSurfaceOrientation = true;
 }

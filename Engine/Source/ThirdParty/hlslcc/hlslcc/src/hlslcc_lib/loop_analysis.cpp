@@ -39,11 +39,10 @@ static bool all_expression_operands_are_loop_constant(ir_rvalue *,
 
 static ir_rvalue *get_basic_induction_increment(ir_assignment *, hash_table *);
 
-
 loop_state::loop_state()
 {
-	this->ht = hash_table_ctor(0, hash_table_pointer_hash,
-		hash_table_pointer_compare);
+	this->ht = hash_table_ctor(0, ir_hash_table_pointer_hash,
+		ir_hash_table_pointer_compare);
 	this->mem_ctx = ralloc_context(NULL);
 	this->loop_found = false;
 }
@@ -156,7 +155,7 @@ loop_analysis::loop_analysis()
 	this->if_statement_depth = 0;
 	this->current_assignment = NULL;
 	this->current_atomic = NULL;
-	this->var_ht = hash_table_ctor(32, hash_table_pointer_hash, hash_table_pointer_compare);
+	this->var_ht = hash_table_ctor(32, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 }
 
 
@@ -238,8 +237,9 @@ loop_analysis::visit_enter(ir_call *ir)
 
 ir_visitor_status loop_analysis::visit(ir_variable* var)
 {
-	void* entry = hash_table_find(var_ht, (void*)var);
-	check(entry == NULL);
+#if !(NDEBUG)
+	check(hash_table_find(var_ht, (void*)var) == NULL);
+#endif
 	hash_table_insert(var_ht, (void*)(if_statement_depth + 1), (void*)var);
 	return visit_continue;
 }
@@ -652,7 +652,12 @@ bool is_loop_terminator(ir_if *ir)
 
 	ir_instruction *const inst =
 		(ir_instruction *)ir->then_instructions.get_head();
-	check(inst != NULL);
+
+	if (inst == nullptr)
+	{
+		// This fixes a case where we have an empty then block which hasn't been optimized yet
+		return false;
+	}
 
 	if (inst->ir_type != ir_type_loop_jump)
 		return false;

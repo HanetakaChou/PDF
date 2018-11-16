@@ -43,26 +43,13 @@ void UMovieSceneLevelVisibilityTrack::RemoveSection( UMovieSceneSection& Section
 
 UMovieSceneSection* UMovieSceneLevelVisibilityTrack::CreateNewSection()
 {
-	return NewObject<UMovieSceneLevelVisibilitySection>(this, UMovieSceneLevelVisibilitySection::StaticClass(), NAME_None, RF_Transactional);
+	return NewObject<UMovieSceneLevelVisibilitySection>(this, NAME_None, RF_Transactional);
 }
 
 
 const TArray<UMovieSceneSection*>& UMovieSceneLevelVisibilityTrack::GetAllSections() const
 {
 	return Sections;
-}
-
-
-TRange<float> UMovieSceneLevelVisibilityTrack::GetSectionBoundaries() const
-{
-	TArray< TRange<float> > Bounds;
-
-	for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); ++SectionIndex)
-	{
-		Bounds.Add(Sections[SectionIndex]->GetRange());
-	}
-
-	return TRange<float>::Hull(Bounds);
 }
 
 

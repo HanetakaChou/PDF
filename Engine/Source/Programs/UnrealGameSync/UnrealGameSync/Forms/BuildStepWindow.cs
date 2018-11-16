@@ -29,6 +29,9 @@ namespace UnrealGameSync
 			Variables = InVariables;
 
 			InitializeComponent();
+
+			this.MaximumSize = new System.Drawing.Size(32768, Height);
+			this.MinimumSize = new System.Drawing.Size(Width, Height);
 		}
 
 		private void BuildTaskWindow_Load(object sender, EventArgs e)
@@ -58,6 +61,7 @@ namespace UnrealGameSync
 					OtherFileNameTextBox.Text = Step.FileName;
 					OtherArgumentsTextBox.Text = Step.Arguments;
 					OtherUseLogWindowCheckBox.Checked = Step.bUseLogWindow;
+					OtherWorkingDirTextBox.Text = Step.WorkingDir;
 					break;
 			}
 
@@ -89,6 +93,8 @@ namespace UnrealGameSync
 			bool bIsOther = OtherRadioButton.Checked;
 			OtherFileNameTextBox.Enabled = bIsOther;
 			OtherFileNameButton.Enabled = bIsOther;
+			OtherWorkingDirTextBox.Enabled = bIsOther;
+			OtherWorkingDirButton.Enabled = bIsOther;
 			OtherArgumentsTextBox.Enabled = bIsOther;
 			OtherUseLogWindowCheckBox.Enabled = bIsOther;
 		}
@@ -145,6 +151,7 @@ namespace UnrealGameSync
 				Step.Platform = null;
 				Step.Configuration = null;
 				Step.FileName = OtherFileNameTextBox.Text;
+				Step.WorkingDir = OtherWorkingDirTextBox.Text;
 				Step.Arguments = OtherArgumentsTextBox.Text;
 				Step.bUseLogWindow = OtherUseLogWindowCheckBox.Checked;
 			}
@@ -178,6 +185,16 @@ namespace UnrealGameSync
 			if(Dialog.ShowDialog() == DialogResult.OK)
 			{
 				OtherFileNameTextBox.Text = RemoveBaseDirectory(Dialog.FileName);
+			}
+		}
+
+		private void OtherWorkingDirButton_Click(object sender, EventArgs e)
+		{
+			FolderBrowserDialog Dialog = new FolderBrowserDialog();
+			Dialog.SelectedPath = OtherWorkingDirTextBox.Text;
+			if (Dialog.ShowDialog() == DialogResult.OK)
+			{
+				OtherWorkingDirTextBox.Text = Dialog.SelectedPath;
 			}
 		}
 

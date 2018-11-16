@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "AnimInstanceProxy.h"
+#include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimInstance.h"
 #include "AnimNode_LiveLinkPose.h"
 
@@ -52,4 +52,11 @@ class LIVELINK_API ULiveLinkInstance : public UAnimInstance
 
 protected:
 	virtual FAnimInstanceProxy* CreateAnimInstanceProxy() override;
+	virtual void DestroyAnimInstanceProxy(FAnimInstanceProxy* InProxy) override;
+
+	// Cache for GC
+	UPROPERTY(transient)
+	ULiveLinkRetargetAsset* CurrentRetargetAsset;
+
+	friend FLiveLinkInstanceProxy;
 };

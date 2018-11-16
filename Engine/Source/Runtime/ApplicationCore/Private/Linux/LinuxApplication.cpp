@@ -1,6 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Linux/LinuxApplication.h"
+
 #include "HAL/PlatformTime.h"
 #include "Misc/StringUtility.h"
 #include "Misc/ConfigCacheIni.h"
@@ -8,6 +9,7 @@
 #include "Features/IModularFeatures.h"
 #include "Linux/LinuxPlatformApplicationMisc.h"
 #include "IInputDeviceModule.h"
+#include "IHapticDevice.h"
 
 //
 // GameController thresholds
@@ -15,6 +17,12 @@
 #define GAMECONTROLLER_LEFT_THUMB_DEADZONE  7849
 #define GAMECONTROLLER_RIGHT_THUMB_DEADZONE 8689
 #define GAMECONTROLLER_TRIGGER_THRESHOLD    30
+
+namespace
+{
+	// How long we wait from a FocusOut event to deactivate the application (100ms default)
+	double DeactivationThreadshold = 0.1;
+}
 
 float ShortToNormalFloat(short AxisVal)
 {
@@ -45,30 +53,19 @@ FLinuxApplication* FLinuxApplication::CreateLinuxApplication()
 	check(InitializedSubsystems & SDL_INIT_EVENTS);
 	check(InitializedSubsystems & SDL_INIT_JOYSTICK);
 	check(InitializedSubsystems & SDL_INIT_GAMECONTROLLER);
+ 	check(InitializedSubsystems & SDL_INIT_HAPTIC);
 #endif // DO_CHECK
 
 	LinuxApplication = new FLinuxApplication();
-
-	int32 ControllerIndex = 0;
 
 	for (int i = 0; i < SDL_NumJoysticks(); ++i)
 	{
 		if (SDL_IsGameController(i))
 		{
-			auto Controller = SDL_GameControllerOpen(i);
-			if (Controller == nullptr)
-			{
-				UE_LOG(LogLoad, Warning, TEXT("Could not open gamecontroller %i: %s\n"), i, UTF8_TO_TCHAR(SDL_GetError()) );
-			}
-			else
-			{
-				SDL_JoystickID Id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(Controller));
-				LinuxApplication->ControllerStates.Add(Id);
-				LinuxApplication->ControllerStates[Id].Controller = Controller;
-				LinuxApplication->ControllerStates[Id].ControllerIndex = ControllerIndex++;
-			}
+ 			LinuxApplication->AddGameController(i);
 		}
 	}
+
 	return LinuxApplication;
 }
 
@@ -81,7 +78,7 @@ FLinuxApplication::FLinuxApplication()
 	,	bInsideOwnWindow(false)
 	,	bIsDragWindowButtonPressed(false)
 	,	bActivateApp(false)
-	,	bLockToCurrentMouseType(false)
+	,	FocusOutDeactivationTime(0.0)
 	,	LastTimeCachedDisplays(-1.0)
 {
 	bUsingHighPrecisionMouseInput = false;
@@ -111,6 +108,11 @@ void FLinuxApplication::DestroyApplication()
 		if(ControllerIt.Value().Controller != nullptr)
 		{
 			SDL_GameControllerClose(ControllerIt.Value().Controller);
+		}
+
+		if(ControllerIt.Value().Haptic != nullptr)
+		{
+			SDL_HapticClose(ControllerIt.Value().Haptic);
 		}
 	}
 	ControllerStates.Empty();
@@ -287,49 +289,26 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 			FLinuxCursor *LinuxCursor = (FLinuxCursor*)Cursor.Get();
 			LinuxCursor->InvalidateCaches();
 
-			if (LinuxCursor->IsHidden())
-			{
-				// Check if the mouse got locked for dragging in viewport.
-				if (bLockToCurrentMouseType == false)
-				{
-					int width, height;
-					if(bIsMouseCursorLocked && CurrentClipWindow.IsValid())
-					{
-						NativeWindow =  CurrentClipWindow->GetHWnd();
-					}
-					
-					SDL_GetWindowSize(NativeWindow, &width, &height);
-					if (motionEvent.x != (width / 2) || motionEvent.y != (height / 2))
-					{
-						int xOffset, yOffset;
-						GetWindowPositionInEventLoop(NativeWindow, &xOffset, &yOffset);
-						LinuxCursor->SetPosition(width / 2 + xOffset, height / 2 + yOffset);
-					}
-					else
-					{
-						break;
-					}
-				}
-			}
-			else
+			if (!LinuxCursor->IsHidden())
 			{
 				int xOffset, yOffset;
 				GetWindowPositionInEventLoop(NativeWindow, &xOffset, &yOffset);
 
-				int32 BorderSizeX, BorderSizeY;
-				CurrentEventWindow->GetNativeBordersSize(BorderSizeX, BorderSizeY);
-
-				LinuxCursor->SetCachedPosition(motionEvent.x + xOffset + BorderSizeX, motionEvent.y + yOffset + BorderSizeY);
-
-				FVector2D CurrentPosition = LinuxCursor->GetPosition();
-				if( LinuxCursor->UpdateCursorClipping( CurrentPosition ) )
+				// When bUsingHighPrecisionMouseInput=1, changing the position cache causes the cursor (inside top/left/right etc. ViewPort)
+				// to not move correct with the selection tool. The next part should be only run when not in Editor mode.
+				if(!GIsEditor)
 				{
-					LinuxCursor->SetPosition( CurrentPosition.X, CurrentPosition.Y );
+					int32 BorderSizeX, BorderSizeY;
+					CurrentEventWindow->GetNativeBordersSize(BorderSizeX, BorderSizeY);
+
+					LinuxCursor->SetCachedPosition(motionEvent.x + xOffset + BorderSizeX, motionEvent.y + yOffset + BorderSizeY);
 				}
+
 				if( !CurrentEventWindow->GetDefinition().HasOSWindowBorder )
 				{
 					if ( CurrentEventWindow->IsRegularWindow() )
 					{
+						FVector2D CurrentPosition = LinuxCursor->GetPosition();
 						MessageHandler->GetWindowZoneForPoint( CurrentEventWindow.ToSharedRef(), CurrentPosition.X - xOffset, CurrentPosition.Y - yOffset );
 						MessageHandler->OnCursorSet();
 					}
@@ -338,20 +317,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 
 			if(bUsingHighPrecisionMouseInput)
 			{
-				// hack to work around jumps (only matters when we have more than one window)
-				const int kTooFarAway = 250;
-				const int kTooFarAwaySquare = kTooFarAway * kTooFarAway;
-				if (Windows.Num() > 1 && motionEvent.xrel * motionEvent.xrel + motionEvent.yrel * motionEvent.yrel > kTooFarAwaySquare)
-				{
-					UE_LOG(LogLinuxWindowEvent, Warning, TEXT("Suppressing too large relative mouse movement due to an apparent bug (%d, %d is larger than threshold %d)"),
-						motionEvent.xrel, motionEvent.yrel,
-						kTooFarAway
-						);
-				}
-				else
-				{
-					MessageHandler->OnRawMouseMove(motionEvent.xrel, motionEvent.yrel);
-				}
+				MessageHandler->OnRawMouseMove(motionEvent.xrel, motionEvent.yrel);
 			}
 			else
 			{
@@ -393,9 +359,6 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				
 				if (buttonEvent.button == SDL_BUTTON_LEFT)
 				{
-					// Unlock the mouse dragging type.
-					bLockToCurrentMouseType = false;
-
 					bIsDragWindowButtonPressed = false;
 				}
 			}
@@ -409,16 +372,6 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 
 				if (buttonEvent.button == SDL_BUTTON_LEFT)
 				{
-					// The user clicked an object and wants to drag maybe. We can use that to disable 
-					// the resetting of the cursor. Before the user can drag objects, the pointer will change.
-					// Usually it will be EMouseCursor::CardinalCross (Default added after IRC discussion how to fix selection in Front/Top/Side views). 
-					// If that happends and the user clicks the left mouse button, we know they want to move something.
-					// TODO Is this always true? Need more checks.
-					if (((FLinuxCursor*)Cursor.Get())->GetType() != EMouseCursor::None)
-					{
-						bLockToCurrentMouseType = true;
-					}
-
 					bIsDragWindowButtonPressed = true;
 				}
 
@@ -464,6 +417,18 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 			float Amount = WheelEvent->y * fMouseWheelScrollAccel;
 
 			MessageHandler->OnMouseWheel(Amount);
+		}
+		break;
+	case SDL_CONTROLLERDEVICEADDED:
+		{
+			SDL_ControllerDeviceEvent& ControllerEvent = Event.cdevice;
+			AddGameController(ControllerEvent.which);
+		}
+		break;
+	case SDL_CONTROLLERDEVICEREMOVED:
+		{
+			SDL_ControllerDeviceEvent& ControllerEvent = Event.cdevice;
+			RemoveGameController(ControllerEvent.which);
 		}
 		break;
 	case SDL_CONTROLLERAXISMOTION:
@@ -674,10 +639,10 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				Button = FGamepadKeyNames::SpecialRight;
 				break;
 			case SDL_CONTROLLER_BUTTON_LEFTSTICK:
-				Button = FGamepadKeyNames::LeftStickDown;
+				Button = FGamepadKeyNames::LeftThumb;
 				break;
 			case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
-				Button = FGamepadKeyNames::RightStickDown;
+				Button = FGamepadKeyNames::RightThumb;
 				break;
 			case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
 				Button = FGamepadKeyNames::LeftShoulder;
@@ -905,6 +870,8 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 							// Only do if the application is active.
 							if(bActivateApp)
 							{
+								FocusOutDeactivationTime = FPlatformTime::Seconds() + DeactivationThreadshold;
+
 								SDL_Event event;
 								event.type = SDL_USEREVENT;
 								event.user.code = CheckForDeactivation;
@@ -974,9 +941,17 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 		{
 			if(Event.user.code == CheckForDeactivation)
 			{
+				// We still havent hit our timeout limit, try again
+				if (FocusOutDeactivationTime > FPlatformTime::Seconds())
+				{
+					SDL_Event event;
+					event.type = SDL_USEREVENT;
+					event.user.code = CheckForDeactivation;
+					SDL_PushEvent(&event);
+				}
 				// If we don't use bIsDragWindowButtonPressed the draged window will be destroyed because we
 				// deactivate the whole appliacton. TODO Is that a bug? Do we have to do something?
-				if (!CurrentFocusWindow.IsValid() && !bIsDragWindowButtonPressed)
+				else if (!CurrentFocusWindow.IsValid() && !bIsDragWindowButtonPressed)
 				{
 					DeactivateApplication();
 				}
@@ -1008,7 +983,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				Touches.Add(FingerId, NewTouch);
 
 				UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchStarted at (%f, %f), finger %d (system touch id %llu)"), NewTouch.Location.X, NewTouch.Location.Y, NewTouch.TouchIndex, FingerId);
-				MessageHandler->OnTouchStarted(CurrentEventWindow, NewTouch.Location, NewTouch.TouchIndex, 0);// NewTouch.DeviceId);
+				MessageHandler->OnTouchStarted(CurrentEventWindow, NewTouch.Location, 1.0f, NewTouch.TouchIndex, 0);// NewTouch.DeviceId);
 			}
 			else
 			{
@@ -1078,9 +1053,9 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					{
 						TouchContext->Location = Location;
 						UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchMoved at (%f, %f), finger %d (system touch id %llu)"), TouchContext->Location.X, TouchContext->Location.Y, TouchContext->TouchIndex, FingerId);
-						MessageHandler->OnTouchMoved(TouchContext->Location, TouchContext->TouchIndex, 0);// TouchContext->DeviceId);
-					}
-				}
+						MessageHandler->OnTouchMoved(TouchContext->Location, 1.0f, TouchContext->TouchIndex, 0);// TouchContext->DeviceId);
+	}
+}
 			}
 			else
 			{
@@ -1111,9 +1086,6 @@ EWindowZone::Type FLinuxApplication::WindowHitTest(const TSharedPtr< FLinuxWindo
 
 void FLinuxApplication::ProcessDeferredEvents( const float TimeDelta )
 {
-	// delete pending destroy windows before, and not after processing events, to prolong their lifetime
-	DestroyPendingWindows();
-
 	// This function can be reentered when entering a modal tick loop.
 	// We need to make a copy of the events that need to be processed or we may end up processing the same messages twice
 	SDL_HWindow NativeWindow = NULL;
@@ -1127,25 +1099,6 @@ void FLinuxApplication::ProcessDeferredEvents( const float TimeDelta )
 	}
 }
 
-void FLinuxApplication::DestroyPendingWindows()
-{
-	if (UNLIKELY(PendingDestroyWindows.Num()))
-	{
-		// destroy native windows that we deferred
-		const double Now = FPlatformTime::Seconds();
-		for(TMap<SDL_HWindow, double>::TIterator It(PendingDestroyWindows); It; ++It)
-		{
-			if (Now > It.Value())
-			{
-				SDL_HWindow Window = It.Key();
-				UE_LOG(LogLinuxWindow, Verbose, TEXT("Destroying SDL window %p"), Window);
-				SDL_DestroyWindow(Window);
-				It.RemoveCurrent();
-			}
-		}
-	}
-}
-
 void FLinuxApplication::PollGameDeviceState( const float TimeDelta )
 {
 	for(auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
@@ -1155,6 +1108,11 @@ void FLinuxApplication::PollGameDeviceState( const float TimeDelta )
 			MessageHandler->OnControllerAnalog(Event.Key(), ControllerIt.Value().ControllerIndex, Event.Value());
 		}
 		ControllerIt.Value().AxisEvents.Empty();
+
+		if (ControllerIt.Value().Haptic != nullptr)
+		{
+			ControllerIt.Value().UpdateHapticEffect();
+		}
 	}
 
 	// initialize any externally-implemented input devices (we delay load initialize the array so any plugins have had time to load)
@@ -1402,8 +1360,7 @@ void FLinuxApplication::UpdateMouseCaptureWindow(SDL_HWindow TargetWindow)
 	FLinuxCursor *LinuxCursor = static_cast<FLinuxCursor*>(Cursor.Get());
 
 	// this is a hacky heuristic which makes QA-ClickHUD work while not ruining SlateViewer...
-	bool bShouldGrab = (IS_PROGRAM != 0 || GIsEditor) && !LinuxCursor->IsHidden();
-
+	bool bShouldGrab = (IS_PROGRAM != 0 || WITH_ENGINE != 0 || GIsEditor) && !LinuxCursor->IsHidden();
 	if (bEnable)
 	{
 		if (TargetWindow)
@@ -1426,6 +1383,7 @@ void FLinuxApplication::SetHighPrecisionMouseMode( const bool Enable, const TSha
 {
 	MessageHandler->OnCursorSet();
 	bUsingHighPrecisionMouseInput = Enable;
+	SDL_SetRelativeMouseMode(Enable ? SDL_TRUE : SDL_FALSE);
 }
 
 void FLinuxApplication::RefreshDisplayCache()
@@ -1489,26 +1447,7 @@ FPlatformRect FLinuxApplication::GetWorkArea( const FPlatformRect& CurrentWindow
 	return WorkArea;
 }
 
-void FLinuxApplication::OnMouseCursorLock( bool bLockEnabled )
-{
-	if (UNLIKELY(!FApp::CanEverRender()))
-	{
-		return;
-	}
-
-	bIsMouseCursorLocked = bLockEnabled;
-	UpdateMouseCaptureWindow( NULL );
-	if(bLockEnabled)
-	{
-		CurrentClipWindow = CurrentlyActiveWindow;
-	}
-	else
-	{
-		CurrentClipWindow = nullptr;
-	}
-}
-
-void FDisplayMetrics::GetDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
+void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 {
 	int NumDisplays = 0;
 
@@ -1551,6 +1490,16 @@ void FDisplayMetrics::GetDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 		Display.DisplayRect = FPlatformRect(DisplayBounds.x, DisplayBounds.y, DisplayBounds.x + DisplayBounds.w, DisplayBounds.y + DisplayBounds.h);
 		Display.WorkArea = FPlatformRect(UsableBounds.x, UsableBounds.y, UsableBounds.x + UsableBounds.w, UsableBounds.y + UsableBounds.h);
 		Display.bIsPrimary = DisplayIdx == 0;
+
+		if (FPlatformApplicationMisc::IsHighDPIAwarenessEnabled())
+		{
+			float HorzDPI = 0.0f, VertDPI = 0.0f;
+			if (SDL_GetDisplayDPI(DisplayIdx, nullptr, &HorzDPI, &VertDPI) == 0)
+			{
+				Display.DPI = FMath::FloorToInt((HorzDPI + VertDPI) / 2.0f);
+			}
+		}
+
 		OutDisplayMetrics.MonitorInfo.Add(Display);
 
 		if (Display.bIsPrimary)
@@ -1829,22 +1778,6 @@ void FLinuxApplication::GetWindowPositionInEventLoop(SDL_HWindow NativeWindow, i
 	}
 }
 
-void FLinuxApplication::DestroyNativeWindow(SDL_HWindow NativeWindow)
-{
-	UE_LOG(LogLinuxWindow, Verbose, TEXT("Asked to destroy SDL window %p"), NativeWindow);
-
-	if (PendingDestroyWindows.Find(NativeWindow) != nullptr)
-	{
-		UE_LOG(LogLinuxWindow, Verbose, TEXT("  SDL window %p is already pending deletion!"), NativeWindow);
-		return;	// use the original 'deadline', do not renew it.
-	}
-
-	// Set deadline to make sure the window survives at least one tick.
-	PendingDestroyWindows.Add(NativeWindow, FPlatformTime::Seconds() + 0.1);
-
-	UE_LOG(LogLinuxWindow, Verbose, TEXT("  Deferring destroying of SDL window %p"), NativeWindow);
-}
-
 bool FLinuxApplication::IsMouseAttached() const
 {
 	int rc;
@@ -1862,4 +1795,226 @@ bool FLinuxApplication::IsMouseAttached() const
 	}
 
 	return false;
+}
+
+void FLinuxApplication::SetForceFeedbackChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value)
+{
+	if (FApp::UseVRFocus() && !FApp::HasVRFocus())
+	{
+		return; // do not proceed if the app uses VR focus but doesn't have it
+	}
+
+	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
+	{
+		auto& ControllerState = ControllerIt.Value();
+		if (ControllerState.ControllerIndex == ControllerId)
+		{
+			if (ControllerState.Haptic != nullptr)
+			{
+				switch (ChannelType)
+				{
+				case FForceFeedbackChannelType::LEFT_LARGE:
+					ControllerState.ForceFeedbackValues.LeftLarge = Value;
+					break;
+				case FForceFeedbackChannelType::LEFT_SMALL:
+					ControllerState.ForceFeedbackValues.LeftSmall = Value;
+					break;
+				case FForceFeedbackChannelType::RIGHT_LARGE:
+					ControllerState.ForceFeedbackValues.RightLarge = Value;
+					break;
+				case FForceFeedbackChannelType::RIGHT_SMALL:
+					ControllerState.ForceFeedbackValues.RightSmall = Value;
+					break;
+				}
+			}
+			break;
+		}
+	}
+
+	// send vibration to externally-implemented devices
+	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
+	{
+		(*DeviceIt)->SetChannelValue(ControllerId, ChannelType, Value);
+	}
+}
+void FLinuxApplication::SetForceFeedbackChannelValues(int32 ControllerId, const FForceFeedbackValues &Values)
+{
+	if (FApp::UseVRFocus() && !FApp::HasVRFocus())
+	{
+		return; // do not proceed if the app uses VR focus but doesn't have it
+	}
+
+	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
+	{
+		auto& ControllerState = ControllerIt.Value();
+		if (ControllerState.ControllerIndex == ControllerId)
+		{
+			if (ControllerState.Haptic != nullptr)
+			{
+				ControllerState.ForceFeedbackValues = Values;
+			}
+			break;
+		}
+	}
+
+	// send vibration to externally-implemented devices
+	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
+	{
+		// *N.B 06/20/2016*: Ideally, we would want to use GetHapticDevice instead
+		// but they're not implemented for SteamController and SteamVRController
+		if ((*DeviceIt)->IsGamepadAttached())
+		{
+			(*DeviceIt)->SetChannelValues(ControllerId, Values);
+		}
+	}
+}
+
+void FLinuxApplication::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values)
+{
+	if (FApp::UseVRFocus() && !FApp::HasVRFocus())
+	{
+		return; // do not proceed if the app uses VR focus but doesn't have it
+	}
+	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
+	{
+		IHapticDevice* HapticDevice = (*DeviceIt)->GetHapticDevice();
+		if (HapticDevice)
+		{
+			HapticDevice->SetHapticFeedbackValues(ControllerId, Hand, Values);
+		}
+	}
+}
+
+void FLinuxApplication::SDLControllerState::UpdateHapticEffect()
+{
+	if (Haptic == nullptr)
+	{
+		return;
+	}
+
+	float LargeValue = FMath::Max(ForceFeedbackValues.LeftLarge, ForceFeedbackValues.RightLarge);
+	float SmallValue = FMath::Max(ForceFeedbackValues.LeftSmall, ForceFeedbackValues.RightSmall);
+
+	if (FMath::IsNearlyEqual(SmallValue, 0.0f) && FMath::IsNearlyEqual(LargeValue, 0.0f))
+	{
+		if (EffectId >= 0 && bEffectRunning)
+		{
+			SDL_HapticStopEffect(Haptic, EffectId);
+			bEffectRunning = false;
+		}
+		return;
+	}
+
+	SDL_HapticEffect Effect;
+	FMemory::Memzero(Effect);
+
+	if (SDL_HapticQuery(Haptic) & SDL_HAPTIC_LEFTRIGHT)
+	{
+		Effect.type = SDL_HAPTIC_LEFTRIGHT;
+		Effect.leftright.length = 1000;
+		Effect.leftright.large_magnitude = 32767.0f * LargeValue;
+		Effect.leftright.small_magnitude = 32767.0f * SmallValue;
+	}
+	else if (SDL_HapticQuery(Haptic) & SDL_HAPTIC_SINE)
+	{
+		Effect.type = SDL_HAPTIC_SINE;
+		Effect.periodic.length = 1000;
+		Effect.periodic.period = 1000;
+		Effect.periodic.magnitude = 32767.0f * FMath::Max(SmallValue, LargeValue);
+	}
+	else
+	{
+		UE_LOG(LogLinux, Warning, TEXT("No available haptic effects"));
+		SDL_HapticClose(Haptic);
+		Haptic = nullptr;
+		return;
+	}
+
+	if (EffectId < 0)
+	{
+		EffectId = SDL_HapticNewEffect(Haptic, &Effect);
+		if (EffectId < 0)
+		{
+			UE_LOG(LogLinux, Warning, TEXT("Failed to create haptic effect: %s"), UTF8_TO_TCHAR(SDL_GetError()) );
+			SDL_HapticClose(Haptic);
+			Haptic = nullptr;
+			return;
+		}
+	}
+
+	if (SDL_HapticUpdateEffect(Haptic, EffectId, &Effect) < 0)
+	{
+		SDL_HapticDestroyEffect(Haptic, EffectId);
+		EffectId = SDL_HapticNewEffect(Haptic, &Effect);
+		if (EffectId < 0)
+		{
+			UE_LOG(LogLinux, Warning, TEXT("Failed to update and recreate haptic effect: %s"), UTF8_TO_TCHAR(SDL_GetError()) );
+			SDL_HapticClose(Haptic);
+			Haptic = nullptr;
+			return;
+		}
+	}
+
+	SDL_HapticRunEffect(Haptic, EffectId, 1);
+	bEffectRunning = true;
+}
+
+void FLinuxApplication::AddGameController(int Index)
+{
+	SDL_JoystickID Id = SDL_JoystickGetDeviceInstanceID(Index);
+	if(ControllerStates.Contains(Id))
+	{
+		return;
+	}
+
+	auto Controller = SDL_GameControllerOpen(Index);
+	if (Controller == nullptr)
+	{
+		UE_LOG(LogLinux, Warning, TEXT("Could not open gamecontroller %i: %s"), Index, UTF8_TO_TCHAR(SDL_GetError()) );
+		return;
+	}
+
+	uint32 UsedBits = 0;
+	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
+	{
+		UsedBits |= (1 << ControllerIt.Value().ControllerIndex);
+	}
+
+	int32 FirstUnusedIndex = FMath::CountTrailingZeros(~UsedBits);
+
+	UE_LOG(LogLinux, Verbose, TEXT("Adding controller %i '%s'"), FirstUnusedIndex, UTF8_TO_TCHAR(SDL_GameControllerName(Controller)));
+	auto& ControllerState = ControllerStates.Add(Id);
+	ControllerState.Controller = Controller;
+	ControllerState.ControllerIndex = FirstUnusedIndex;
+	// Check for haptic support.
+	ControllerState.Haptic = SDL_HapticOpenFromJoystick(SDL_GameControllerGetJoystick(Controller));
+
+	if (ControllerState.Haptic != nullptr)
+	{
+		if ((SDL_HapticQuery(ControllerState.Haptic) & (SDL_HAPTIC_SINE | SDL_HAPTIC_LEFTRIGHT)) == 0)
+		{
+			UE_LOG(LogLinux, Warning, TEXT("No supported haptic effects for controller %i"), ControllerState.ControllerIndex);
+			SDL_HapticClose(ControllerState.Haptic);
+			ControllerState.Haptic = nullptr;
+		}
+	}
+}
+
+void FLinuxApplication::RemoveGameController(SDL_JoystickID Id)
+{
+	if (!ControllerStates.Contains(Id))
+	{
+		return;
+	}
+
+	SDLControllerState& ControllerState = ControllerStates[Id];
+	UE_LOG(LogLinux, Verbose, TEXT("Removing controller %i '%s'"), ControllerState.ControllerIndex, UTF8_TO_TCHAR(SDL_GameControllerName(ControllerState.Controller)));
+
+	if (ControllerState.Haptic != nullptr)
+	{
+		SDL_HapticClose(ControllerState.Haptic);
+	}
+
+	SDL_GameControllerClose(ControllerState.Controller);
+	ControllerStates.Remove(Id);
 }

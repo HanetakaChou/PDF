@@ -74,8 +74,6 @@ bool FTextTest::RunTest (const FString& Parameters)
 	FText ArgText2 = FText::FromString(TEXT("Arg2"));
 	FText ArgText3 = FText::FromString(TEXT("Arg3"));
 
-#define INVTEXT(x) FText::FromString(TEXT(x))
-
 #define TEST( Desc, A, B ) if( !A.EqualTo(B) ) AddError(FString::Printf(TEXT("%s - A=%s B=%s"),*Desc,*A.ToString(),*B.ToString()))
 	
 	FText TestText;
@@ -279,6 +277,52 @@ bool FTextTest::RunTest (const FString& Parameters)
 #undef TEST
 
 #undef INVTEXT
+
+#define TEST(NumBytes, UnitStandard, ExpectedString) \
+	if (!FText::FromString(TEXT(ExpectedString)).EqualTo(FText::AsMemory(NumBytes, &NumberFormattingOptions, nullptr, UnitStandard))) \
+	{ \
+		AddError(FString::Printf(TEXT("FText::AsMemory expected %s bytes in %s to be %s - got %s"), TEXT(#NumBytes), TEXT(#UnitStandard), TEXT(ExpectedString), *FText::AsMemory(NumBytes, &NumberFormattingOptions, nullptr, UnitStandard).ToString())); \
+	} \
+
+	{
+		FNumberFormattingOptions NumberFormattingOptions = FNumberFormattingOptions()
+			.SetRoundingMode(ERoundingMode::HalfFromZero)
+			.SetMinimumFractionalDigits(0)
+			.SetMaximumFractionalDigits(3);
+
+		TEST(0, EMemoryUnitStandard::SI, "0 B");
+		TEST(1, EMemoryUnitStandard::SI, "1 B");
+		TEST(1000, EMemoryUnitStandard::SI, "1 kB");
+		TEST(1000000, EMemoryUnitStandard::SI, "1 MB");
+		TEST(1000000000, EMemoryUnitStandard::SI, "1 GB");
+		TEST(1000000000000, EMemoryUnitStandard::SI, "1 TB");
+		TEST(1000000000000000, EMemoryUnitStandard::SI, "1 PB");
+		TEST(1000000000000000000, EMemoryUnitStandard::SI, "1 EB");
+		TEST(999, EMemoryUnitStandard::SI, "999 B");
+		TEST(999999, EMemoryUnitStandard::SI, "999.999 kB");
+		TEST(999999999, EMemoryUnitStandard::SI, "999.999 MB");
+		TEST(999999999999, EMemoryUnitStandard::SI, "999.999 GB");
+		TEST(999999999999999, EMemoryUnitStandard::SI, "999.999 TB");
+		TEST(999999999999999999, EMemoryUnitStandard::SI, "999.999 PB");
+		TEST(18446744073709551615ULL, EMemoryUnitStandard::SI, "18.446 EB");
+
+		TEST(0, EMemoryUnitStandard::IEC, "0 B");
+		TEST(1, EMemoryUnitStandard::IEC, "1 B");
+		TEST(1024, EMemoryUnitStandard::IEC, "1 KiB");
+		TEST(1048576, EMemoryUnitStandard::IEC, "1 MiB");
+		TEST(1073741824, EMemoryUnitStandard::IEC, "1 GiB");
+		TEST(1099511627776, EMemoryUnitStandard::IEC, "1 TiB");
+		TEST(1125899906842624, EMemoryUnitStandard::IEC, "1 PiB");
+		TEST(1152921504606846976, EMemoryUnitStandard::IEC, "1 EiB");
+		TEST(1023, EMemoryUnitStandard::IEC, "0.999 KiB");
+		TEST(1048575, EMemoryUnitStandard::IEC, "0.999 MiB");
+		TEST(1073741823, EMemoryUnitStandard::IEC, "0.999 GiB");
+		TEST(1099511627775, EMemoryUnitStandard::IEC, "0.999 TiB");
+		TEST(1125899906842623, EMemoryUnitStandard::IEC, "0.999 PiB");
+		TEST(1152921504606846975, EMemoryUnitStandard::IEC, "0.999 EiB");
+		TEST(18446744073709551615ULL, EMemoryUnitStandard::IEC, "15.999 EiB");
+	}
+#undef TEST
 
 #if UE_ENABLE_ICU
 	if (I18N.SetCurrentCulture("en-US"))
@@ -1069,7 +1113,7 @@ bool FICUSanitizationTest::RunTest(const FString& Parameters)
 		auto TestCultureCodeSanitization = [this](const FString& InCode, const FString& InExpectedCode)
 		{
 			const FString SanitizedCode = ICUUtilities::SanitizeCultureCode(InCode);
-			if (SanitizedCode != InExpectedCode)
+			if (!SanitizedCode.Equals(InExpectedCode, ESearchCase::CaseSensitive))
 			{
 				AddError(FString::Printf(TEXT("SanitizeCultureCode did not produce the expected result (got '%s', expected '%s')"), *SanitizedCode, *InExpectedCode));
 			}
@@ -1086,7 +1130,7 @@ bool FICUSanitizationTest::RunTest(const FString& Parameters)
 		auto TestTimezoneCodeSanitization = [this](const FString& InCode, const FString& InExpectedCode)
 		{
 			const FString SanitizedCode = ICUUtilities::SanitizeTimezoneCode(InCode);
-			if (SanitizedCode != InExpectedCode)
+			if (!SanitizedCode.Equals(InExpectedCode, ESearchCase::CaseSensitive))
 			{
 				AddError(FString::Printf(TEXT("SanitizeTimezoneCode did not produce the expected result (got '%s', expected '%s')"), *SanitizedCode, *InExpectedCode));
 			}
@@ -1111,7 +1155,7 @@ bool FICUSanitizationTest::RunTest(const FString& Parameters)
 		auto TestCurrencyCodeSanitization = [this](const FString& InCode, const FString& InExpectedCode)
 		{
 			const FString SanitizedCode = ICUUtilities::SanitizeCurrencyCode(InCode);
-			if (SanitizedCode != InExpectedCode)
+			if (!SanitizedCode.Equals(InExpectedCode, ESearchCase::CaseSensitive))
 			{
 				AddError(FString::Printf(TEXT("SanitizeCurrencyCode did not produce the expected result (got '%s', expected '%s')"), *SanitizedCode, *InExpectedCode));
 			}
@@ -1121,6 +1165,39 @@ bool FICUSanitizationTest::RunTest(const FString& Parameters)
 		TestCurrencyCodeSanitization(TEXT("USD{}%"), TEXT("USD"));
 		TestCurrencyCodeSanitization(TEXT("U{}%SD"), TEXT("USD"));
 		TestCurrencyCodeSanitization(TEXT("USDUSD"), TEXT("USD"));
+	}
+
+	// Validate canonization of culture names
+	{
+		auto TestCultureCodeCanonization = [this](const FString& InCode, const FString& InExpectedCode)
+		{
+			const FString CanonizedCode = FCulture::GetCanonicalName(InCode);
+			if (!CanonizedCode.Equals(InExpectedCode, ESearchCase::CaseSensitive))
+			{
+				AddError(FString::Printf(TEXT("GetCanonicalName did not produce the expected result (got '%s', expected '%s')"), *CanonizedCode, *InExpectedCode));
+			}
+		};
+
+		// Valid codes
+		TestCultureCodeCanonization(TEXT(""), TEXT("en-US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en"), TEXT("en"));
+		TestCultureCodeCanonization(TEXT("en_US"), TEXT("en-US"));
+		TestCultureCodeCanonization(TEXT("en_US_POSIX"), TEXT("en-US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en_US@POSIX"), TEXT("en-US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en_US.utf8"), TEXT("en-US"));
+		TestCultureCodeCanonization(TEXT("en_US.utf8@posix"), TEXT("en-US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en_IE_PREEURO"), TEXT("en-IE@currency=IEP"));
+		TestCultureCodeCanonization(TEXT("en_IE@CURRENCY=IEP"), TEXT("en-IE@currency=IEP"));
+		TestCultureCodeCanonization(TEXT("fr@collation=phonebook;calendar=islamic-civil"), TEXT("fr@calendar=islamic-civil;collation=phonebook"));
+		TestCultureCodeCanonization(TEXT("sr_Latn_RS_REVISED@currency=USD"), TEXT("sr-Latn-RS-REVISED@currency=USD"));
+		
+		// Invalid codes
+		TestCultureCodeCanonization(TEXT("%%%"), TEXT("en-US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en____US_POSIX"), TEXT("en----US-POSIX"));
+		TestCultureCodeCanonization(TEXT("en_POSIX"), TEXT("en--POSIX"));
+		TestCultureCodeCanonization(TEXT("en__POSIX"), TEXT("en--POSIX"));
+		TestCultureCodeCanonization(TEXT("en_US@wooble=USD"), TEXT("en-US@wooble=USD"));
+		TestCultureCodeCanonization(TEXT("fred_wooble_bob_wibble"), TEXT("fred--WOOBLE-BOB-WIBBLE"));
 	}
 
 	return true;

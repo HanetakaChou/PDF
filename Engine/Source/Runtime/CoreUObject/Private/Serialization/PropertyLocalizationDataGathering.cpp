@@ -16,6 +16,9 @@
 FPropertyLocalizationDataGatherer::FPropertyLocalizationDataGatherer(TArray<FGatherableTextData>& InOutGatherableTextDataArray, const UPackage* const InPackage, EPropertyLocalizationGathererResultFlags& OutResultFlags)
 	: GatherableTextDataArray(InOutGatherableTextDataArray)
 	, Package(InPackage)
+#if USE_STABLE_LOCALIZATION_KEYS
+	, PackageNamespace(TextNamespaceUtil::GetPackageNamespace(InPackage))
+#endif	// USE_STABLE_LOCALIZATION_KEYS
 	, ResultFlags(OutResultFlags)
 	, AllObjectsInPackage()
 {
@@ -208,6 +211,13 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 
 	const EPropertyLocalizationGathererTextFlags ChildPropertyGatherTextFlags = GatherTextFlags | (Property->HasAnyPropertyFlags(CPF_EditorOnly) ? EPropertyLocalizationGathererTextFlags::ForceEditorOnly : EPropertyLocalizationGathererTextFlags::None);
 
+	auto CanGatherFromInnerProperty = [](UProperty* InnerProperty)
+	{
+		return InnerProperty->IsA<UTextProperty>() ||
+			InnerProperty->IsA<UStructProperty>() ||
+			InnerProperty->IsA<UObjectPropertyBase>();
+	};
+
 	// Handles both native, fixed-size arrays and plain old non-array properties.
 	const bool IsFixedSizeArray = Property->ArrayDim > 1;
 	for(int32 i = 0; i < Property->ArrayDim; ++i)
@@ -239,6 +249,12 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 		// Property is a DYNAMIC array property.
 		else if (ArrayProperty)
 		{
+			// Skip arrays of types which can't contain any text.
+			if (CanGatherFromInnerProperty(ArrayProperty->Inner) == false)
+			{
+				continue;
+			}
+
 			// Iterate over all elements of the array.
 			FScriptArrayHelper ScriptArrayHelper(ArrayProperty, ElementValueAddress);
 			const int32 ElementCount = ScriptArrayHelper.Num();
@@ -250,6 +266,12 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 		// Property is a map property.
 		else if (MapProperty)
 		{
+			// Skip maps of types which can't contain any text.
+			if (CanGatherFromInnerProperty(MapProperty->KeyProp) == false && CanGatherFromInnerProperty(MapProperty->ValueProp) == false)
+			{
+				continue;
+			}
+
 			// Iterate over all elements of the map.
 			FScriptMapHelper ScriptMapHelper(MapProperty, ElementValueAddress);
 			const int32 ElementCount = ScriptMapHelper.Num();
@@ -261,14 +283,26 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 				}
 
 				const uint8* MapPairPtr = ScriptMapHelper.GetPairPtr(j);
+				if (CanGatherFromInnerProperty(MapProperty->KeyProp))
+				{
 				GatherLocalizationDataFromChildTextProperties(PathToElement + FString::Printf(TEXT("(%d - Key)"), ElementIndex), MapProperty->KeyProp, MapPairPtr + MapProperty->MapLayout.KeyOffset, nullptr, ChildPropertyGatherTextFlags);
+				}
+				if (CanGatherFromInnerProperty(MapProperty->ValueProp))
+				{
 				GatherLocalizationDataFromChildTextProperties(PathToElement + FString::Printf(TEXT("(%d - Value)"), ElementIndex), MapProperty->ValueProp, MapPairPtr + MapProperty->MapLayout.ValueOffset, nullptr, ChildPropertyGatherTextFlags);
+				}
 				++ElementIndex;
 			}
 		}
 		// Property is a set property.
 		else if (SetProperty)
 		{
+			// Skip sets of types which can't contain any text.
+			if (CanGatherFromInnerProperty(SetProperty->ElementProp) == false)
+			{
+				continue;
+			}
+
 			// Iterate over all elements of the Set.
 			FScriptSetHelper ScriptSetHelper(SetProperty, ElementValueAddress);
 			const int32 ElementCount = ScriptSetHelper.Num();
@@ -363,6 +397,17 @@ void FPropertyLocalizationDataGatherer::GatherTextInstance(const FText& Text, co
 	// Always include the text without its package localization ID
 	const FString CleanNamespace = TextNamespaceUtil::StripPackageNamespace(Namespace);
 	AddGatheredText(CleanNamespace, Key, SourceData, bIsEditorOnly);
+
+#if USE_STABLE_LOCALIZATION_KEYS
+	// Sanity check that the text we gathered has the expected package localization ID
+	{
+		const FString TextPackageNamespace = TextNamespaceUtil::ExtractPackageNamespace(Namespace);
+		if (!TextPackageNamespace.IsEmpty() && !TextPackageNamespace.Equals(PackageNamespace, ESearchCase::CaseSensitive))
+		{
+			ResultFlags |= EPropertyLocalizationGathererResultFlags::HasTextWithInvalidPackageLocalizationID;
+		}
+	}
+#endif // USE_STABLE_LOCALIZATION_KEYS
 }
 
 struct FGatherTextFromScriptBytecode
@@ -398,7 +443,7 @@ private:
 
 	#define SERIALIZEEXPR_INC
 	#define SERIALIZEEXPR_AUTO_UNDEF_XFER_MACROS
-	#include "ScriptSerialization.h"
+	#include "UObject/ScriptSerialization.h"
 		return Expr;
 	#undef SERIALIZEEXPR_INC
 	#undef SERIALIZEEXPR_AUTO_UNDEF_XFER_MACROS
@@ -437,10 +482,10 @@ private:
 			do
 			{
 				uint16 UnicodeChar = 0;
-#ifdef REQUIRES_ALIGNED_INT_ACCESS
-				FMemory::Memcpy(&UnicodeChar, &Script[iCode], sizeof(uint16));
-#else
+#if PLATFORM_SUPPORTS_UNALIGNED_LOADS
 				UnicodeChar = *((uint16*)(&Script[iCode]));
+#else
+				FMemory::Memcpy(&UnicodeChar, &Script[iCode], sizeof(uint16));				
 #endif
 				LastParsedString += (TCHAR)UnicodeChar;
 

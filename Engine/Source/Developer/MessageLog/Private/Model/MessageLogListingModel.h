@@ -52,9 +52,6 @@ public:
 	/** Returns the message at the specified index */
 	const TSharedPtr<FTokenizedMessage> GetMessageAtIndex( const uint32 PageIndex, const int32 MessageIndex ) const;
 
-	/** Tries to find the first message that matches the message data */
-	const TSharedPtr<FTokenizedMessage> GetMessageFromData( const FTokenizedMiscData& MessageData ) const;
-
 	/** Gets all messages as a string */
 	FText GetAllMessagesAsText(const uint32 PageIndex) const;
 
@@ -97,7 +94,7 @@ public:
 	/** Helper function for RemoveDuplicates(), exposed so the ViewModel can use it too */
 	static bool AreMessagesEqual(const TSharedRef< FTokenizedMessage >& Message0, const TSharedRef< FTokenizedMessage >& Message1);
 
-	/** Remove any messages that are duplicates of one another - O(n^2) */
+	/** Remove any messages that are duplicates of one another - O(n) */
 	void RemoveDuplicates(uint32 PageIndex);
 
 protected:

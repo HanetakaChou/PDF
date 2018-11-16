@@ -9,7 +9,7 @@
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
-#include "UnrealMathUtility.h"
+#include "Math/UnrealMathUtility.h"
 #include "ScenePrivate.h"
 
 SHADERCORE_API bool UsePreExposure(EShaderPlatform Platform);
@@ -44,6 +44,16 @@ TAutoConsoleVariable<float> CVarEyeAdaptationFocus(
 	TEXT(">0: Center focus, 1 is a good number (default)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
+FORCEINLINE float EV100ToLuminance(float EV100)
+{
+	return 1.2 * FMath::Pow(2.0f, EV100);
+}
+
+FORCEINLINE float EV100ToLog2(float EV100)
+{
+	return EV100 + 0.263f; // Where .263 is log2(1.2)
+}
+
 /**
  *   Shared functionality used in computing the eye-adaptation parameters
  *   Compute the parameters used for eye-adaptation.  These will default to values
@@ -51,43 +61,66 @@ TAutoConsoleVariable<float> CVarEyeAdaptationFocus(
  */
 inline static void ComputeEyeAdaptationValues(const ERHIFeatureLevel::Type MinFeatureLevel, const FViewInfo& View, FVector4 Out[EYE_ADAPTATION_PARAMS_SIZE])
 {
+	static const auto VarDefaultAutoExposureExtendDefaultLuminanceRange = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+	const bool bExtendedLuminanceRange = VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnRenderThread() == 1;
+
 	const FPostProcessSettings& Settings = View.FinalPostProcessSettings;
 	const FEngineShowFlags& EngineShowFlags = View.Family->EngineShowFlags;
 
+	// ----------
+
+	// Histogram related values.
 	float LowPercent = FMath::Clamp(Settings.AutoExposureLowPercent, 1.0f, 99.0f) * 0.01f;
 	float HighPercent = FMath::Clamp(Settings.AutoExposureHighPercent, 1.0f, 99.0f) * 0.01f;
-
-	float MinAverageLuminance = 1;
-	float MaxAverageLuminance = 1;
-
-	// This scales the average luminance after it gets clamped, affecting the exposure value directly.
-	float LocalExposureMultipler = View.Family->ExposureSettings.bFixed ? 1.f : FMath::Pow(2.0f, Settings.AutoExposureBias);
-
-	// This is used in the basic mode as a premultiplier before clamping between [MinLuminance, MaxLuminance]
-	// Because this happens before clamping, the calibration constant has no impact on fixed EV100 modes.
-	const float CalibrationConstant = FMath::Clamp<float>(Settings.AutoExposureCalibrationConstant, 1.f, 100.f) * 0.01f;
-	float AverageLuminanceScale = Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Basic ? (1.f / CalibrationConstant) : 1.f;
-
-	// example min/max: -8 .. 4   means a range from 1/256 to 4  pow(2,-8) .. pow(2,4)
-	float HistogramLogMin = Settings.HistogramLogMin;
-	float HistogramLogMax = Settings.HistogramLogMax;
+	float HistogramLogMin = bExtendedLuminanceRange ? EV100ToLog2(Settings.HistogramLogMin) : Settings.HistogramLogMin;
+	float HistogramLogMax = bExtendedLuminanceRange ? EV100ToLog2(Settings.HistogramLogMax) : Settings.HistogramLogMax;
 	HistogramLogMin = FMath::Min<float>(HistogramLogMin, HistogramLogMax - 1);
 
-	// Eye adaptation is disabled except for highend right now because the histogram is not computed.
-	if (EngineShowFlags.Lighting && EngineShowFlags.EyeAdaptation && View.GetFeatureLevel() >= MinFeatureLevel)
-	{
-		if (View.Family->ExposureSettings.bFixed || Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Manual)
-		{
-			float FixedEV100 = View.Family->ExposureSettings.bFixed ? 
-									View.Family->ExposureSettings.FixedEV100 : 
-									FMath::Log2(FMath::Square(Settings.DepthOfFieldFstop) * Settings.CameraShutterSpeed * 100 / FMath::Max(1.f, Settings.CameraISO));
+	// ----------
 
-			MinAverageLuminance = MaxAverageLuminance = 1.2f * FMath::Pow(2.0f, FixedEV100);
+	// Those clamps the average luminance computed from the scene color.
+	float MinAverageLuminance = 1;
+	float MaxAverageLuminance = 1;
+	// This scales the average luminance AFTER it gets clamped, affecting the exposure value directly.
+	float LocalExposureMultipler = FMath::Pow(2.0f, Settings.AutoExposureBias);
+	// This scales the average luminance BEFORE it gets clamped, used to implement the calibration constant for AEM_Basic.
+	float AverageLuminanceScale = 1.f;
+
+	// When any of those flags are set, make sure the tonemapper uses an exposure of 1.
+	if (!EngineShowFlags.Lighting || (EngineShowFlags.VisualizeBuffer && View.CurrentBufferVisualizationMode != NAME_None) || View.Family->UseDebugViewPS())
+	{
+		LocalExposureMultipler = 1.f;
+	}
+	// Otherwise handle the viewport override settings.
+	else if (View.Family->ExposureSettings.bFixed)
+	{
+		LocalExposureMultipler = 1.f;
+		MinAverageLuminance = MaxAverageLuminance = EV100ToLuminance(View.Family->ExposureSettings.FixedEV100);
+	}
+	// When !EngineShowFlags.EyeAdaptation (from "r.EyeAdaptationQuality 0") or the feature level doesn't support eye adaptation, only Settings.AutoExposureBias controls exposure.
+	else if (EngineShowFlags.EyeAdaptation && View.GetFeatureLevel() >= MinFeatureLevel)
+	{
+		if (Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Manual)
+		{
+			const float FixedEV100 = FMath::Log2(FMath::Square(Settings.DepthOfFieldFstop) * Settings.CameraShutterSpeed * 100 / FMath::Max(1.f, Settings.CameraISO));
+			MinAverageLuminance = MaxAverageLuminance = EV100ToLuminance(FixedEV100);
+		}
+		else if (bExtendedLuminanceRange)
+		{
+			MinAverageLuminance = EV100ToLuminance(Settings.AutoExposureMinBrightness);
+			MaxAverageLuminance = EV100ToLuminance(Settings.AutoExposureMaxBrightness);
 		}
 		else
 		{
 			MinAverageLuminance = Settings.AutoExposureMinBrightness;
 			MaxAverageLuminance = Settings.AutoExposureMaxBrightness;
+		}
+
+		// Note that AEM_Histogram implements the calibration constant through LowPercent and HiPercent.
+		if (Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Basic)
+		{
+			const float CalibrationConstant = FMath::Clamp<float>(Settings.AutoExposureCalibrationConstant, 1.f, 100.f) * 0.01f;
+			AverageLuminanceScale = 1.f / CalibrationConstant;
 		}
 	}
 
@@ -353,7 +386,7 @@ void FRCPassPostProcessEyeAdaptation::Process(FRenderingCompositePassContext& Co
 			*VertexShader,
 			EDRF_UseTriangleOptimization);
 
-		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 
 		// Inform MultiGPU systems that we've finished updating this texture for this frame
 		Context.RHICmdList.EndUpdateMultiFrameResource(DestRenderTarget.ShaderResourceTexture);
@@ -409,7 +442,7 @@ void FSceneViewState::UpdatePreExposure(FViewInfo& View)
 	{
 		const FSceneViewFamily& ViewFamily = *View.Family;
 
-		if (!IsRichView(ViewFamily) && !ViewFamily.EngineShowFlags.VisualizeHDR && !ViewFamily.EngineShowFlags.VisualizeBloom && ViewFamily.EngineShowFlags.PostProcessing && ViewFamily.bResolveScene)
+		if (!IsRichView(ViewFamily) /*&& !ViewFamily.EngineShowFlags.VisualizeHDR */&& !ViewFamily.EngineShowFlags.VisualizeBloom && ViewFamily.EngineShowFlags.PostProcessing && ViewFamily.bResolveScene)
 		{
 			const float PreExposureOverride = CVarEyeAdaptationPreExposureOverride.GetValueOnRenderThread();
 			const float LastExposure = View.GetLastEyeAdaptationExposure();
@@ -562,7 +595,7 @@ void FRCPassPostProcessBasicEyeAdaptationSetUp::Process(FRenderingCompositePassC
 		Context.HasHmdMesh(),
 		EDRF_UseTriangleOptimization);
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 }
 
 FPooledRenderTargetDesc FRCPassPostProcessBasicEyeAdaptationSetUp::ComputeOutputDesc(EPassOutputId InPassOutputId) const
@@ -736,7 +769,7 @@ void FRCPassPostProcessBasicEyeAdaptation::Process(FRenderingCompositePassContex
 		*VertexShader,
 		EDRF_UseTriangleOptimization);
 
-	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
+	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, FResolveParams());
 
 	// Inform MultiGPU systems that we've finished with this texture for this frame
 	Context.RHICmdList.EndUpdateMultiFrameResource(DestRenderTarget.ShaderResourceTexture);
@@ -781,7 +814,7 @@ void FSceneViewState::FEyeAdaptationRTManager::SwapRTs(bool bInUpdateLastExposur
 		}
 
 		// Transfer memory GPU -> CPU
-		RHICmdList.CopyToResolveTarget(PooledRenderTarget[CurrentBuffer]->GetRenderTargetItem().TargetableTexture, StagingBuffers[CurrentStagingBuffer]->GetRenderTargetItem().ShaderResourceTexture, false, FResolveParams());
+		RHICmdList.CopyToResolveTarget(PooledRenderTarget[CurrentBuffer]->GetRenderTargetItem().TargetableTexture, StagingBuffers[CurrentStagingBuffer]->GetRenderTargetItem().ShaderResourceTexture, FResolveParams());
 
 		// Take the oldest buffer and read it
 		const int32 NextStagingBuffer = (CurrentStagingBuffer + 1) % NUM_STAGING_BUFFERS;
@@ -805,12 +838,12 @@ void FSceneViewState::FEyeAdaptationRTManager::SwapRTs(bool bInUpdateLastExposur
 	CurrentBuffer = 1 - CurrentBuffer;
 }
 
-TRefCountPtr<IPooledRenderTarget>&  FSceneViewState::FEyeAdaptationRTManager::GetRTRef(FRHICommandList& RHICmdList, const int BufferNumber)
+TRefCountPtr<IPooledRenderTarget>&  FSceneViewState::FEyeAdaptationRTManager::GetRTRef(FRHICommandList* RHICmdList, const int BufferNumber)
 {
 	check(BufferNumber == 0 || BufferNumber == 1);
 
 	// Create textures if needed.
-	if (!PooledRenderTarget[BufferNumber].IsValid())
+	if (!PooledRenderTarget[BufferNumber].IsValid() && RHICmdList)
 	{
 		// Create the texture needed for EyeAdaptation
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(1, 1), PF_G32R32F, FClearValueBinding::None, TexCreate_None, TexCreate_RenderTargetable, false));
@@ -818,7 +851,7 @@ TRefCountPtr<IPooledRenderTarget>&  FSceneViewState::FEyeAdaptationRTManager::Ge
 		{
 			Desc.TargetableFlags |= TexCreate_UAV;
 		}
-		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, PooledRenderTarget[BufferNumber], TEXT("EyeAdaptation"), true, ERenderTargetTransience::NonTransient);
+		GRenderTargetPool.FindFreeElement(*RHICmdList, Desc, PooledRenderTarget[BufferNumber], TEXT("EyeAdaptation"), true, ERenderTargetTransience::NonTransient);
 	}
 
 	return PooledRenderTarget[BufferNumber];

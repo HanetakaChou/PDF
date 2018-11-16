@@ -28,6 +28,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Misc/HotReloadInterface.h"
 #include "UObject/UObjectThreadContext.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(LogScriptFrame);
 DEFINE_LOG_CATEGORY_STATIC(LogScriptCore, Log, All);
@@ -40,6 +41,30 @@ DECLARE_CYCLE_STAT(TEXT("Blueprint Time"), STAT_BlueprintTime, STATGROUP_Game);
 DEFINE_STAT(STAT_ScriptVmTime_Total);
 DEFINE_STAT(STAT_ScriptNativeTime_Total);
 #endif //TOTAL_OVERHEAD_SCRIPT_STATS
+
+static int32 GVerboseScriptStats = 0;
+static FAutoConsoleVariableRef CVarVerboseScriptStats(
+	TEXT("bp.VerboseStats"),
+	GVerboseScriptStats,
+	TEXT("Create additional stats for Blueprint execution.\n"),
+	ECVF_Default
+);
+
+#if USE_UBER_GRAPH_PERSISTENT_FRAME
+// Mirror definition of FPointerToUberGraphFrame, it is a UStruct and
+// we cannot easily generate its reflection data here in CoreUObject. The
+// builtins pattern we use for FVector, FQuat etc cannot be used because
+// our only member is a raw pointer and it cannot be a UProperty. This
+// creates difficulty in determining the correct size for the UStruct
+struct FPointerToUberGraphFrameCoreUObject
+{
+	uint8* RawPointer;
+
+#if VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
+	uint32 UberGraphFunctionKey;
+#endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
+};
+#endif //USE_UBER_GRAPH_PERSISTENT_FRAME
 
 /*-----------------------------------------------------------------------------
 	Globals.
@@ -175,29 +200,29 @@ void FBlueprintCoreDelegates::SetScriptMaximumLoopIterations( const int32 Maximu
 	}
 }
 
+#if DO_BLUEPRINT_GUARD
+
 // This is meant to be called from the immediate mode, and for confusing reasons the optimized code isn't always safe in that case
 PRAGMA_DISABLE_OPTIMIZATION
 
 void PrintScriptCallStackImpl()
 {
-#if DO_BLUEPRINT_GUARD
-	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
-	if( BlueprintExceptionTracker.ScriptStack.Num() > 0 )
+	const FBlueprintExceptionTracker* BlueprintExceptionTracker = FBlueprintExceptionTracker::TryGet();
+	if (BlueprintExceptionTracker)
 	{
-		FString ScriptStack = TEXT( "\n\nScript Stack:\n" );
-		for (int32 FrameIdx = BlueprintExceptionTracker.ScriptStack.Num() - 1; FrameIdx >= 0; --FrameIdx)
+		FString ScriptStack = FString::Printf(TEXT("\n\nScript Stack (%d frames):\n"), BlueprintExceptionTracker->ScriptStack.Num());
+		for (int32 FrameIdx = BlueprintExceptionTracker->ScriptStack.Num() - 1; FrameIdx >= 0; --FrameIdx)
 		{
-			ScriptStack += BlueprintExceptionTracker.ScriptStack[FrameIdx]->GetStackDescription() + TEXT( "\n" );
+			ScriptStack += BlueprintExceptionTracker->ScriptStack[FrameIdx]->GetStackDescription() + TEXT("\n");
 		}
-
-		UE_LOG( LogOutputDevice, Warning, TEXT( "%s" ), *ScriptStack );
+		UE_LOG(LogOutputDevice, Warning, TEXT("%s"), *ScriptStack);
 	}
-#endif
 }
 
 PRAGMA_ENABLE_OPTIMIZATION
 
 extern CORE_API void (*GPrintScriptCallStackFn)();
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // FEditorScriptExecutionGuard
@@ -209,8 +234,6 @@ FEditorScriptExecutionGuard::FEditorScriptExecutionGuard()
 	if( GIsEditor && !FApp::IsGame() )
 	{
 		GInitRunaway();
-		
-		GPrintScriptCallStackFn = &PrintScriptCallStackImpl;
 	}
 }
 
@@ -302,6 +325,33 @@ FString UnicodeToCPPIdentifier(const FString& InName, bool bDeprecated, const TC
 	return bDeprecated ? Ret + TEXT("_DEPRECATED") : Ret;
 }
 
+#if USE_UBER_GRAPH_PERSISTENT_FRAME
+/** Returns memory used to store temporary data on an instance, used by blueprints */
+static uint8* GetPersistentUberGraphFrameUnchecked(const UFunction* ForFn, UObject* Obj)
+{
+	const UClass* FromClass = ForFn->GetOuterUClassUnchecked();
+	checkSlow(ForFn->HasAnyFunctionFlags(FUNC_UbergraphFunction));
+	checkSlow(Obj->IsA(FromClass));
+	checkSlow(FromClass->UberGraphFramePointerProperty);
+	FPointerToUberGraphFrameCoreUObject* PointerToUberGraphFrame =
+		FromClass->UberGraphFramePointerProperty->ContainerPtrToValuePtr<FPointerToUberGraphFrameCoreUObject>(
+			(void*)Obj
+		);
+	checkSlow(PointerToUberGraphFrame);
+	checkSlow(PointerToUberGraphFrame->RawPointer);
+	return PointerToUberGraphFrame->RawPointer;
+}
+
+uint8* GetPersistentUberGraphFrame(const UFunction* ForFn, UObject* Obj)
+{
+	if (ForFn->HasAnyFunctionFlags(FUNC_UbergraphFunction))
+	{
+		return GetPersistentUberGraphFrameUnchecked(ForFn, Obj);
+	}
+	return nullptr;
+}
+#endif //USE_UBER_GRAPH_PERSISTENT_FRAME
+
 /*-----------------------------------------------------------------------------
 	FFrame implementation.
 -----------------------------------------------------------------------------*/
@@ -388,6 +438,13 @@ FString FFrame::GetStackDescription() const
 	return Node->GetOuter()->GetName() + TEXT(".") + Node->GetName();
 }
 
+#if DO_BLUEPRINT_GUARD
+void FFrame::InitPrintScriptCallstack()
+{
+	GPrintScriptCallStackFn = &PrintScriptCallStackImpl;
+}
+#endif
+
 //
 // Error or warning handler.
 //
@@ -417,10 +474,10 @@ void FFrame::KismetExecutionMessage(const TCHAR* Message, ELogVerbosity::Type Ve
 	FString ScriptStack;
 
 	// Tracking down some places that display warnings but no message..
-	ensure(Verbosity > ELogVerbosity::Warning || FCString::Strlen(Message) > 0);
+	ensureAlways(Verbosity > ELogVerbosity::Warning || FCString::Strlen(Message) > 0);
 
 #if DO_BLUEPRINT_GUARD
-	// Show the stackfor fatal/error, and on warning if that option is enabled
+	// Show the stack for fatal/error, and on warning if that option is enabled
 	if (Verbosity <= ELogVerbosity::Error || (ShowKismetScriptStackOnWarnings() && Verbosity == ELogVerbosity::Warning))
 	{
 		ScriptStack = TEXT("Script call stack:\n");
@@ -432,17 +489,14 @@ void FFrame::KismetExecutionMessage(const TCHAR* Message, ELogVerbosity::Type Ve
 	{
 		UE_LOG(LogScriptCore, Fatal, TEXT("Script Msg: %s\n%s"), Message, *ScriptStack);
 	}
-#if !NO_LOGGING
+#if NO_LOGGING
+	else
+#else
 	else if (!LogScriptCore.IsSuppressed(Verbosity))
-	{
-		// Call directly so we can pass verbosity through
-		FMsg::Logf_Internal(__FILE__, __LINE__, LogScriptCore.GetCategoryName(), Verbosity, TEXT("Script Msg: %s"), Message);
-		if (!ScriptStack.IsEmpty())
-		{
-			FMsg::Logf_Internal(__FILE__, __LINE__, LogScriptCore.GetCategoryName(), Verbosity, TEXT("%s"), *ScriptStack);
-		}
-	}	
 #endif
+	{
+		FScriptExceptionHandler::Get().HandleException(Verbosity, Message, *ScriptStack);
+	}
 }
 
 void FFrame::Serialize( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category )
@@ -682,11 +736,12 @@ DEFINE_FUNCTION(UObject::execCallMathFunction)
 	UFunction* Function = (UFunction*)Stack.ReadObject();
 	checkSlow(Function);
 	checkSlow(Function->FunctionFlags & FUNC_Native);
-	UObject* NewContext = Function->GetOuterUClass()->GetDefaultObject(false);
+	UObject* NewContext = Function->GetOuterUClassUnchecked()->ClassDefaultObject;
 	checkSlow(NewContext);
 	{
-		FScopeCycleCounterUObject ContextScope(Stack.Object);
+#if PER_FUNCTION_SCRIPT_STATS
 		FScopeCycleCounterUObject FunctionScope(Function);
+#endif // PER_FUNCTION_SCRIPT_STATS
 
 		// CurrentNativeFunction is used so far only by FLuaContext::InvokeScriptFunction
 		// TGuardValue<UFunction*> NativeFuncGuard(Stack.CurrentNativeFunction, Function);
@@ -706,7 +761,7 @@ void UObject::CallFunction( FFrame& Stack, RESULT_DECL, UFunction* Function )
 #endif // PER_FUNCTION_SCRIPT_STATS
 
 #if STATS || ENABLE_STATNAMEDEVENTS
-	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
+	const bool bShouldTrackObject = GVerboseScriptStats && Stats::IsThreadCollectingData();
 	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? this : nullptr);
 #endif
 
@@ -757,9 +812,7 @@ void UObject::CallFunction( FFrame& Stack, RESULT_DECL, UFunction* Function )
 			}
 
 			// Call regular native function.
-			FScopeCycleCounterUObject NativeContextScope(Stack.Object);
-			FScopeCycleCounterUObject NativeFunctionScope(Function);
-
+			FScopeCycleCounterUObject NativeContextScope(GVerboseScriptStats ? Stack.Object : nullptr);
 			Function->Invoke(this, Stack, RESULT_PARAM);
 		}
 		else
@@ -772,7 +825,7 @@ void UObject::CallFunction( FFrame& Stack, RESULT_DECL, UFunction* Function )
 	{
 		uint8* Frame = NULL;
 #if USE_UBER_GRAPH_PERSISTENT_FRAME
-		Frame = GetClass()->GetPersistentUberGraphFrame(this, Function);
+		Frame = GetPersistentUberGraphFrame(Function, this);
 #endif
 		const bool bUsePersistentFrame = (NULL != Frame);
 		if (!bUsePersistentFrame)
@@ -917,6 +970,7 @@ void ClearReturnValue(UProperty* ReturnProp, RESULT_DECL)
 
 DEFINE_FUNCTION(UObject::ProcessInternal)
 {
+#if DO_BLUEPRINT_GUARD
 	// remove later when stable
 	if (P_THIS->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists))
 	{
@@ -926,18 +980,9 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 		}
 		return;
 	}
+#endif
 
 	UFunction* Function = (UFunction*)Stack.Node;
-
-#if PER_FUNCTION_SCRIPT_STATS
-	const bool bShouldTrackFunction = Stats::IsThreadCollectingData();
-	FScopeCycleCounterUObject FunctionScope(bShouldTrackFunction ? Function : nullptr);
-#endif // PER_FUNCTION_SCRIPT_STATS
-
-#if STATS || ENABLE_STATNAMEDEVENTS
-	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
-	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? P_THIS : nullptr);
-#endif
 
 	int32 FunctionCallspace = P_THIS->GetFunctionCallspace(Function, Stack.Locals, NULL);
 	if (FunctionCallspace & FunctionCallspace::Remote)
@@ -951,14 +996,15 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 		MS_ALIGN(16) uint8 Buffer[MAX_SIMPLE_RETURN_VALUE_SIZE] GCC_ALIGN(16);
 
 #if DO_BLUEPRINT_GUARD
-		if(FBlueprintExceptionTracker::Get().bRanaway)
+		FBlueprintExceptionTracker& BpET = FBlueprintExceptionTracker::Get();
+		if(BpET.bRanaway)
 		{
 			// If we have a return property, return a zeroed value in it, to try and save execution as much as possible
 			UProperty* ReturnProp = (Function)->GetReturnProperty();
 			ClearReturnValue(ReturnProp, RESULT_PARAM);
 			return;
 		}
-		else if (++FBlueprintExceptionTracker::Get().Recurse == RECURSE_LIMIT)
+		else if (++BpET.Recurse == RECURSE_LIMIT)
 		{
 			// If we have a return property, return a zeroed value in it, to try and save execution as much as possible
 			UProperty* ReturnProp = (Function)->GetReturnProperty();
@@ -976,7 +1022,7 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 
 			// This flag prevents repeated warnings of infinite loop, script exception handler 
 			// is expected to have terminated execution appropriately:
-			FBlueprintExceptionTracker::Get().bRanaway = true;
+			BpET.bRanaway = true;
 
 			return;
 		}
@@ -985,7 +1031,7 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 		while (*Stack.Code != EX_Return)
 		{
 #if DO_BLUEPRINT_GUARD
-			if( FBlueprintExceptionTracker::Get().Runaway > GMaximumScriptLoopIterations )
+			if(BpET.Runaway > GMaximumScriptLoopIterations )
 			{
 				// If we have a return property, return a zeroed value in it, to try and save execution as much as possible
 				UProperty* ReturnProp = (Function)->GetReturnProperty();
@@ -1002,7 +1048,7 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 
 				// Need to reset Runaway counter BEFORE throwing script exception, because the exception causes a modal dialog,
 				// and other scripts running will then erroneously think they are also "runaway".
-				FBlueprintExceptionTracker::Get().Runaway = 0;
+				BpET.Runaway = 0;
 
 				FBlueprintCoreDelegates::ThrowScriptException(P_THIS, Stack, RunawayLoopExceptionInfo);
 				return;
@@ -1025,7 +1071,7 @@ DEFINE_FUNCTION(UObject::ProcessInternal)
 		}
 
 #if DO_BLUEPRINT_GUARD
-		--FBlueprintExceptionTracker::Get().Recurse;
+		--BpET.Recurse;
 #endif
 	}
 	else
@@ -1184,10 +1230,110 @@ UFunction* UObject::FindFunctionChecked( FName InName ) const
 	return Result;
 }
 
+#if TOTAL_OVERHEAD_SCRIPT_STATS
+void FBlueprintEventTimer::FPausableScopeTimer::Start()
+{
+	FPausableScopeTimer*& ActiveTimer = FThreadedTimerManager::Get().ActiveTimer;
+
+	double CurrentTime = FPlatformTime::Seconds();
+	if (ActiveTimer)
+	{
+		ActiveTimer->Pause(CurrentTime);
+	}
+
+	PreviouslyActiveTimer = ActiveTimer;
+	StartTime = CurrentTime;
+	TotalTime = 0.0;
+
+	ActiveTimer = this;
+}
+
+double FBlueprintEventTimer::FPausableScopeTimer::Stop()
+{
+	if (PreviouslyActiveTimer)
+	{
+		PreviouslyActiveTimer->Resume();
+	}
+	FThreadedTimerManager::Get().ActiveTimer = PreviouslyActiveTimer;
+	return TotalTime + (FPlatformTime::Seconds() - StartTime);
+}
+
+FBlueprintEventTimer::FScopedVMTimer::FScopedVMTimer()
+	: Timer()
+	, VMParent(nullptr)
+{
+	if (IsInGameThread())
+	{
+		FScopedVMTimer*& ActiveVMTimer = FThreadedTimerManager::Get().ActiveVMScope;
+		VMParent = ActiveVMTimer;
+
+		ActiveVMTimer = this;
+		Timer.Start();
+	}
+}
+
+FBlueprintEventTimer::FScopedVMTimer::~FScopedVMTimer()
+{
+	if (IsInGameThread())
+	{
+		INC_FLOAT_STAT_BY(STAT_ScriptVmTime_Total, Timer.Stop() * 1000.0);
+		FThreadedTimerManager::Get().ActiveVMScope = VMParent;
+	}
+}
+
+FBlueprintEventTimer::FScopedNativeTimer::FScopedNativeTimer()
+	: Timer()
+{
+	if (IsInGameThread())
+	{
+		Timer.Start();
+	}
+}
+
+FBlueprintEventTimer::FScopedNativeTimer::~FScopedNativeTimer()
+{
+	if (IsInGameThread())
+	{
+		if (FThreadedTimerManager::Get().ActiveVMScope)
+		{
+			if (IsInGameThread())
+			{
+				INC_FLOAT_STAT_BY(STAT_ScriptNativeTime_Total, Timer.Stop()* 1000.0);
+			}
+		}
+	}
+}
+
+#endif
+
+// Switch for a lightweight process event counter, useful when disabling the blueprint guard
+// which can taint profiling results:
+#define LIGHTWEIGHT_PROCESS_EVENT_COUNTER 0 && !DO_BLUEPRINT_GUARD
+
+#if LIGHTWEIGHT_PROCESS_EVENT_COUNTER
+thread_local int32 ProcessEventCounter = 0;
+#endif
+
 void UObject::ProcessEvent( UFunction* Function, void* Parms )
 {
 	checkf(!IsUnreachable(),TEXT("%s  Function: '%s'"), *GetFullName(), *Function->GetPathName());
 	checkf(!FUObjectThreadContext::Get().IsRoutingPostLoad, TEXT("Cannot call UnrealScript (%s - %s) while PostLoading objects"), *GetFullName(), *Function->GetFullName());
+
+#if LIGHTWEIGHT_PROCESS_EVENT_COUNTER
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_BlueprintTime, IsInGameThread() && ProcessEventCounter == 0);
+	TGuardValue<int32> PECounter(ProcessEventCounter, ProcessEventCounter+1);
+#endif
+
+#if DO_BLUEPRINT_GUARD
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
+	TGuardValue<int32> EntryCounter( BlueprintExceptionTracker.ScriptEntryTag, BlueprintExceptionTracker.ScriptEntryTag+1);
+
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_BlueprintTime, IsInGameThread() && BlueprintExceptionTracker.ScriptEntryTag == 1);
+#endif
+
+#if TOTAL_OVERHEAD_SCRIPT_STATS
+	FBlueprintEventTimer::FScopedVMTimer VMTime;
+#endif // TOTAL_OVERHEAD_SCRIPT_STATS
 
 	// Reject.
 	if (IsPendingKill())
@@ -1227,25 +1373,14 @@ void UObject::ProcessEvent( UFunction* Function, void* Parms )
 	}
 	checkSlow((Function->ParmsSize == 0) || (Parms != NULL));
 
-#if TOTAL_OVERHEAD_SCRIPT_STATS
-	FBlueprintEventTimer::FScopedVMTimer VMTime;
-#endif // TOTAL_OVERHEAD_SCRIPT_STATS
-
 #if PER_FUNCTION_SCRIPT_STATS
 	const bool bShouldTrackFunction = Stats::IsThreadCollectingData();
 	FScopeCycleCounterUObject FunctionScope(bShouldTrackFunction ? Function : nullptr);
 #endif // PER_FUNCTION_SCRIPT_STATS
 
 #if STATS || ENABLE_STATNAMEDEVENTS
-	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
+	const bool bShouldTrackObject = GVerboseScriptStats && Stats::IsThreadCollectingData();
 	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? this : nullptr);
-#endif
-
-#if DO_BLUEPRINT_GUARD
-	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
-	BlueprintExceptionTracker.ScriptEntryTag++;
-
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_BlueprintTime, BlueprintExceptionTracker.ScriptEntryTag == 1);
 #endif
 
 #if UE_BLUEPRINT_EVENTGRAPH_FASTCALLS
@@ -1269,7 +1404,7 @@ void UObject::ProcessEvent( UFunction* Function, void* Parms )
 	{
 		uint8* Frame = NULL;
 #if USE_UBER_GRAPH_PERSISTENT_FRAME
-		Frame = GetClass()->GetPersistentUberGraphFrame(this, Function);
+		Frame = GetPersistentUberGraphFrame(Function, this);
 #endif
 		const bool bUsePersistentFrame = (NULL != Frame);
 		if (!bUsePersistentFrame)
@@ -1364,10 +1499,6 @@ void UObject::ProcessEvent( UFunction* Function, void* Parms )
 #if WITH_EDITORONLY_DATA
 	FBlueprintCoreDelegates::OnScriptExecutionEnd.Broadcast();
 #endif
-#endif
-
-#if DO_BLUEPRINT_GUARD
-	--BlueprintExceptionTracker.ScriptEntryTag;
 #endif
 }
 
@@ -1805,12 +1936,13 @@ DEFINE_FUNCTION(UObject::execLetValueOnPersistentFrame)
 	Stack.MostRecentProperty = NULL;
 	Stack.MostRecentPropertyAddress = NULL;
 
-	auto DestProperty = Stack.ReadProperty();
+	UProperty* DestProperty = Stack.ReadProperty();
 	checkSlow(DestProperty);
-	auto UberGraphFunction = CastChecked<UFunction>(DestProperty->GetOwnerStruct());
-	auto FrameBase = Stack.Object->GetClass()->GetPersistentUberGraphFrame(Stack.Object, UberGraphFunction);
+	UFunction* UberGraphFunction = CastChecked<UFunction>(DestProperty->GetOwnerStruct());
+	checkSlow(Stack.Object->GetClass()->IsChildOf(UberGraphFunction->GetOuterUClassUnchecked()));
+	uint8* FrameBase = GetPersistentUberGraphFrameUnchecked(UberGraphFunction, Stack.Object);
 	checkSlow(FrameBase);
-	auto DestAddress = DestProperty->ContainerPtrToValuePtr<uint8>(FrameBase);
+	uint8* DestAddress = DestProperty->ContainerPtrToValuePtr<uint8>(FrameBase);
 
 	Stack.Step(Stack.Object, DestAddress);
 #else

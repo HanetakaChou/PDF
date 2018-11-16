@@ -5,7 +5,7 @@
 
 FString FOnlineAsyncTaskSteamReadSharedFile::ToString() const
 {
-	return FString::Printf(TEXT("FOnlineAsyncTaskSteamReadSharedFile bWasSuccessful: %d Handle: %s"), bWasSuccessful, *SharedHandle.ToDebugString());
+	return FString::Printf(TEXT("FOnlineAsyncTaskSteamReadSharedFile bWasSuccessful: %d Handle: %s"), WasSuccessful(), *SharedHandle.ToDebugString());
 }
 
 void FOnlineAsyncTaskSteamReadSharedFile::Tick()
@@ -25,12 +25,12 @@ void FOnlineAsyncTaskSteamReadSharedFile::Tick()
 			}
 			else
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Steam user not logged in."));
+				UE_LOG_ONLINE_CLOUD(Warning, TEXT("Steam user not logged in."));
 			}
 		}
 		else
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Steam remote storage API disabled."));
+			UE_LOG_ONLINE_CLOUD(Warning, TEXT("Steam remote storage API disabled."));
 		}
 
 		bInit = true;
@@ -113,7 +113,7 @@ void FOnlineAsyncTaskSteamReadSharedFile::TriggerDelegates()
 FString FOnlineAsyncTaskSteamWriteSharedFile::ToString() const
 {
 	return FString::Printf(TEXT("FOnlineAsyncTaskSteamWriteSharedFile bWasSuccessful:%d UserId:%s FileName:%s Handle:%s"),
-								bWasSuccessful, *UserId.ToDebugString(), *FileName, *FSharedContentHandleSteam(CallbackResults.m_hFile).ToDebugString());
+								WasSuccessful(), *UserId.ToDebugString(), *FileName, *FSharedContentHandleSteam(CallbackResults.m_hFile).ToDebugString());
 }
 
 void FOnlineAsyncTaskSteamWriteSharedFile::Tick()

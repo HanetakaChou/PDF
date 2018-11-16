@@ -34,11 +34,9 @@ public class Vorbis : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			PublicAdditionalLibraries.AddRange(
-				new string[] {
-					VorbisPath + "macosx/libvorbis.dylib",
-				}
-			);
+			string DylibPath = Target.UEThirdPartyBinariesDirectory + "Vorbis/Mac/libvorbis.dylib";
+			PublicDelayLoadDLLs.Add(DylibPath);
+			RuntimeDependencies.Add(DylibPath);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.HTML5)
 		{
@@ -63,7 +61,7 @@ public class Vorbis : ModuleRules
 			}
 			PublicAdditionalLibraries.Add(VorbisLibPath + "libvorbis" + OpimizationSuffix + ".bc");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Android)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
 			// toolchain will filter
 			PublicLibraryPaths.Add(VorbisPath + "lib/Android/ARMv7");
@@ -73,7 +71,7 @@ public class Vorbis : ModuleRules
 
 			PublicAdditionalLibraries.Add("vorbis");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Linux)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			PublicAdditionalLibraries.Add(VorbisPath + "lib/Linux/" + Target.Architecture + "/libvorbis.a");
 		}

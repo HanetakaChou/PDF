@@ -12,6 +12,7 @@
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Evaluation/PersistentEvaluationData.h"
 #include "MovieSceneSequencePlayer.h"
+#include "Misc/QualifiedFrameTime.h"
 #include "LevelSequence.h"
 #include "LevelSequencePlayer.generated.h"
 
@@ -33,10 +34,10 @@ struct FLevelSequenceSnapshotSettings
 	GENERATED_BODY()
 
 	FLevelSequenceSnapshotSettings()
-		: ZeroPadAmount(4), FrameRate(30)
+		: ZeroPadAmount(4), FrameRate(30, 1)
 	{}
 
-	FLevelSequenceSnapshotSettings(int32 InZeroPadAmount, float InFrameRate)
+	FLevelSequenceSnapshotSettings(int32 InZeroPadAmount, FFrameRate InFrameRate)
 		: ZeroPadAmount(InZeroPadAmount), FrameRate(InFrameRate)
 	{}
 
@@ -46,7 +47,7 @@ struct FLevelSequenceSnapshotSettings
 
 	/** Playback framerate */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	float FrameRate;
+	FFrameRate FrameRate;
 };
 
 /**
@@ -61,13 +62,22 @@ struct FLevelSequencePlayerSnapshot
 	FString MasterName;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	float MasterTime;
+	FQualifiedFrameTime MasterTime;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
+	FQualifiedFrameTime SourceTime;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
 	FString CurrentShotName;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	float CurrentShotLocalTime;
+	FQualifiedFrameTime CurrentShotLocalTime;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
+	FQualifiedFrameTime CurrentShotSourceTime;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
+	FString SourceTimecode;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
 	UCameraComponent* CameraComponent;
@@ -132,13 +142,15 @@ public:
 	DEPRECATED(4.15, "Please use GetSequence instead.")
 	ULevelSequence* GetLevelSequence() const { return Cast<ULevelSequence>(Sequence); }
 
+	// IMovieScenePlayer interface
+	virtual UObject* GetPlaybackContext() const override;
+	virtual TArray<UObject*> GetEventContexts() const override;
+
 protected:
 
 	// IMovieScenePlayer interface
 	virtual void UpdateCameraCut(UObject* CameraObject, UObject* UnlockIfCameraObject, bool bJumpCut) override;
 	virtual void NotifyBindingUpdate(const FGuid& InGuid, FMovieSceneSequenceIDRef InSequenceID, TArrayView<TWeakObjectPtr<>> Objects) override;
-	virtual UObject* GetPlaybackContext() const override;
-	virtual TArray<UObject*> GetEventContexts() const override;
 
 	//~ UMovieSceneSequencePlayer interface
 	virtual bool CanPlay() const override;
@@ -160,8 +172,8 @@ public:
 	/** Take a snapshot of the current state of this player */
 	void TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSnapshot) const;
 
-	/** Set the offset time for the snapshot */
-	void SetSnapshotOffsetTime(float InTime) {SnapshotOffsetTime = TOptional<float>(InTime); }
+	/** Set the offset time for the snapshot in play rate frames. */
+	void SetSnapshotOffsetFrames(int32 InFrameOffset) { SnapshotOffsetTime = TOptional<int32>(InFrameOffset); }
 
 private:
 
@@ -183,7 +195,7 @@ protected:
 	/** How to take snapshots */
 	FLevelSequenceSnapshotSettings SnapshotSettings;
 
-	TOptional<float> SnapshotOffsetTime;
+	TOptional<int32> SnapshotOffsetTime;
 
 	TWeakObjectPtr<UCameraComponent> CachedCameraComponent;
 

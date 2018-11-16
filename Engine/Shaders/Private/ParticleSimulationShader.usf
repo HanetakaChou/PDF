@@ -5,6 +5,7 @@
 ==============================================================================*/
 
 #include "Common.ush"
+#include "SceneTexturesCommon.ush"
 
 #if DISTANCE_FIELD_COLLISION
 	#include "GlobalDistanceFieldShared.ush"
@@ -25,21 +26,26 @@ struct FShaderInterpolants
 
 /*------------------------------------------------------------------------------
 	Vertex shader.
-
-	Compile time parameters:
-		TILE_SIZE_X - The width of a particle tile in the texture.
-		TILE_SIZE_Y - The height of a particle tile in the texture.
 ------------------------------------------------------------------------------*/
 #if VERTEXSHADER
 
+/** The width and height of a tile in the particle simulation texture */
+float TileSizeX;
+float TileSizeY;
+
 struct FVertexInput
 {
+	/** The texture coordinate. */
+	float2 TexCoord	: ATTRIBUTE0;
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	/** Unique vertex ID. */
 	uint VertexId	: SV_VertexID;
 	/** Unique instance ID. */
 	uint InstanceId	: SV_InstanceID;
-	/** The texture coordinate. */
-	float2 TexCoord	: ATTRIBUTE0;
+#else // Mobile
+	/** Tile offsets in per-instance data */
+	float2 TileOffsets : ATTRIBUTE1;
+#endif
 };
 
 /** Buffer from which to read tile offsets. */
@@ -51,9 +57,14 @@ void VertexMain(
 	out float4 OutPosition : SV_POSITION
 	)
 {
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	uint InstanceId = Input.InstanceId * TILES_PER_INSTANCE + Input.VertexId / 4;
+	float2 TileOffset = TileOffsets[InstanceId];
+#else
+	float2 TileOffset = Input.TileOffsets.xy;
+#endif
 	
-float2 TileCoord = Input.TexCoord.xy * float2(TILE_SIZE_X,TILE_SIZE_Y) + TileOffsets[InstanceId];
+	float2 TileCoord = Input.TexCoord.xy * float2(TileSizeX,TileSizeY) + TileOffset;
 
 	OutPosition = float4(
 		TileCoord.xy * float2(2.0f,-2.0f) + float2(-1.0f,1.0f),
@@ -73,12 +84,14 @@ float2 TileCoord = Input.TexCoord.xy * float2(TILE_SIZE_X,TILE_SIZE_Y) + TileOff
 /** Define to 1 to force no collision in the shader. */
 #define FORCE_NO_COLLISION 0
 
-#if FORCE_NO_COLLISION || FEATURE_LEVEL < FEATURE_LEVEL_SM4
+#if FORCE_NO_COLLISION || (FEATURE_LEVEL < FEATURE_LEVEL_SM4 && !VULKAN_PROFILE)
 	#undef DEPTH_BUFFER_COLLISION
 	#define DEPTH_BUFFER_COLLISION 0
 	#undef DISTANCE_FIELD_COLLISION
 	#define DISTANCE_FIELD_COLLISION 0
 #endif
+
+#define FORWARD_SHADING_NORMAL_CALC	(FORWARD_SHADING || ((FEATURE_LEVEL == FEATURE_LEVEL_ES3_1) && VULKAN_PROFILE))
 
 /** Position (XYZ) and squared radius (W) of the point attractor. */
 float4 PointAttractor;
@@ -263,11 +276,6 @@ Texture2D RenderAttributesTexture;
 SamplerState RenderAttributesTextureSampler;
 
 #if DEPTH_BUFFER_COLLISION
-#if !FORWARD_SHADING
-/** For retrieving the world-space normal. */
-Texture2D GBufferATexture;
-SamplerState GBufferATextureSampler;
-#endif
 
 /** Limits the depth bounds for which to search for a collision plane. */
 float CollisionDepthBounds;
@@ -275,8 +283,8 @@ float CollisionDepthBounds;
 /** TODO: Should be moved to Common.usf and used globaly. */
 float3 WorldPositionFromSceneDepth(float2 ScreenPosition, float SceneDepth)
 {
-	float4 HomogeneousWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), View.ScreenToWorld);
-	return HomogeneousWorldPosition.xyz / HomogeneousWorldPosition.w;
+	float3 WorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), View.ScreenToWorld).xyz;
+	return WorldPosition;
 }
 
 float3 ComputeCollidingVelocity(
@@ -351,7 +359,7 @@ void CollideWithDepthBuffer(
 		float SceneDepth = CalcSceneDepth(ScreenUV);
 		if (abs(ClipPosition.w - SceneDepth) < CollisionDepthBounds)
 		{
-#if FORWARD_SHADING_ACCURATE_NORMAL && FORWARD_SHADING
+#if FORWARD_SHADING_ACCURATE_NORMAL && FORWARD_SHADING_NORMAL_CALC
 			float SceneDepth0 = CalcSceneDepth(ScreenUV + float2(View.BufferSizeAndInvSize.z, 0.0));
 			float SceneDepth1 = CalcSceneDepth(ScreenUV + float2(0.0, View.BufferSizeAndInvSize.w));
 			// When using the forward shading, the normal of the pixel is approximated by the derivative of the world position
@@ -366,18 +374,18 @@ void CollideWithDepthBuffer(
 			// Reconstruct world position.
 			float3 WorldPosition = WorldPositionFromSceneDepth(ScreenPosition.xy, SceneDepth);
 			
-#if FORWARD_SHADING && FORWARD_SHADING_ACCURATE_NORMAL
+#if FORWARD_SHADING_NORMAL_CALC && FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using the two additional neighbooring pixel depth buffer fetches.
 			float3 WorldPosition0 = WorldPositionFromSceneDepth(ScreenPosition.xy + float2(2 * View.ViewSizeAndInvSize.z, 0.0), SceneDepth0);
 			float3 WorldPosition1 = WorldPositionFromSceneDepth(ScreenPosition.xy - float2(0.0, 2 * View.ViewSizeAndInvSize.w), SceneDepth1);
 			float3 WorldNormal = normalize(cross(WorldPosition0 - WorldPosition, WorldPosition1 - WorldPosition));
-#elif FORWARD_SHADING // && !FORWARD_SHADING_ACCURATE_NORMAL
+#elif FORWARD_SHADING_NORMAL_CALC // && !FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using a ddx/ddy hack, hopefully the neighbooring particules will be close enough...
 			float3 WorldNormal = normalize(cross(ddx(WorldPosition), ddy(WorldPosition)));
 			WorldNormal *= sign(dot(View.WorldCameraOrigin - NewPosition, WorldNormal));
-#else //!FORWARD_SHADING
+#else //!FORWARD_SHADING_NORMAL_CALC
 			// Sample the normal buffer to create a plane to collide against.
-			float3 WorldNormal = Texture2DSampleLevel(GBufferATexture, GBufferATextureSampler, ScreenUV, 0).xyz * 2.0 - 1.0;
+			float3 WorldNormal = Texture2DSampleLevel(SceneTexturesStruct.GBufferATexture, SceneTexturesStruct.GBufferATextureSampler, ScreenUV, 0).xyz * 2.0 - 1.0;
 #endif
 			float4 CollisionPlane = float4(WorldNormal, dot(WorldPosition.xyz,WorldNormal));
 

@@ -55,6 +55,7 @@ protected:
 
 	TArray<uint8> SavedProperties;
 	TArray<UObject*> InstancedObjects;
+	TArray<uint32_t> ObjectReferenceIndicesInByteArray;
 };
 
 /** 
@@ -71,6 +72,14 @@ public:
 	FComponentInstanceDataCache(const AActor* InActor);
 
 	~FComponentInstanceDataCache();
+
+	/** Non-copyable */
+	FComponentInstanceDataCache(const FComponentInstanceDataCache&) = delete;
+	FComponentInstanceDataCache& operator=(const FComponentInstanceDataCache&) = delete;
+
+	/** Movable */
+	FComponentInstanceDataCache(FComponentInstanceDataCache&&) = default;
+	FComponentInstanceDataCache& operator=(FComponentInstanceDataCache&&) = default;
 
 	/** Iterates over an Actor's components and applies the stored component instance data to each */
 	void ApplyToActor(AActor* Actor, const ECacheApplyPhase CacheApplyPhase) const;

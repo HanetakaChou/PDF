@@ -49,7 +49,7 @@ void SNodeTitle::Construct(const FArguments& InArgs, UEdGraphNode* InNode)
 	{
 		TitleText = TAttribute<FText>(this, &SNodeTitle::GetNodeTitle);
 	}
-	NodeTitleCache.SetCachedText(TitleText.Get(), GraphNode);
+	NodeTitleCache.SetCachedText(TitleText.Get(), GraphNode.Get());
 	RebuildWidget();
 }
 
@@ -58,22 +58,22 @@ void SNodeTitle::Tick( const FGeometry& AllottedGeometry, const double InCurrent
 	CachedSize = AllottedGeometry.GetLocalSize();
 
 	// Checks to see if the cached string is valid, and if not, updates it.
-	if (NodeTitleCache.IsOutOfDate(GraphNode))
+	if (NodeTitleCache.IsOutOfDate(GraphNode.Get()))
 	{
-		NodeTitleCache.SetCachedText(TitleText.Get(), GraphNode);
+		NodeTitleCache.SetCachedText(TitleText.Get(), GraphNode.Get());
 		RebuildWidget();
 	}
 }
 
 FText SNodeTitle::GetNodeTitle() const
 {
-	if (GetDefault<UBlueprintEditorSettings>()->bBlueprintNodeUniqueNames && GraphNode)
+	if (GetDefault<UBlueprintEditorSettings>()->bBlueprintNodeUniqueNames && GraphNode.IsValid())
 	{
 		return FText::FromName(GraphNode->GetFName());
 	}
 	else
 	{
-		return (GraphNode != NULL)
+		return GraphNode.IsValid()
 			? GraphNode->GetNodeTitle(ENodeTitleType::FullTitle)
 			: NSLOCTEXT("GraphEditor", "NullNode", "Null Node");
 	}
@@ -81,7 +81,7 @@ FText SNodeTitle::GetNodeTitle() const
 
 FText SNodeTitle::GetHeadTitle() const
 {
-	return (GraphNode && GraphNode->bCanRenameNode) ? GraphNode->GetNodeTitle(ENodeTitleType::EditableTitle) : CachedHeadTitle;
+	return (GraphNode.IsValid() && GraphNode->bCanRenameNode) ? GraphNode->GetNodeTitle(ENodeTitleType::EditableTitle) : CachedHeadTitle;
 }
 
 FVector2D SNodeTitle::GetTitleSize() const
@@ -563,7 +563,7 @@ FSlateColor SGraphNode::GetNodeTitleColor() const
 {
 	FLinearColor ReturnTitleColor = GraphNode->IsDeprecated() ? FLinearColor::Red : GetNodeObj()->GetNodeTitleColor();
 
-	if(!GraphNode->IsNodeEnabled())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
 	{
 		ReturnTitleColor *= FLinearColor(0.5f, 0.5f, 0.5f, 0.4f);
 	}
@@ -577,7 +577,7 @@ FSlateColor SGraphNode::GetNodeTitleColor() const
 FSlateColor SGraphNode::GetNodeBodyColor() const
 {
 	FLinearColor ReturnBodyColor = FLinearColor::White;
-	if(!GraphNode->IsNodeEnabled())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
 	{
 		ReturnBodyColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.5f); 
 	}
@@ -587,7 +587,7 @@ FSlateColor SGraphNode::GetNodeBodyColor() const
 FSlateColor SGraphNode::GetNodeTitleIconColor() const
 {
 	FLinearColor ReturnIconColor = IconColor;
-	if(!GraphNode->IsNodeEnabled())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
 	{
 		ReturnIconColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.3f); 
 	}
@@ -597,7 +597,7 @@ FSlateColor SGraphNode::GetNodeTitleIconColor() const
 FLinearColor SGraphNode::GetNodeTitleTextColor() const
 {
 	FLinearColor ReturnTextColor = FLinearColor::White;
-	if(!GraphNode->IsNodeEnabled())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
 	{
 		ReturnTextColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.3f); 
 	}
@@ -1392,11 +1392,7 @@ bool SGraphNode::OnVerifyNameTextChanged(const FText& InText, FText& OutErrorMes
 
 void SGraphNode::OnNameTextCommited(const FText& InText, ETextCommit::Type CommitInfo)
 {
-	FText ErrorMessage;
-	if (!OnVerifyTextCommit.IsBound() || OnVerifyTextCommit.Execute(InText, GraphNode, ErrorMessage))
-	{
-		OnTextCommitted.ExecuteIfBound(InText, CommitInfo, GraphNode);
-	}
+	OnTextCommitted.ExecuteIfBound(InText, CommitInfo, GraphNode);
 	
 	UpdateErrorInfo();
 	if (ErrorReporting.IsValid())

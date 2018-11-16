@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "ModuleInterface.h"
-#include "ModuleManager.h"
-#include "Async.h"
+#include "Modules/ModuleInterface.h"
+#include "Modules/ModuleManager.h"
+#include "Async/Async.h"
 
 #if WITH_XGE_CONTROLLER
 
@@ -20,13 +20,13 @@ public:
 	virtual bool SupportsDynamicReloading() override { return false; }
 
 	// Returns true if the XGE controller may be used.
-	virtual bool IsSupported() abstract;
+	virtual bool IsSupported() = 0;
 
 	// Returns a new file path to be used for writing input data to.
-	virtual FString CreateUniqueFilePath() abstract;
+	virtual FString CreateUniqueFilePath() = 0;
 
 	// Launches a task within XGE. Returns a future which can be waited on for the results.
-	virtual TFuture<FXGETaskResult> EnqueueTask(const FString& Command, const FString& CommandArgs) abstract;
+	virtual TFuture<FXGETaskResult> EnqueueTask(const FString& Command, const FString& CommandArgs) = 0;
 
 	static XGECONTROLLER_API IXGEController& Get();
 };

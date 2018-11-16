@@ -19,14 +19,14 @@ UGranularSynth::~UGranularSynth()
 bool UGranularSynth::Init(int32& SampleRate)
 {
 	NumChannels = 2;
-	SoundWaveLoader.Init(GetAudioDevice());
 	return true;
 }
 
-void UGranularSynth::OnGenerateAudio(float* OutAudio, int32 NumSamples)
+int32 UGranularSynth::OnGenerateAudio(float* OutAudio, int32 NumSamples)
 {
 	const int32 NumFrames = NumSamples / NumChannels;
 	GranularSynth.Generate(OutAudio, NumFrames);
+	return NumSamples;
 }
 
 void UGranularSynth::OnRegister()
@@ -101,26 +101,34 @@ void UGranularSynth::NoteOff(const float Note, const bool bKill)
 
 void UGranularSynth::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
-	if (SoundWaveLoader.Update())
-	{
-		Audio::FSampleBuffer SampleBuffer;
-		SoundWaveLoader.GetSampleBuffer(SampleBuffer);
-
-		SynthCommand([this, SampleBuffer]()
-		{
-			GranularSynth.LoadSampleBuffer(SampleBuffer);
-
-			// Clear the pending sound waves queue since we've now loaded a new buffer of data
-			SoundWaveLoader.Reset();
-		});
-	}
+	SoundWaveLoader.Update();
 }
 
 void UGranularSynth::SetSoundWave(USoundWave* InSoundWave)
 {
-	if (InSoundWave)
+	if (InSoundWave != GranulatedSoundWave)
 	{
-		SoundWaveLoader.LoadSoundWave(InSoundWave);
+		GranulatedSoundWave = InSoundWave;
+		bIsLoaded = false;
+
+		if (InSoundWave)
+		{
+			TFunction<void(const USoundWave * SoundWave, const Audio::FSampleBuffer & SampleBuffer)> OnLoaded
+				= [this](const USoundWave * SoundWave, const Audio::FSampleBuffer & SampleBuffer)
+			{
+				if (SoundWave == GranulatedSoundWave)
+				{
+					SynthCommand([this, SampleBuffer]()
+					{
+						GranularSynth.LoadSampleBuffer(SampleBuffer);
+					});
+
+					bIsLoaded = true;
+				}
+			};
+
+			SoundWaveLoader.LoadSoundWave(InSoundWave, MoveTemp(OnLoaded));
+		}
 	}
 }
 
@@ -217,5 +225,5 @@ float UGranularSynth::GetCurrentPlayheadTime() const
 
 bool UGranularSynth::IsLoaded() const
 {
-	return SoundWaveLoader.IsSoundWaveLoaded();
+	return bIsLoaded;
 }

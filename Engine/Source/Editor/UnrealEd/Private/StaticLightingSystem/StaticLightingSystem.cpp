@@ -24,7 +24,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/LightComponentBase.h"
 #include "Components/ReflectionCaptureComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Components/LightComponent.h"
 #include "Model.h"
@@ -310,7 +310,20 @@ void FStaticLightingManager::CreateStaticLightingSystem(const FLightingBuildOpti
 		}
 		else
 		{
-			FStaticLightingManager::Get()->FailLightingBuild();
+			// BeginLightmassProcess returns false if there are errors or no precomputed lighting is allowed. Handle both cases.
+			static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+			const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnGameThread() != 0);
+			const bool bForceNoPrecomputedLighting = GWorld->GetWorldSettings()->bForceNoPrecomputedLighting || !bAllowStaticLighting;
+
+
+			if (bForceNoPrecomputedLighting)
+			{
+				DestroyStaticLightingSystems();
+			}
+			else
+			{
+				FStaticLightingManager::Get()->FailLightingBuild();
+			}
 		}
 	}
 	else
@@ -345,7 +358,19 @@ void FStaticLightingManager::UpdateBuildLighting()
 				}
 				else
 				{
-					FStaticLightingManager::Get()->FailLightingBuild();
+					// BeginLightmassProcess returns false if there are errors or no precomputed lighting is allowed. Handle both cases.
+					static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+					const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnGameThread() != 0);
+					const bool bForceNoPrecomputedLighting = GWorld->GetWorldSettings()->bForceNoPrecomputedLighting || !bAllowStaticLighting;
+
+					if (bForceNoPrecomputedLighting)
+					{
+						DestroyStaticLightingSystems();
+					}
+					else
+					{
+						FStaticLightingManager::Get()->FailLightingBuild();
+					}
 				}
 			}
 		}
@@ -523,10 +548,9 @@ bool FStaticLightingSystem::BeginLightmassProcess()
 			}
 		}
 
-		for( int32 LevelIndex = 0 ; LevelIndex < World->StreamingLevels.Num() ; ++LevelIndex )
+		for (ULevelStreaming* CurStreamingLevel : World->GetStreamingLevels())
 		{
-			ULevelStreaming* CurStreamingLevel = World->StreamingLevels[ LevelIndex ];
-			if (CurStreamingLevel && CurStreamingLevel->GetLoadedLevel() && !CurStreamingLevel->bShouldBeVisibleInEditor)
+			if (CurStreamingLevel && CurStreamingLevel->GetLoadedLevel() && !CurStreamingLevel->GetShouldBeVisibleInEditor())
 			{
 				if (SkippedLevels.Len() > 0)
 				{
@@ -1878,7 +1902,19 @@ bool FStaticLightingSystem::CreateLightmassProcessor()
 		return false;
 	}
 
-	NSwarm::FSwarmInterface::Initialize(*(FString(FPlatformProcess::BaseDir()) + TEXT("..\\DotNET\\SwarmInterface.dll")));
+	if (NSwarm::FSwarmInterface::Initialize(*(FString(FPlatformProcess::BaseDir()) + TEXT("..\\DotNET\\SwarmInterface.dll"))) == false)
+	{
+		UE_LOG(LogStaticLightingSystem, Warning, TEXT("Failed to initialize Swarm."));
+		FMessageDialog::Open(EAppMsgType::Ok,
+#if USE_LOCAL_SWARM_INTERFACE
+			LOCTEXT("FailedToInitializeSwarmDialogMessage_CheckNetwork", "Failed to initialize Swarm. Check to make sure you have the right version of Swarm installed.")
+#else
+			LOCTEXT("FailedToInitializeSwarmDialogMessage", "Failed to initialize Swarm. Check to make sure you have the right version of Swarm installed.")
+#endif	
+		);
+
+		return false;
+	}
 
 	// Create the processor
 	check(LightmassProcessor == NULL);
@@ -1889,7 +1925,7 @@ bool FStaticLightingSystem::CreateLightmassProcessor()
 		UE_LOG(LogStaticLightingSystem, Warning, TEXT("Failed to connect to Swarm."));
 		FMessageDialog::Open( EAppMsgType::Ok, 
 #if USE_LOCAL_SWARM_INTERFACE
-			LOCTEXT("FailedToConnectToSwarmDialogMessage", "Failed to connect to Swarm. Check that your network interface supports multicast.")
+			LOCTEXT("FailedToConnectToSwarmDialogMessage_CheckNetwork", "Failed to connect to Swarm. Check that your network interface supports multicast.")
 #else
 			LOCTEXT("FailedToConnectToSwarmDialogMessage", "Failed to connect to Swarm.")
 #endif	

@@ -6,9 +6,7 @@
 #include "PropertyHandle.h"
 #include "DetailLayoutBuilder.h"
 
-#if WITH_ENGINE
 #include "AudioPluginUtilities.h"
-#endif
 
 class AUDIOSETTINGSEDITOR_API FAudioPluginWidgetManager
 {
@@ -35,6 +33,10 @@ private:
 	TSharedPtr<FText> SelectedReverb;
 	TSharedPtr<FText> SelectedSpatialization;
 	TSharedPtr<FText> SelectedOcclusion;
+
+	TSharedPtr<FText> ManualSpatializationEntry;
+	TSharedPtr<FText> ManualReverbEntry;
+	TSharedPtr<FText> ManualOcclusionEntry;
 
 	TArray<TSharedPtr<FText>> SpatializationPlugins;
 	TArray<TSharedPtr<FText>> ReverbPlugins;

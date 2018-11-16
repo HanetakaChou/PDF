@@ -34,13 +34,10 @@ void FPaperGroupedSpriteUtilities::BuildHarvestList(const TArray<UObject*>& Obje
 
 		if (AActor* SelectedActor = Cast<AActor>(Object))
 		{
-			TArray<UActorComponent*> Components;
-			SelectedActor->GetComponents(Components);
-
 			bool bHadHarvestableComponents = false;
-			for (UActorComponent* Component : Components)
+			for (UActorComponent* Component : SelectedActor->GetComponents())
 			{
-				if (Component->IsA(HarvestClassType) && !Component->IsEditorOnly())
+				if (Component && Component->IsA(HarvestClassType) && !Component->IsEditorOnly())
 				{
 					bHadHarvestableComponents = true;
 					OutComponentsToHarvest.Add(Component);
@@ -94,7 +91,7 @@ void FPaperGroupedSpriteUtilities::SplitSprites(const TArray<UObject*>& InObject
 	{
 		if (UWorld* World = ComponentsToHarvest[0]->GetWorld())
 		{
-			const FScopedTransaction Transaction(LOCTEXT("SplitSprites", "Split sprite instances"));
+			const FScopedTransaction Transaction(LOCTEXT("SplitSpritesTransation", "Split sprite instances"));
 
 			// Create an instance from each item of each batch component that we're harvesting
 			for (UActorComponent* SourceComponent : ComponentsToHarvest)
@@ -183,7 +180,7 @@ void FPaperGroupedSpriteUtilities::MergeSprites(const TArray<UObject*>& InObject
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.bDeferConstruction = true;
 
-			const FScopedTransaction Transaction(LOCTEXT("MergeSprites", "Merge sprite instances"));
+			const FScopedTransaction Transaction(LOCTEXT("MergeSpritesTransaction", "Merge sprite instances"));
 
 			if (APaperGroupedSpriteActor* SpawnedActor = World->SpawnActor<APaperGroupedSpriteActor>(SpawnParams))
 			{

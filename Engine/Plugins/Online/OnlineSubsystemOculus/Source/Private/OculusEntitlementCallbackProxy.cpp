@@ -22,7 +22,7 @@ void UOculusEntitlementCallbackProxy::Activate()
 
 	if (OculusIdentityInterface.IsValid())
 	{
-		auto Unused = new FUniqueNetIdString("UNUSED");
+		auto Unused = new FUniqueNetIdString("UNUSED", OCULUS_SUBSYSTEM);
 		OculusIdentityInterface->GetUserPrivilege(
 			*Unused,
 			EUserPrivileges::CanPlay,
@@ -31,7 +31,7 @@ void UOculusEntitlementCallbackProxy::Activate()
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("Oculus platform service not available. Skipping entitlement check."));
+		UE_LOG_ONLINE_ENTITLEMENT(Warning, TEXT("Oculus platform service not available. Skipping entitlement check."));
 		OnFailure.Broadcast();
 	}
 }

@@ -49,9 +49,9 @@ struct FPartyDetails : public TSharedFromThis<FPartyDetails>
 		return PartyJoinInfo->GetPartyTypeId();
 	}
 
-	const TSharedRef<const FUniqueNetId>& GetLeaderId() const
+	const TSharedRef<const FUniqueNetId>& GetSourceUserId() const
 	{
-		return PartyJoinInfo->GetLeaderId();
+		return PartyJoinInfo->GetSourceUserId();
 	}
 
 	const FString& GetAppId() const
@@ -62,9 +62,9 @@ struct FPartyDetails : public TSharedFromThis<FPartyDetails>
 	virtual FString ToString() const
 	{
 		return FString::Printf(
-			TEXT("PartyId: %s LeaderId: %s App: %s"), 
+			TEXT("PartyId: %s SourceUserId: %s App: %s"), 
 			*GetPartyId()->ToDebugString(), 
-			*GetLeaderId()->ToDebugString(),
+			*GetSourceUserId()->ToDebugString(),
 			*GetAppId());
 	}
 
@@ -243,7 +243,7 @@ public:
 	 * Reestablish all party state and information upon returning to the main menu
 	 * Makes sure all data is proper and notifies the UI to reconstruct the party
 	 */
-	void RestorePersistentPartyState();
+	virtual void RestorePersistentPartyState();
 
 	/**
 	 * Do both LeavePersistentParty() and RestorePersistentPartyState() together
@@ -337,6 +337,8 @@ public:
 	 * @return Session name
 	 */
 	FName GetPlayerSessionName() const;
+
+	bool IsLeavingPersistentParty() const { return bLeavingPersistentParty; }
 
 protected:
 
@@ -445,14 +447,16 @@ protected:
 	 */
 	virtual bool ShouldTryRejoiningPersistentParty(const FRejoinableParty& InRejoinableParty);
 
+	/** Array of leave persistent party delegates gathered while already leaving a persistent party */
+	TArray<UPartyDelegates::FOnLeaveUPartyComplete> LeavePartyCompleteDelegates;
+
+	virtual void PartyStateChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& InPartyId, EPartyState State);
 
 private:
 
 	/** Is leaving the persistent party already in flight */
 	UPROPERTY()
 	bool bLeavingPersistentParty;
-	/** Array of leave persistent party delegates gathered while already leaving a persistent party */
-	TArray<UPartyDelegates::FOnLeaveUPartyComplete> LeavePartyCompleteDelegates;
 	/** Id of the current persistent party, only one and it should always be valid except while transferring between parties */
 	TSharedPtr<const FOnlinePartyId> PersistentPartyId;
 	/** Mapping of all known joined parties */
@@ -543,19 +547,24 @@ private:
 	void PartyMemberJoinedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& InMemberId);
 	void PartyDataReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const TSharedRef<FOnlinePartyData>& InPartyData);
 	void PartyMemberDataReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& InMemberId, const TSharedRef<FOnlinePartyData>& InPartyMemberData);
-	void PartyJoinRequestReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& SenderId);
-	void PartyQueryJoinabilityReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& SenderId);
+	void PartyJoinRequestReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& SenderId, const FString& Platform, const FOnlinePartyData& JoinData);
+	void PartyQueryJoinabilityReceivedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& SenderId, const FString& Platform, const FOnlinePartyData& JoinData);
+	virtual void PartyFillJoinRequestData(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, FOnlinePartyData& PartyData);
 	void PartyMemberPromotedInternal(const FUniqueNetId& InLocalUserId, const FOnlinePartyId& InPartyId, const FUniqueNetId& InNewLeaderId);
 	void PartyPromotionLockoutStateChangedInternal(const FUniqueNetId& LocalUserId, const FOnlinePartyId& InPartyId, const bool bLockoutState);
 
 	void PartyExitedInternal(const FUniqueNetId& LocalUserId, const FOnlinePartyId& InPartyId);
 	void OnPersistentPartyExitedInternalCompleted(const FUniqueNetId& LocalUserId, const ECreatePartyCompletionResult Result);
 
-	void PartyStateChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& InPartyId, EPartyState State);
-
 	void LeavePersistentPartyForRejoin();
 	void OnLeavePersistentPartyForRejoinComplete(const FUniqueNetId& LocalUserId, const ELeavePartyCompletionResult LeaveResult);
-	void OnRejoinPartyComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const EJoinPartyCompletionResult Result, int32 DeniedResultCode);
+
+protected:
+
+	virtual void RejoinParty(const FUniqueNetId& InUserId, const UPartyDelegates::FOnJoinUPartyComplete& InCompletionDelegate);
+	void OnRejoinPartyComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const EJoinPartyCompletionResult Result, int32 DeniedResultCode, UPartyDelegates::FOnJoinUPartyComplete InCompletionDelegate);
+
+private:
 
 	/**
 	 *
@@ -584,6 +593,7 @@ private:
 	FDelegateHandle PartyMemberDataReceivedDelegateHandle;
 	FDelegateHandle PartyJoinRequestReceivedDelegateHandle;
 	FDelegateHandle PartyQueryJoinabilityReceivedDelegateHandle;
+	FDelegateHandle PartyFillPartyJoinRequestDataDelegateHandle;
 	FDelegateHandle PartyMemberPromotedDelegateHandle;
 	FDelegateHandle PartyMemberExitedDelegateHandle;
 	FDelegateHandle PartyExitedDelegateHandle;

@@ -31,7 +31,7 @@ public:
 
 	FORCENOINLINE SClippingHorizontalBox() 
 	{
-		bCanTick = true;
+		SetCanTick(true);
 	}
 
 	/** SWidget interface */
@@ -63,6 +63,9 @@ private:
 
 	/** Index of the first clipped child/block */
 	int32 ClippedIdx;
+
+	/** Number of clipped children not including the wrap button */
+	mutable int32 NumClippedChildren;
 
 	/** The style to use */
 	const ISlateStyle* StyleSet;

@@ -44,19 +44,21 @@ public class nvTextureTools : ModuleRules
 			PublicAdditionalLibraries.Add(nvttPath + "lib/Mac/libnvtt.dylib");
 			PublicAdditionalLibraries.Add(nvttPath + "lib/Mac/libsquish.a");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture.StartsWith("x86_64"))
-        {
-            PublicAdditionalLibraries.Add(nvttPath + "lib/Linux/x86_64-unknown-linux-gnu/libnvcore.so");
-            PublicAdditionalLibraries.Add(nvttPath + "lib/Linux/x86_64-unknown-linux-gnu/libnvimage.so");
-            PublicAdditionalLibraries.Add(nvttPath + "lib/Linux/x86_64-unknown-linux-gnu/libnvmath.so");
-            PublicAdditionalLibraries.Add(nvttPath + "lib/Linux/x86_64-unknown-linux-gnu/libnvtt.so");
-            PublicAdditionalLibraries.Add(nvttPath + "lib/Linux/x86_64-unknown-linux-gnu/libsquish.a");
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
+		{
+			string NvBinariesDir = Target.UEThirdPartyBinariesDirectory + "nvTextureTools/Linux/" + Target.Architecture;
+			PrivateRuntimeLibraryPaths.Add(NvBinariesDir);
 
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/Linux/libnvcore.so");
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/Linux/libnvimage.so");
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/Linux/libnvmath.so");
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/Linux/libnvtt.so");
-        }
+			PublicAdditionalLibraries.Add(NvBinariesDir + "/libnvcore.so");
+			PublicAdditionalLibraries.Add(NvBinariesDir + "/libnvimage.so");
+			PublicAdditionalLibraries.Add(NvBinariesDir + "/libnvmath.so");
+			PublicAdditionalLibraries.Add(NvBinariesDir + "/libnvtt.so");
+
+			RuntimeDependencies.Add(NvBinariesDir + "/libnvcore.so");
+			RuntimeDependencies.Add(NvBinariesDir + "/libnvimage.so");
+			RuntimeDependencies.Add(NvBinariesDir + "/libnvmath.so");
+			RuntimeDependencies.Add(NvBinariesDir + "/libnvtt.so");
+		}
 	}
 }
 

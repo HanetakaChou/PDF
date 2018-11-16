@@ -10,6 +10,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Misc/RedirectCollector.h"
 #include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Modules/ModuleManager.h"
@@ -23,6 +24,7 @@
 #include "Engine/MapBuildDataRegistry.h"
 #include "Editor/EditorEngine.h"
 #include "ISourceControlModule.h"
+#include "SourceControlOperations.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "Factories/Factory.h"
@@ -39,6 +41,7 @@
 #include "BusyCursor.h"
 #include "MRUFavoritesList.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Exporters/Exporter.h"
 
 
 #include "PackagesDialog.h"
@@ -84,20 +87,16 @@ public:
 	{
 		if ( Verbosity == ELogVerbosity::Error || Verbosity == ELogVerbosity::Warning )
 		{
-			EMessageSeverity::Type Severity = EMessageSeverity::Info;
+			EMessageSeverity::Type Severity;
 			if ( Verbosity == ELogVerbosity::Error )
 			{
 				Severity = EMessageSeverity::Error;
 			}
-			else if ( Verbosity == ELogVerbosity::Warning )
+			else
 			{
 				Severity = EMessageSeverity::Warning;
 			}
-			
-			if ( ensure(Severity != EMessageSeverity::Info) )
-			{
-				ErrorMessages.Add(FTokenizedMessage::Create(Severity, FText::FromName(InData)));
-			}
+			ErrorMessages.Add(FTokenizedMessage::Create(Severity, FText::FromName(InData)));
 		}
 	}
 
@@ -223,6 +222,75 @@ static bool InInterpEditMode()
 }
 
 /**
+* Prompts user with a confirmation dialog if there are checkouts or modifications in other branches
+*
+* @return true if checkout should proceed
+*/
+static bool ConfirmPackageBranchCheckOutStatus(const TArray<UPackage*>& PackagesToCheckOut)
+{
+	for (auto& CurPackage : PackagesToCheckOut)
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+		FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(CurPackage, EStateCacheUsage::Use);
+
+		// If checked out or modified in another branch, warn about possible loss of changes and confirm checkout
+		if (SourceControlState.IsValid() && SourceControlState->IsCheckedOutOrModifiedInOtherBranch())
+		{
+			int32 HeadCL;
+			FString HeadBranch, HeadAction;
+			FNumberFormattingOptions NoCommas;
+			NoCommas.UseGrouping = false;
+
+			const FString& CurrentBranch = FEngineVersion::Current().GetBranch();
+
+			SourceControlState->GetOtherBranchHeadModification(HeadBranch, HeadAction, HeadCL);
+
+			FText InfoText;
+
+			if (SourceControlState->IsModifiedInOtherBranch())
+			{
+				int32 CurrentBranchIdx = SourceControlProvider.GetStateBranchIndex(CurrentBranch);
+				int32 HeadBranchIdx = SourceControlProvider.GetStateBranchIndex(HeadBranch);
+				{
+					if (CurrentBranchIdx != INDEX_NONE && HeadBranchIdx != INDEX_NONE)
+					{
+						// modified
+						if (CurrentBranchIdx < HeadBranchIdx)
+						{
+							InfoText = LOCTEXT("WarningModifiedOtherBranchHigher", "Modified in higher branch, consider waiting for package to be merged down.");
+						}
+						else
+						{
+							InfoText = LOCTEXT("WarningModifiedOtherBranchLower", "Modified in lower branch, keep track of your work. You may need to redo it during the merge.");
+						}
+					}
+				}
+			}
+			else
+			{
+				// checked out
+
+				FString Username;
+				if (!SourceControlState->GetOtherUserBranchCheckedOuts().Split(TEXT("@"), &Username, nullptr))
+				{
+					Username = SourceControlState->GetOtherUserBranchCheckedOuts();
+				}
+
+				InfoText = FText::Format(LOCTEXT("WarningCheckedOutOtherBranchHigher", "Please ask if {0}'s change can wait."), FText::FromString(Username));
+
+			}
+
+			const FText Message = SourceControlState->IsModifiedInOtherBranch() ? FText::Format(LOCTEXT("WarningModifiedOtherBranch", "WARNING: Packages modified in {0} CL {1}\n\n{2}\n\nCheck out packages anyway?"), FText::FromString(HeadBranch), FText::AsNumber(HeadCL, &NoCommas), InfoText)
+				: FText::Format(LOCTEXT("WarningCheckedOutOtherBranch", "WARNING: Packages checked out in {0}\n\n{1}\n\nCheck out packages anyway?"), FText::FromString(SourceControlState->GetOtherUserBranchCheckedOuts()), InfoText);
+
+			return OpenMsgDlgInt(EAppMsgType::YesNo, Message, SourceControlState->IsModifiedInOtherBranch() ? FText::FromString("Package Branch Modifications") : FText::FromString("Package Branch Checkouts")) == EAppReturnType::Yes;
+		}
+	}
+
+	return true;
+}
+
+/**
  * Maps loaded level packages to the package filenames.
  */
 static TMap<FName, FString> LevelFilenames;
@@ -308,6 +376,7 @@ static FString GetDefaultDirectory()
 FString FEditorFileUtils::GetFilterString(EFileInteraction Interaction)
 {
 	FString Result;
+	TSet<FString> Extensions;
 
 	switch( Interaction )
 	{
@@ -324,9 +393,13 @@ FString FEditorFileUtils::GetFilterString(EFileInteraction Interaction)
 			TArray<UFactory*> Factories;
 			for (UClass* Class : TObjectRange<UClass>())
 			{
-				if (Class->IsChildOf<USceneImportFactory>())
+				if (Class->IsChildOf<USceneImportFactory>() && !Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
 				{
-					Factories.Add(Class->GetDefaultObject<UFactory>());
+					UFactory* Factory = Class->GetDefaultObject<UFactory>();
+					if (Factory->bEditorImport)
+					{
+						Factories.Add(Factory);
+					}
 				}
 
 			}
@@ -349,7 +422,51 @@ FString FEditorFileUtils::GetFilterString(EFileInteraction Interaction)
 		break;
 
 	case FI_ExportScene:
-		Result = TEXT("FBX (*.fbx)|*.fbx|Object (*.obj)|*.obj|Unreal Text (*.t3d)|*.t3d|Stereo Litho (*.stl)|*.stl|LOD Export (*.lod.obj)|*.lod.obj");
+		{
+			for (UClass* Class : TObjectRange<UClass>())
+			{
+				if (!Class->IsChildOf<UExporter>() || Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+				{
+					continue;
+				}
+
+				UExporter* Exporter = Class->GetDefaultObject<UExporter>();
+				if (!Exporter->SupportsObject(UWorld::StaticClass()->GetDefaultObject()))
+				{
+					continue;
+				}
+
+				// Ignore generic UObject exporters
+				if (!Exporter->SupportedClass || !Exporter->SupportedClass->IsChildOf<UWorld>())
+				{
+					continue;
+				}
+
+				for (int32 i = 0; i < Exporter->FormatExtension.Num(); ++i)
+				{
+					FString FormatExtensionLower = Exporter->FormatExtension[i].ToLower();
+					if (FormatExtensionLower == TEXT("copy"))
+					{
+						continue;
+					}
+
+					// Skip over duplicates
+					if (Extensions.Contains(FormatExtensionLower))
+					{
+						continue;
+					}
+					Extensions.Add(FormatExtensionLower);
+
+					if (Result.Len() > 0)
+					{
+						Result += TEXT("|");
+					}
+
+					const FString& FormatDescription = Exporter->FormatDescription[i];
+					Result += FString::Printf(TEXT("%s (*.%s)|*.%s"), *FormatDescription, *FormatExtensionLower, *FormatExtensionLower);
+				}
+			}
+		}
 		break;
 
 	default:
@@ -541,6 +658,9 @@ static bool SaveWorld(UWorld* World,
 
 		SlowTask.EnterProgressFrame(25);
 
+		FSoftObjectPath OldPath( World );
+		bool bAddedAssetPathRedirection = false;
+
 		// Rename the package and the object, as necessary
 		UWorld* DuplicatedWorld = nullptr;
 		if ( bRenamePackageToFile )
@@ -570,7 +690,25 @@ static bool SaveWorld(UWorld* World,
 					
 					if (bWorldNeedsRename)
 					{
+						// Unload package of existing MapBuildData to allow overwrite
+						if (World->PersistentLevel->MapBuildData && !World->PersistentLevel->MapBuildData->IsLegacyBuildData())
+						{
+							FString NewBuiltPackageName = World->GetOutermost()->GetName() + TEXT("_BuiltData");
+							UObject* ExistingObject = StaticFindObject(nullptr, 0, *NewBuiltPackageName);
+							if (ExistingObject && ExistingObject != World->PersistentLevel->MapBuildData->GetOutermost())
+							{
+								TArray<UPackage*> AllPackagesToUnload;
+								AllPackagesToUnload.Add(Cast<UPackage>(ExistingObject));
+								UPackageTools::UnloadPackages(AllPackagesToUnload);
+							}
+						}
+
 						World->Rename(*NewWorldAssetName, NULL, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+
+						// We're renaming the world, add a path redirector so that soft object paths get fixed on save
+						FSoftObjectPath NewPath( World );
+						GRedirectCollector.AddAssetPathRedirection( *OldPath.GetAssetPathString(), *NewPath.GetAssetPathString() );
+						bAddedAssetPathRedirection = true;
 					}
 				}
 			}
@@ -584,7 +722,7 @@ static bool SaveWorld(UWorld* World,
 			const FString KeepDirtyString = bPIESaving ? TEXT("true") : TEXT("false");
 			FSaveErrorOutputDevice SaveErrors;
 
-			bSuccess = GUnrealEd->Exec( NULL, *FString::Printf( TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=true AUTOSAVING=%s KEEPDIRTY=%s"), *Package->GetName(), *FinalFilename, *AutoSavingString, *KeepDirtyString ), SaveErrors );
+			bSuccess = GEditor->Exec( NULL, *FString::Printf( TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=true AUTOSAVING=%s KEEPDIRTY=%s"), *Package->GetName(), *FinalFilename, *AutoSavingString, *KeepDirtyString ), SaveErrors );
 			SaveErrors.Flush();
 		}
 
@@ -845,10 +983,9 @@ static bool SaveAsImplementation( UWorld* InWorld, const FString& DefaultFilenam
 						bool bAnythingToRename = false;
 						{
 							// Check for contained streaming levels
-							for( int32 CurStreamingLevelIndex = 0; CurStreamingLevelIndex < InWorld->StreamingLevels.Num(); ++CurStreamingLevelIndex )
+							for (ULevelStreaming* CurStreamingLevel : InWorld->GetStreamingLevels())
 							{
-								ULevelStreaming* CurStreamingLevel = InWorld->StreamingLevels[ CurStreamingLevelIndex ];
-								if( CurStreamingLevel != NULL )
+								if (CurStreamingLevel)
 								{
 									// Update the package name
 									FString PackageNameToRename = CurStreamingLevel->GetWorldAssetPackageName();
@@ -883,10 +1020,9 @@ static bool SaveAsImplementation( UWorld* InWorld, const FString& DefaultFilenam
 					if( DlgResult == EAppReturnType::Yes )	// Yes?
 					{
 						// Update streaming level names
-						for( int32 CurStreamingLevelIndex = 0; CurStreamingLevelIndex < InWorld->StreamingLevels.Num(); ++CurStreamingLevelIndex )
+						for (ULevelStreaming* CurStreamingLevel : InWorld->GetStreamingLevels())
 						{
-							ULevelStreaming* CurStreamingLevel = InWorld->StreamingLevels[ CurStreamingLevelIndex ];
-							if( CurStreamingLevel != NULL )
+							if (CurStreamingLevel)
 							{
 								// Update the package name
 								FString PackageNameToRename = CurStreamingLevel->GetWorldAssetPackageName();
@@ -1112,7 +1248,7 @@ void FEditorFileUtils::Import(const FString& InFilename)
 	USceneImportFactory *SceneFactory = nullptr;
 	for (UClass* Class : TObjectRange<UClass>())
 	{
-		if (Class->IsChildOf<USceneImportFactory>())
+		if (Class->IsChildOf<USceneImportFactory>() && !Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
 		{
 			USceneImportFactory* TestFactory = Class->GetDefaultObject<USceneImportFactory>();
 			if (TestFactory->FactoryCanImport(InFilename))
@@ -1160,12 +1296,12 @@ void FEditorFileUtils::Import(const FString& InFilename)
 
 		Args.Add(TEXT("MapFilename"), FText::FromString(FPaths::GetCleanFilename(InFilename)));
 		GWarn->BeginSlowTask(FText::Format(NSLOCTEXT("UnrealEd", "ImportingMap_F", "Importing map: {MapFilename}..."), Args), true);
-		GUnrealEd->Exec(GWorld, *FString::Printf(TEXT("MAP IMPORTADD FILE=\"%s\""), *InFilename));
+		GEditor->Exec(GWorld, *FString::Printf(TEXT("MAP IMPORTADD FILE=\"%s\""), *InFilename));
 
 		GWarn->EndSlowTask();
 	}
 
-	GUnrealEd->RedrawLevelEditingViewports();
+	GEditor->RedrawLevelEditingViewports();
 
 	FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(InFilename)); // Save path as default for next time.
 
@@ -1181,7 +1317,7 @@ void FEditorFileUtils::Export(bool bExportSelectedActorsOnly)
 	FString LastUsedPath = GetDefaultDirectory();
 	if( FileDialogHelpers::SaveFile( NSLOCTEXT("UnrealEd", "Export", "Export").ToString(), GetFilterString(FI_ExportScene), LastUsedPath, FPaths::GetBaseFilename(LevelFilename), ExportFilename ) )
 	{
-		GUnrealEd->ExportMap( World, *ExportFilename, bExportSelectedActorsOnly );
+		GEditor->ExportMap( World, *ExportFilename, bExportSelectedActorsOnly );
 		FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(ExportFilename)); // Save path as default for next time.
 	}
 }
@@ -1204,6 +1340,7 @@ bool FEditorFileUtils::AddCheckoutPackageItems(bool bCheckDirty, TArray<UPackage
 
 	bool bPackagesAdded = false;
 	bool bShowWarning = false;
+	bool bOtherBranchWarning = false;
 	bool bHavePackageToCheckOut = false;
 
 	if (OutPackagesNotNeedingCheckout)
@@ -1268,7 +1405,18 @@ bool FEditorFileUtils::AddCheckoutPackageItems(bool bCheckDirty, TArray<UPackage
 				// Provided it's not in the list to not prompt any more, add it to the dialog
 				if (!PackagesNotToPromptAnyMore.Contains(CurPackage->GetName()))
 				{
-					const FText Tooltip = SourceControlState.IsValid() ? SourceControlState->GetDisplayTooltip() : NSLOCTEXT("PackagesDialogModule", "Dlg_NotCheckedOutTip", "Not checked out");
+					FText Tooltip = NSLOCTEXT("PackagesDialogModule", "Dlg_NotCheckedOutTip", "Not checked out");
+
+					if (SourceControlState.IsValid())
+					{
+						if (SourceControlState->IsCheckedOutOrModifiedInOtherBranch())
+						{
+							bShowWarning = true;
+							bOtherBranchWarning = true;
+						}						
+
+						Tooltip = SourceControlState->GetDisplayTooltip();
+					}
 
 					bHavePackageToCheckOut = true;
 					//Add this package to the dialog if its not checked out, in the source control depot, dirty(if we are checking), and read only
@@ -1308,8 +1456,16 @@ bool FEditorFileUtils::AddCheckoutPackageItems(bool bCheckDirty, TArray<UPackage
 	{
 		if (bShowWarning)
 		{
-			CheckoutPackagesDialogModule.SetWarning(
-				NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesWarnMessage", "Warning: There are modified assets which you will not be able to check out as they are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."));
+			if (!bOtherBranchWarning)
+			{
+				CheckoutPackagesDialogModule.SetWarning(
+					NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesWarnMessage", "Warning: There are modified assets which you will not be able to check out as they are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."));
+			}
+			else
+			{
+				CheckoutPackagesDialogModule.SetWarning(
+					NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesOtherBranchWarnMessage", "Warning: There are assets checked out or modified in another branch.  If you check out files in the current branch, you may lose your changes."));
+			}
 		}
 		else
 		{
@@ -1491,7 +1647,7 @@ bool FEditorFileUtils::PromptToCheckoutPackages(bool bCheckDirty, const TArray<U
 	ISourceControlModule::Get().QueueStatusUpdate(PackagesToCheckOut);
 
 	// If any files were just checked out, remove any pending flag to show a notification prompting for checkout.
-	if (PackagesToCheckOut.Num() > 0)
+	if (GUnrealEd && PackagesToCheckOut.Num() > 0)
 	{
 		for (UPackage* Package : PackagesToCheckOut)
 		{
@@ -1525,6 +1681,12 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>&
 	
 	if(CheckOutResult != ECommandResult::Cancelled)
 	{
+		// If any packages are checked out or modified in another branch, prompt for confirmation
+		if (!ConfirmPackageBranchCheckOutStatus(PkgsToCheckOut))
+		{
+			return ECommandResult::Cancelled;
+		}
+
 		// Assemble a final list of packages to check out
 		for( auto PkgsToCheckOutIter = PkgsToCheckOut.CreateConstIterator(); PkgsToCheckOutIter; ++PkgsToCheckOutIter )
 		{
@@ -2012,7 +2174,7 @@ bool FEditorFileUtils::AttemptUnloadInactiveWorldPackage(UPackage* PackageToUnlo
 		TArray<UPackage*> PackagesToUnload;
 		PackagesToUnload.Add(PackageToUnload);
 		TWeakObjectPtr<UPackage> WeakPackage = PackageToUnload;
-		if (!PackageTools::UnloadPackages(PackagesToUnload, OutErrorMessage))
+		if (!UPackageTools::UnloadPackages(PackagesToUnload, OutErrorMessage))
 		{
 			return false;
 		}
@@ -2033,7 +2195,7 @@ bool FEditorFileUtils::AttemptUnloadInactiveWorldPackage(UPackage* PackageToUnlo
  */
 bool FEditorFileUtils::LoadMap()
 {
-	if (GUnrealEd->WarnIfLightingBuildIsCurrentlyRunning())
+	if (GEditor->WarnIfLightingBuildIsCurrentlyRunning())
 	{
 		return false;
 	}
@@ -2123,7 +2285,7 @@ static void NotifyBSPNeedsRebuild(const FString& PackageName)
 			{
 				if (Level.IsValid())
 				{
-					GUnrealEd->RebuildLevel(*Level.Get());
+					GEditor->RebuildLevel(*Level.Get());
 				}
 			}
 			ABrush::OnRebuildDone();
@@ -2174,7 +2336,7 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 {
 	double LoadStartTime = FPlatformTime::Seconds();
 	
-	if (GUnrealEd->WarnIfLightingBuildIsCurrentlyRunning())
+	if (GEditor->WarnIfLightingBuildIsCurrentlyRunning())
 	{
 		return false;
 	}
@@ -2231,13 +2393,13 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 	GLevelEditorModeTools().DeactivateAllModes();
 
 	FString LoadCommand = FString::Printf(TEXT("MAP LOAD FILE=\"%s\" TEMPLATE=%d SHOWPROGRESS=%d FEATURELEVEL=%d"), *Filename, LoadAsTemplate, bShowProgress, (int32)GEditor->DefaultWorldFeatureLevel);
-	const bool bResult = GUnrealEd->Exec( NULL, *LoadCommand );
+	const bool bResult = GEditor->Exec( NULL, *LoadCommand );
 
 	UWorld* World = GWorld;
 	// In case the load failed after GWorld was torn down, default to a new blank map
 	if( ( !World ) || ( bResult == false ) )
 	{
-		World = GUnrealEd->NewMap();
+		World = GEditor->NewMap();
 
 		ResetLevelFilenames();
 
@@ -2283,12 +2445,15 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 	// Track time spent loading map.
 	UE_LOG(LogFileHelpers, Log, TEXT("Loading map '%s' took %.3f"), *FPaths::GetBaseFilename(Filename), FPlatformTime::Seconds() - LoadStartTime );
 
-	// Update volume actor visibility for each viewport since we loaded a level which could
-	// potentially contain volumes.
-	GUnrealEd->UpdateVolumeActorVisibility(NULL);
+	if (GUnrealEd)
+	{
+		// Update volume actor visibility for each viewport since we loaded a level which could
+		// potentially contain volumes.
+		GUnrealEd->UpdateVolumeActorVisibility(NULL);
 
-	// If there are any old mirrored brushes in the map with inverted polys, fix them here
-	GUnrealEd->FixAnyInvertedBrushes(World);
+		// If there are any old mirrored brushes in the map with inverted polys, fix them here
+		GUnrealEd->FixAnyInvertedBrushes(World);
+	}
 
 	// Request to rebuild BSP if the loading process flagged it as not up-to-date
 	if (ABrush::NeedsRebuild())
@@ -2317,21 +2482,14 @@ bool FEditorFileUtils::SaveMap(UWorld* InWorld, const FString& Filename )
 	// Disallow the save if in interpolation editing mode and the user doesn't want to exit interpolation mode.
 	if ( !InInterpEditMode() )
 	{
-		double SaveStartTime = FPlatformTime::Seconds();
+		const double SaveStartTime = FPlatformTime::Seconds();
 
-		// Only save the world if GEditor is null, the Persistent Level is not using Externally referenced objects or the user wants to continue regardless
-		if ( !GEditor || 
-			!GEditor->PackageUsingExternalObjects(InWorld->PersistentLevel) || 
-			EAppReturnType::Yes == FMessageDialog::Open( EAppMsgType::YesNo, EAppReturnType::No, NSLOCTEXT("UnrealEd", "Warning_UsingExternalPackage", "This map is using externally referenced packages which won't be found when in a game and all references will be broken. Perform a map check for more details.\n\nWould you like to continue?")) 
-			)
-		{
-			FString FinalFilename;
-			bLevelWasSaved = SaveWorld( InWorld, &Filename,
-										NULL, NULL,
-										true, false,
-										FinalFilename,
-										false, false );
-		}
+		FString FinalFilename;
+		bLevelWasSaved = SaveWorld( InWorld, &Filename,
+									nullptr, nullptr,
+									true, false,
+									FinalFilename,
+									false, false );
 
 		// Track time spent saving map.
 		UE_LOG(LogFileHelpers, Log, TEXT("Saving map '%s' took %.3f"), *FPaths::GetBaseFilename(Filename), FPlatformTime::Seconds() - SaveStartTime );
@@ -2461,15 +2619,34 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveContentPackagesEx
 		// If the package is dirty and is not the transient package, we'd like to autosave it
 		if ( CurPackage && ( CurPackage != TransientPackage ) && CurPackage->IsDirty() && (bForceIfNotInList || DirtyPackagesForAutoSave.Contains(CurPackage)) )
 		{
-			UWorld* MapWorld = UWorld::FindWorldInPackage(CurPackage);
+			bool bSkipPackage = false;
+			TArray<UObject*> ObjectsInPackage;
+			GetObjectsWithOuter(CurPackage, ObjectsInPackage, false);
+			for (auto ObjIt = ObjectsInPackage.CreateConstIterator(); ObjIt; ++ObjIt)
+			{
+				// Also, make sure this is not a map package
+				if (Cast<UWorld>(*ObjIt))
+				{
+					bSkipPackage = true;
+					break;
+				}
+				else if (Cast<UMapBuildDataRegistry>(*ObjIt))
+				{
+					// Do not auto save generated map build data packages
+					bSkipPackage = true;
+					break;
+				}
+			}
 
-			// Also, make sure this is not a map package
-			const bool bIsMapPackage = MapWorld != NULL;
+			if (bSkipPackage)
+			{
+				continue;
+			}
 
 			// Ignore packages with long, invalid names. This culls out packages with paths in read-only roots such as /Temp.
 			const bool bInvalidLongPackageName = !FPackageName::IsShortPackageName(CurPackage->GetFName()) && !FPackageName::IsValidLongPackageName(CurPackage->GetName(), /*bIncludeReadOnlyRoots=*/false);
 				
-			if ( !bIsMapPackage && !bInvalidLongPackageName )
+			if ( !bInvalidLongPackageName )
 			{
 				PackagesToSave.Add(CurPackage);
 			}
@@ -2492,7 +2669,7 @@ EAutosaveContentPackagesResult::Type FEditorFileUtils::AutosaveContentPackagesEx
 		SlowTask.EnterProgressFrame();
 
 		const FString AutosaveFilename = GetAutoSaveFilename(CurPackage, AbsoluteAutosaveDir, AutosaveIndex, FPackageName::GetAssetPackageExtension());
-		if (!GUnrealEd->Exec(nullptr, *FString::Printf(TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=false AUTOSAVING=true"), *CurPackage->GetName(), *AutosaveFilename)))
+		if (!GEditor->Exec(nullptr, *FString::Printf(TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=false AUTOSAVING=true"), *CurPackage->GetName(), *AutosaveFilename)))
 		{
 			return EAutosaveContentPackagesResult::Failure;
 		}
@@ -3594,7 +3771,7 @@ void FEditorFileUtils::LoadDefaultMapAtStartup()
 		FString MapFilenameToLoad = FPackageName::LongPackageNameToFilename( EditorStartupMap );
 
 		bIsLoadingDefaultStartupMap = true;
-		FEditorFileUtils::LoadMap( MapFilenameToLoad + FPackageName::GetMapPackageExtension(), GUnrealEd->IsTemplateMap(EditorStartupMap), true );
+		FEditorFileUtils::LoadMap( MapFilenameToLoad + FPackageName::GetMapPackageExtension(), GUnrealEd && GUnrealEd->IsTemplateMap(EditorStartupMap), true );
 		bIsLoadingDefaultStartupMap = false;
 	}
 }
@@ -3768,6 +3945,19 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 
 				if (BuiltDataPackage->IsDirty() && BuiltDataPackage != WorldPackage)
 				{
+					// If built data package does not have a name yet add the world package so a user is prompted to have a name chosen
+					if (!WorldPackage->IsDirty())
+					{
+						const FString WorldPackageName = WorldPackage->GetName();
+						const bool bIncludeReadOnlyRoots = false;
+						const bool bIsValidPath = FPackageName::IsValidLongPackageName(WorldPackageName, bIncludeReadOnlyRoots);
+						if (!bIsValidPath)
+						{
+							WorldPackage->MarkPackageDirty();
+							OutDirtyPackages.Add(WorldPackage);
+						}
+					}
+
 					OutDirtyPackages.Add(BuiltDataPackage);
 				}
 			}
@@ -3855,7 +4045,7 @@ UWorld* UEditorLoadingAndSavingUtils::NewBlankMap(bool bSaveExistingMap)
 		return nullptr;
 	}
 
-	UWorld* World = GUnrealEd->NewMap();
+	UWorld* World = GEditor->NewMap();
 
 	FEditorFileUtils::ResetLevelFilenames();
 
@@ -3889,26 +4079,6 @@ UWorld* UEditorLoadingAndSavingUtils::LoadMapWithDialog()
 	return GEditor->GetEditorWorldContext().World();
 }
 
-static bool InternalCheckForReferencesToExternalPackages(const TArray<UPackage*>& PackagesToSave)
-{
-	TArray<UPackage*> PackagesWithExternalRefs;
-	if (PackageTools::CheckForReferencesToExternalPackages(&PackagesToSave, &PackagesWithExternalRefs))
-	{
-		FString PackageNames;
-		for (UPackage* Package : PackagesWithExternalRefs)
-		{
-			PackageNames += FString::Printf(TEXT("%s\n"), *Package->GetName());
-		}
-
-		bool bProceed = EAppReturnType::Yes == FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, FText::Format(NSLOCTEXT("UnrealEd", "Warning_ExternalPackageRef", "The following assets have references to external assets: \n{0}\nExternal assets won't be found when in a game and all references will be broken.  Proceed?"), FText::FromString(PackageNames)));
-		if (!bProceed)
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
 static bool InternalCheckoutAndSavePackages(const TArray<UPackage*>& PackagesToSave, bool bUseDialog)
 {
 	bool bResult = true;
@@ -3916,10 +4086,6 @@ static bool InternalCheckoutAndSavePackages(const TArray<UPackage*>& PackagesToS
 	{
 		if (bUseDialog)
 		{
-			if (!InternalCheckForReferencesToExternalPackages(PackagesToSave))
-			{
-				return false;
-			}
 			const bool bPromptUserToSave = true;
 			const bool bFastSave = false;
 			const bool bCanBeDeclined = true;
@@ -3930,11 +4096,6 @@ static bool InternalCheckoutAndSavePackages(const TArray<UPackage*>& PackagesToS
 			const FScopedBusyCursor BusyCursor;
 			// Prevent modal window if not requested.
 			TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
-
-			if (!InternalCheckForReferencesToExternalPackages(PackagesToSave))
-			{
-				return false;
-			}
 
 			const bool bErrorIfAlreadyCheckedOut = false;
 			const bool bShowDialogIfFailure = false;
@@ -4023,6 +4184,11 @@ void UEditorLoadingAndSavingUtils::ImportScene(const FString& Filename)
 void UEditorLoadingAndSavingUtils::ExportScene(bool bExportSelectedActorsOnly)
 {
 	FEditorFileUtils::Export(bExportSelectedActorsOnly);
+}
+
+void UEditorLoadingAndSavingUtils::UnloadPackages(const TArray<UPackage*>& PackagesToUnload, bool& bOutAnyPackagesUnloaded, FText& OutErrorMessage)
+{
+	bOutAnyPackagesUnloaded = UPackageTools::UnloadPackages(PackagesToUnload, OutErrorMessage);
 }
 
 #undef LOCTEXT_NAMESPACE

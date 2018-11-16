@@ -72,6 +72,14 @@ void FAsyncTextureStreamingData::UpdatePerfectWantedMips_Async(FStreamingTexture
 
 	const float MaxAllowedSize = StreamingTexture.GetMaxAllowedSize();
 
+#if !UE_BUILD_SHIPPING
+	if (Settings.bStressTest)
+	{
+		// In stress test, we choose between the allowed mips. Combined with "r.Streaming.DropMips=2" this can also generate cancel requests.
+		MaxSize_VisibleOnly = MaxSize = (float)(0x1 << (FMath::RandRange(StreamingTexture.MinAllowedMips, StreamingTexture.MaxAllowedMips) - 1));
+	}
+	else
+#endif
 	if (Settings.bFullyLoadUsedTextures)
 	{
 		if (StreamingTexture.LastRenderTime < 300)
@@ -215,6 +223,19 @@ void FAsyncTextureStreamingTask::UpdateBudgetedMips_Async(int64& MemoryUsed, int
 	//*************************************
 
 	bool bResetMipBias = false;
+
+	if (PerfectWantedMipsBudgetResetThresold - MemoryBudgeted > TempMemoryBudget + MemoryMargin)
+	{
+		// Reset the budget tradeoffs if the required pool size shrinked significantly.
+		PerfectWantedMipsBudgetResetThresold = MemoryBudgeted;
+		bResetMipBias = true;
+	}
+	else if (MemoryBudgeted > PerfectWantedMipsBudgetResetThresold)
+	{
+		// Keep increasing the threshold since higher requirements incurs bigger tradeoffs.
+		PerfectWantedMipsBudgetResetThresold = MemoryBudgeted; 
+	}
+
 
 	const int64 NonStreamingTextureMemory =  AllocatedMemory - MemoryUsed;
 	int64 AvailableMemoryForStreaming = PoolSize - NonStreamingTextureMemory - MemoryMargin;
@@ -510,7 +531,8 @@ void FAsyncTextureStreamingTask::UpdateLoadAndCancelationRequests_Async(int64 Me
 			const int64 TempMemoryRequired = StreamingTexture.GetSize(StreamingTexture.WantedMips);
 			const int64 UsedMemoryRequired = StreamingTexture.GetSize(StreamingTexture.WantedMips) - StreamingTexture.GetSize(StreamingTexture.ResidentMips);
 
-			if (TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget)
+			// Respect the temporary budget unless this is the first unload request. This allows a single mip update of any size.
+			if (TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget || !LoadRequests.Num())
 			{
 				LoadRequests.Add(TextureIndex);
 	
@@ -523,7 +545,8 @@ void FAsyncTextureStreamingTask::UpdateLoadAndCancelationRequests_Async(int64 Me
 			const int64 UsedMemoryRequired = StreamingTexture.GetSize(StreamingTexture.WantedMips) - StreamingTexture.GetSize(StreamingTexture.ResidentMips);
 			const int64 TempMemoryRequired = StreamingTexture.GetSize(StreamingTexture.WantedMips);
 
-			if (MemoryUsed + UsedMemoryRequired <= MemoryBudget && TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget)
+			// Respect the temporary budget unless this is the first load request. This allows a single mip update of any size.
+			if (MemoryUsed + UsedMemoryRequired <= MemoryBudget && (TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget || !LoadRequests.Num()))
 			{
 				LoadRequests.Add(TextureIndex);
 	
@@ -566,10 +589,21 @@ void FAsyncTextureStreamingTask::DoWork()
 	// Update the distance and size for each bounds.
 	StreamingData.UpdateBoundSizes_Async(Settings);
 	
+	if (StreamingManager.GetAndResetNewFilesHaveLoaded())
+	{
+		for (FStreamingTexture& StreamingTexture : StreamingTextures)
+		{
+			if (IsAborted()) break;
+			StreamingTexture.ClearCachedOptionalMipsState_Async();
+		}
+	}
+
 	for (FStreamingTexture& StreamingTexture : StreamingTextures)
 	{
 		if (IsAborted()) break;
 
+		StreamingTexture.UpdateOptionalMipsState_Async();
+		
 		StreamingData.UpdatePerfectWantedMips_Async(StreamingTexture, Settings);
 		StreamingTexture.DynamicBoostFactor = 1.f; // Reset after every computation.
 	}

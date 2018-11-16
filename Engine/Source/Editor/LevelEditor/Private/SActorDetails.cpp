@@ -28,7 +28,7 @@
 #include "LevelEditorGenericDetails.h"
 #include "ScopedTransaction.h"
 #include "SourceCodeNavigation.h"
-#include "SDockTab.h"
+#include "Widgets/Docking/SDockTab.h"
 
 class SActorDetailsUneditableComponentWarning : public SCompoundWidget
 {
@@ -282,6 +282,9 @@ void SActorDetails::PostUndo(bool bSuccess)
 	if (SelectedActor)
 	{
 		GUnrealEd->SetActorSelectionFlags(SelectedActor);
+
+		// Update the pivot (widget) as the current selection may be a component within the Actor instance
+		GUnrealEd->UpdatePivotLocationForSelection();
 	}
 }
 

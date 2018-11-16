@@ -4,7 +4,7 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CustomEvent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "EditorStyleSettings.h"
+#include "Classes/EditorStyleSettings.h"
 #include "Editor/EditorEngine.h"
 #include "ObjectEditorUtils.h"
 #include "EditorCategoryUtils.h"
@@ -73,6 +73,8 @@ bool UK2Node_AssignDelegate::IsCompatibleWithGraph(const UEdGraph* TargetGraph) 
 //------------------------------------------------------------------------------
 void UK2Node_AssignDelegate::PostPlacedNewNode()
 {
+	Super::PostPlacedNewNode();
+	
 	UEdGraphPin* InDelegatePin = GetDelegatePin();
 	if (InDelegatePin->LinkedTo.Num() == 0)
 	{

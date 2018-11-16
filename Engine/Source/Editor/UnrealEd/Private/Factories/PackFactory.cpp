@@ -32,9 +32,9 @@
 #include "Misc/AES.h"
 #include "GameProjectGenerationModule.h"
 #include "Dialogs/SOutputLogDialog.h"
-#include "UniquePtr.h"
+#include "Templates/UniquePtr.h"
 #include "Logging/MessageLog.h"
-#include "CoreDelegates.h"
+#include "Misc/CoreDelegates.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPackFactory, Log, All);
 
@@ -54,7 +54,7 @@ UPackFactory::UPackFactory(const FObjectInitializer& PCIP)
 namespace PackFactoryHelper
 {
 	// Utility function to copy a single pak entry out of the Source archive and in to the Destination archive using Buffer as temporary space
-	bool BufferedCopyFile(FArchive& DestAr, FArchive& Source, const FPakEntry& Entry, TArray<uint8>& Buffer)
+	bool BufferedCopyFile(FArchive& DestAr, FArchive& Source, const FPakEntry& Entry, TArray<uint8>& Buffer, const FPakFile& PakFile)
 	{	
 		// Align down
 		const int64 BufferSize = Buffer.Num() & ~(FAES::AESBlockSize-1);
@@ -63,13 +63,13 @@ namespace PackFactoryHelper
 		{
 			const int64 SizeToCopy = FMath::Min(BufferSize, RemainingSizeToCopy);
 			// If file is encrypted so we need to account for padding
-			int64 SizeToRead = Entry.bEncrypted ? Align(SizeToCopy,FAES::AESBlockSize) : SizeToCopy;
+			int64 SizeToRead = Entry.IsEncrypted() ? Align(SizeToCopy,FAES::AESBlockSize) : SizeToCopy;
 
 			Source.Serialize(Buffer.GetData(),SizeToRead);
-			if (Entry.bEncrypted)
+			if (Entry.IsEncrypted())
 			{
 				FAES::FAESKey Key;
-				FPakPlatformFile::GetPakEncryptionKey(Key);
+				FPakPlatformFile::GetPakEncryptionKey(Key, PakFile.GetInfo().EncryptionKeyGuid);
 				checkf(Key.IsValid(), TEXT("Trying to copy an encrypted file between pak files, but no decryption key is available"));
 				FAES::DecryptData(Buffer.GetData(), SizeToRead, Key);
 			}
@@ -80,7 +80,7 @@ namespace PackFactoryHelper
 	}
 
 	// Utility function to uncompress and copy a single pak entry out of the Source archive and in to the Destination archive using PersistentBuffer as temporary space
-	bool UncompressCopyFile(FArchive& DestAr, FArchive& Source, const FPakEntry& Entry, TArray<uint8>& PersistentBuffer)
+	bool UncompressCopyFile(FArchive& DestAr, FArchive& Source, const FPakEntry& Entry, TArray<uint8>& PersistentBuffer, const FPakFile& PakFile)
 	{
 		if (Entry.UncompressedSize == 0)
 		{
@@ -101,14 +101,14 @@ namespace PackFactoryHelper
 		{
 			uint32 CompressedBlockSize = Entry.CompressionBlocks[BlockIndex].CompressedEnd - Entry.CompressionBlocks[BlockIndex].CompressedStart;
 			uint32 UncompressedBlockSize = (uint32)FMath::Min<int64>(Entry.UncompressedSize - Entry.CompressionBlockSize*BlockIndex, Entry.CompressionBlockSize);
-			Source.Seek(Entry.CompressionBlocks[BlockIndex].CompressedStart);
-			uint32 SizeToRead = Entry.bEncrypted ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
+			Source.Seek(Entry.CompressionBlocks[BlockIndex].CompressedStart + (PakFile.GetInfo().HasRelativeCompressedChunkOffsets() ? Entry.Offset : 0));
+			uint32 SizeToRead = Entry.IsEncrypted() ? Align(CompressedBlockSize, FAES::AESBlockSize) : CompressedBlockSize;
 			Source.Serialize(PersistentBuffer.GetData(), SizeToRead);
 
-			if (Entry.bEncrypted)
+			if (Entry.IsEncrypted())
 			{
 				FAES::FAESKey Key;
-				FPakPlatformFile::GetPakEncryptionKey(Key);
+				FPakPlatformFile::GetPakEncryptionKey(Key, PakFile.GetInfo().EncryptionKeyGuid);
 				checkf(Key.IsValid(), TEXT("Trying to copy an encrypted file between pak files, but no decryption key is available"));
 				FAES::DecryptData(PersistentBuffer.GetData(), SizeToRead, Key);
 			}
@@ -125,26 +125,26 @@ namespace PackFactoryHelper
 
 	// Utility function to extract a pak entry out of the memory reader containing the pak file and place in the destination archive.
 	// Uses Buffer or PersistentCompressionBuffer depending on whether the entry is compressed or not.
-	void ExtractFile(const FPakEntry& Entry, FBufferReader& PakReader, TArray<uint8>& Buffer, TArray<uint8>& PersistentCompressionBuffer, FArchive& DestAr)
+	void ExtractFile(const FPakEntry& Entry, FBufferReader& PakReader, TArray<uint8>& Buffer, TArray<uint8>& PersistentCompressionBuffer, FArchive& DestAr, const FPakFile& PakFile)
 	{
 		if (Entry.CompressionMethod == COMPRESS_None)
 		{
-			PackFactoryHelper::BufferedCopyFile(DestAr, PakReader, Entry, Buffer);
+			PackFactoryHelper::BufferedCopyFile(DestAr, PakReader, Entry, Buffer, PakFile);
 		}
 		else
 		{
-			PackFactoryHelper::UncompressCopyFile(DestAr, PakReader, Entry, PersistentCompressionBuffer);
+			PackFactoryHelper::UncompressCopyFile(DestAr, PakReader, Entry, PersistentCompressionBuffer, PakFile);
 		}
 	}
 
 	// Utility function to extract a pak entry out of the memory reader containing the pak file and place in a string.
 	// Uses Buffer or PersistentCompressionBuffer depending on whether the entry is compressed or not.
-	void ExtractFileToString(const FPakEntry& Entry, FBufferReader& PakReader, TArray<uint8>& Buffer, TArray<uint8>& PersistentCompressionBuffer, FString& FileContents)
+	void ExtractFileToString(const FPakEntry& Entry, FBufferReader& PakReader, TArray<uint8>& Buffer, TArray<uint8>& PersistentCompressionBuffer, FString& FileContents, const FPakFile& PakFile)
 	{
 		TArray<uint8> Contents;
 		FMemoryWriter MemWriter(Contents);
 
-		ExtractFile(Entry, PakReader, Buffer, PersistentCompressionBuffer, MemWriter);
+		ExtractFile(Entry, PakReader, Buffer, PersistentCompressionBuffer, MemWriter, PakFile);
 
 		// Add a line feed at the end because the FString archive read will consume the last byte
 		Contents.Add('\n');
@@ -383,7 +383,7 @@ UObject* UPackFactory::FactoryCreateBinary
 				if (EntryInfo == Entry)
 				{
 					FString ConfigString;
-					PackFactoryHelper::ExtractFileToString(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, ConfigString);
+					PackFactoryHelper::ExtractFileToString(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, ConfigString, PakFile);
 					PackFactoryHelper::ProcessPackConfig(ConfigString, ConfigParameters);
 				}
 				else
@@ -511,7 +511,7 @@ UObject* UPackFactory::FactoryCreateBinary
 					UE_LOG(LogPackFactory, Log, TEXT("%s (%ld) -> %s"), *It.Filename(), Entry.Size, *DestFilename);
 
 					FString SourceContents;
-					PackFactoryHelper::ExtractFileToString(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, SourceContents);
+					PackFactoryHelper::ExtractFileToString(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, SourceContents, PakFile);
 
 					FGameProjectGenerationModule& GameProjectModule = FModuleManager::LoadModuleChecked<FGameProjectGenerationModule>(TEXT("GameProjectGeneration"));
 
@@ -555,7 +555,7 @@ UObject* UPackFactory::FactoryCreateBinary
 
 					if (FileHandle)
 					{
-						PackFactoryHelper::ExtractFile(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, *FileHandle);
+						PackFactoryHelper::ExtractFile(Entry, PakReader, CopyBuffer, PersistentCompressionBuffer, *FileHandle, PakFile);
 						WrittenFiles.Add(*DestFilename);
 					}
 					else

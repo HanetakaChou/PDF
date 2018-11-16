@@ -51,10 +51,16 @@ public class SlateReflector : ModuleRules
 		{
 			PublicDefinitions.Add("SLATE_REFLECTOR_HAS_SESSION_SERVICES=1");
 
-			PrivateIncludePathModuleNames.AddRange(
+			PrivateDependencyModuleNames.AddRange(
+                new string[] {
+                    "PropertyEditor",
+                }
+			);
+
+            PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"SessionServices",
-				}
+                }
 			);
 
 			DynamicallyLoadedModuleNames.AddRange(
@@ -62,7 +68,7 @@ public class SlateReflector : ModuleRules
 					"SessionServices",
 				}
 			);
-		}
+        }
 		else
 		{
 			PublicDefinitions.Add("SLATE_REFLECTOR_HAS_SESSION_SERVICES=0");
@@ -86,6 +92,11 @@ public class SlateReflector : ModuleRules
 		else
 		{
 			PublicDefinitions.Add("SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM=0");
+		}
+
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PrecompileForTargets = PrecompileTargetsType.Any;
 		}
 	}
 }

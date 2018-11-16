@@ -65,7 +65,6 @@ TSharedRef<SWidget> FLoadingScreenAttributes::NewTestLoadingScreenWidget()
 	return SNew(SLoadingScreenTestWidget);
 }
 
-
 void CreateMoviePlayer()
 {
 	// Do not create the movie player if it already exists
@@ -121,7 +120,7 @@ IGameMoviePlayer& GetMoviePlayerRef()
 bool IsMoviePlayerEnabled()
 {
 	bool bEnabled = !GIsEditor && !IsRunningDedicatedServer() && !IsRunningCommandlet() && GUseThreadedRendering;
-	
+
 #if !UE_BUILD_SHIPPING
 	bEnabled &= !FParse::Param(FCommandLine::Get(), TEXT("NoLoadingScreen"));
 #endif

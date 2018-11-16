@@ -70,9 +70,6 @@ public:
 	UPROPERTY()
 	TArray<struct FDebugDisplayProperty> DebugProperties;
 
-	/** border of safe area */
-	struct FTitleSafeZoneArea TitleSafeZone;
-
 	/** Array of the screen data needed for all the different splitscreen configurations */
 	TArray<struct FSplitscreenData> SplitscreenInfo;
 
@@ -150,7 +147,7 @@ public:
 	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent EventType, float AmountDepressed=1.f, bool bGamepad=false) override;
 	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
 	virtual bool InputChar(FViewport* Viewport,int32 ControllerId, TCHAR Character) override;
-	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex) override;
+	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex) override;
 	virtual bool InputMotion(FViewport* Viewport, int32 ControllerId, const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration) override;
 	virtual EMouseCursor::Type GetCursor(FViewport* Viewport, int32 X, int32 Y ) override;
 	virtual TOptional<TSharedRef<SWidget>> MapCursor(FViewport* Viewport, const FCursorReply& CursorReply) override;
@@ -182,6 +179,11 @@ public:
 	//~ End FExec Interface.
 
 	/**
+	 * Gives the game's custom viewport client a way to handle F11 or Alt+Enter before processing the input
+	 */
+	bool TryToggleFullscreenOnInputKey(FKey Key, EInputEvent EventType);
+
+	/**
 	 * Exec command handlers
 	 */
 	bool HandleForceFullscreenCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -205,6 +207,7 @@ public:
 	bool HandleDisplayAllLocationCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleDisplayAllRotationCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleDisplayClearCommand( const TCHAR* Cmd, FOutputDevice& Ar );
+	bool HandleGetAllLocationCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleTextureDefragCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleToggleMIPFadeCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandlePauseRenderClockCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -334,6 +337,9 @@ public:
 	/** @return Whether or not the main viewport is fullscreen or windowed. */
 	bool IsFullScreenViewport() const;
 
+	/** @return If we're specifically in fullscreen mode, not windowed fullscreen. */
+	bool IsExclusiveFullscreenViewport() const;
+
 	/** @return mouse position in game viewport coordinates (does not account for splitscreen) */
 	bool GetMousePosition(FVector2D& MousePosition) const;
 
@@ -401,7 +407,7 @@ public:
 	void GetPixelSizeOfScreen( float& Width, float& Height, UCanvas* Canvas, int32 LocalPlayerIndex );
 
 	/** Calculate the amount of safezone needed for a single side for both vertical and horizontal dimensions*/
-	void CalculateSafeZoneValues( float& Horizontal, float& Vertical, UCanvas* Canvas, int32 LocalPlayerIndex, bool bUseMaxPercent );
+	void CalculateSafeZoneValues( FMargin& SafeZone, UCanvas* Canvas, int32 LocalPlayerIndex, bool bUseMaxPercent );
 
 	/**
 	* pixel size of the deadzone for all sides (right/left/top/bottom) based on which local player it is
@@ -559,6 +565,15 @@ public:
 
 	/** FViewport interface */
 	virtual bool ShouldDPIScaleSceneCanvas() const override { return false; }
+
+#if WITH_EDITOR
+	void SetPlayInEditorUseMouseForTouch(bool bUseMouseForTouch);
+#endif
+
+protected:
+
+	bool GetUseMouseForTouch() const;
+
 protected:
 	/** FCommonViewportClient interface */
 	virtual float UpdateViewportClientWindowDPIScale() const override;
@@ -702,7 +717,8 @@ public:
 	 */
 	virtual bool ShouldAlwaysLockMouse() override
 	{
-		return MouseLockMode == EMouseLockMode::LockAlways;
+		return MouseLockMode == EMouseLockMode::LockAlways
+			 || (MouseLockMode == EMouseLockMode::LockInFullscreen && IsExclusiveFullscreenViewport());
 	}
 
 	/**
@@ -764,6 +780,12 @@ public:
 
 	void SetVirtualCursorWidget(EMouseCursor::Type Cursor, class UUserWidget* Widget);
 
+	/** Adds a cursor to the set based on the enum and the class reference to it. */
+	void AddSoftwareCursor(EMouseCursor::Type Cursor, const FSoftClassPath& CursorClass);
+
+	/** Does the viewport client have a software cursor set up for the given enum? */
+	bool HasSoftwareCursor(EMouseCursor::Type Cursor) const;
+
 private:
 	/** Resets the platform type shape to nullptr, to restore it to the OS default. */
 	void ResetHardwareCursorStates();
@@ -812,9 +834,6 @@ private:
 
 	/** Delegate handler for when a window DPI changes and we might need to adjust the scenes resolution */
 	void HandleWindowDPIScaleChanged(TSharedRef<SWindow> InWindow);
-
-	/** Adds a cursor to the set based on the enum and the class reference to it. */
-	void AddSoftwareCursor(EMouseCursor::Type Cursor, const FSoftClassPath& CursorClass);
 
 private:
 	/** Slate window associated with this viewport client.  The same window may host more than one viewport client. */
@@ -930,4 +949,9 @@ private:
 
 	/** Is the mouse currently over the viewport client */
 	bool bIsMouseOverClient;
+
+#if WITH_EDITOR
+	/** Should the mouse send touch events. */
+	bool bUseMouseForTouchInEditor;
+#endif
 };

@@ -83,13 +83,17 @@ struct FOptionalPinFromProperty
 	uint8 bIsOverridePinVisible:1;
 
 	FOptionalPinFromProperty()
-		: bIsMarkedForAdvancedDisplay(false)
+		: bShowPin(false)
+		, bCanToggleVisibility(false)
+		, bPropertyIsCustomized(false)
+		, bHasOverridePin(false)
+		, bIsMarkedForAdvancedDisplay(false)
 		, bIsOverrideEnabled(true)
 		, bIsSetValuePinVisible(true)
 		, bIsOverridePinVisible(true)
 	{
 	}
-	
+
 	FOptionalPinFromProperty(FName InPropertyName, bool bInShowPin, bool bInCanToggleVisibility, const FString& InFriendlyName, const FText& InTooltip, bool bInPropertyIsCustomized, FName InCategoryName, bool bInHasOverridePin)
 		: PropertyName(InPropertyName)
 		, PropertyFriendlyName(InFriendlyName)
@@ -245,6 +249,9 @@ class UK2Node : public UEdGraphNode
 	virtual bool ShouldShowNodeProperties() const { return false; }
 
 	/** Return whether the node's execution pins should support the remove execution pin action */
+	virtual bool CanEverInsertExecutionPin() const { return false; }
+
+	/** Return whether the node's execution pins should support the remove execution pin action */
 	virtual bool CanEverRemoveExecutionPin() const { return false; }
 
 	/** Called when the connection list of one of the pins of this node is changed in the editor, after the pin has had it's literal cleared */
@@ -393,8 +400,11 @@ protected:
 
 	enum ERedirectType
 	{
+		/* The pins do not match */
 		ERedirectType_None,
+		/* The pins match by name or redirect and have the same type (or we're ok with the mismatched type) */
 		ERedirectType_Name,
+		/* The pins match via a redirect and the value needs to also be redirected */
 		ERedirectType_Value
 	};
 
@@ -402,7 +412,7 @@ protected:
 	BLUEPRINTGRAPH_API void ReconstructSinglePin(UEdGraphPin* NewPin, UEdGraphPin* OldPin, ERedirectType RedirectType);
 
 	// Helper function to rewire old pins to new pins during node reconstruction (or other regeneration of pins)
-	BLUEPRINTGRAPH_API void RewireOldPinsToNewPins(TArray<UEdGraphPin*>& InOldPins, TArray<UEdGraphPin*>& InNewPins);
+	BLUEPRINTGRAPH_API void RewireOldPinsToNewPins(TArray<UEdGraphPin*>& InOldPins, TArray<UEdGraphPin*>& InNewPins, TMap<UEdGraphPin*, UEdGraphPin*>* NewPinToOldPin);
 
 	// Helper function to properly destroy a set of pins
 	BLUEPRINTGRAPH_API void DestroyPinList(TArray<UEdGraphPin*>& InPins);

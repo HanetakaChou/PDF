@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "MovieSceneEvalTemplate.h"
-#include "MovieScenePropertyTemplate.h"
+#include "Evaluation/MovieSceneEvalTemplate.h"
+#include "Evaluation/MovieScenePropertyTemplate.h"
+#include "Misc/FrameNumber.h"
 #include "MovieSceneImagePlateTemplate.generated.h"
 
 class UMovieSceneImagePlateSection;
@@ -15,8 +16,10 @@ struct FMovieSceneImagePlateSectionParams
 {
 	GENERATED_BODY()
 
+	FMovieSceneImagePlateSectionParams();
+
 	UPROPERTY()
-	float SectionStartTime;
+	FFrameNumber SectionStartTime;
 
 	UPROPERTY()
 	UImagePlateFileSequence* FileSequence;
@@ -29,7 +32,8 @@ USTRUCT()
 struct FMovieSceneImagePlateSectionTemplate : public FMovieSceneEvalTemplate
 {
 	GENERATED_BODY()
-	FMovieSceneImagePlateSectionTemplate() {}
+
+	FMovieSceneImagePlateSectionTemplate();
 	FMovieSceneImagePlateSectionTemplate(const UMovieSceneImagePlateSection& InSection, const UMovieSceneImagePlateTrack& InTrack);
 
 	virtual void SetupOverrides() override

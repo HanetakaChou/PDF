@@ -59,14 +59,22 @@ UAISense_Hearing::UAISense_Hearing(const FObjectInitializer& ObjectInitializer)
 		OnNewListenerDelegate.BindUObject(this, &UAISense_Hearing::OnNewListenerImpl);
 		OnListenerUpdateDelegate.BindUObject(this, &UAISense_Hearing::OnListenerUpdateImpl);
 		OnListenerRemovedDelegate.BindUObject(this, &UAISense_Hearing::OnListenerRemovedImpl);
-
-		static bool bMakeNoiseInterceptionSetUp = false;
-		if (bMakeNoiseInterceptionSetUp == false)
-		{
-			AActor::SetMakeNoiseDelegate(FMakeNoiseDelegate::CreateStatic(&UAIPerceptionSystem::MakeNoiseImpl));
-			bMakeNoiseInterceptionSetUp = true;
-		}
 	}
+}
+
+void UAISense_Hearing::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	if (HasAnyFlags(RF_ClassDefaultObject) == false)
+	{
+		RegisterMakeNoiseDelegate();
+	}
+}
+
+void UAISense_Hearing::RegisterMakeNoiseDelegate()
+{
+	AActor::SetMakeNoiseDelegate(FMakeNoiseDelegate::CreateStatic(&UAIPerceptionSystem::MakeNoiseImpl));
 }
 
 void UAISense_Hearing::ReportNoiseEvent(UObject* WorldContextObject, FVector NoiseLocation, float Loudness, AActor* Instigator, float MaxRange, FName Tag)
@@ -166,6 +174,13 @@ float UAISense_Hearing::Update()
 void UAISense_Hearing::RegisterEvent(const FAINoiseEvent& Event)
 {
 	NoiseEvents.Add(Event);
+
+	RequestImmediateUpdate();
+}
+
+void UAISense_Hearing::RegisterEventsBatch(const TArray<FAINoiseEvent>& Events)
+{
+	NoiseEvents.Append(Events);
 
 	RequestImmediateUpdate();
 }

@@ -79,7 +79,11 @@ bool SVirtualJoystick::ShouldDisplayTouchInterface()
 	GConfig->GetBool(TEXT("/Script/Engine.InputSettings"), TEXT("bAlwaysShowTouchInterface"), bAlwaysShowTouchInterface, GInputIni);
 
 	// do we want to show virtual joysticks?
-	return FPlatformMisc::GetUseVirtualJoysticks() || bAlwaysShowTouchInterface || FSlateApplication::Get().IsFakingTouchEvents();
+	return FPlatformMisc::GetUseVirtualJoysticks() || bAlwaysShowTouchInterface
+#if ! PLATFORM_HTML5 // make HTML5 support bAlwaysShowTouchInterface only
+		|| FSlateApplication::Get().IsFakingTouchEvents()
+#endif
+		;
 }
 
 static int32 ResolveRelativePosition(float Position, float RelativeTo, float ScaleFactor)
@@ -137,7 +141,7 @@ int32 SVirtualJoystick::OnPaint( const FPaintArgs& Args, const FGeometry& Allott
 					AllottedGeometry.ToPaintGeometry(
 					Control.VisualCenter - FVector2D(Control.CorrectedVisualSize.X * 0.5f, Control.CorrectedVisualSize.Y * 0.5f),
 					Control.CorrectedVisualSize),
-					Control.Image2.Get(),
+					Control.Image2->GetSlateBrush(),
 					ESlateDrawEffect::None,
 					ColorAndOpacitySRGB
 					);
@@ -151,7 +155,7 @@ int32 SVirtualJoystick::OnPaint( const FPaintArgs& Args, const FGeometry& Allott
 					AllottedGeometry.ToPaintGeometry(
 					Control.VisualCenter + Control.ThumbPosition - FVector2D(Control.CorrectedThumbSize.X * 0.5f, Control.CorrectedThumbSize.Y * 0.5f),
 					Control.CorrectedThumbSize),
-					Control.Image1.Get(),
+					Control.Image1->GetSlateBrush(),
 					ESlateDrawEffect::None,
 					ColorAndOpacitySRGB
 					);
@@ -335,6 +339,9 @@ void SVirtualJoystick::Tick( const FGeometry& AllottedGeometry, const double InC
 	// count how many controls are active
 	int32 NumActiveControls = 0;
 
+	// figure out how much to scale the control sizes
+	float ScaleFactor = GetScaleFactor(AllottedGeometry);
+
 	for (int32 ControlIndex = 0; ControlIndex < Controls.Num(); ControlIndex++)
 	{
 		FControlInfo& Control = Controls[ControlIndex];
@@ -358,11 +365,8 @@ void SVirtualJoystick::Tick( const FGeometry& AllottedGeometry, const double InC
 
 		// calculate absolute positions based on geometry
 		// @todo: Need to manage geometry changing!
-		if (!Control.bHasBeenPositioned)
+		if (!Control.bHasBeenPositioned || ScaleFactor != PreviousScalingFactor)
 		{
-			// figure out how much to scale the control sizes
-			float ScaleFactor = GetScaleFactor(AllottedGeometry);
-
 			// update all the sizes
 			Control.CorrectedCenter = FVector2D(ResolveRelativePosition(Control.Center.X, AllottedGeometry.GetLocalSize().X, ScaleFactor), ResolveRelativePosition(Control.Center.Y, AllottedGeometry.GetLocalSize().Y, ScaleFactor));
 			Control.VisualCenter = Control.CorrectedCenter;
@@ -399,7 +403,6 @@ void SVirtualJoystick::Tick( const FGeometry& AllottedGeometry, const double InC
 			const FGamepadKeyNames::Type XAxis = (Control.MainInputKey.IsValid() ? Control.MainInputKey.GetFName() : (ControlIndex == 0 ? FGamepadKeyNames::LeftAnalogX : FGamepadKeyNames::RightAnalogX));
 			const FGamepadKeyNames::Type YAxis = (Control.AltInputKey.IsValid() ? Control.AltInputKey.GetFName() : (ControlIndex == 0 ? FGamepadKeyNames::LeftAnalogY : FGamepadKeyNames::RightAnalogY));
 
-	//		UE_LOG(LogTemp, Log, TEXT("Joysticking %f,%f"), NormalizedOffset.X, -NormalizedOffset.Y);
 			FSlateApplication::Get().SetAllUserFocusToGameViewport();
 			FSlateApplication::Get().OnControllerAnalog(XAxis, 0, NormalizedOffset.X);
 			FSlateApplication::Get().OnControllerAnalog(YAxis, 0, -NormalizedOffset.Y);
@@ -412,6 +415,8 @@ void SVirtualJoystick::Tick( const FGeometry& AllottedGeometry, const double InC
 		}
 	}
 
+	// we need to store the computed scale factor so we can compare it with the value computed in the following frame and, if necessary, recompute widget position
+	PreviousScalingFactor = ScaleFactor;
 
 	// STATE MACHINE!
 	if (NumActiveControls > 0 || bPreventReCenter)

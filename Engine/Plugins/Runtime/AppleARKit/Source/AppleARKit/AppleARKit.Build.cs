@@ -1,22 +1,14 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class AppleARKit : ModuleRules
 {
 	public AppleARKit(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.AddRange(
-			new string[] {
-				"AppleARKit/Public"
-				// ... add public include paths required here ...
-			}
-			);
-				
-		
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"AppleARKit/Private",
 				"../../../../Source/Runtime/Renderer/Private",
 				// ... add other private include paths required here ...
 			}
@@ -44,13 +36,8 @@ public class AppleARKit : ModuleRules
                 "RenderCore",
                 "ShaderCore",
                 "HeadMountedDisplay",
-                "IOSRuntimeSettings",
                 "AugmentedReality",
-                "ProceduralMeshComponent",
-                "LiveLink",
-                "LiveLinkInterface",
-//                "OnlineSubsystem",
-                "Sockets"
+                "AppleImageUtils"
 				// ... add private dependencies that you statically link with here ...
 			}
 			);
@@ -65,12 +52,12 @@ public class AppleARKit : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
-			PublicDefinitions.Add("ARKIT_SUPPORT=1");
+    		PrivateDependencyModuleNames.Add("IOSRuntimeSettings");
+
 			PublicFrameworks.Add( "ARKit" );
-		}
-		else
-		{
-			PublicDefinitions.Add("ARKIT_SUPPORT=0");
+
+            string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+            AdditionalPropertiesForReceipt.Add("IOSPlugin", Path.Combine(PluginPath, "AppleARKit_IOS_UPL.xml"));
 		}
 	}
 }

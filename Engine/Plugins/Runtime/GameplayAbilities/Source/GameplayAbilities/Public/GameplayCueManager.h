@@ -26,57 +26,85 @@ DECLARE_DELEGATE_OneParam(FOnGameplayCueNotifySetLoaded, TArray<FSoftObjectPath>
 DECLARE_DELEGATE_OneParam(FGameplayCueProxyTick, float);
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FShouldLoadGCNotifyDelegate, const FAssetData&, FName);
 
+/** Options to specify what parts of gameplay cue execution should be skipped */
+enum class EGameplayCueExecutionOptions : int32
+{
+	// Default options, check everything
+	Default = 0,
+	// Skip gameplay cue interface check
+	IgnoreInterfaces	= 0x00000001,
+	// Skip spawning notifies
+	IgnoreNotifies		= 0x00000002,
+	// Skip tag translation step
+	IgnoreTranslation	= 0x00000004,
+	// Ignores suppression check, always spawns
+	IgnoreSuppression	= 0x00000008,
+	// Don't show debug visualizations
+	IgnoreDebug			= 0x00000010
+};
+ENUM_CLASS_FLAGS(EGameplayCueExecutionOptions);
+
 /** An ObjectLibrary for the GameplayCue Notifies. Wraps 2 underlying UObjectLibraries plus options/delegates for how they are loaded */ 
 USTRUCT()
 struct FGameplayCueObjectLibrary
 {
 	GENERATED_BODY()
 	FGameplayCueObjectLibrary()
+		: ActorObjectLibrary(nullptr)
+		, StaticObjectLibrary(nullptr)
+		, CueSet(nullptr)
+		, AsyncPriority(0)
+		, bShouldSyncScan(false)
+		, bShouldAsyncLoad(false)
+		, bShouldSyncLoad(false)
+		, bHasBeenInitialized(false)
 	{
-		bHasBeenInitialized = false;
 	}
 
-	// Paths to search for
+	/** Paths to search for */
 	UPROPERTY()
 	TArray<FString> Paths;
 
-	// Callback for when load finishes
+	/** Callback for when load finishes */
 	FOnGameplayCueNotifySetLoaded OnLoaded;
 
-	// Callback for "should I add this FAssetData to the set"
+	/** Callback for "should I add this FAssetData to the set" */
 	FShouldLoadGCNotifyDelegate ShouldLoad;
 
-	// Object library for actor based notifies
+	/** Object library for actor based notifies */
 	UPROPERTY()
 	UObjectLibrary* ActorObjectLibrary;
 
-	// Object library for object based notifies
+	/** Object library for object based notifies */
 	UPROPERTY()
 	UObjectLibrary* StaticObjectLibrary;
 
-	// Priority to use if async loading
-	TAsyncLoadPriority AsyncPriority;
-
-	// Should we force a sync scan on the asset registry in order to discover asset data, or just use what is there?
-	UPROPERTY()
-	bool bShouldSyncScan;
-
-	// Should we start async loading everything that we find (that passes ShouldLoad delegate check)
-	UPROPERTY()
-	bool bShouldAsyncLoad;
-
-	// Should we sync load everything that we find (that passes ShouldLoad delegate check)
-	UPROPERTY()
-	bool bShouldSyncLoad;
-
-	// Set to put the loaded asset data into. If null we will use the global set (RuntimeGameplayCueObjectLibrary.CueSet)
+	/** Set to put the loaded asset data into. If null we will use the global set (RuntimeGameplayCueObjectLibrary.CueSet) */
 	UPROPERTY()
 	UGameplayCueSet* CueSet;
 
+	/** Priority to use if async loading */
+	TAsyncLoadPriority AsyncPriority;
+
+	/** Should we force a sync scan on the asset registry in order to discover asset data, or just use what is there */
+	UPROPERTY()
+	bool bShouldSyncScan;
+
+	/** Should we start async loading everything that we find (that passes ShouldLoad delegate check) */
+	UPROPERTY()
+	bool bShouldAsyncLoad;
+
+	/** Should we sync load everything that we find (that passes ShouldLoad delegate check) */
+	UPROPERTY()
+	bool bShouldSyncLoad;
+
+	/** True if this has been initialized with correct data */
 	UPROPERTY()
 	bool bHasBeenInitialized;
 };
 
+
+/** Singleton manager object that handles dispatching gameplay cues and spawning GameplayCueNotify actors as needed */
 UCLASS()
 class GAMEPLAYABILITIES_API UGameplayCueManager : public UDataAsset
 {
@@ -85,7 +113,6 @@ class GAMEPLAYABILITIES_API UGameplayCueManager : public UDataAsset
 	// -------------------------------------------------------------
 	// Wrappers to handle replicating executed cues
 	// -------------------------------------------------------------
-
 	virtual void InvokeGameplayCueExecuted_FromSpec(UAbilitySystemComponent* OwningComponent, const FGameplayEffectSpec& Spec, FPredictionKey PredictionKey);
 	virtual void InvokeGameplayCueExecuted(UAbilitySystemComponent* OwningComponent, const FGameplayTag GameplayCueTag, FPredictionKey PredictionKey, FGameplayEffectContextHandle EffectContext);
 	virtual void InvokeGameplayCueExecuted_WithParams(UAbilitySystemComponent* OwningComponent, const FGameplayTag GameplayCueTag, FPredictionKey PredictionKey, FGameplayCueParameters GameplayCueParameters);
@@ -102,8 +129,10 @@ class GAMEPLAYABILITIES_API UGameplayCueManager : public UDataAsset
 	/** Broadcasted when ::FlushPendingCues runs: useful for custom batching/gameplay cue handling */
 	FSimpleMulticastDelegate	OnFlushPendingCues;
 
+	/** Called when manager is first created */
 	virtual void OnCreated();
 
+	/** Called when engine has completely loaded, this is a good time to finalize things */
 	virtual void OnEngineInitComplete();
 
 	/** Process a pending cue, return false if the cue should be rejected. */
@@ -117,8 +146,8 @@ class GAMEPLAYABILITIES_API UGameplayCueManager : public UDataAsset
 	// -------------------------------------------------------------
 
 	/** Main entry point for handling a gameplaycue event. These functions will call the 3 functions below to handle gameplay cues */
-	virtual void HandleGameplayCues(AActor* TargetActor, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);
-	virtual void HandleGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);
+	virtual void HandleGameplayCues(AActor* TargetActor, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters, EGameplayCueExecutionOptions Options = EGameplayCueExecutionOptions::Default);
+	virtual void HandleGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters, EGameplayCueExecutionOptions Options = EGameplayCueExecutionOptions::Default);
 
 	/** 1. returns true to ignore gameplay cues */
 	virtual bool ShouldSuppressGameplayCues(AActor* TargetActor);
@@ -127,7 +156,7 @@ class GAMEPLAYABILITIES_API UGameplayCueManager : public UDataAsset
 	void TranslateGameplayCue(FGameplayTag& Tag, AActor* TargetActor, const FGameplayCueParameters& Parameters);
 
 	/** 3. Actually routes the gameplaycue event to the right place.  */
-	virtual void RouteGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters);
+	virtual void RouteGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters, EGameplayCueExecutionOptions Options = EGameplayCueExecutionOptions::Default);
 
 	// -------------------------------------------------------------
 
@@ -248,7 +277,7 @@ public:
 
 	static UWorld* GetCachedWorldForGameplayCueNotifies();
 
-	DECLARE_EVENT_FourParams(UGameplayCueManager, FOnRouteGameplayCue, AActor*, FGameplayTag, EGameplayCueEvent::Type, const FGameplayCueParameters&);
+	DECLARE_EVENT_FiveParams(UGameplayCueManager, FOnRouteGameplayCue, AActor*, FGameplayTag, EGameplayCueEvent::Type, const FGameplayCueParameters&, EGameplayCueExecutionOptions);
 	FOnRouteGameplayCue& OnGameplayCueRouted() { return OnRouteGameplayCue; }
 
 #if WITH_EDITOR

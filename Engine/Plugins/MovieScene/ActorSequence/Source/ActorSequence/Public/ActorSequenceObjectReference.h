@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "LazyObjectPtr.h"
+#include "UObject/LazyObjectPtr.h"
 #include "ActorSequenceObjectReference.generated.h"
 
 class UActorComponent;
@@ -29,7 +29,9 @@ struct FActorSequenceObjectReference
 	/**
 	 * Default construction to a null reference
 	 */
-	FActorSequenceObjectReference() {}
+	FActorSequenceObjectReference()
+		: Type(EActorSequenceObjectReferenceType::ContextActor)
+	{}
 
 	/**
 	 * Generates a new reference to an object within a given context.

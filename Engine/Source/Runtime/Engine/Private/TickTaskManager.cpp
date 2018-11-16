@@ -18,6 +18,7 @@
 #include "TickTaskManagerInterface.h"
 #include "Async/ParallelFor.h"
 #include "Misc/TimeGuard.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTick, Log, All);
 
@@ -34,6 +35,8 @@ DECLARE_CYCLE_STAT(TEXT("TG_NewlySpawned"), STAT_TG_NewlySpawned, STATGROUP_Tick
 DECLARE_CYCLE_STAT(TEXT("ReleaseTickGroup"), STAT_ReleaseTickGroup, STATGROUP_TickGroups);
 DECLARE_CYCLE_STAT(TEXT("ReleaseTickGroup Block"), STAT_ReleaseTickGroup_Block, STATGROUP_TickGroups);
 DECLARE_CYCLE_STAT(TEXT("CleanupTasksWait"), STAT_CleanupTasksWait, STATGROUP_TickGroups);
+
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 static TAutoConsoleVariable<float> CVarStallStartFrame(
 	TEXT("CriticalPathStall.TickStartFrame"),
@@ -70,6 +73,13 @@ static TAutoConsoleVariable<int32> CVarAllowAsyncTickCleanup(
 	1,
 	TEXT("If true, ticks are cleaned up in a task thread."));
 
+static float GTimeguardThresholdMS = 0.0f;
+static FAutoConsoleVariableRef CVarLightweightTimeguardThresholdMS(
+	TEXT("tick.LightweightTimeguardThresholdMS"), 
+	GTimeguardThresholdMS, 
+	TEXT("Threshold in milliseconds for the tick timeguard"),
+	ECVF_Default);
+
 FAutoConsoleTaskPriority CPrio_DispatchTaskPriority(
 	TEXT("TaskGraph.TaskPriorities.TickDispatchTaskPriority"),
 	TEXT("Task and thread priority for tick tasks dispatch."),
@@ -81,9 +91,8 @@ FAutoConsoleTaskPriority CPrio_DispatchTaskPriority(
 FAutoConsoleTaskPriority CPrio_CleanupTaskPriority(
 	TEXT("TaskGraph.TaskPriorities.TickCleanupTaskPriority"),
 	TEXT("Task and thread priority for tick cleanup."),
-	ENamedThreads::BackgroundThreadPriority, // if we have background priority task threads, then use them...
-	ENamedThreads::HighTaskPriority, // .. at high task priority
-	ENamedThreads::NormalTaskPriority // if we don't have background threads, then use normal priority threads at normal task priority instead
+	ENamedThreads::NormalThreadPriority, 
+	ENamedThreads::NormalTaskPriority	
 	);
 
 FAutoConsoleTaskPriority CPrio_NormalAsyncTickTaskPriority(
@@ -100,7 +109,6 @@ FAutoConsoleTaskPriority CPrio_HiPriAsyncTickTaskPriority(
 	ENamedThreads::NormalTaskPriority, // .. at normal task priority
 	ENamedThreads::HighTaskPriority // if we don't have hi pri threads, then use normal priority threads at high task priority instead
 	);
-
 
 FORCEINLINE bool CanDemoteIntoTickGroup(ETickingGroup TickGroup)
 {
@@ -206,6 +214,11 @@ struct FTickContext
 	}
 };
 
+
+
+
+
+
 /**
  * Class that handles the actual tick tasks and starting and completing tick groups
  */
@@ -267,8 +280,9 @@ public:
 			FTimerNameDelegate NameFunction = FTimerNameDelegate::CreateLambda( [&]{ return FString::Printf(TEXT("Slowtick %s "), *Target->DiagnosticMessage()); } );
 			SCOPE_TIME_GUARD_DELEGATE_MS(NameFunction, 4);
 #endif
-
+			LIGHTWEIGHT_TIME_GUARD_BEGIN(FTickFunctionTask, GTimeguardThresholdMS);
 			Target->ExecuteTick(Target->CalculateDeltaTime(Context), Context.TickType, CurrentThread, MyCompletionGraphEvent);
+			LIGHTWEIGHT_TIME_GUARD_END(FTickFunctionTask, Target->DiagnosticMessage());
 		}
 		Target->TaskPointer = nullptr;  // This is stale and a good time to clear it for safety
 	}
@@ -539,7 +553,7 @@ public:
 				if (TickCompletionEvents[Block].Num())
 				{
 					FTaskGraphInterface::Get().WaitUntilTasksComplete(TickCompletionEvents[Block], ENamedThreads::GameThread);
-					if (SingleThreadedMode() || Block == TG_NewlySpawned || CVarAllowAsyncTickCleanup.GetValueOnGameThread() == 0)
+					if (SingleThreadedMode() || Block == TG_NewlySpawned || CVarAllowAsyncTickCleanup.GetValueOnGameThread() == 0 || TickCompletionEvents[Block].Num() < 50)
 					{
 						ResetTickGroup(Block);
 					}
@@ -761,6 +775,14 @@ public:
 		bTickNewlySpawned = true;
 
 		{
+			SCOPE_CYCLE_COUNTER(STAT_GatherTicksForParallel);
+			for (TSet<FTickFunction*>::TIterator It(AllEnabledTickFunctions); It; ++It)
+			{
+				FTickFunction* TickFunction = *It;
+				AllTickFunctions.Add(TickFunction);
+			}
+		}
+		{
 			SCOPE_CYCLE_COUNTER(STAT_DequeueCooldowns);
 			// Determine which cooled down ticks will be enabled this frame
 			float CumulativeCooldown = 0.f;
@@ -782,14 +804,6 @@ public:
 
 				AllCoolingDownTickFunctions.Head = TickFunction->Next;
 				TickFunction = TickFunction->Next;
-			}
-		}
-		{
-			SCOPE_CYCLE_COUNTER(STAT_GatherTicksForParallel);
-			for (TSet<FTickFunction*>::TIterator It(AllEnabledTickFunctions); It; ++It)
-			{
-				FTickFunction* TickFunction = *It;
-				AllTickFunctions.Add(TickFunction);
 			}
 		}
 	}
@@ -815,7 +829,7 @@ public:
 	/* Helper to presize reschedule array */
 	void ReserveTickFunctionCooldowns(int32 NumToReserve)
 	{
-		TickFunctionsToReschedule.Reserve(NumToReserve);
+		TickFunctionsToReschedule.Reserve(TickFunctionsToReschedule.Num() + NumToReserve);
 	}
 	/* Puts a TickFunction in to the cooldown state*/
 	void ScheduleTickFunctionCooldowns()
@@ -1209,17 +1223,24 @@ public:
 			break;
 
 		case FTickFunction::ETickState::CoolingDown:
-			FTickFunction* PrevComparisionFunction = nullptr;
+			// If a cooling function is in the reschedule list then we must be in a pause frame and it has already been set for
+			// reschedule and removed from the cooldown list so we won't find it there. This is fine as the reschedule will see
+			// the tick function is disabled and not reschedule it.
+			auto FindTickFunctionInRescheduleList = [TickFunction](const FTickScheduleDetails& TSD)
+			{
+				return (TSD.TickFunction == TickFunction);
+			};
+			bool bFound = TickFunctionsToReschedule.ContainsByPredicate(FindTickFunctionInRescheduleList);
+			FTickFunction* PrevComparisonFunction = nullptr;
 			FTickFunction* ComparisonFunction = AllCoolingDownTickFunctions.Head;
-			bool bFound = false;
 			while (ComparisonFunction && !bFound)
 			{
 				if (ComparisonFunction == TickFunction)
 				{
 					bFound = true;
-					if (PrevComparisionFunction)
+					if (PrevComparisonFunction)
 					{
-						PrevComparisionFunction->Next = TickFunction->Next;
+						PrevComparisonFunction->Next = TickFunction->Next;
 					}
 					else
 					{
@@ -1234,7 +1255,7 @@ public:
 				}
 				else
 				{
-					PrevComparisionFunction = ComparisonFunction;
+					PrevComparisonFunction = ComparisonFunction;
 					ComparisonFunction = ComparisonFunction->Next;
 				}
 			}
@@ -1342,6 +1363,8 @@ public:
 	virtual void StartFrame(UWorld* InWorld, float InDeltaSeconds, ELevelTick InTickType, const TArray<ULevel*>& LevelsToTick) override
 	{
 		SCOPE_CYCLE_COUNTER(STAT_QueueTicks);
+		CSV_SCOPED_TIMING_STAT(Basic, UWorld_Tick_QueueTicks);
+
 #if !UE_BUILD_SHIPPING
 		if (CVarStallStartFrame.GetValueOnGameThread() > 0.0f)
 		{
@@ -1361,8 +1384,8 @@ public:
 
 		int32 NumWorkerThread = 0;
 		bool bConcurrentQueue = false;
-#if !PLATFORM_WINDOWS
-		// the windows scheduler will hang for seconds trying to do this algorithm, threads starve even though other threads are calling sleep(0)
+#if !PLATFORM_WINDOWS && !PLATFORM_ANDROID
+		// some schedulers will hang for seconds trying to do this algorithm, threads starve even though other threads are calling sleep(0)
 		if (!FTickTaskSequencer::SingleThreadedMode())
 		{
 			bConcurrentQueue = !!CVarAllowConcurrentQueue.GetValueOnGameThread();
@@ -1377,6 +1400,7 @@ public:
 				TotalTickFunctions += LevelList[LevelIndex]->StartFrame(Context);
 			}
 			INC_DWORD_STAT_BY(STAT_TicksQueued, TotalTickFunctions);
+			CSV_CUSTOM_STAT(Basic, TicksQueued, TotalTickFunctions, ECsvCustomStatOp::Accumulate);
 			for( int32 LevelIndex = 0; LevelIndex < LevelList.Num(); LevelIndex++ )
 			{
 				LevelList[LevelIndex]->QueueAllTicks();
@@ -1389,6 +1413,7 @@ public:
 				LevelList[LevelIndex]->StartFrameParallel(Context, AllTickFunctions);
 			}
 			INC_DWORD_STAT_BY(STAT_TicksQueued, AllTickFunctions.Num());
+			CSV_CUSTOM_STAT(Basic, TicksQueued, AllTickFunctions.Num(), ECsvCustomStatOp::Accumulate);
 			FTickTaskSequencer& TTS = FTickTaskSequencer::Get();
 			TTS.SetupAddTickTaskCompletionParallel(AllTickFunctions.Num());
 			for( int32 LevelIndex = 0; LevelIndex < LevelList.Num(); LevelIndex++ )
@@ -1603,6 +1628,7 @@ FTickFunction::FTickFunction()
 	, ActualEndTickGroup(TG_PrePhysics)
 	, bTickEvenWhenPaused(false)
 	, bCanEverTick(false)
+	, bStartWithTickEnabled(false)
 	, bAllowTickOnDedicatedServer(true)
 	, bHighPriority(false)
 	, bRunOnAnyThread(false)

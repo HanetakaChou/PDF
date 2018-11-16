@@ -64,17 +64,18 @@ struct INPUTCORE_API FKey
 	bool IsValid() const;
 	bool IsModifierKey() const;
 	bool IsGamepadKey() const;
+	bool IsTouch() const;
 	bool IsMouseButton() const;
 	bool IsFloatAxis() const;
 	bool IsVectorAxis() const;
 	bool IsBindableInBlueprints() const;
 	bool ShouldUpdateAxisWithoutSamples() const;
-	FText GetDisplayName() const;
+	FText GetDisplayName(bool bLongDisplayName = true) const;
 	FString ToString() const;
 	FName GetFName() const;
 	FName GetMenuCategory() const;
 
-	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot);
 	bool ExportTextItem(FString& ValueStr, FKey const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const;
 	bool ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText);
 	void PostSerialize(const FArchive& Ar);
@@ -104,7 +105,7 @@ struct TStructOpsTypeTraits<FKey> : public TStructOpsTypeTraitsBase2<FKey>
 {
 	enum
 	{
-		WithSerializeFromMismatchedTag = true,
+		WithStructuredSerializeFromMismatchedTag = true,
 		WithExportTextItem = true,
 		WithImportTextItem = true,
 		WithPostSerialize = true,
@@ -118,31 +119,36 @@ struct INPUTCORE_API FKeyDetails
 {
 	enum EKeyFlags
 	{
-		GamepadKey				= 0x01,
-		MouseButton				= 0x02,
-		ModifierKey				= 0x04,
-		NotBlueprintBindableKey	= 0x08,
-		FloatAxis				= 0x10,
-		VectorAxis				= 0x20,
-		UpdateAxisWithoutSamples = 0x40,
+		GamepadKey				 = 1 << 0,
+		Touch					 = 1 << 1,
+		MouseButton				 = 1 << 2,
+		ModifierKey				 = 1 << 3,
+		NotBlueprintBindableKey	 = 1 << 4,
+		FloatAxis				 = 1 << 5,
+		VectorAxis				 = 1 << 6,
+		UpdateAxisWithoutSamples = 1 << 7,
 
 		NoFlags                 = 0,
 	};
 
-	FKeyDetails(const FKey InKey, const TAttribute<FText>& InDisplayName, const uint8 InKeyFlags = 0, const FName InMenuCategory = NAME_None);
+	FKeyDetails(const FKey InKey, const TAttribute<FText>& InLongDisplayName, const uint8 InKeyFlags = 0, const FName InMenuCategory = NAME_None, const TAttribute<FText>& InShortDisplayName = TAttribute<FText>() );
+	FKeyDetails(const FKey InKey, const TAttribute<FText>& InLongDisplayName, const TAttribute<FText>& InShortDisplayName, const uint8 InKeyFlags = 0, const FName InMenuCategory = NAME_None);
 
 	FORCEINLINE bool IsModifierKey() const { return bIsModifierKey != 0; }
 	FORCEINLINE bool IsGamepadKey() const { return bIsGamepadKey != 0; }
+	FORCEINLINE bool IsTouch() const { return bIsTouch != 0; }
 	FORCEINLINE bool IsMouseButton() const { return bIsMouseButton != 0; }
 	FORCEINLINE bool IsFloatAxis() const { return AxisType == EInputAxisType::Float; }
 	FORCEINLINE bool IsVectorAxis() const { return AxisType == EInputAxisType::Vector; }
 	FORCEINLINE bool IsBindableInBlueprints() const { return bIsBindableInBlueprints != 0; }
 	FORCEINLINE bool ShouldUpdateAxisWithoutSamples() const { return bShouldUpdateAxisWithoutSamples != 0; }
 	FORCEINLINE FName GetMenuCategory() const { return MenuCategory; }
-	FText GetDisplayName() const;
+	FText GetDisplayName(const bool bLongDisplayName = true) const;
 	FORCEINLINE const FKey& GetKey() const { return Key; }
 
 private:
+
+	void CommonInit(const uint8 InKeyFlags);	
 
 	enum class EInputAxisType : uint8
 	{
@@ -152,18 +158,19 @@ private:
 	};
 
 	FKey  Key;
-	
-	TAttribute<FText> DisplayName;
 
 	FName MenuCategory;
 
-	int32 bIsModifierKey:1;
-	int32 bIsGamepadKey:1;
-	int32 bIsMouseButton:1;
-	int32 bIsBindableInBlueprints:1;
-	int32 bShouldUpdateAxisWithoutSamples:1;
+	uint8 bIsModifierKey : 1;
+	uint8 bIsGamepadKey : 1;
+	uint8 bIsTouch : 1;
+	uint8 bIsMouseButton : 1;
+	uint8 bIsBindableInBlueprints : 1;
+	uint8 bShouldUpdateAxisWithoutSamples : 1;
 	EInputAxisType AxisType;
 
+	TAttribute<FText> LongDisplayName;
+	TAttribute<FText> ShortDisplayName;
 };
 
 UENUM(BlueprintType)
@@ -521,6 +528,7 @@ struct INPUTCORE_API EKeys
 	static void AddMenuCategoryDisplayInfo(const FName CategoryName, const FText DisplayName, const FName PaletteIcon);
 	static FText GetMenuCategoryDisplayName(const FName CategoryName);
 	static FName GetMenuCategoryPaletteIcon(const FName CategoryName);
+
 private:
 
 	struct FCategoryDisplayInfo
@@ -544,6 +552,8 @@ namespace ETouchType
 		Began,
 		Moved,
 		Stationary,
+		ForceChanged,
+		FirstMove,
 		Ended,
 
 		NumTypes

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -42,8 +42,6 @@ namespace AutomationTool
 
 	public partial class CommandUtils
 	{
-		#region Commandlets
-
 		/// <summary>
 		/// Runs Cook commandlet.
 		/// </summary>
@@ -88,9 +86,6 @@ namespace AutomationTool
                 CommandletArguments += (CommandletArguments.Length > 0 ? " " : "") + CulturesToCookArg;
             }
 
-			// UAT has it's own option for appending log timestamps; we don't need the UE4 timestamps too.
-			CommandletArguments += " -NoLogTimes";
-
             RunCommandlet(ProjectName, UE4Exe, "Cook", String.Format("{0} -TargetPlatform={1} {2}",  CommandletArguments, TargetPlatform, Parameters));
 		}
 
@@ -130,6 +125,17 @@ namespace AutomationTool
 
 			RunCommandlet(ProjectName, UE4Exe, "ResavePackages", String.Format("-buildtexturestreaming -buildlighting -MapsOnly -ProjectOnly -AllowCommandletRendering -SkipSkinVerify {0} {1}", MapsToRebuildLighting, Parameters));
 		}
+
+        public static void RebuildHLODCommandlet(FileReference ProjectName, string UE4Exe = "UE4Editor-Cmd.exe", string[] Maps = null, string Parameters = "")
+        {
+            string MapsToRebuildHLODs = "";
+            if (!IsNullOrEmpty(Maps))
+            {
+                MapsToRebuildHLODs = "-Map=" + CombineCommandletParams(Maps).Trim();
+            }
+
+            RunCommandlet(ProjectName, UE4Exe, "ResavePackages", String.Format("-BuildHLOD -ProjectOnly -AllowCommandletRendering -SkipSkinVerify {0} {1}", MapsToRebuildHLODs, Parameters));
+        }
 
         /// <summary>
         /// Runs RebuildLightMaps commandlet.
@@ -227,7 +233,21 @@ namespace AutomationTool
 		/// <param name="Parameters">Command line parameters (without -run=)</param>
 		public static void RunCommandlet(FileReference ProjectName, string UE4Exe, string Commandlet, string Parameters = null)
 		{
-			Log("Running UE4Editor {0} for project {1}", Commandlet, ProjectName);
+			string LogFile;
+			RunCommandlet(ProjectName, UE4Exe, Commandlet, Parameters, out LogFile);
+		}
+
+		/// <summary>
+		/// Runs a commandlet using Engine/Binaries/Win64/UE4Editor-Cmd.exe.
+		/// </summary>
+		/// <param name="ProjectFile">Project name.</param>
+		/// <param name="UE4Exe">The name of the UE4 Editor executable to use.</param>
+		/// <param name="Commandlet">Commandlet name.</param>
+		/// <param name="Parameters">Command line parameters (without -run=)</param>
+		/// <param name="DestLogFile">Log file after completion</param>
+		public static void RunCommandlet(FileReference ProjectName, string UE4Exe, string Commandlet, string Parameters, out string DestLogFile)
+		{
+			LogInformation("Running UE4Editor {0} for project {1}", Commandlet, ProjectName);
 
             var CWD = Path.GetDirectoryName(UE4Exe);
 
@@ -244,9 +264,9 @@ namespace AutomationTool
 			DateTime StartTime = DateTime.UtcNow;
 
 			string LocalLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.EngineSavedFolder, Commandlet));
-			Log("Commandlet log file is {0}", LocalLogFile);
+			LogInformation("Commandlet log file is {0}", LocalLogFile);
 			string Args = String.Format(
-				"{0} -run={1} {2} -abslog={3} -stdout -CrashForUAT -unattended {5}{4}",
+				"{0} -run={1} {2} -abslog={3} -stdout -CrashForUAT -unattended -NoLogTimes {5}{4}",
 				(ProjectName == null) ? "" : CommandUtils.MakePathSafeToUseWithCommandLine(ProjectName.FullName),
 				Commandlet,
 				String.IsNullOrEmpty(Parameters) ? "" : Parameters,
@@ -260,8 +280,39 @@ namespace AutomationTool
 				Args += " -UTF8Output";
 				Opts |= ERunOptions.UTF8Output;
 			}
-			var RunResult = Run(EditorExe, Args, Options: Opts, Identifier: Commandlet);
+			IProcessResult RunResult = Run(EditorExe, Args, Options: Opts, Identifier: Commandlet);
 			PopDir();
+
+			// If we're running on a Windows build machine, copy any crash dumps into the log folder
+			if(HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64 && IsBuildMachine)
+			{
+				DirectoryInfo CrashesDir = new DirectoryInfo(DirectoryReference.Combine(DirectoryReference.FromFile(ProjectName) ?? CommandUtils.EngineDirectory, "Saved", "Crashes").FullName);
+				if(CrashesDir.Exists)
+				{
+					foreach(DirectoryInfo CrashDir in CrashesDir.EnumerateDirectories())
+					{
+						if(CrashDir.LastWriteTimeUtc > StartTime)
+						{
+							DirectoryInfo OutputCrashesDir = new DirectoryInfo(Path.Combine(CmdEnv.LogFolder, "Crashes", CrashDir.Name));
+							try
+							{
+								CommandUtils.LogInformation("Copying crash data to {0}...", OutputCrashesDir.FullName);
+								OutputCrashesDir.Create();
+
+								foreach(FileInfo CrashFile in CrashDir.EnumerateFiles())
+								{
+									CrashFile.CopyTo(Path.Combine(OutputCrashesDir.FullName, CrashFile.Name));
+								}
+							}
+							catch(Exception Ex)
+							{
+								CommandUtils.LogWarning("Unable to copy crash data; skipping. See log for exception details.");
+								CommandUtils.LogVerbose(Tools.DotNETCommon.ExceptionUtils.FormatExceptionDetails(Ex));
+							}
+						}
+					}
+				}
+			}
 
 			// If we're running on a Mac, dump all the *.crash files that were generated while the editor was running.
 			if(HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
@@ -270,7 +321,7 @@ namespace AutomationTool
 				// If we exited normally, still check without waiting in case SCW or some other child process crashed.
 				if(RunResult.ExitCode > 128)
 				{
-					CommandUtils.Log("Pausing before checking for crash logs...");
+					CommandUtils.LogInformation("Pausing before checking for crash logs...");
 					Thread.Sleep(10 * 1000);
 				}
 				
@@ -307,15 +358,16 @@ namespace AutomationTool
 				foreach(FileInfo CrashFileInfo in CrashFileInfos)
 				{
 					// snmpd seems to often crash (suspect due to it being starved of CPU cycles during cooks)
-					if(!CrashFileInfo.Name.StartsWith("snmpd_"))
+					// also ignore spotlight crash with the excel plugin
+					if(!CrashFileInfo.Name.StartsWith("snmpd_") && !CrashFileInfo.Name.StartsWith("mdworker32_") && !CrashFileInfo.Name.StartsWith("Dock_"))
 					{
-						CommandUtils.Log("Found crash log - {0}", CrashFileInfo.FullName);
+						CommandUtils.LogInformation("Found crash log - {0}", CrashFileInfo.FullName);
 						try
 						{
 							string[] Lines = File.ReadAllLines(CrashFileInfo.FullName);
 							foreach(string Line in Lines)
 							{
-								CommandUtils.Log("Crash: {0}", Line);
+								CommandUtils.LogInformation("Crash: {0}", Line);
 							}
 						}
 						catch(Exception Ex)
@@ -327,7 +379,7 @@ namespace AutomationTool
 			}
 
 			// Copy the local commandlet log to the destination folder.
-			string DestLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.LogFolder, Commandlet));
+			DestLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.LogFolder, Commandlet));
 			if (!CommandUtils.CopyFile_NoExceptions(LocalLogFile, DestLogFile))
 			{
 				CommandUtils.LogWarning("Commandlet {0} failed to copy the local log file from {1} to {2}. The log file will be lost.", Commandlet, LocalLogFile, DestLogFile);
@@ -452,7 +504,5 @@ namespace AutomationTool
 			}
 			return ProjectFullPath;
 		}
-
-		#endregion
 	}
 }

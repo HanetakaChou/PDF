@@ -28,7 +28,7 @@
 #include "AssetRegistryModule.h"
 #include "SSkeletonWidget.h"
 #include "Engine/DataAsset.h"
-#include "PreviewCollectionInterface.h"
+#include "Animation/PreviewCollectionInterface.h"
 #include "HAL/PlatformApplicationMisc.h"
 
 const FString FEditableSkeleton::SocketCopyPasteHeader = TEXT("SocketCopyPasteBuffer");
@@ -1095,12 +1095,31 @@ int32 FEditableSkeleton::DeleteAnimNotifies(const TArray<FName>& InNotifyNames)
 	return NumAnimationsModified;
 }
 
+void FEditableSkeleton::DeleteSyncMarkers(const TArray<FName>& InSyncMarkerNames)
+{
+	const FScopedTransaction Transaction(LOCTEXT("DeleteSyncMarkers", "Delete Sync Markers"));
+
+	Skeleton->Modify();
+
+	for (FName Marker : InSyncMarkerNames)
+	{
+		Skeleton->RemoveMarkerName(Marker);
+	}
+}
+
 void FEditableSkeleton::AddNotify(FName NewName)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddNewNotifyToSkeleton", "Add New Anim Notify To Skeleton"));
 	Skeleton->Modify();
 	Skeleton->AddNewAnimationNotify(NewName);
 	OnNotifiesChanged.Broadcast();
+}
+
+void FEditableSkeleton::AddSyncMarker(FName NewName)
+{
+	const FScopedTransaction Transaction(LOCTEXT("AddNewSyncMarkerToSkeleton", "Add New Sync Marker To Skeleton"));
+	Skeleton->Modify();
+	Skeleton->RegisterMarkerName(NewName);
 }
 
 int32 FEditableSkeleton::RenameNotify(const FName& NewName, const FName& OldName)
@@ -1149,6 +1168,11 @@ int32 FEditableSkeleton::RenameNotify(const FName& NewName, const FName& OldName
 	OnNotifiesChanged.Broadcast();
 
 	return NumAnimationsModified;
+}
+
+void FEditableSkeleton::BroadcastNotifyChanged()
+{
+	OnNotifiesChanged.Broadcast();
 }
 
 void FEditableSkeleton::GetCompatibleAnimSequences(TArray<struct FAssetData>& OutAssets)

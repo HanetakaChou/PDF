@@ -11,6 +11,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
+#include "Framework/Docking/TabManager.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
@@ -20,7 +21,7 @@
 #include "DirectoryWatcherModule.h"
 
 #if PLATFORM_WINDOWS
-#include "WindowsHWrapper.h"
+#include "Windows/WindowsHWrapper.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SlateFileDialogsNamespace"
@@ -231,7 +232,9 @@ bool FSlateFileDlgWindow::OpenFileDialog(const void* ParentWindowHandle, const F
 	
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
 		
-	FSlateApplication::Get().AddModalWindow(ModalWindow, NULL);
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+
 	return (DialogWidget->GetResponse() == EResult::Accept && OutFilenames.Num() > 0);
 }
 
@@ -277,7 +280,9 @@ bool FSlateFileDlgWindow::OpenDirectoryDialog(const void* ParentWindowHandle, co
 
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
 
-	FSlateApplication::Get().AddModalWindow(ModalWindow, NULL);
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+
 	bool RC = (DialogWidget->GetResponse() == EResult::Accept && TempOut.Num() > 0);
 
 	if (TempOut.Num() > 0)
@@ -327,7 +332,9 @@ bool FSlateFileDlgWindow::SaveFileDialog(const void* ParentWindowHandle, const F
 
 	ModalWindow->SetContent( DialogWidget.ToSharedRef() );
 		
-	FSlateApplication::Get().AddModalWindow(ModalWindow, NULL);
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+	FSlateApplication::Get().AddModalWindow(ModalWindow, RootWindow);
+
 	return (DialogWidget->GetResponse() == EResult::Accept && OutFilenames.Num() > 0);
 }
 
@@ -791,6 +798,7 @@ void SSlateFileOpenDlg::Construct(const FArguments& InArgs)
 					[
 						SNew(SButton)
 						.ContentPadding(FMargin(5.0f, 5.0f))
+						.IsEnabled(this, &SSlateFileOpenDlg::IsAcceptEnabled)
 						.OnClicked(this, &SSlateFileOpenDlg::OnAcceptCancelClick, FSlateFileDlgWindow::Accept)
 						.Text(AcceptText)
 					]
@@ -837,6 +845,13 @@ void SSlateFileOpenDlg::Construct(const FArguments& InArgs)
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
+SSlateFileOpenDlg::~SSlateFileOpenDlg()
+{
+	if (DirectoryWatcher && RegisteredPath.Len() > 0)
+	{
+		DirectoryWatcher->UnregisterDirectoryChangedCallback_Handle(RegisteredPath, OnDialogDirectoryChangedDelegateHandle);
+	}
+}
 
 void SSlateFileOpenDlg::BuildDirectoryPath()
 {
@@ -1116,6 +1131,17 @@ void SSlateFileOpenDlg::SetOutputFiles()
 			}
 		}
 	}
+}
+
+
+bool SSlateFileOpenDlg::IsAcceptEnabled() const
+{
+	if (!bDirectoriesOnly)
+	{
+		return !SaveFilename.IsEmpty();
+	}
+
+	return true;
 }
 
 
@@ -1471,8 +1497,8 @@ void SSlateFileOpenDlg::ParseFilters()
 		{
 			if (FilterNameArray.Num() == 0)
 			{
-				TCHAR Temp[MAX_FILTER_LENGTH];
-				FCString::Strcpy(Temp, Filters.Len(), *Filters);
+				TCHAR Temp[MAX_FILTER_LENGTH] = {0};
+				FCString::Strcpy(Temp, ARRAY_COUNT(Temp), *Filters);
 
 				// break path into tokens
 				TCHAR *ContextStr = nullptr;
@@ -1515,8 +1541,8 @@ bool SSlateFileOpenDlg::GetFilterExtension(FString &OutString)
 	}
 
 	// make a copy of filter string that we can modify
-	TCHAR Temp[MAX_FILTER_LENGTH];
-	FCString::Strcpy(Temp, FilterNameArray[FilterIndex]->Len(), *(*FilterNameArray[FilterIndex].Get()));
+	TCHAR Temp[MAX_FILTER_LENGTH] = {0};
+	FCString::Strcpy(Temp, ARRAY_COUNT(Temp), *(*FilterNameArray[FilterIndex].Get()));
 
 	// find start of extension
 	TCHAR *FilterExt = FCString::Strchr(Temp, '.');

@@ -96,14 +96,15 @@ FPrimitiveSceneInfo::FPrimitiveSceneInfo(UPrimitiveComponent* InComponent,FScene
 	LastRenderTime(-FLT_MAX),
 	LastVisibilityChangeTime(0.0f),
 	Scene(InScene),
-	NumES2DynamicPointLights(0),
+	NumMobileMovablePointLights(0),
 	bIsUsingCustomLODRules(Proxy->IsUsingCustomLODRules()),
 	bIsUsingCustomWholeSceneShadowLODRules(Proxy->IsUsingCustomWholeSceneShadowLODRules()),
 	PackedIndex(INDEX_NONE),
 	ComponentForDebuggingOnly(InComponent),
 	bNeedsStaticMeshUpdate(false),
 	bNeedsUniformBufferUpdate(false),
-	bPrecomputedLightingBufferDirty(false)
+	bPrecomputedLightingBufferDirty(false),
+	bPrecomputedLightingBufferAssignedToProxyLCIs(false)
 	// NVCHANGE_BEGIN: Add VXGI
 	, VxgiLastVoxelizationPass(0)
 	, VoxelizationOnlyMeshStartIdx(0)
@@ -287,22 +288,6 @@ void FPrimitiveSceneInfo::AddToScene(FRHICommandListImmediate& RHICmdList, bool 
 	PrimitiveBounds.MinDrawDistanceSq = FMath::Square(Proxy->GetMinDrawDistance());
 	PrimitiveBounds.MaxDrawDistance = Proxy->GetMaxDrawDistance();
 	PrimitiveBounds.MaxCullDistance = PrimitiveBounds.MaxDrawDistance;
-
-	if (LODParentComponentId.IsValid())
-	{
-		static auto CVarChild = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HLOD.MaxDrawDistanceScaleForChildren"));
-		const float MaxDrawDistanceScaleForHLODChildren = CVarChild->GetFloat();
-		const bool bUseMaxDrawDistanceMultiplier = MaxDrawDistanceScaleForHLODChildren != 0.0f;
-		if (bUseMaxDrawDistanceMultiplier)
-		{
-			PrimitiveBounds.MaxCullDistance *= MaxDrawDistanceScaleForHLODChildren;
-		}
-		else
-		{
-			PrimitiveBounds.MaxCullDistance = FLT_MAX;
-		}
-	}
-
 
 	Scene->PrimitiveFlagsCompact[PackedIndex] = FPrimitiveFlagsCompact(Proxy);
 
@@ -670,7 +655,7 @@ bool FPrimitiveSceneInfo::ShouldRenderVelocity(const FViewInfo& View, bool bChec
 	}
 
 	// If the base pass is allowed to render velocity in the GBuffer, only mesh with static lighting need the velocity pass.
-	if (FVelocityRendering::OutputsToGBuffer() && (!UseSelectiveBasePassOutputs() || !Proxy->HasStaticLighting()))
+	if (FVelocityRendering::BasePassCanOutputVelocity(Scene->GetFeatureLevel()) && !(UseSelectiveBasePassOutputs() && Proxy->HasStaticLighting()))
 	{
 		return false;
 	}
@@ -709,6 +694,8 @@ void FPrimitiveSceneInfo::UpdatePrecomputedLightingBuffer()
 			IndirectLightingCacheUniformBuffer.SafeRelease();
 		}
 
+		bPrecomputedLightingBufferAssignedToProxyLCIs = false;
+
 		FPrimitiveSceneProxy::FLCIArray LCIs;
 		Proxy->GetLCIs(LCIs);
 		for (int32 i = 0; i < LCIs.Num(); ++i)
@@ -720,6 +707,7 @@ void FPrimitiveSceneInfo::UpdatePrecomputedLightingBuffer()
 			if (LCI->GetShadowMapInteraction().GetType() == SMIT_Texture || LCI->GetLightMapInteraction(Scene->GetFeatureLevel()).GetType() == LMIT_Texture)
 			{
 				LCI->SetPrecomputedLightingBuffer(CreatePrecomputedLightingUniformBuffer(BufferUsage, Scene->GetFeatureLevel(), NULL, NULL, FVector(0, 0, 0), 0, NULL, LCI));
+				bPrecomputedLightingBufferAssignedToProxyLCIs = true;
 			}
 			else
 			{
@@ -737,6 +725,8 @@ void FPrimitiveSceneInfo::ClearPrecomputedLightingBuffer(bool bSingleFrameOnly)
 	{
 		IndirectLightingCacheUniformBuffer.SafeRelease();
 
+		if (bPrecomputedLightingBufferAssignedToProxyLCIs)
+		{
 		FPrimitiveSceneProxy::FLCIArray LCIs;
 		Proxy->GetLCIs(LCIs);
 		for (int32 i = 0; i < LCIs.Num(); ++i)
@@ -747,6 +737,9 @@ void FPrimitiveSceneInfo::ClearPrecomputedLightingBuffer(bool bSingleFrameOnly)
 				LCI->SetPrecomputedLightingBuffer(FUniformBufferRHIRef());
 			}
 		}
+			bPrecomputedLightingBufferAssignedToProxyLCIs = false;
+		}
+
 		MarkPrecomputedLightingBufferDirty();
 	}
 }

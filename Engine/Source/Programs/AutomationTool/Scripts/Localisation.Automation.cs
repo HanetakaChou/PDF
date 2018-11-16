@@ -174,8 +174,8 @@ class Localise : BuildCommand
 			ProcessLocalizationProjects(LocalizationBatch, PendingChangeList, UEProjectRoot, UEProjectName, LocalizationProviderName, LocalizationSteps, AdditionalCommandletArguments);
 		}
 
-		// Submit that single changelist now
-		if (P4Enabled && AllowSubmit)
+		// Clean-up the changelist so it only contains the changed files, and then submit it (if we were asked to)
+		if (P4Enabled)
 		{
 			// Revert any PO files that haven't changed aside from their header
 			{
@@ -211,8 +211,12 @@ class Localise : BuildCommand
 			// Revert any other unchanged files
 			P4.RevertUnchanged(PendingChangeList);
 
-			int SubmittedChangeList;
-			P4.Submit(PendingChangeList, out SubmittedChangeList);
+			// Submit that single changelist now
+			if (AllowSubmit)
+			{
+				int SubmittedChangeList;
+				P4.Submit(PendingChangeList, out SubmittedChangeList);
+			}
 		}
 	}
 
@@ -237,7 +241,7 @@ class Localise : BuildCommand
 		// Make sure the Localization configs and content is up-to-date to ensure we don't get errors later on
 		if (P4Enabled)
 		{
-			Log("Sync necessary content to head revision");
+			LogInformation("Sync necessary content to head revision");
 			P4.Sync(P4Env.Branch + "/" + LocalizationBatch.LocalizationTargetDirectory + "/Config/Localization/...");
 			P4.Sync(P4Env.Branch + "/" + LocalizationBatch.LocalizationTargetDirectory + "/Content/Localization/...");
 		}
@@ -268,20 +272,28 @@ class Localise : BuildCommand
 		{
 			EditorArguments = String.Format("-SCCProvider={0}", "None");
 		}
+		if (IsBuildMachine)
+		{
+			EditorArguments += " -BuildMachine";
+		}
 		EditorArguments += " -Unattended";
 
 		// Execute commandlet for each config in each project.
 		bool bLocCommandletFailed = false;
 		foreach (var ProjectInfo in ProjectInfos)
 		{
+			var LocalizationConfigFiles = new List<string>();
 			foreach (var LocalizationStep in ProjectInfo.LocalizationSteps)
 			{
-				if (!LocalizationSteps.Contains(LocalizationStep.Name))
+				if (LocalizationSteps.Contains(LocalizationStep.Name))
 				{
-					continue;
+					LocalizationConfigFiles.Add(LocalizationStep.LocalizationConfigFile);
 				}
+			}
 
-				var CommandletArguments = String.Format("-config=\"{0}\"", LocalizationStep.LocalizationConfigFile);
+			if (LocalizationConfigFiles.Count > 0)
+			{
+				var CommandletArguments = String.Format("-config=\"{0}\"", String.Join(";", LocalizationConfigFiles));
 
 				if (!String.IsNullOrEmpty(AdditionalCommandletArguments))
 				{
@@ -289,11 +301,11 @@ class Localise : BuildCommand
 				}
 
 				string Arguments = String.Format("{0} -run=GatherText {1} {2}", UEProjectName, EditorArguments, CommandletArguments);
-				Log("Running localization commandlet: {0}", Arguments);
+				LogInformation("Running localization commandlet: {0}", Arguments);
 				var StartTime = DateTime.UtcNow;
 				var RunResult = Run(EditorExe, Arguments, null, ERunOptions.Default | ERunOptions.NoLoggingOfRunCommand); // Disable logging of the run command as it will print the exit code which GUBP can pick up as an error (we do that ourselves below)
 				var RunDuration = (DateTime.UtcNow - StartTime).TotalMilliseconds;
-				Log("Localization commandlet finished in {0}s", RunDuration / 1000);
+				LogInformation("Localization commandlet finished in {0}s", RunDuration / 1000);
 
 				if (RunResult.ExitCode != 0)
 				{
@@ -429,6 +441,10 @@ class Localise : BuildCommand
 		foreach (var LocalizationBatch in LocalizationBatches)
 		{
 			var LocalizationPath = CombinePaths(UEProjectRoot, LocalizationBatch.LocalizationTargetDirectory, "Content", "Localization");
+			if (!Directory.Exists(LocalizationPath))
+			{
+				continue;
+			}
 
 			string[] POFileNames = Directory.GetFiles(LocalizationPath, "*.po", SearchOption.AllDirectories);
 			foreach (var POFileName in POFileNames)

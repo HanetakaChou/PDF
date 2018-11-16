@@ -4,11 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
-#include "Curves/RichCurve.h"
 
 #if WITH_EDITOR
 
-#include "MovieSceneEventSection.h"
+#include "Channels/MovieSceneFloatChannel.h"
+#include "Channels/MovieSceneEvent.h"
+#include "Sections/MovieSceneEventSection.h"
+#include "Sections/MovieSceneActorReferenceSection.h"
 #include "MovieSceneClipboard.h"
 
 namespace MovieSceneClipboard
@@ -23,9 +25,14 @@ namespace MovieSceneClipboard
 		static FName Name("Int");
 		return Name;
 	}
-	template<> inline FName GetKeyTypeName<FRichCurveKey>()
+	template<> inline FName GetKeyTypeName<int64>()
 	{
-		static FName Name("RichKey");
+		static FName Name("Int64");
+		return Name;
+	}
+	template<> inline FName GetKeyTypeName<FMovieSceneFloatValue>()
+	{
+		static FName Name("Float");
 		return Name;
 	}
 	template<> inline FName GetKeyTypeName<FName>()
@@ -43,14 +50,18 @@ namespace MovieSceneClipboard
 		static FName Name("String");
 		return Name;
 	}
-	template<> inline FName GetKeyTypeName<FGuid>()
+	template<> inline FName GetKeyTypeName<FMovieSceneActorReferenceKey>()
 	{
-		static FName Name("Guid");
+		static FName Name("MovieSceneActorReferenceKey");
 		return Name;
 	}
 	template<> inline FName GetKeyTypeName<FEventPayload>()
 	{
 		return "EventPayload";
+	}
+	template<> inline FName GetKeyTypeName<FMovieSceneEvent>()
+	{
+		return "MovieSceneEvent";
 	}
 }
 

@@ -13,7 +13,7 @@
 #include "RenderResource.h"
 #include "ShaderCore.h"
 #include "Shader.h"
-#include "EnumClassFlags.h"
+#include "Misc/EnumClassFlags.h"
 
 class FMaterial;
 
@@ -176,7 +176,7 @@ public:
 	}
 
 	/** Calculates a Hash based on this vertex factory type's source code and includes */
-	SHADERCORE_API const FSHAHash& GetSourceHash() const;
+	SHADERCORE_API const FSHAHash& GetSourceHash(EShaderPlatform ShaderPlatform) const;
 
 	/**
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
@@ -216,11 +216,7 @@ public:
 	{
 		ReferencedUniformBufferStructsCache.Empty();
 		GenerateReferencedUniformBuffers(ShaderFilename, Name, ShaderFileToUniformBufferVariables, ReferencedUniformBufferStructsCache);
-
-		for (int32 Platform = 0; Platform < SP_NumPlatforms; Platform++)
-		{
-			bCachedUniformBufferStructDeclarations[Platform] = false;
-		}
+		bCachedUniformBufferStructDeclarations = false;
 	}
 
 	const TMap<const TCHAR*, FCachedUniformBufferDeclaration>& GetReferencedUniformBufferStructsCache() const
@@ -258,7 +254,7 @@ private:
 	TMap<const TCHAR*, FCachedUniformBufferDeclaration> ReferencedUniformBufferStructsCache;
 
 	/** Tracks what platforms ReferencedUniformBufferStructsCache has had declarations cached for. */
-	bool bCachedUniformBufferStructDeclarations[SP_NumPlatforms];
+	bool bCachedUniformBufferStructDeclarations;
 
 	/** 
 	 * Stores a history of serialization sizes for this vertex factory's shader parameter class. 
@@ -324,7 +320,7 @@ public:
 
 	friend FArchive& operator<<(FArchive& Ar,class FVertexFactoryTypeDependency& Ref)
 	{
-		Ar << Ref.VertexFactoryType << Ref.VFSourceHash;
+		Ar << Ref.VertexFactoryType << FShaderResource::FilterShaderSourceHashForSerialization(Ar, Ref.VFSourceHash);
 		return Ar;
 	}
 
@@ -366,7 +362,7 @@ public:
 	/**
 	 * Activates the vertex factory.
 	 */
-	void Set(EShaderPlatform InShaderPlatform, FRHICommandList& RHICmdList) const;
+	void SetStreams(ERHIFeatureLevel::Type InFeatureLevel, FRHICommandList& RHICmdList) const;
 
 	/**
 	 * Call SetStreamSource on instance streams to offset the read pointer
@@ -431,9 +427,10 @@ public:
 	virtual uint64 GetStaticBatchElementVisibility(const class FSceneView& View, const struct FMeshBatch* Batch, const void* InViewCustomData = nullptr) const { return 1; }
 
 	bool NeedsDeclaration() const { return bNeedsDeclaration; }
-	bool SupportsManualVertexFetch(EShaderPlatform InShaderPlatform) const 
+	bool SupportsManualVertexFetch(ERHIFeatureLevel::Type InFeatureLevel) const 
 	{ 
-		return bSupportsManualVertexFetch && RHISupportsManualVertexFetch(InShaderPlatform);
+		check(InFeatureLevel != ERHIFeatureLevel::Num);
+		return bSupportsManualVertexFetch && (InFeatureLevel > ERHIFeatureLevel::ES3_1) && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform);
 	}
 
 protected:
@@ -514,7 +511,7 @@ private:
 class SHADERCORE_API FVertexFactoryParameterRef
 {
 public:
-	FVertexFactoryParameterRef(FVertexFactoryType* InVertexFactoryType,const FShaderParameterMap& ParameterMap, EShaderFrequency InShaderFrequency);
+	FVertexFactoryParameterRef(FVertexFactoryType* InVertexFactoryType,const FShaderParameterMap& ParameterMap, EShaderFrequency InShaderFrequency, EShaderPlatform InShaderPlatform);
 
 	FVertexFactoryParameterRef():
 		Parameters(NULL),
@@ -539,6 +536,9 @@ public:
 	/** Returns the hash of the vertex factory shader file that this shader was compiled with. */
 	const FSHAHash& GetHash() const;
 
+	/** Returns the shader platform that this shader was compiled with. */
+	EShaderPlatform GetShaderPlatform() const;
+
 	friend SHADERCORE_API bool operator<<(FArchive& Ar,FVertexFactoryParameterRef& Ref);
 
 	uint32 GetAllocatedSize() const
@@ -550,6 +550,7 @@ private:
 	FVertexFactoryShaderParameters* Parameters;
 	FVertexFactoryType* VertexFactoryType;
 	EShaderFrequency ShaderFrequency;
+	EShaderPlatform ShaderPlatform;
 
 	// Hash of the vertex factory's source file at shader compile time, used by the automatic versioning system to detect changes
 	FSHAHash VFHash;

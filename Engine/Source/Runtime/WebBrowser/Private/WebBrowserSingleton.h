@@ -8,20 +8,26 @@
 
 #if WITH_CEF3
 #if PLATFORM_WINDOWS
-	#include "WindowsHWrapper.h"
-	#include "AllowWindowsPlatformTypes.h"
-	#include "AllowWindowsPlatformAtomics.h"
+	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
+	#include "Windows/AllowWindowsPlatformAtomics.h"
 #endif
 #pragma push_macro("OVERRIDE")
 #undef OVERRIDE // cef headers provide their own OVERRIDE macro
 THIRD_PARTY_INCLUDES_START
+#if PLATFORM_APPLE
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+#endif
 #include "include/internal/cef_ptr.h"
 #include "include/cef_request_context.h"
+#if PLATFORM_APPLE
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
 THIRD_PARTY_INCLUDES_END
 #pragma pop_macro("OVERRIDE")
 #if PLATFORM_WINDOWS
-	#include "HideWindowsPlatformAtomics.h"
-	#include "HideWindowsPlatformTypes.h"
+	#include "Windows/HideWindowsPlatformAtomics.h"
+	#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 #include "CEF/CEFSchemeHandler.h"
 class CefListValue;
@@ -33,6 +39,7 @@ class IWebBrowserCookieManager;
 class IWebBrowserWindow;
 struct FWebBrowserWindowInfo;
 struct FWebBrowserInitSettings;
+class UMaterialInterface;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
@@ -78,7 +85,8 @@ public:
 		TOptional<FString> ContentsToLoad = TOptional<FString>(),
 		bool ShowErrorMessage = true,
 		FColor BackgroundColor = FColor(255, 255, 255, 255),
-		int BrowserFrameRate = 24 ) override;
+		int BrowserFrameRate = 24,
+		const TArray<FString>& AltRetryDomains = TArray<FString>()) override;
 
 	TSharedPtr<IWebBrowserWindow> CreateBrowserWindow(const FCreateBrowserWindowSettings& Settings) override;
 
@@ -114,6 +122,30 @@ public:
 		bJSBindingsToLoweringEnabled = bEnabled;
 	}
 
+	/** Set a reference to UWebBrowser's default material*/
+	virtual void SetDefaultMaterial(UMaterialInterface* InDefaultMaterial) override
+	{
+		DefaultMaterial = InDefaultMaterial;
+	}
+
+	/** Set a reference to UWebBrowser's translucent material*/
+	virtual void SetDefaultTranslucentMaterial(UMaterialInterface* InDefaultMaterial) override
+	{
+		DefaultTranslucentMaterial = InDefaultMaterial;
+	}
+
+	/** Get a reference to UWebBrowser's default material*/
+	virtual UMaterialInterface* GetDefaultMaterial() override
+	{
+		return DefaultMaterial;
+	}
+
+	/** Get a reference to UWebBrowser's translucent material*/
+	virtual UMaterialInterface* GetDefaultTranslucentMaterial() override
+	{
+		return DefaultTranslucentMaterial;
+	}
+
 public:
 
 	// FTickerObjectBase Interface
@@ -129,20 +161,32 @@ private:
 	void HandleRenderProcessCreated(CefRefPtr<CefListValue> ExtraInfo);
 	/** Pointer to the CEF App implementation */
 	CefRefPtr<FCEFBrowserApp>			CEFBrowserApp;
-	/** List of currently existing browser windows */
-	TArray<TWeakPtr<FCEFWebBrowserWindow>>	WindowInterfaces;
-	/** Critical section for thread safe modification of WindowInterfaces array. */
-	FCriticalSection WindowInterfacesCS;
 
 	TMap<FString, CefRefPtr<CefRequestContext>> RequestContexts;
 	FCefSchemeHandlerFactories SchemeHandlerFactories;
 #endif
+
+	/** List of currently existing browser windows */
+#if WITH_CEF3
+	TArray<TWeakPtr<FCEFWebBrowserWindow>>	WindowInterfaces;
+#elif PLATFORM_IOS || PLATFORM_PS4 || (PLATFORM_ANDROID && USE_ANDROID_JNI)
+	TArray<TWeakPtr<IWebBrowserWindow>>	WindowInterfaces;
+#endif
+
+	/** Critical section for thread safe modification of WindowInterfaces array. */
+	FCriticalSection WindowInterfacesCS;
 
 	TSharedRef<IWebBrowserWindowFactory> WebBrowserWindowFactory;
 
 	bool bDevToolsShortcutEnabled;
 
 	bool bJSBindingsToLoweringEnabled;
+
+	/** Reference to UWebBrowser's default material*/
+	UMaterialInterface* DefaultMaterial;
+
+	/** Reference to UWebBrowser's translucent material*/
+	UMaterialInterface* DefaultTranslucentMaterial;
 
 };
 

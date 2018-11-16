@@ -16,7 +16,7 @@
 #include "MediaSampleQueue.h"
 #include "Templates/SharedPointer.h"
 
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 
 class FWmfMediaAudioSamplePool;
 class FWmfMediaSampler;
@@ -30,6 +30,7 @@ enum class EMediaTextureSampleFormat;
 enum class EMediaTrackType;
 enum class EWmfMediaSamplerClockEvent;
 
+struct FMediaPlayerOptions;
 
 /**
  * Track collection for Windows Media Foundation based media players.
@@ -148,7 +149,7 @@ public:
 	 * @param Url The media source URL.
 	 * @see IsInitialized, Shutdown
 	 */
-	void Initialize(IMFMediaSource* InMediaSource, const FString& Url);
+	void Initialize(IMFMediaSource* InMediaSource, const FString& Url, const FMediaPlayerOptions* PlayerOptions);
 
 	/**
 	 * Reinitialize the track collection
@@ -340,6 +341,6 @@ private:
 };
 
 
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
 #endif //WMFMEDIA_SUPPORTED_PLATFORM

@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
+#include "Misc/SingleThreadRunnable.h"
 #include "Misc/Timespan.h"
 #include "HAL/Runnable.h"
 #include "Shared/UdpMessageSegment.h"
@@ -23,17 +24,19 @@ struct FIPv4Endpoint;
  */
 class FUdpMessageBeacon
 	: public FRunnable
+	, private FSingleThreadRunnable
 {
 public:
 
 	/** 
-	 * Creates and initializes a new Hello sender.
+	 * Creates and initializes a new beacon sender.
 	 *
 	 * @param InSocket The network socket used to send Hello segments.
 	 * @param InSocketId The network socket identifier (used to detect unicast endpoint).
 	 * @param InMulticastEndpoint The multicast group endpoint to transport messages to.
+	 * @param InStaticEndpoints The static nodes to broadcast to alongside the multicast.
 	 */
-	FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint);
+	FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint, const TArray<FIPv4Endpoint>& InStaticEndpoints);
 
 	/** Virtual destructor. */
 	virtual ~FUdpMessageBeacon();
@@ -61,6 +64,7 @@ public:
 
 	//~ FRunnable interface
 
+	virtual FSingleThreadRunnable* GetSingleThreadInterface() override;
 	virtual bool Init() override;
 	virtual uint32 Run() override;
 	virtual void Stop() override;
@@ -72,8 +76,30 @@ protected:
 	 * Sends the specified segment.
 	 *
 	 * @param SegmentType The type of segment to send (Hello or Bye).
+	 * @param SocketWaitTime Maximum time to wait for the socket to be ready.
+	 * @return true on success, false otherwise.
 	 */
-	void SendSegment(EUdpMessageSegments SegmentType);
+	bool SendSegment(EUdpMessageSegments SegmentType, const FTimespan& SocketWaitTime);
+
+	/**
+	 * Sends a ping segment to static addresses.
+	 * @return true on success, false otherwise.
+	 */
+	bool SendPing(const FTimespan& SocketWaitTime);
+
+	/**
+	 * Update the beacon sender.
+	 *
+	 * @param CurrentTime The current time (in UTC).
+	 * @param SocketWaitTime Maximum time to wait for the socket to be ready.
+	 */
+	void Update(const FDateTime& CurrentTime, const FTimespan& SocketWaitTime);
+
+protected:
+
+	//~ FSingleThreadRunnable interface
+
+	virtual void Tick() override;
 
 private:
 
@@ -91,6 +117,9 @@ private:
 
 	/** Holds the multicast address and port number to send to. */
 	TSharedPtr<FInternetAddr> MulticastAddress;
+
+	/** Holds the static addresses to broadcast ping to. */
+	TArray<TSharedPtr<FInternetAddr>> StaticAddresses;
 
 	/** Holds the time at which the next Hello segment must be sent. */
 	FDateTime NextHelloTime;

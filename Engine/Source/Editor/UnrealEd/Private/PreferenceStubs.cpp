@@ -7,6 +7,7 @@
 #include "Preferences/MaterialEditorOptions.h"
 #include "Preferences/PersonaOptions.h"
 #include "Preferences/PhysicsAssetEditorOptions.h"
+#include "Preferences/MaterialStatsOptions.h"
 
 // @todo find a better place for all of this, preferably in the appropriate modules
 // though this would require the classes to be relocated as well
@@ -57,10 +58,38 @@ UMaterialEditorOptions::UMaterialEditorOptions(const FObjectInitializer& ObjectI
 {
 }
 
+UMaterialStatsOptions::UMaterialStatsOptions(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+#if PLATFORM_WINDOWS
+	bPlatformUsed[GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 ? SP_PCD3D_SM5 : SP_PCD3D_SM4] = 1;
+#elif PLATFORM_IOS
+	bPlatformUsed[SP_OPENGL_ES2_IOS] = 1;
+#endif
+
+	bMaterialQualityUsed[EMaterialQualityLevel::High] = 1;
+}
+
 
 UCurveEdOptions::UCurveEdOptions(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+}
+
+void FViewportConfigOptions::SetToDefault()
+{
+	ViewModeIndex = VMI_Lit;
+	ViewFOV = 53.43f;
+	CameraFollowMode = EAnimationViewportCameraFollowMode::None;
+	CameraFollowBoneName = NAME_None;
+}
+
+void FAssetEditorOptions::SetViewportConfigsToDefault()
+{
+	for (FViewportConfigOptions& ViewportConfig : ViewportConfigs)
+	{
+		ViewportConfig.SetToDefault();
+	}
 }
 
 UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
@@ -77,13 +106,7 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 
 	for(FAssetEditorOptions& EditorOptions : AssetEditorOptions)
 	{
-		for(FViewportConfigOptions& ViewportConfig : EditorOptions.ViewportConfigs)
-		{
-			ViewportConfig.ViewModeIndex = VMI_Lit;
-			ViewportConfig.ViewFOV = 53.43f;
-			ViewportConfig.CameraFollowMode = EAnimationViewportCameraFollowMode::None;
-			ViewportConfig.CameraFollowBoneName = NAME_None;
-		}
+		EditorOptions.SetViewportConfigsToDefault();
 	}
 
 	SectionTimingNodeColor = FLinearColor(0.0f, 1.0f, 0.0f);

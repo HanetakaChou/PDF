@@ -13,14 +13,14 @@
 #include "WorldCollision.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "GameFramework/PhysicsVolume.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/Texture2D.h"
 #include "ComponentReregisterContext.h"
 #include "UnrealEngine.h"
-#include "PhysicsPublic.h"
+#include "Physics/PhysicsInterfaceCore.h"
 #include "Logging/MessageLog.h"
 #include "Net/UnrealNetwork.h"
 #include "ComponentUtils.h"
@@ -30,9 +30,11 @@
 #include "UObject/UObjectThreadContext.h"
 #include "Engine/SCS_Node.h"
 #include "EngineGlobals.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "DeviceProfiles/DeviceProfile.h"
 
 #define LOCTEXT_NAMESPACE "SceneComponent"
-
 
 namespace SceneComponentStatics
 {
@@ -419,6 +421,71 @@ static void UpdateAttachedIsEditorOnly(USceneComponent* ComponentThatChanged)
 	}
 }
 
+static bool SceneComponentNeedsLoadForTarget(USceneComponent const* SceneComponentObject, const ITargetPlatform* TargetPlatform)
+{
+	if(UDeviceProfile* DeviceProfile = UDeviceProfileManager::Get().FindProfile(TargetPlatform->IniPlatformName()))
+	{
+		// get local scalability CVars that could cull this actor
+		int32 CVarCullBasedOnDetailLevel;
+		if(DeviceProfile->GetConsolidatedCVarValue(TEXT("r.CookOutUnusedDetailModeComponents"), CVarCullBasedOnDetailLevel) && CVarCullBasedOnDetailLevel == 1)
+		{
+			int32 CVarDetailMode;
+			if(DeviceProfile->GetConsolidatedCVarValue(TEXT("r.DetailMode"), CVarDetailMode))
+			{
+				// Check component's detail mode.
+				// If e.g. the component's detail mode is High and the platform detail is Medium,
+				// then we should cull it.
+				if((int32)SceneComponentObject->DetailMode > CVarDetailMode)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+static bool CheckDescendantsAreAlsoCulledForTarget(USceneComponent const* SceneComponentObject, const ITargetPlatform* TargetPlatform)
+{
+	if (!ensure(SceneComponentObject != nullptr))
+	{
+		return 0;
+	}
+
+	TArray<USceneComponent*> AttachedChildren = SceneComponentObject->GetAttachChildren();
+
+	for (USceneComponent* ChildSceneComponent : AttachedChildren)
+	{
+		if (SceneComponentNeedsLoadForTarget(ChildSceneComponent, TargetPlatform))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool USceneComponent::NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const
+{
+	if(!SceneComponentNeedsLoadForTarget(this, TargetPlatform))
+	{
+		// Also check whether any of our children are culled.
+		bool bDescendantsCulled = CheckDescendantsAreAlsoCulledForTarget(this, TargetPlatform);
+
+		// Child not culled, so warn
+		if(!bDescendantsCulled)
+		{
+			UE_LOG(LogSceneComponent, Warning, TEXT("Component %s not cooked out for client because descendants were not also cooked out."), *GetName());
+			return true;
+		}
+
+		return false;
+	}
+
+	return true;
+}
+
 void USceneComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const static FName LocationName("RelativeLocation");
@@ -426,6 +493,7 @@ void USceneComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	const static FName ScaleName("RelativeScale3D");
 
 	const FName PropertyName = PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : FName();
+	const FName MemberPropertyName = PropertyChangedEvent.MemberProperty ? PropertyChangedEvent.MemberProperty->GetFName() : FName();
 
 	// Note: This must be called before UActorComponent::PostEditChangeChainProperty is called because this component will be reset when UActorComponent reruns construction scripts 
 	if (PropertyName == SceneComponentStatics::MobilityName)
@@ -439,9 +507,14 @@ void USceneComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	if (PropertyName == LocationName || PropertyName == RotationName || PropertyName == ScaleName)
+	const bool bLocationChanged = (PropertyName == LocationName || MemberPropertyName == LocationName);
+	if (bLocationChanged || (PropertyName == RotationName || MemberPropertyName == RotationName) || (PropertyName == ScaleName || MemberPropertyName == ScaleName))
 	{
-		UNavigationSystem::UpdateComponentInNavOctree(*this);
+		FNavigationSystem::UpdateComponentData(*this);
+		if (!GIsDemoMode)
+		{
+			InvalidateLightingCacheDetailed(true, bLocationChanged);
+		}
 	}
 }
 
@@ -547,7 +620,10 @@ void USceneComponent::UpdateComponentToWorldWithParent(USceneComponent* Parent,F
 		//QUICK_SCOPE_CYCLE_COUNTER(STAT_USceneComponent_UpdateComponentToWorldWithParent_HasChanged);
 		bHasChanged = !GetComponentTransform().Equals(NewTransform, SMALL_NUMBER);
 	}
-	if (bHasChanged)
+
+	// We propagate here based on more than just the transform changing, as other components may depend on the teleport flag
+	// to detect transforms out of the component direct hierarchy (such as the actor transform)
+	if (bHasChanged || Teleport != ETeleportType::None)
 	{
 		//QUICK_SCOPE_CYCLE_COUNTER(STAT_USceneComponent_UpdateComponentToWorldWithParent_Changed);
 		// Update transform
@@ -596,7 +672,7 @@ void USceneComponent::OnRegister()
 		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
 		SpriteComponent->Mobility = EComponentMobility::Movable;
 		SpriteComponent->AlwaysLoadOnClient = false;
-		SpriteComponent->bIsEditorOnly = true;
+		SpriteComponent->SetIsVisualizationComponent(true);
 		SpriteComponent->SpriteInfo.Category = TEXT("Misc");
 		SpriteComponent->SpriteInfo.DisplayName = NSLOCTEXT( "SpriteCategory", "Misc", "Misc" );
 		SpriteComponent->CreationMethod = CreationMethod;
@@ -623,10 +699,10 @@ void USceneComponent::PropagateTransformUpdate(bool bTransformChanged, EUpdateTr
 	{
 		FScopedMovementUpdate* CurrentUpdate = GetCurrentScopedMovement();
 
-		if (CurrentUpdate && Teleport == ETeleportType::TeleportPhysics)
+		if (CurrentUpdate && Teleport != ETeleportType::None)
 		{
 			// Remember this was a teleport
-			CurrentUpdate->SetHasTeleported();
+			CurrentUpdate->SetHasTeleported(Teleport);
 		}
 
 		// We are deferring these updates until later.
@@ -735,7 +811,7 @@ void USceneComponent::EndScopedMovementUpdate(class FScopedMovementUpdate& Compl
 			if (bTransformChanged)
 			{
 				// Pass teleport flag if set
-				PropagateTransformUpdate(true, EUpdateTransformFlags::None, CurrentScopedUpdate->bHasTeleported ? ETeleportType::TeleportPhysics : ETeleportType::None);
+				PropagateTransformUpdate(true, EUpdateTransformFlags::None, CurrentScopedUpdate->TeleportType);
 			}
 
 			// We may have moved somewhere and then moved back to the start, we still need to update overlaps if we touched things along the way.
@@ -1095,10 +1171,6 @@ void USceneComponent::UpdateBounds()
 {
 	SCOPE_CYCLE_COUNTER(STAT_ComponentUpdateBounds);
 
-#if WITH_EDITOR
-	FBoxSphereBounds OriginalBounds = Bounds; // Save old bounds
-#endif
-
 	// if use parent bound if attach parent exists, and the flag is set
 	// since parents tick first before child, this should work correctly
 	if ( bUseAttachParentBound && GetAttachParent() != nullptr )
@@ -1117,15 +1189,6 @@ void USceneComponent::UpdateBounds()
 	{
 		logOrEnsureNanError(TEXT("Bounds contains NaN for %s"), *GetPathName());
 		Bounds.DiagnosticCheckNaN();
-	}
-#endif
-
-#if WITH_EDITOR
-	// If bounds have changed (in editor), trigger data rebuild
-	if ( IsRegistered() && (GetWorld() != nullptr) && !GetWorld()->IsGameWorld() &&
-		(OriginalBounds.Origin.Equals(Bounds.Origin) == false || OriginalBounds.BoxExtent.Equals(Bounds.BoxExtent) == false) )
-	{
-		GEngine->TriggerStreamingDataRebuild();
 	}
 #endif
 }
@@ -1174,6 +1237,18 @@ void USceneComponent::SetRelativeLocationAndRotation(FVector NewLocation, FRotat
 	{
 		// We know the rotations are different, don't bother with the cache.
 		SetRelativeLocationAndRotation(NewLocation, NewRotation.Quaternion(), bSweep, OutSweepHitResult, Teleport);
+	}
+}
+
+void USceneComponent::SetRelativeRotationExact(FRotator NewRotation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
+{
+	if (!NewRotation.Equals(RelativeRotation, SCENECOMPONENT_ROTATOR_TOLERANCE))
+	{
+		// We know the rotations are different, don't bother with the cache.
+		const FQuat NewQuat = NewRotation.Quaternion();
+     	SetRelativeLocationAndRotation(RelativeLocation, NewQuat, bSweep, OutSweepHitResult, Teleport);
+		RelativeRotation = NewRotation;
+		
 	}
 }
 
@@ -1307,7 +1382,7 @@ void USceneComponent::SetWorldLocation(FVector NewLocation, bool bSweep, FHitRes
 	SetRelativeLocation(NewRelLocation, bSweep, OutSweepHitResult, Teleport);
 }
 
-void USceneComponent::SetWorldRotation(const FQuat& NewRotation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
+FQuat USceneComponent::GetRelativeRotationFromWorld(const FQuat & NewRotation)
 {
 	FQuat NewRelRotation = NewRotation;
 
@@ -1318,7 +1393,7 @@ void USceneComponent::SetWorldRotation(const FQuat& NewRotation, bool bSweep, FH
 		// in order to support mirroring, you'll have to use FTransform.GetRelativeTransform
 		// because negative SCALE should flip the rotation
 		if (FTransform::AnyHasNegativeScale(RelativeScale3D, ParentToWorld.GetScale3D()))
-		{	
+		{
 			FTransform NewTransform = GetComponentTransform();
 			// set new desired rotation
 			NewTransform.SetRotation(NewRotation);
@@ -1331,10 +1406,15 @@ void USceneComponent::SetWorldRotation(const FQuat& NewRotation, bool bSweep, FH
 			const FQuat ParentToWorldQuat = ParentToWorld.GetRotation();
 			// Quat multiplication works reverse way, make sure you do Parent(-1) * World = Local, not World*Parent(-) = Local (the way matrix does)
 			const FQuat NewRelQuat = ParentToWorldQuat.Inverse() * NewRotation;
-			NewRelRotation = NewRelQuat;		
+			NewRelRotation = NewRelQuat;
 		}
 	}
+	return NewRelRotation;
+}
 
+void USceneComponent::SetWorldRotation(const FQuat& NewRotation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
+{
+	FQuat NewRelRotation = GetRelativeRotationFromWorld(NewRotation);
 	SetRelativeRotation(NewRelRotation, bSweep, OutSweepHitResult, Teleport);
 }
 
@@ -1350,7 +1430,6 @@ void USceneComponent::SetWorldRotation(FRotator NewRotation, bool bSweep, FHitRe
 		SetWorldRotation(NewRotation.Quaternion(), bSweep, OutSweepHitResult, Teleport);
 	}
 }
-
 
 void USceneComponent::SetWorldScale3D(FVector NewScale)
 {
@@ -1560,14 +1639,29 @@ void USceneComponent::GetChildrenComponents(bool bIncludeAllDescendants, TArray<
 	}
 	else
 	{
-		Children.Append(GetAttachChildren());
+		const TArray<USceneComponent*>& AttachedChildren = GetAttachChildren();
+		Children.Reserve(AttachedChildren.Num());
+		for (USceneComponent* Child : AttachedChildren)
+		{
+			if (Child)
+			{
+				Children.Add(Child);
+			}
+		}
 	}
 }
 
 void USceneComponent::AppendDescendants(TArray<USceneComponent*>& Children) const
 {
 	const TArray<USceneComponent*>& AttachedChildren = GetAttachChildren();
-	Children.Append(AttachedChildren);
+	Children.Reserve(Children.Num() + AttachedChildren.Num());
+	for (USceneComponent* Child : AttachedChildren)
+	{
+		if (Child)
+		{
+			Children.Add(Child);
+		}
+	}
 
 	for (USceneComponent* Child : AttachedChildren)
 	{
@@ -1599,7 +1693,7 @@ void USceneComponent::SetRelativeRotationCache(const FRotationConversionCache& I
 
 void USceneComponent::SetupAttachment(class USceneComponent* InParent, FName InSocketName)
 {
-	if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachTo. Once a component is registered you must use AttachTo.")))
+	if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachToComponent. Once a component is registered you must use AttachToComponent.")))
 	{
 		if (ensureMsgf(InParent != this, TEXT("Cannot attach a component to itself.")))
 		{
@@ -1743,11 +1837,11 @@ bool USceneComponent::AttachToComponent(USceneComponent* Parent, const FAttachme
 		{
 			if (Parent->IsTemplate())
 			{
-				ensureMsgf(false, TEXT("Template Mismatch during attachment. Attaching instanced component to template component. Parent '%s' Self '%s'"), *Parent->GetName(), *GetName());
+				ensureMsgf(false, TEXT("Template Mismatch during attachment. Attaching instanced component to template component. Parent '%s' (Owner '%s') Self '%s' (Owner '%s')."), *Parent->GetName(), *GetNameSafe(Parent->GetOwner()), *GetName(), *GetNameSafe(GetOwner()));
 			}
 			else
 			{
-				ensureMsgf(false, TEXT("Template Mismatch during attachment. Attaching template component to instanced component. Parent '%s' Self '%s'"), *Parent->GetName(), *GetName());
+				ensureMsgf(false, TEXT("Template Mismatch during attachment. Attaching template component to instanced component. Parent '%s' (Owner '%s') Self '%s' (Owner '%s')."), *Parent->GetName(), *GetNameSafe(Parent->GetOwner()), *GetName(), *GetNameSafe(GetOwner()));
 			}
 			return false;
 		}
@@ -1760,6 +1854,11 @@ bool USceneComponent::AttachToComponent(USceneComponent* Parent, const FAttachme
 		// Find out if we're already attached, and save off our position in the array if we are
 		int32 LastAttachIndex = INDEX_NONE;
 		Parent->GetAttachChildren().Find(this, LastAttachIndex);
+
+		if (!ShouldSkipUpdateOverlaps())	//if we can't skip UpdateOverlaps, make sure the parent doesn't either
+		{
+			Parent->ClearSkipUpdateOverlaps();
+		}
 
 		FDetachmentTransformRules DetachmentRules(AttachmentRules, true);
 
@@ -1778,7 +1877,6 @@ bool USceneComponent::AttachToComponent(USceneComponent* Parent, const FAttachme
 		
 		// Restore detachment update overlaps flag.
 		bDisableDetachmentUpdateOverlaps = bSavedDisableDetachmentUpdateOverlaps;
-
 		{
 			//This code requires some explaining. Inside the editor we allow user to attach physically simulated objects to other objects. This is done for convenience so that users can group things together in hierarchy.
 			//At runtime we must not attach physically simulated objects as it will cause double transform updates, and you should just use a physical constraint if attachment is the desired behavior.
@@ -2086,7 +2184,7 @@ AActor* USceneComponent::GetAttachmentRootActor() const
 	return AttachmentRootComponent ? AttachmentRootComponent->GetOwner() : nullptr;
 }
 
-bool USceneComponent::IsAttachedTo(class USceneComponent* TestComp) const
+bool USceneComponent::IsAttachedTo(const USceneComponent* TestComp) const
 {
 	if(TestComp != nullptr)
 	{
@@ -2434,9 +2532,9 @@ bool USceneComponent::IsAnySimulatingPhysics() const
 
 APhysicsVolume* USceneComponent::GetPhysicsVolume() const
 {
-	if (PhysicsVolume.IsValid())
+	if (APhysicsVolume* MyVolume = PhysicsVolume.Get())
 	{
-		return PhysicsVolume.Get();
+		return MyVolume;
 	}
 	else if (const UWorld* MyWorld = GetWorld())
 	{
@@ -2456,43 +2554,46 @@ void USceneComponent::UpdatePhysicsVolume( bool bTriggerNotifiers )
 
 			APhysicsVolume* NewVolume = MyWorld->GetDefaultPhysicsVolume();
 			// Avoid doing anything if there are no other physics volumes in the world.
-			if (MyWorld->GetNonDefaultPhysicsVolumeCount() > 0)
+			const int32 NumVolumes = MyWorld->GetNonDefaultPhysicsVolumeCount();
+			if (NumVolumes > 0)
 			{
 				// Avoid a full overlap query if we can do some quick bounds tests against the volumes.
-				static uint32 MaxVolumesToCheck = 100;
-				uint32 VolumeIndex = 0;
-				bool bAnyPotentialOverlap = false;
-				for (auto VolumeIter = MyWorld->GetNonDefaultPhysicsVolumeIterator(); VolumeIter && !bAnyPotentialOverlap; ++VolumeIter, ++VolumeIndex)
+				static int32 MaxVolumesToCheck = 20;
+				bool bAnyPotentialOverlap = true;
+
+				// Only check volumes manually if there are fewer than our limit, otherwise skip ahead to the query.
+				if (NumVolumes <= MaxVolumesToCheck)
 				{
-					const APhysicsVolume* Volume = VolumeIter->Get();
-					if (Volume != nullptr)
+					//QUICK_SCOPE_CYCLE_COUNTER(STAT_UpdatePhysicsVolume_Iterate);
+					bAnyPotentialOverlap = false;
+					for (auto VolumeIter = MyWorld->GetNonDefaultPhysicsVolumeIterator(); VolumeIter; ++VolumeIter)
 					{
-						const USceneComponent* VolumeRoot = Volume->GetRootComponent();
-						if (VolumeRoot)
+						const APhysicsVolume* Volume = VolumeIter->Get();
+						if (Volume != nullptr)
 						{
-							if (FBoxSphereBounds::SpheresIntersect(VolumeRoot->Bounds, Bounds))
+							const USceneComponent* VolumeRoot = Volume->GetRootComponent();
+							if (VolumeRoot)
 							{
-								if (FBoxSphereBounds::BoxesIntersect(VolumeRoot->Bounds, Bounds))
+								if (FBoxSphereBounds::SpheresIntersect(VolumeRoot->Bounds, Bounds))
 								{
-									bAnyPotentialOverlap = true;
+									if (FBoxSphereBounds::BoxesIntersect(VolumeRoot->Bounds, Bounds))
+									{
+										bAnyPotentialOverlap = true;
+										break;
+									}
 								}
 							}
 						}
-					}
-
-					// Bail if too many volumes. Later we'll probably convert to using an octree so this wouldn't be a concern.
-					if (VolumeIndex >= MaxVolumesToCheck)
-					{
-						bAnyPotentialOverlap = true;
-						break;
 					}
 				}
 
 				if (bAnyPotentialOverlap)
 				{
+					//QUICK_SCOPE_CYCLE_COUNTER(STAT_UpdatePhysicsVolume_OverlapQuery);
 					// check for all volumes that overlap the component
 					TArray<FOverlapResult> Hits;
 					FComponentQueryParams Params(SCENE_QUERY_STAT(UpdatePhysicsVolume),  GetOwner());
+					Params.bIgnoreBlocks = true; // Only care about overlaps
 
 					bool bOverlappedOrigin = false;
 					const UPrimitiveComponent* SelfAsPrimitive = Cast<UPrimitiveComponent>(this);
@@ -2521,10 +2622,7 @@ void USceneComponent::UpdatePhysicsVolume( bool bTriggerNotifiers )
 				}
 			}
 
-			if (PhysicsVolume != NewVolume)
-			{
-				SetPhysicsVolume(NewVolume, bTriggerNotifiers);
-			}
+			SetPhysicsVolume(NewVolume, bTriggerNotifiers);
 		}
 	}
 }
@@ -2536,18 +2634,19 @@ void USceneComponent::SetPhysicsVolume( APhysicsVolume * NewVolume,  bool bTrigg
 	// Still the delegate should be still called
 	if( bTriggerNotifiers )
 	{
-		if( NewVolume != PhysicsVolume )
+		APhysicsVolume* OldPhysicsVolume = PhysicsVolume.Get();
+		if (NewVolume != OldPhysicsVolume)
 		{
 			AActor *A = GetOwner();
-			if( PhysicsVolume.IsValid() )
+			if (OldPhysicsVolume)
 			{
-				PhysicsVolume->ActorLeavingVolume(A);
+				OldPhysicsVolume->ActorLeavingVolume(A);
 			}
 			PhysicsVolumeChangedDelegate.Broadcast(NewVolume);
 			PhysicsVolume = NewVolume;
-			if( PhysicsVolume.IsValid() )
+			if (IsValid(NewVolume))
 			{
-				PhysicsVolume->ActorEnteredVolume(A);
+				NewVolume->ActorEnteredVolume(A);
 			}
 		}
 	}
@@ -2555,6 +2654,11 @@ void USceneComponent::SetPhysicsVolume( APhysicsVolume * NewVolume,  bool bTrigg
 	{
 		PhysicsVolume = NewVolume;
 	}
+}
+
+bool USceneComponent::IsPostLoadThreadSafe() const
+{
+	return GetClass() == USceneComponent::StaticClass();
 }
 
 void USceneComponent::BeginDestroy()
@@ -2614,7 +2718,9 @@ bool USceneComponent::InternalSetWorldLocationAndRotation(FVector NewLocation, c
 	}
 
 	const FRotator NewRelativeRotation = RelativeRotationCache.QuatToRotator_ReadOnly(NewRotationQuat);
-	if (!NewLocation.Equals(RelativeLocation) || !NewRelativeRotation.Equals(RelativeRotation))
+	bool bDiffLocation = !NewLocation.Equals(RelativeLocation);
+	bool bDiffRotation = !NewRelativeRotation.Equals(RelativeRotation);
+	if (bDiffLocation || bDiffRotation)
 	{
 		RelativeLocation = NewLocation;
 
@@ -2625,8 +2731,11 @@ bool USceneComponent::InternalSetWorldLocationAndRotation(FVector NewLocation, c
 		// it is required to generate that same ComponentToWorld otherwise the FComponentInstanceDataCache
 		// might fail to apply to the relevant component. In order to have the exact same transform
 		// we must enforce the quaternion to come from the rotator (as in load)
-		RelativeRotation = NewRelativeRotation;
-		RelativeRotationCache.RotatorToQuat(NewRelativeRotation);
+		if (bDiffRotation)
+		{
+			RelativeRotation = NewRelativeRotation;
+			RelativeRotationCache.RotatorToQuat(NewRelativeRotation);
+		}
 
 #if ENABLE_NAN_DIAGNOSTIC
 		if (RelativeRotation.ContainsNaN())
@@ -2638,8 +2747,7 @@ bool USceneComponent::InternalSetWorldLocationAndRotation(FVector NewLocation, c
 		UpdateComponentToWorldWithParent(GetAttachParent(),GetAttachSocketName(), SkipPhysicsToEnum(bNoPhysics), RelativeRotationCache.GetCachedQuat(), Teleport);
 
 		// we need to call this even if this component itself is not navigation relevant
-		// checking ShouldUpdateNavOctreeOnComponentChange here is an optimization for static navigation users
-		if (UNavigationSystem::ShouldUpdateNavOctreeOnComponentChange())
+		if (IsRegistered() && bCanEverAffectNavigation)
 		{
 			PostUpdateNavigationData();
 		}
@@ -2650,16 +2758,12 @@ bool USceneComponent::InternalSetWorldLocationAndRotation(FVector NewLocation, c
 	return false;
 }
 
-void USceneComponent::UpdateOverlaps(TArray<FOverlapInfo> const* PendingOverlaps, bool bDoNotifies, const TArray<FOverlapInfo>* OverlapsAtEndLocation)
+bool USceneComponent::UpdateOverlapsImpl(TArray<FOverlapInfo> const* PendingOverlaps, bool bDoNotifies, const TArray<FOverlapInfo>* OverlapsAtEndLocation)
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdateOverlaps); 
 
-	if (IsDeferringMovementUpdates())
-	{
-		GetCurrentScopedMovement()->ForceOverlapUpdate();
-		return;
-	}
-	
+	bool bCanSkipUpdateOverlaps = true;
+
 	// SceneComponent has no physical representation, so no overlaps to test for/
 	// But, we need to test down the attachment chain since there might be PrimitiveComponents below.
 	TInlineComponentArray<USceneComponent*> AttachedChildren;
@@ -2669,14 +2773,17 @@ void USceneComponent::UpdateOverlaps(TArray<FOverlapInfo> const* PendingOverlaps
 		if (ChildComponent)
 		{
 			// Do not pass on OverlapsAtEndLocation, it only applied to this component.
-			ChildComponent->UpdateOverlaps(nullptr, bDoNotifies);
+			bCanSkipUpdateOverlaps &= ChildComponent->UpdateOverlaps(nullptr, bDoNotifies);
 		}
 	}
 
 	if (bShouldUpdatePhysicsVolume)
 	{
 		UpdatePhysicsVolume(bDoNotifies);
+		bCanSkipUpdateOverlaps = false;
 	}
+
+	return bCanSkipUpdateOverlaps;
 }
 
 bool USceneComponent::CheckStaticMobilityAndWarn(const FText& ActionText) const
@@ -3132,6 +3239,16 @@ void USceneComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & O
 }
 
 #if WITH_EDITOR
+void USceneComponent::PostEditComponentMove(bool bFinished)
+{
+	if (!bFinished)
+	{
+		// Snapshot the transaction buffer for this component if we've not finished moving yet
+		// This allows listeners to be notified of intermediate changes of state
+		SnapshotTransactionBuffer(this);
+	}
+}
+
 bool USceneComponent::CanEditChange( const UProperty* Property ) const
 {
 	bool bIsEditable = Super::CanEditChange( Property );
@@ -3212,12 +3329,12 @@ static uint32 s_ScopedWarningCount = 0;
 FScopedMovementUpdate::FScopedMovementUpdate( class USceneComponent* Component, EScopedUpdate::Type ScopeBehavior, bool bRequireOverlapsEventFlagToQueueOverlaps )
 : Owner(Component)
 , OuterDeferredScope(nullptr)
+, CurrentOverlapState(EOverlapState::eUseParent)
+, TeleportType(ETeleportType::None)
+, FinalOverlapCandidatesIndex(INDEX_NONE)
 , bDeferUpdates(ScopeBehavior == EScopedUpdate::DeferredUpdates)
 , bHasMoved(false)
-, bHasTeleported(false)
 , bRequireOverlapsEventFlag(bRequireOverlapsEventFlagToQueueOverlaps)
-, CurrentOverlapState(EOverlapState::eUseParent)
-, FinalOverlapCandidatesIndex(INDEX_NONE)
 {
 	if (IsValid(Component))
 	{
@@ -3266,9 +3383,9 @@ FScopedMovementUpdate::~FScopedMovementUpdate()
 
 bool FScopedMovementUpdate::IsTransformDirty() const
 {
-	if (IsValid(Owner))
+	if (Owner)
 	{
-		return !InitialTransform.Equals(Owner->GetComponentToWorld());
+		return !InitialTransform.Equals(Owner->GetComponentToWorld(), SMALL_NUMBER);
 	}
 
 	return false;
@@ -3301,6 +3418,7 @@ void FScopedMovementUpdate::RevertMove()
 	}
 	bHasMoved = false;
 	CurrentOverlapState = EOverlapState::eUseParent;
+	TeleportType = ETeleportType::None;
 }
 
 void FScopedMovementUpdate::AppendOverlapsAfterMove(const TArray<FOverlapInfo>& NewPendingOverlaps, bool bSweep, bool bIncludesOverlapsAtEnd)
@@ -3369,6 +3487,11 @@ void FScopedMovementUpdate::OnInnerScopeComplete(const FScopedMovementUpdate& In
 				}
 				PendingOverlaps.Append(InnerScope.GetPendingOverlaps());
 				checkSlow(FinalOverlapCandidatesIndex < PendingOverlaps.Num());
+			}
+
+			if (InnerScope.TeleportType > TeleportType)
+			{
+				SetHasTeleported(InnerScope.TeleportType);
 			}
 		}
 		else
@@ -3446,6 +3569,30 @@ bool FScopedMovementUpdate::SetWorldLocationAndRotation(FVector NewLocation, con
 	return false;
 }
 
+void USceneComponent::ClearSkipUpdateOverlaps()
+{
+	if (ShouldSkipUpdateOverlaps())
+	{
+		bSkipUpdateOverlaps = false;
+		if (GetAttachParent())
+		{
+			GetAttachParent()->ClearSkipUpdateOverlaps();
+		}
+	}
+}
+
+void USceneComponent::SetShouldUpdatePhysicsVolume(bool bInShouldUpdatePhysicsVolume)
+{
+	if (bInShouldUpdatePhysicsVolume)
+	{
+		ClearSkipUpdateOverlaps();
+	}
+
+	bShouldUpdatePhysicsVolume = bInShouldUpdatePhysicsVolume;
+}
+
+int USceneComponent::SkipUpdateOverlapsOptimEnabled = 1;
+static FAutoConsoleVariableRef CVarSkipUpdateOverlapsOptimEnabled(TEXT("p.SkipUpdateOverlapsOptimEnabled"), USceneComponent::SkipUpdateOverlapsOptimEnabled, TEXT("If enabled, we cache whether we need to call UpdateOverlaps on certain components"));
 
 #if WITH_EDITOR
 const int32 USceneComponent::GetNumUncachedStaticLightingInteractions() const
@@ -3466,13 +3613,13 @@ void USceneComponent::UpdateNavigationData()
 {
 	SCOPE_CYCLE_COUNTER(STAT_ComponentUpdateNavData);
 
-	if (UNavigationSystem::ShouldUpdateNavOctreeOnComponentChange() && IsRegistered())
+	if (IsRegistered())
 	{
 		UWorld* MyWorld = GetWorld();
-		if ((MyWorld == nullptr) || !MyWorld->IsGameWorld() || !MyWorld->IsNetMode(ENetMode::NM_Client))
+		if ((MyWorld != nullptr) && (!MyWorld->IsGameWorld() || !MyWorld->IsNetMode(ENetMode::NM_Client)))
 		{
 			// use propagated component's transform update in editor OR server game with additional navsys check
-			UNavigationSystem::UpdateComponentInNavOctree(*this);
+			FNavigationSystem::UpdateComponentData(*this);
 		}
 	}
 }
@@ -3480,17 +3627,7 @@ void USceneComponent::UpdateNavigationData()
 void USceneComponent::PostUpdateNavigationData()
 {
 	SCOPE_CYCLE_COUNTER(STAT_ComponentPostUpdateNavData);
-
-	if (UNavigationSystem::ShouldUpdateNavOctreeOnComponentChange() && IsRegistered())
-	{
-		UWorld* MyWorld = GetWorld();
-		if (MyWorld != nullptr && MyWorld->GetNavigationSystem() != nullptr 
-			&& (MyWorld->GetNavigationSystem()->ShouldAllowClientSideNavigation() || !MyWorld->IsNetMode(ENetMode::NM_Client)))
-		{
-			// use propagated component's transform update in editor OR server game with additional navsys check
-			UNavigationSystem::UpdateNavOctreeAfterMove(this);
-		}
-	}
+	FNavigationSystem::OnComponentTransformChanged(*this);
 }
 
 

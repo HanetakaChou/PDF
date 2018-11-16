@@ -37,7 +37,13 @@ struct FTouchInputControl
 	FKey AltInputKey;
 
 	FTouchInputControl()
-		: InputScale(1.f, 1.f)
+		: Image1(nullptr)
+		, Image2(nullptr)
+		, Center(ForceInitToZero)
+		, VisualSize(ForceInitToZero)
+		, ThumbSize(ForceInitToZero)
+		, InteractionSize(ForceInitToZero)
+		, InputScale(1.f, 1.f)
 	{
 	}
 };

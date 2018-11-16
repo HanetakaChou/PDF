@@ -20,6 +20,8 @@
 #include "HttpModule.h"
 #include "PlatformHttp.h"
 #include "Misc/EngineVersion.h"
+#include "HttpRetrySystem.h"
+
 
 /** When enabled (and -AnalyticsTrackPerf is specified on the command line, will log out analytics flush timings on a regular basis to Saved/AnalyticsTiming.csv. */
 #define ANALYTICS_PERF_TRACKING_ENABLED !UE_BUILD_SHIPPING
@@ -37,7 +39,7 @@ struct FAnalyticsPerfTracker : FTickerObjectBase
 			LogFile.Serialize(TEXT("Date,CL,RunID,Time,WindowSeconds,ProfiledSeconds,Frames,Flushes,Events,Bytes,FrameCounter"), ELogVerbosity::Log, FName());
 			LastSubmitTime = StartTime;
 			StartDate = FDateTime::UtcNow().ToIso8601();
-			CL = Lex::ToString(FEngineVersion::Current().GetChangelist());
+			CL = LexToString(FEngineVersion::Current().GetChangelist());
 		}
 	}
 
@@ -74,6 +76,8 @@ private:
 	/** Check to see if we need to log another window of time. */
 	virtual bool Tick(float DeltaTime) override
 	{
+        QUICK_SCOPE_CYCLE_COUNTER(STAT_IAnalyticsProviderET_Tick);
+
 		if (bEnabled)
 		{
 			++FramesThisWindow;
@@ -197,22 +201,27 @@ public:
 	virtual const TArray<FAnalyticsEventAttribute>& GetDefaultEventAttributes() const override;
 	virtual void SetEventCallback(const OnEventRecorded& Callback) override;
 
+	virtual void SetURLEndpoint(const FString& UrlEndpoint, const TArray<FString>& AltDomains) override;
+	virtual void BlockUntilFlushed(float InTimeoutSec) override;
 	virtual ~FAnalyticsProviderET();
 
 	FString GetAPIKey() const { return APIKey; }
 
 private:
-	/** 
+	/**
 	 * Determines whether we need to flush. Generally, this is only if we have cached events.
 	 * Since the first event is always a control event, and we overwrite multiple control events in a row,
 	 * we can safely say that if the array is longer than 1 item, it must have a real event in it to flush.
-	 * 
+	 *
 	 * NOTE: This MUST be accessed inside a lock on CachedEventsCS!!
 	 */
 	bool ShouldFlush() const
 	{
 		return CachedEvents.Num() > 1;
 	}
+
+	/** Create a request utilizing HttpRetry domains */
+	TSharedRef<IHttpRequest> CreateRequest();
 
 	bool bSessionInProgress;
 	/** ET Game API Key - Get from your account manager */
@@ -232,7 +241,7 @@ private:
 	/** Min retry delay (in seconds) after a failure to submit. */
 	const float RetryDelaySecs;
 	/** Timecode of the last time a flush request failed to submit (for throttling). */
-	FDateTime LastFailedFlush;
+	double LastFailedFlush;
 	/** Allows events to not be cached when -AnalyticsDisableCaching is used. This should only be used for debugging as caching significantly reduces bandwidth overhead per event. */
 	bool bShouldCacheEvents;
 	/** Current countdown timer to keep track of MaxCachedElapsedTime push */
@@ -273,8 +282,8 @@ private:
 			, bIsDefaultAttributes(bInIsDefaultAttributes)
 		{}
 	};
-	
-	/** 
+
+	/**
 	 * List of analytic events pending a server update .
 	 * NOTE: This MUST be accessed inside a lock on CachedEventsCS!!
 	 */
@@ -289,6 +298,9 @@ private:
 	* Delegate called when an event Http request completes
 	*/
 	void EventRequestComplete(FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded, TSharedPtr< TArray<FAnalyticsEventEntry> > FlushedEvents);
+
+	TSharedPtr<class FHttpRetrySystem::FManager> HttpRetryManager;
+	FHttpRetrySystem::FRetryDomainsPtr RetryServers;
 };
 
 TSharedPtr<IAnalyticsProviderET> FAnalyticsET::CreateAnalyticsProvider(const Config& ConfigValues) const
@@ -312,7 +324,7 @@ FAnalyticsProviderET::FAnalyticsProviderET(const FAnalyticsET::Config& ConfigVal
 	, MaxCachedNumEvents(20)
 	, MaxCachedElapsedTime(60.0f)
 	, RetryDelaySecs(120.0f)
-	, LastFailedFlush(FDateTime::MinValue())
+	, LastFailedFlush(0.0)
 	, bShouldCacheEvents(true)
 	, FlushEventsCountdown(MaxCachedElapsedTime)
 	, bInDestructor(false)
@@ -322,6 +334,28 @@ FAnalyticsProviderET::FAnalyticsProviderET(const FAnalyticsET::Config& ConfigVal
 	if (APIKey.IsEmpty() || APIServer.IsEmpty())
 	{
 		UE_LOG(LogAnalytics, Fatal, TEXT("AnalyticsET: APIKey (%s) and APIServer (%s) cannot be empty!"), *APIKey, *APIServer);
+	}
+
+	// Set the number of retries to the number of retry URLs that have been passed in.
+	uint32 RetryLimitCount = ConfigValues.AltAPIServersET.Num();
+
+	HttpRetryManager = MakeShared<FHttpRetrySystem::FManager>(
+		FHttpRetrySystem::FRetryLimitCountSetting::Create(RetryLimitCount),
+		FHttpRetrySystem::FRetryTimeoutRelativeSecondsSetting::Unused()
+		);
+
+	// If we have retry domains defined, insert the default domain into the list
+	if (RetryLimitCount > 0)
+	{
+		TArray<FString> TmpAltAPIServers = ConfigValues.AltAPIServersET;
+
+		FString DefaultUrlDomain = FPlatformHttp::GetUrlDomain(APIServer);
+		if (!TmpAltAPIServers.Contains(DefaultUrlDomain))
+		{
+			TmpAltAPIServers.Insert(DefaultUrlDomain, 0);
+		}
+
+		RetryServers = MakeShared<FHttpRetrySystem::FRetryDomains, ESPMode::ThreadSafe>(MoveTemp(TmpAltAPIServers));
 	}
 
 	// force very verbose logging if we are force-disabling events.
@@ -343,7 +377,7 @@ FAnalyticsProviderET::FAnalyticsProviderET(const FAnalyticsET::Config& ConfigVal
 	FString ConfigAppVersion = ConfigValues.AppVersionET;
 	// Allow the cmdline to force a specific AppVersion so it can be set dynamically.
 	FParse::Value(FCommandLine::Get(), TEXT("ANALYTICSAPPVERSION="), ConfigAppVersion, false);
-	AppVersion = ConfigAppVersion.IsEmpty() 
+	AppVersion = ConfigAppVersion.IsEmpty()
 		? FString(FApp::GetBuildVersion())
 		: ConfigAppVersion.Replace(TEXT("%VERSION%"), FApp::GetBuildVersion(), ESearchCase::CaseSensitive);
 
@@ -374,6 +408,8 @@ bool FAnalyticsProviderET::Tick(float DeltaSeconds)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAnalyticsProviderET_Tick);
 
+	HttpRetryManager->Update();
+
 	// There are much better ways to do this, but since most events are recorded and handled on the same (game) thread,
 	// this is probably mostly fine for now, and simply favoring not crashing at the moment
 	FScopeLock ScopedLock(&CachedEventsCS);
@@ -397,13 +433,13 @@ bool FAnalyticsProviderET::Tick(float DeltaSeconds)
 			}
 			else
 			{
-				LastFrameCounterFlushed = GFrameCounter;
-				FTimespan TimeSinceLastFailure = FDateTime::UtcNow() - LastFailedFlush;	
-				if (TimeSinceLastFailure.GetTotalSeconds() >= RetryDelaySecs)
+				double TimeSinceLastFailure = FPlatformTime::Seconds() - LastFailedFlush;
+				if (TimeSinceLastFailure >= RetryDelaySecs)
 				{
-			FlushEvents();
-		}
-	}
+					FlushEvents();
+					LastFrameCounterFlushed = GFrameCounter;
+				}
+			}
 		}
 	}
 	return true;
@@ -429,7 +465,7 @@ bool FAnalyticsProviderET::StartSession(const TArray<FAnalyticsEventAttribute>& 
 bool FAnalyticsProviderET::StartSession(TArray<FAnalyticsEventAttribute>&& Attributes)
 {
 	UE_LOG(LogAnalytics, Log, TEXT("[%s] AnalyticsET::StartSession"), *APIKey);
-	
+
 	// end/flush previous session before staring new one
 	if (bSessionInProgress)
 	{
@@ -442,8 +478,6 @@ bool FAnalyticsProviderET::StartSession(TArray<FAnalyticsEventAttribute>&& Attri
 
 	// always ensure we send a few specific attributes on session start.
 	TArray<FAnalyticsEventAttribute> AppendedAttributes(MoveTemp(Attributes));
-	// this allows mapping to ad networks attribution data
-	AppendedAttributes.Emplace(TEXT("AttributionId"), FPlatformMisc::GetUniqueAdvertisingId());
 	// we should always know what platform is hosting this session.
 	AppendedAttributes.Emplace(TEXT("Platform"), FString(FPlatformProperties::IniPlatformName()));
 
@@ -453,7 +487,7 @@ bool FAnalyticsProviderET::StartSession(TArray<FAnalyticsEventAttribute>&& Attri
 }
 
 /**
- * End capturing stats and queue the upload 
+ * End capturing stats and queue the upload
  */
 void FAnalyticsProviderET::EndSession()
 {
@@ -465,6 +499,18 @@ void FAnalyticsProviderET::EndSession()
 	SessionID.Empty();
 
 	bSessionInProgress = false;
+}
+
+TSharedRef<IHttpRequest> FAnalyticsProviderET::CreateRequest()
+{
+	// TODO add config values for retries, for now, using default
+	TSharedRef<IHttpRequest> HttpRequest = HttpRetryManager->CreateRequest(FHttpRetrySystem::FRetryLimitCountSetting::Unused(),
+		FHttpRetrySystem::FRetryTimeoutRelativeSecondsSetting::Unused(),
+		FHttpRetrySystem::FRetryResponseCodes(),
+		FHttpRetrySystem::FRetryVerbs(),
+		RetryServers);
+
+	return HttpRequest;
 }
 
 void FAnalyticsProviderET::FlushEvents()
@@ -481,7 +527,7 @@ void FAnalyticsProviderET::FlushEvents()
 	{
 		return;
 	}
-	
+
 	ANALYTICS_FLUSH_TRACKING_BEGIN();
 	int EventCount = 0;
 	int PayloadSize = 0;
@@ -593,13 +639,13 @@ void FAnalyticsProviderET::FlushEvents()
 			JsonWriter->WriteObjectEnd();
 			JsonWriter->Close();
 
-			FString URLPath = FString::Printf(TEXT("datarouter/api/v1/public/data?SessionID=%s&AppID=%s&AppVersion=%s&UserID=%s&AppEnvironment=%s&UploadType=%s"),
-				*FPlatformHttp::UrlEncode(SessionID),
-				*FPlatformHttp::UrlEncode(APIKey),
-				*FPlatformHttp::UrlEncode(AppVersion),
-				*FPlatformHttp::UrlEncode(UserID),
-				*FPlatformHttp::UrlEncode(AppEnvironment),
-				*FPlatformHttp::UrlEncode(UploadType));
+			// UrlEncode NOTE: need to concatenate everything
+			FString URLPath  = TEXT("datarouter/api/v1/public/data?SessionID=") + FPlatformHttp::UrlEncode(SessionID);
+					URLPath += TEXT("&AppID=") + FPlatformHttp::UrlEncode(APIKey);
+					URLPath += TEXT("&AppVersion=") + FPlatformHttp::UrlEncode(AppVersion);
+					URLPath += TEXT("&UserID=") + FPlatformHttp::UrlEncode(UserID);
+					URLPath += TEXT("&AppEnvironment=") + FPlatformHttp::UrlEncode(AppEnvironment);
+					URLPath += TEXT("&UploadType=") + FPlatformHttp::UrlEncode(UploadType);
 			PayloadSize = URLPath.Len() + Payload.Len();
 
 			if (UE_LOG_ACTIVE(LogAnalytics, VeryVerbose))
@@ -619,12 +665,12 @@ void FAnalyticsProviderET::FlushEvents()
 			}
 
 			// Create/send Http request for an event
-			TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+			TSharedRef<IHttpRequest> HttpRequest = CreateRequest();
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json; charset=utf-8"));
-
-			HttpRequest->SetURL(APIServer + URLPath);
+			HttpRequest->SetURL(APIServer / URLPath);
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetContentAsString(Payload);
+
 			// Don't set a response callback if we are in our destructor, as the instance will no longer be there to call.
 			if (!bInDestructor)
 			{
@@ -677,17 +723,18 @@ void FAnalyticsProviderET::FlushEvents()
 						*EventParams);
 
 					// Create/send Http request for an event
-					TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+					TSharedRef<IHttpRequest> HttpRequest = CreateRequest();
 					HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("text/plain"));
+
 					// Don't need to URL encode the APIServer or the EventParams, which are already encoded, and contain parameter separaters that we DON'T want encoded.
-					HttpRequest->SetURL(FString::Printf(TEXT("%sSendEvent.1?SessionID=%s&AppID=%s&AppVersion=%s&UserID=%s&EventName=%s%s"),
-						*APIServer,
-						*FPlatformHttp::UrlEncode(SessionID),
-						*FPlatformHttp::UrlEncode(APIKey),
-						*FPlatformHttp::UrlEncode(AppVersion),
-						*FPlatformHttp::UrlEncode(UserID),
-						*FPlatformHttp::UrlEncode(Event.EventName),
-						*EventParams));
+					FString URLPath  = APIServer;
+							URLPath += TEXT("SendEvent.1?SessionID=") + FPlatformHttp::UrlEncode(SessionID);
+							URLPath += TEXT("&AppID=") + FPlatformHttp::UrlEncode(APIKey);
+							URLPath += TEXT("&AppVersion=") + FPlatformHttp::UrlEncode(AppVersion);
+							URLPath += TEXT("&UserID=") + FPlatformHttp::UrlEncode(UserID);
+							URLPath += TEXT("&EventName=") + FPlatformHttp::UrlEncode(Event.EventName);
+							URLPath += EventParams;
+					HttpRequest->SetURL(URLPath);
 					PayloadSize = HttpRequest->GetURL().Len();
 					HttpRequest->SetVerb(TEXT("GET"));
 					if (!bInDestructor)
@@ -858,33 +905,68 @@ void FAnalyticsProviderET::EventRequestComplete(FHttpRequestPtr HttpRequest, FHt
 	if (!bEventsDelivered)
 	{
 		// record the time (for throttling) so we don't retry again immediately
-		LastFailedFlush = FDateTime::UtcNow();
+		LastFailedFlush = FPlatformTime::Seconds();
 
 		// if FlushedEvents is passed, re-queue the events for next time
 		if (FlushedEvents.IsValid())
-	{
-		// add a dropped submission event so we can see how often this is happening
-		if (bShouldCacheEvents && CachedEvents.Num() < 1024)
 		{
-			TArray<FAnalyticsEventAttribute> Attributes;
-			Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("HTTP_STATUS")), FString::Printf(TEXT("%d"), HttpResponse.IsValid() ? HttpResponse->GetResponseCode() : 0)));
-			Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("EVENTS_IN_BATCH")), FString::Printf(TEXT("%d"), FlushedEvents->Num())));
-			Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("EVENTS_QUEUED")), FString::Printf(TEXT("%d"), CachedEvents.Num())));
-			CachedEvents.Emplace(FAnalyticsEventEntry(FString(TEXT("ET.DroppedSubmission")), MoveTemp(Attributes), false, false));
-		}
+			// add a dropped submission event so we can see how often this is happening
+			if (bShouldCacheEvents && CachedEvents.Num() < 1024)
+			{
+				TArray<FAnalyticsEventAttribute> Attributes;
+				Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("HTTP_STATUS")), FString::Printf(TEXT("%d"), HttpResponse.IsValid() ? HttpResponse->GetResponseCode() : 0)));
+				Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("EVENTS_IN_BATCH")), FString::Printf(TEXT("%d"), FlushedEvents->Num())));
+				Attributes.Emplace(FAnalyticsEventAttribute(FString(TEXT("EVENTS_QUEUED")), FString::Printf(TEXT("%d"), CachedEvents.Num())));
+				CachedEvents.Emplace(FAnalyticsEventEntry(FString(TEXT("ET.DroppedSubmission")), MoveTemp(Attributes), false, false));
+			}
 
-		// if we're being super spammy or have been offline forever, just leave it at the ET.DroppedSubmission event
-		if (bShouldCacheEvents && CachedEvents.Num() < 256)
-		{
-			UE_LOG(LogAnalytics, Log, TEXT("[%s] ET Requeuing %d analytics events due to failure to send"), *APIKey, FlushedEvents->Num());
+			// if we're being super spammy or have been offline forever, just leave it at the ET.DroppedSubmission event
+			if (bShouldCacheEvents && CachedEvents.Num() < 256)
+			{
+				UE_LOG(LogAnalytics, Log, TEXT("[%s] ET Requeuing %d analytics events due to failure to send"), *APIKey, FlushedEvents->Num());
 
-			// put them at the beginning since it should include a default attributes entry and we don't want to change the current default attributes
-			CachedEvents.Insert(*FlushedEvents, 0);
-		}
-		else
-		{
-			UE_LOG(LogAnalytics, Error, TEXT("[%s] ET dropping %d analytics events due to too many in queue (%d)"), *APIKey, FlushedEvents->Num(), CachedEvents.Num());
+				// put them at the beginning since it should include a default attributes entry and we don't want to change the current default attributes
+				CachedEvents.Insert(*FlushedEvents, 0);
+			}
+			else
+			{
+				UE_LOG(LogAnalytics, Error, TEXT("[%s] ET dropping %d analytics events due to too many in queue (%d)"), *APIKey, FlushedEvents->Num(), CachedEvents.Num());
+			}
 		}
 	}
 }
+
+void FAnalyticsProviderET::SetURLEndpoint(const FString& UrlEndpoint, const TArray<FString>& AltDomains)
+{
+	FlushEvents();
+	APIServer = UrlEndpoint;
+
+	// Set the number of retries to the number of retry URLs that have been passed in.
+	uint32 RetryLimitCount = AltDomains.Num();
+
+	HttpRetryManager->SetDefaultRetryLimit(RetryLimitCount);
+
+	TArray<FString> TmpAltAPIServers = AltDomains;
+
+	// If we have retry domains defined, insert the default domain into the list
+	if (RetryLimitCount > 0)
+	{
+		FString DefaultUrlDomain = FPlatformHttp::GetUrlDomain(APIServer);
+		if (!TmpAltAPIServers.Contains(DefaultUrlDomain))
+		{
+			TmpAltAPIServers.Insert(DefaultUrlDomain, 0);
+		}
+
+		RetryServers = MakeShared<FHttpRetrySystem::FRetryDomains, ESPMode::ThreadSafe>(MoveTemp(TmpAltAPIServers));
+	}
+	else
+	{
+		RetryServers.Reset();
+	}
+}
+
+void FAnalyticsProviderET::BlockUntilFlushed(float InTimeoutSec)
+{
+	FlushEvents();
+	HttpRetryManager->BlockUntilFlushed(InTimeoutSec);
 }

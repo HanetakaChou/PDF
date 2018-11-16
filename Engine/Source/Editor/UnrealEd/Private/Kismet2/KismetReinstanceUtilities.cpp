@@ -205,6 +205,17 @@ struct FArchetypeReinstanceHelper
 	}
 };
 
+FReplaceInstancesOfClassParameters::FReplaceInstancesOfClassParameters(UClass* InOldClass, UClass* InNewClass)
+	: OldClass(InOldClass)
+	, NewClass(InNewClass)
+	, OriginalCDO(nullptr)
+	, ObjectsThatShouldUseOldStuff(nullptr)
+	, InstancesThatShouldUseOldClass(nullptr)
+	, bClassObjectReplaced(false)
+	, bPreserveRootComponent(true)
+{
+}
+
 /////////////////////////////////////////////////////////////////////////////////
 // FBlueprintCompileReinstancer
 
@@ -226,7 +237,7 @@ FBlueprintCompileReinstancer::FBlueprintCompileReinstancer(UClass* InClassToRein
 	, bIsRootReinstancer(false)
 	, bAllowResaveAtTheEndIfRequested(false)
 {
-	if( InClassToReinstance != nullptr )
+	if( InClassToReinstance != nullptr && InClassToReinstance->ClassDefaultObject )
 	{
 		bool bAutoInferSaveOnCompile = !!(Flags & EBlueprintCompileReinstancerFlags::AutoInferSaveOnCompile);
 		bool bIsBytecodeOnly = !!(Flags & EBlueprintCompileReinstancerFlags::BytecodeOnly);
@@ -1105,7 +1116,7 @@ struct FActorReplacementHelper
 		, AttachmentData( MoveTemp(InAttachmentData) )
 		, bSelectNewActor(OldActor->IsSelected())
 	{
-		CachedActorData = StaticCastSharedPtr<AActor::FActorTransactionAnnotation>(OldActor->GetTransactionAnnotation());
+		CachedActorData = StaticCastSharedPtr<AActor::FActorTransactionAnnotation>(OldActor->FindOrCreateTransactionAnnotation());
 		TArray<AActor*> AttachedActors;
 		OldActor->GetAttachedActors(AttachedActors);
 
@@ -1183,7 +1194,8 @@ void FActorReplacementHelper::Finalize(const TMap<UObject*, UObject*>& OldToNewI
 	FEditorScriptExecutionGuard ScriptGuard;
 
 	// run the construction script, which will use the properties we just copied over
-	if (NewActor->CurrentTransactionAnnotation.IsValid())
+	bool bCanReRun = UBlueprint::IsBlueprintHierarchyErrorFree(NewActor->GetClass());
+	if (NewActor->CurrentTransactionAnnotation.IsValid() && bCanReRun)
 	{
 		NewActor->CurrentTransactionAnnotation->ComponentInstanceData.FindAndReplaceInstances(OldToNewInstanceMap);
 		NewActor->RerunConstructionScripts();
@@ -1238,14 +1250,6 @@ void FActorReplacementHelper::Finalize(const TMap<UObject*, UObject*>& OldToNewI
 		GEditor->NotifyToolsOfObjectReplacement(ConstructedComponentReplacementMap);
 	}
 
-	// Make array of component subobjects that have been reinstanced as part of the new Actor.
-	TArray<UObject*> SourceObjects;
-	ConstructedComponentReplacementMap.GenerateKeyArray(SourceObjects);
-
-	// Find and replace any outstanding references to the old Actor's component subobject instances that exist outside of the old Actor instance.
-	// Note: This will typically be references held by the Editor's transaction buffer - we need to find and replace those as well since we also do this for the old->new Actor instance.
-	FReplaceReferenceHelper::FindAndReplaceReferences(SourceObjects, ObjectsThatShouldUseOldStuff, ObjectsToReplace, ConstructedComponentReplacementMap, ReinstancedObjectsWeakReferenceMap);
-	
 	// Destroy actor and clear references.
 	NewActor->Modify();
 	if (GEditor && GEditor->Layers.IsValid())
@@ -1308,6 +1312,7 @@ void FActorReplacementHelper::AttachChildActors(USceneComponent* RootComponent, 
 		}
 
 		// If this actor is no longer attached to anything, reattach
+		check(Info.AttachedActor);
 		if (!Info.AttachedActor->IsPendingKill() && Info.AttachedActor->GetAttachParentActor() == nullptr)
 		{
 			USceneComponent* ChildRoot = Info.AttachedActor->GetRootComponent();
@@ -1338,7 +1343,7 @@ namespace InstancedPropertyUtils
 			, InstancedPropertyMap(PropertyMapOut)
 		{
 			ArIsObjectReferenceCollector = true;
-			ArIsPersistent = false;
+			this->SetIsPersistent(false);
 			ArIgnoreArchetypeRef = false;
 
 			if (bAutoSerialize)
@@ -1353,7 +1358,7 @@ namespace InstancedPropertyUtils
 			if (Obj != nullptr)
 			{
 				UProperty* SerializingProperty = GetSerializedProperty();
-				const bool bHasInstancedValue = SerializingProperty->HasAnyPropertyFlags(CPF_PersistentInstance);
+				const bool bHasInstancedValue = SerializingProperty && SerializingProperty->HasAnyPropertyFlags(CPF_PersistentInstance);
 
 				// default sub-objects are handled by CopyPropertiesForUnrelatedObjects()
 				if (bHasInstancedValue && !Obj->IsDefaultSubobject())
@@ -1465,6 +1470,13 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass(UClass* OldClass, UCl
 	TMap<UClass*, UClass*> OldToNewClassMap;
 	OldToNewClassMap.Add(OldClass, NewClass);
 	ReplaceInstancesOfClass_Inner(OldToNewClassMap, OriginalCDO, ObjectsThatShouldUseOldStuff, bClassObjectReplaced, bPreserveRootComponent);
+}
+
+void FBlueprintCompileReinstancer::ReplaceInstancesOfClassEx(const FReplaceInstancesOfClassParameters& Parameters )
+{
+	TMap<UClass*, UClass*> OldToNewClassMap;
+	OldToNewClassMap.Add(Parameters.OldClass, Parameters.NewClass);
+	ReplaceInstancesOfClass_Inner(OldToNewClassMap, Parameters.OriginalCDO, Parameters.ObjectsThatShouldUseOldStuff, Parameters.bClassObjectReplaced, Parameters.bPreserveRootComponent, /*bArchetypesAreUpToDate=*/false, Parameters.InstancesThatShouldUseOldClass);
 }
 
 void FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(TMap<UClass*, UClass*>& InOldToNewClassMap, bool bArchetypesAreUpToDate)
@@ -1817,6 +1829,7 @@ static void ReplaceActorHelper(UObject* OldObject, UClass* OldClass, UObject*& N
 
 	UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
 	Params.bPreserveRootComponent = bPreserveRootComponent;
+	Params.bAggressiveDefaultSubobjectReplacement = true;
 	UEngine::CopyPropertiesForUnrelatedObjects(OldActor, NewActor, Params);
 
 	// reset properties/streams
@@ -1844,7 +1857,7 @@ static void ReplaceActorHelper(UObject* OldObject, UClass* OldClass, UObject*& N
 	OldToNewInstanceMap.Add(OldActor, NewActor);
 }
 
-void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, UClass*>& InOldToNewClassMap, UObject* InOriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff, bool bClassObjectReplaced, bool bPreserveRootComponent, bool bArchetypesAreUpToDate)
+void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, UClass*>& InOldToNewClassMap, UObject* InOriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff, bool bClassObjectReplaced, bool bPreserveRootComponent, bool bArchetypesAreUpToDate, const TSet<UObject*>* InstancesThatShouldUseOldClass )
 {
 	// If there is an original CDO, we are only reinstancing a single class
 	check((InOriginalCDO != nullptr && InOldToNewClassMap.Num() == 1) || InOriginalCDO == nullptr); // (InOldToNewClassMap.Num() > 1 && InOriginalCDO == nullptr) || (InOldToNewClassMap.Num() == 1 && InOriginalCDO != nullptr));
@@ -1945,7 +1958,8 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 					const bool bIsComponent = NewClass->IsChildOf(UActorComponent::StaticClass());
 					const bool bIsChildActorTemplate = OldActor && OldActor->GetOuter()->IsA<UChildActorComponent>();
 					if (OldObject->IsPendingKill() || 
-						(!bIsComponent && !bIsChildActorTemplate && OldObject->IsTemplate()))
+						(!bIsComponent && !bIsChildActorTemplate && OldObject->IsTemplate()) ||
+						(InstancesThatShouldUseOldClass && InstancesThatShouldUseOldClass->Contains(OldObject)))
 					{
 						continue;
 					}
@@ -1986,12 +2000,15 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 				for (int32 OldObjIndex = 0; OldObjIndex < ObjectsToReplace.Num(); ++OldObjIndex)
 				{
 					UObject* OldObject = ObjectsToReplace[OldObjIndex];
-					if (!OldObject->IsPendingKill())
+					if(OldObject->IsPendingKill() || 
+						(InstancesThatShouldUseOldClass && InstancesThatShouldUseOldClass->Contains(OldObject)))
 					{
-						if (AActor* OldActor = Cast<AActor>(OldObject))
-						{
-							ActorAttachmentData.Add(OldObject, FActorAttachmentData(OldActor));
-						}
+						continue;
+					}
+
+					if (AActor* OldActor = Cast<AActor>(OldObject))
+					{
+						ActorAttachmentData.Add(OldObject, FActorAttachmentData(OldActor));
 					}
 				}
 
@@ -2003,7 +2020,9 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 
 					// Skip archetype instances, EXCEPT for child actor templates
 					const bool bIsChildActorTemplate = OldActor && OldActor->GetOuter()->IsA<UChildActorComponent>();
-					if (OldObject->IsPendingKill() || (!bIsChildActorTemplate && OldObject->IsTemplate()))
+					if (OldObject->IsPendingKill() || 
+						(!bIsChildActorTemplate && OldObject->IsTemplate()) ||
+						(InstancesThatShouldUseOldClass && InstancesThatShouldUseOldClass->Contains(OldObject)))
 					{
 						continue;
 					}
@@ -2095,6 +2114,8 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 		{
 			ReplacementActor.ApplyAttachments(ObjectRemappingHelper.ReplacedObjects, ObjectsThatShouldUseOldStuff, ObjectsReplaced, ReinstancedObjectsWeakReferenceMap);
 		}
+
+		OldToNewInstanceMap.Append(ObjectRemappingHelper.ReplacedObjects);
 	}
 
 	FReplaceReferenceHelper::FindAndReplaceReferences(SourceObjects, ObjectsThatShouldUseOldStuff, ObjectsReplaced, OldToNewInstanceMap, ReinstancedObjectsWeakReferenceMap);

@@ -10,6 +10,10 @@
 #include "OpenGL/SlateOpenGLRenderingPolicy.h"
 #include "Rendering/ElementBatcher.h"
 
+#if PLATFORM_LINUX
+	#include "HAL/PlatformApplicationMisc.h"
+#endif
+
 class FSlateOpenGLFontAtlasFactory : public ISlateFontAtlasFactory
 {
 public:
@@ -58,6 +62,9 @@ FSlateOpenGLRenderer::FSlateOpenGLRenderer( const ISlateStyle& InStyle )
 							FPlane(0,	0,	1,  0),
 							FPlane(0,	0,	0,	1));
 
+#if PLATFORM_LINUX
+	FPlatformApplicationMisc::UsingOpenGL();
+#endif // PLATFORM_LINUX
 }
 
 FSlateOpenGLRenderer::~FSlateOpenGLRenderer()
@@ -106,18 +113,18 @@ void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 	const TSharedRef<FSlateFontCache> FontCache = SlateFontServices->GetFontCache();
 
 	// Draw each window.  For performance.  All elements are batched before anything is rendered
-	TArray< TSharedPtr<FSlateWindowElementList> >& WindowElementLists = InWindowDrawBuffer.GetWindowElementLists();
+	const TArray< TSharedRef<FSlateWindowElementList> >& WindowElementLists = InWindowDrawBuffer.GetWindowElementLists();
 
 	for( int32 ListIndex = 0; ListIndex < WindowElementLists.Num(); ++ListIndex )
 	{
 		FSlateWindowElementList& ElementList = *WindowElementLists[ListIndex];
 
-		if ( ElementList.GetWindow().IsValid() )
+		if ( ElementList.GetRenderWindow() )
 		{
-			TSharedRef<SWindow> WindowToDraw = ElementList.GetWindow().ToSharedRef();
+			SWindow* WindowToDraw = ElementList.GetRenderWindow();
 
 			const FVector2D WindowSize = WindowToDraw->GetSizeInScreen();
-			FSlateOpenGLViewport* Viewport = WindowToViewportMap.Find( &WindowToDraw.Get() );
+			FSlateOpenGLViewport* Viewport = WindowToViewportMap.Find( WindowToDraw );
 			check(Viewport);
 		
 			//@todo Slate OpenGL: Move this to ResizeViewport
@@ -152,7 +159,7 @@ void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 			glViewport( Viewport->ViewportRect.Left, Viewport->ViewportRect.Top, Viewport->ViewportRect.Right, Viewport->ViewportRect.Bottom );
 
 			// Draw all elements
-			RenderingPolicy->DrawElements( ViewMatrix*Viewport->ProjectionMatrix, WindowSize, BatchData.GetRenderBatches(), BatchData.GetRenderClipStates() );
+			RenderingPolicy->DrawElements( ViewMatrix*Viewport->ProjectionMatrix, WindowSize, BatchData.GetRenderBatches() );
 
 			Viewport->SwapBuffers();
 
@@ -281,6 +288,11 @@ ISlateAtlasProvider* FSlateOpenGLRenderer::GetTextureAtlasProvider()
 	}
 
 	return nullptr;
+}
+
+FCriticalSection* FSlateOpenGLRenderer::GetResourceCriticalSection()
+{
+	return &ResourceCriticalSection;
 }
 
 int32 FSlateOpenGLRenderer::RegisterCurrentScene(FSceneInterface* Scene) 

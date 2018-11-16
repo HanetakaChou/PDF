@@ -17,16 +17,22 @@
 #include "Engine/Player.h"
 #include "Engine/Channel.h"
 #include "ProfilingDebugging/Histogram.h"
-#include "ArrayView.h"
+#include "Containers/ArrayView.h"
+#include "ReplicationDriver.h"
+#include "Analytics/EngineNetAnalytics.h"
+#include "PacketTraits.h"
 
 #include "NetConnection.generated.h"
 
 #define NETCONNECTION_HAS_SETENCRYPTIONKEY 1
 
+class FInternetAddr;
 class FObjectReplicator;
 class StatelessConnectHandlerComponent;
 class UActorChannel;
 class UChildConnection;
+
+typedef TMap<TWeakObjectPtr<AActor>, UActorChannel*, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<AActor>, UActorChannel*>> FActorChannelMap;
 
 /*-----------------------------------------------------------------------------
 	Types.
@@ -37,13 +43,6 @@ enum { MAX_CHSEQUENCE = 1024 }; // Power of 2 >RELIABLE_BUFFER, covering loss/mi
 enum { MAX_BUNCH_HEADER_BITS = 64 };
 enum { MAX_PACKET_HEADER_BITS = 15 }; // = FMath::CeilLogTwo(MAX_PACKETID) + 1 (IsAck)
 enum { MAX_PACKET_TRAILER_BITS = 1 };
-
-class UNetDriver;
-
-//
-// Whether to support net lag and packet loss testing.
-//
-#define DO_ENABLE_NET_TEST !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 // 
 // State of a connection.
@@ -167,17 +166,34 @@ struct DelayedPacket
 	/** The size of the packet in bits */
 	int32 SizeBits;
 
+	/** The traits applied to the packet */
+	FOutPacketTraits Traits;
+
 	/** The time at which to send the packet */
 	double SendTime;
 
 public:
+	DEPRECATED(4.21, "Use the constructor that takes PacketTraits for allowing for analytics and flags")
 	FORCEINLINE DelayedPacket(uint8* InData, int32 InSizeBytes, int32 InSizeBits)
 		: Data()
 		, SizeBits(InSizeBits)
+		, Traits()
 		, SendTime(0.0)
 	{
 		Data.AddUninitialized(InSizeBytes);
 		FMemory::Memcpy(Data.GetData(), InData, InSizeBytes);
+	}
+
+	FORCEINLINE DelayedPacket(uint8* InData, int32 InSizeBits, FOutPacketTraits& InTraits)
+		: Data()
+		, SizeBits(InSizeBits)
+		, Traits(InTraits)
+		, SendTime(0.0)
+	{
+		int32 SizeBytes = FMath::DivideAndRoundUp(SizeBits, 8);
+
+		Data.AddUninitialized(SizeBytes);
+		FMemory::Memcpy(Data.GetData(), InData, SizeBytes);
 	}
 };
 #endif
@@ -256,10 +272,13 @@ class UNetConnection : public UPlayer
 		Ack
 	};
 
-public:
-	// Constants.
-	enum{ MAX_CHANNELS         = 10240 };	// Maximum channels. TODO: This needs to differ per game somehow but cannot with shared executable
+	/** Returns the actor starvation map */
+	TMap<FString, TArray<float>>& GetActorsStarvedByClassTimeMap() { return ActorsStarvedByClassTimeMap; }
+	
+	/** Clears the actor starvation map */
+	void ResetActorsStarvedByClassTimeMap() { ActorsStarvedByClassTimeMap.Empty(); }
 
+public:
 	// Connection information.
 
 	EConnectionState	State;					// State this connection is in.
@@ -327,7 +346,7 @@ public:
 	float			BestLag,   AvgLag;		// Lag.
 
 	// Stat accumulators.
-	float			LagAcc, BestLagAcc;		// Previous msec lag.
+	double			LagAcc, BestLagAcc;		// Previous msec lag.
 	int32			LagCount;				// Counter for lag measurement.
 	double			LastTime, FrameTime;	// Monitors frame time.
 	/** @todo document */
@@ -336,14 +355,28 @@ public:
 	int32			CountedFrames;
 	/** bytes sent/received on this connection (accumulated during a StatPeriod) */
 	int32 InBytes, OutBytes;
+	/** total bytes sent/received on this connection */
+	int32 InTotalBytes, OutTotalBytes;
 	/** packets sent/received on this connection (accumulated during a StatPeriod) */
 	int32 InPackets, OutPackets;
+	/** total packets sent/received on this connection */
+	int32 InTotalPackets, OutTotalPackets;
 	/** bytes sent/received on this connection (per second) - these are from previous StatPeriod interval */
 	int32 InBytesPerSecond, OutBytesPerSecond;
 	/** packets sent/received on this connection (per second) - these are from previous StatPeriod interval */
 	int32 InPacketsPerSecond, OutPacketsPerSecond;
-	/** packets lost on this connection */
+	/** packets lost on this connection (accumulated during a StatPeriod) */
 	int32 InPacketsLost, OutPacketsLost;
+	/** total packets lost on this connection */
+	int32 InTotalPacketsLost, OutTotalPacketsLost;
+
+	/** Net Analytics */
+
+	/** The locally cached/updated analytics variables, for the NetConnection - aggregated upon connection Close */
+	FNetConnAnalyticsVars							AnalyticsVars;
+
+	/** The net analytics data holder for the NetConnection analytics, which is where analytics variables are aggregated upon Close */
+	TNetAnalyticsDataPtr<FNetConnAnalyticsData>		NetAnalyticsData;
 
 	// Packet.
 	FBitWriter		SendBuffer;						// Queued up bits waiting to send
@@ -358,10 +391,13 @@ public:
 	bool			bLastHasServerFrameTime;
 
 	// Channel table.
-	class UChannel*		Channels		[ MAX_CHANNELS ];
-	int32				OutReliable		[ MAX_CHANNELS ];
-	int32				InReliable		[ MAX_CHANNELS ];
-	int32				PendingOutRec	[ MAX_CHANNELS ];	// Outgoing reliable unacked data from previous (now destroyed) channel in this slot.  This contains the first chsequence not acked
+	static const int32 DEFAULT_MAX_CHANNEL_SIZE;
+
+	int32 MaxChannelSize;
+	TArray<UChannel*>	Channels;
+	TArray<int32>		OutReliable;
+	TArray<int32>		InReliable;
+	TArray<int32>		PendingOutRec;	// Outgoing reliable unacked data from previous (now destroyed) channel in this slot.  This contains the first chsequence not acked
 	TArray<int32> QueuedAcks, ResendAcks;
 
 	int32				InitOutReliable;
@@ -376,8 +412,134 @@ public:
 	int32			LogCallCount;
 	int32			LogSustainedCount;
 
+	// ----------------------------------------------
+	// Actor Channel Accessors
+	// ----------------------------------------------
+
+	void RemoveActorChannel(AActor* Actor)
+	{
+		ActorChannels.Remove(Actor);
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->NotifyActorChannelRemoved(Actor);
+		}
+	}
+
+	void AddActorChannel(AActor* Actor, UActorChannel* Channel)
+	{
+		ActorChannels.Add(Actor, Channel);
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->NotifyActorChannelAdded(Actor, Channel);
+		}
+	}
+
+	UActorChannel* FindActorChannelRef(const TWeakObjectPtr<AActor>& Actor)
+	{
+		return ActorChannels.FindRef(Actor);
+	}
+
+	UActorChannel** FindActorChannel(const TWeakObjectPtr<AActor>& Actor)
+	{
+		return ActorChannels.Find(Actor);
+	}
+
+	bool ContainsActorChannel(const TWeakObjectPtr<AActor>& Actor)
+	{
+		return ActorChannels.Contains(Actor);
+	}
+
+	int32 ActorChannelsNum() const
+	{
+		return ActorChannels.Num();
+	}
+
+	FActorChannelMap::TConstIterator ActorChannelConstIterator() const
+	{
+		return ActorChannels.CreateConstIterator();
+	}
+
+	const FActorChannelMap& ActorChannelMap() const
+	{
+		return ActorChannels;
+	}
+
+	UReplicationConnectionDriver* GetReplicationConnectionDriver()
+	{
+		return ReplicationConnectionDriver;
+	}
+
+	void SetReplicationConnectionDriver(UReplicationConnectionDriver* NewReplicationConnectionDriver)
+	{
+		ReplicationConnectionDriver = NewReplicationConnectionDriver;
+	}
+
+	void TearDownReplicationConnectionDriver()
+	{
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->TearDown();
+			ReplicationConnectionDriver = nullptr;
+		}
+	}
+
+private:
 	/** @todo document */
-	TMap<TWeakObjectPtr<AActor>, UActorChannel*, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<AActor>, UActorChannel*>> ActorChannels;
+	FActorChannelMap ActorChannels;
+
+	UReplicationConnectionDriver* ReplicationConnectionDriver;
+
+
+public:
+
+	void AddDestructionInfo(FActorDestructionInfo* DestructionInfo)
+	{
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->NotifyAddDestructionInfo(DestructionInfo);
+		}
+		else
+		{
+			DestroyedStartupOrDormantActorGUIDs.Add(DestructionInfo->NetGUID);
+		}
+	}
+
+	void RemoveDestructionInfo(FActorDestructionInfo* DestructionInfo)
+	{
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->NotifyRemoveDestructionInfo(DestructionInfo);
+		}
+		else
+		{
+			DestroyedStartupOrDormantActorGUIDs.Remove(DestructionInfo->NetGUID);
+		}
+	}
+	
+	void ResetDestructionInfos()
+	{
+		if (ReplicationConnectionDriver)
+		{
+			ReplicationConnectionDriver->NotifyResetDestructionInfo();
+		}
+		else
+		{
+			DestroyedStartupOrDormantActorGUIDs.Reset(); 
+		}
+	}
+
+	TSet<FNetworkGUID>& GetDestroyedStartupOrDormantActorGUIDs() { return DestroyedStartupOrDormantActorGUIDs; }
+
+private:
+
+	/** The server adds GUIDs to this set for each destroyed actor that does not have a channel
+	 *  but that the client still knows about: startup, dormant, or recently dormant set.
+	 *  This set is also populated from the UNetDriver for clients who join-in-progress, so that they can destroy any
+	 *  startup actors that the server has already destroyed.
+	 */
+	TSet<FNetworkGUID>	DestroyedStartupOrDormantActorGUIDs;
+
+public:
 
 	/** This holds a list of actor channels that want to fully shutdown, but need to continue processing bunches before doing so */
 	TMap<FNetworkGUID, TArray<class UActorChannel*>> KeepProcessingActorChannelBunchesMap;
@@ -385,12 +547,7 @@ public:
 	/** A list of replicators that belong to recently dormant actors/objects */
 	TMap< TWeakObjectPtr< UObject >, TSharedRef< FObjectReplicator > > DormantReplicatorMap;
 
-	/** The server adds GUIDs to this set for each destroyed actor that does not have a channel
-	 *  but that the client still knows about: startup, dormant, or recently dormant set.
-	 *  This set is also populated from the UNetDriver for clients who join-in-progress, so that they can destroy any
-	 *  startup actors that the server has already destroyed.
-	 */
-	TSet<FNetworkGUID>	DestroyedStartupOrDormantActors;
+	
 
 	ENGINE_API FName GetClientWorldPackageName() const { return ClientWorldPackageName; }
 
@@ -501,15 +658,22 @@ public:
 	/** Describe the connection. */
 	ENGINE_API virtual FString Describe();
 
+	DEPRECATED(4.21, "Use the method that allows for packet traits for analytics and modification")
+	ENGINE_API virtual void LowLevelSend(void* Data, int32 CountBytes, int32 CountBits)
+	{
+		FOutPacketTraits EmptyTraits;
+		LowLevelSend(Data, CountBits, EmptyTraits);
+	}
+
 	/**
 	 * Sends a byte stream to the remote endpoint using the underlying socket
 	 *
 	 * @param Data			The byte stream to send
-	 * @param CountBytes	The length of the stream to send, in bytes
 	 * @param CountBits		The length of the stream to send, in bits (to support bit-level additions to packets, from PacketHandler's)
+	 * @param Traits		Special traits for the packet, passed down from the NetConnection through the PacketHandler
 	 */
-	// @todo: Deprecate 'CountBytes' eventually
-	ENGINE_API virtual void LowLevelSend(void* Data, int32 CountBytes, int32 CountBits)
+	// @todo: Traits should be passed within bit readers/writers, eventually
+	ENGINE_API virtual void LowLevelSend(void* Data, int32 CountBits, FOutPacketTraits& Traits)
 		PURE_VIRTUAL(UNetConnection::LowLevelSend,);
 
 	/** Validates the FBitWriter to make sure it's not in an error state */
@@ -555,6 +719,14 @@ public:
 	{
 		return 0;
 	}
+
+	/**
+	 * Return the platform specific FInternetAddr type, containing this connections address.
+	 * If nullptr is returned, connection is not added to MappedClientConnections, and can't receive net packets which depend on this.
+	 *
+	 * @return	The platform specific FInternetAddr containing this connections address
+	 */
+	virtual TSharedPtr<FInternetAddr> GetInternetAddr() PURE_VIRTUAL(UNetConnection::GetInternetAddr,return TSharedPtr<FInternetAddr>(););
 
 	/** closes the connection (including sending a close notify across the network) */
 	ENGINE_API void Close();
@@ -610,13 +782,16 @@ public:
 	 */
 	ENGINE_API virtual void InitConnection(UNetDriver* InDriver, EConnectionState InState, const FURL& InURL, int32 InConnectionSpeed=0, int32 InMaxPacket=0);
 
+	DEPRECATED(4.21, "Analytics providers are now handled in the NetDriver")
+	ENGINE_API virtual void InitHandler(TSharedPtr<IAnalyticsProvider> InProvider)
+	{
+		InitHandler();
+	}
 
 	/**
 	 * Initializes the PacketHandler
-	 *
-	 * @param InProvider Analytics provider that's passed in to the packet handler
 	 */
-	ENGINE_API virtual void InitHandler(TSharedPtr<IAnalyticsProvider> InProvider = nullptr);
+	ENGINE_API virtual void InitHandler();
 
 	/**
 	 * Initializes the sequence numbers for the connection, usually from shared randomized data
@@ -625,6 +800,12 @@ public:
 	 * @param OutgoingSequence	The initial sequence number for outgoing packets
 	 */
 	ENGINE_API virtual void InitSequence(int32 IncomingSequence, int32 OutgoingSequence);
+
+	/**
+	 * Notification that the NetDriver analytics provider has been updated
+	 * NOTE: Can also mean disabled, e.g. during hotfix
+	 */
+	ENGINE_API virtual void NotifyAnalyticsProvider();
 
 	/**
 	 * Sets the encryption key and enables encryption.
@@ -650,6 +831,11 @@ public:
 	 * Enables encryption for the underlying encryption packet handler component.
 	 */
 	ENGINE_API void EnableEncryption();
+
+	/**
+	 * Returns true if encryption is enabled for this connection.
+	 */
+	ENGINE_API bool IsEncryptionEnabled() const;
 
 	/** 
 	* Gets a unique ID for the connection, this ID depends on the underlying connection
@@ -715,6 +901,7 @@ public:
 
 	/** @return The driver object */
 	UNetDriver* GetDriver() {return Driver;}
+	const UNetDriver* GetDriver() const { return Driver; }
 
 	/** @todo document */
 	class UControlChannel* GetControlChannel();
@@ -805,10 +992,28 @@ public:
 
 	/** Returns the online platform name for the player on this connection. Only valid for client connections on servers. */
 	ENGINE_API FName GetPlayerOnlinePlatformName() const { return PlayerOnlinePlatformName; }
+	
+	/**
+	 * Sets whether or not we should ignore bunches that would attempt to open channels that are already open.
+	 * Should only be used with InternalAck.
+	 */
+	void SetIgnoreAlreadyOpenedChannels(bool bInIgnoreAlreadyOpenedChannels);
+
+	/** Returns the OutgoingBunches array, only to be used by UChannel::SendBunch */
+	TArray<FOutBunch *>& GetOutgoingBunches() { return OutgoingBunches; }
+
+	/** Removes Actor and its replicated components from DormantReplicatorMap. */
+	void CleanupDormantReplicatorsForActor(AActor* Actor);
+
+	/** Removes stale entries from DormantReplicatorMap. */
+	void CleanupStaleDormantReplicators();
 
 protected:
 
 	void CleanupDormantActorState();
+
+	/** Called internally to destroy an actor during replay fast-forward when the actor channel index will be recycled */
+	ENGINE_API virtual void DestroyIgnoredActor(AActor* Actor);
 
 private:
 	/**
@@ -835,11 +1040,24 @@ private:
 	/** Updates entire cached LevelVisibility map */
 	void UpdateAllCachedLevelVisibility() const;
 
+	/** Returns true if an outgoing packet should be dropped due to packet simulation settings, including loss burst simulation. */
+	bool ShouldDropOutgoingPacketForLossSimulation() const;
+
 	/**
 	 * on the server, the world the client has told us it has loaded
 	 * used to make sure the client has traveled correctly, prevent replicating actors before level transitions are done, etc
 	 */
 	FName ClientWorldPackageName;
+
+	/** A map of class names to arrays of time differences between replication of actors of that class for each connection */
+	TMap<FString, TArray<float>> ActorsStarvedByClassTimeMap;
+
+	/** Tracks channels that we should ignore when handling special demo data. */
+	TMap<int32, FNetworkGUID> IgnoringChannels;
+	bool bIgnoreAlreadyOpenedChannels;
+
+	/** This is only used in UChannel::SendBunch. It's a member so that we can preserve the allocation between calls, as an optimization, and in a thread-safe way to be compatible with demo.ClientRecordAsyncEndOfFrame */
+	TArray<FOutBunch*> OutgoingBunches;
 };
 
 
@@ -898,3 +1116,18 @@ struct FScopedNetConnectionSettings
 	FNetConnectionSettings OldSettings;
 	bool ShouldApply;
 };
+
+/** A fake connection that will absorb traffic and auto ack every packet. Useful for testing scaling. Use net.SimulateConnections command to add at runtime. */
+UCLASS(transient, config=Engine)
+class ENGINE_API USimulatedClientNetConnection
+	: public UNetConnection
+{
+	GENERATED_UCLASS_BODY()
+public:
+
+	virtual void LowLevelSend(void* Data, int32 CountBits, FOutPacketTraits& Traits) override { }
+	void HandleClientPlayer( APlayerController* PC, UNetConnection* NetConnection ) override;
+	virtual FString LowLevelGetRemoteAddress(bool bAppendPort=false) override { return FString(); }
+	virtual bool ClientHasInitializedLevelFor(const AActor* TestActor) const { return true; }
+};
+

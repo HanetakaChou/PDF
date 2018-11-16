@@ -9,7 +9,7 @@
 #include "EditorUndoClient.h"
 #include "IDetailsView.h"
 #include "ISkeletonEditor.h"
-#include "ArrayView.h"
+#include "Containers/ArrayView.h"
 
 class IPersonaToolkit;
 class IPersonaViewport;
@@ -106,9 +106,6 @@ private:
 	void OnImportAsset();
 
 public:
-	/** Multicast delegate fired on anim notifies changing */
-	FSimpleMulticastDelegate OnChangeAnimNotifies;
-
 	/** Multicast delegate fired on global undo/redo */
 	FSimpleMulticastDelegate OnPostUndo;
 

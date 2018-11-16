@@ -18,14 +18,14 @@ bool FOnlineExternalUIIOS::ShowLoginUI(const int ControllerIndex, bool bShowOnli
 	
 	if (IdentityInterface->GetLocalGameCenterUser() == nullptr)
 	{
-		UE_LOG(LogOnline, Log, TEXT("Game Center localPlayer is null."));
-		Delegate.ExecuteIfBound(nullptr, ControllerIndex);
+		UE_LOG_ONLINE_EXTERNALUI(Log, TEXT("Game Center localPlayer is null."));
+		Delegate.ExecuteIfBound(nullptr, ControllerIndex, FOnlineError(false));
 		return true;
 	}
 	
 	if (IdentityInterface->GetLocalGameCenterUser().isAuthenticated)
 	{
-		Delegate.ExecuteIfBound(IdentityInterface->GetLocalPlayerUniqueId(), ControllerIndex);
+		Delegate.ExecuteIfBound(IdentityInterface->GetLocalPlayerUniqueId(), ControllerIndex, FOnlineError(true));
 		return true;
 	}
 	
@@ -68,7 +68,9 @@ bool FOnlineExternalUIIOS::ShowLeaderboardUI( const FString& LeaderboardName )
 
 bool FOnlineExternalUIIOS::ShowWebURL(const FString& Url, const FShowWebUrlParams& ShowParams, const FOnShowWebUrlClosedDelegate& Delegate)
 {
-	return false;
+	FPlatformProcess::LaunchURL(*Url, nullptr, nullptr);
+
+	return true;
 }
 
 bool FOnlineExternalUIIOS::CloseWebURL()
@@ -98,14 +100,17 @@ bool FOnlineExternalUIIOS::ShowSendMessageUI(int32 LocalUserNum, const FShowSend
 
 void FOnlineExternalUIIOS::OnLoginComplete(int ControllerIndex, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& ErrorString)
 {
+	FOnlineError Error(bWasSuccessful);
+	Error.SetFromErrorCode(ErrorString);
+
     FOnlineIdentityIOS* IdentityInterface = static_cast<FOnlineIdentityIOS*>(Subsystem->GetIdentityInterface().Get());
-    TSharedPtr<FUniqueNetIdString> UniqueNetId;
+    TSharedPtr<FUniqueNetIdIOS> UniqueNetId;
     if (bWasSuccessful)
     {
         const FString PlayerId(IdentityInterface->GetLocalGameCenterUser().playerID);
-        UniqueNetId = MakeShareable(new FUniqueNetIdString(PlayerId));
+        UniqueNetId = MakeShareable(new FUniqueNetIdIOS(PlayerId));
     }
-    CopiedDelegate.ExecuteIfBound(UniqueNetId, ControllerIndex);
+    CopiedDelegate.ExecuteIfBound(UniqueNetId, ControllerIndex, Error);
 
 	check(IdentityInterface != nullptr);
 	IdentityInterface->ClearOnLoginCompleteDelegate_Handle(ControllerIndex, CompleteDelegate);

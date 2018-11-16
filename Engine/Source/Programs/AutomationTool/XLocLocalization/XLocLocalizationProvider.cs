@@ -23,7 +23,7 @@ public struct XLocConfig
 	public string LocalizationId;
 };
 
-struct XLocUtils
+public struct XLocUtils
 {
 	public static string MD5HashString(string Str)
 	{
@@ -94,11 +94,16 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 		try
 		{
 			var EpicCultureToXLocLanguageId = GetEpicCultureToXLocLanguageId();
-			LatestBuildXml = RequestLatestBuild(XLocApiClient, AuthToken, EpicCultureToXLocLanguageId[Culture]);
+			LatestBuildXml = RequestLatestBuild(XLocApiClient, AuthToken, EpicCultureToXLocLanguageId[Culture], XLocFilename);
 		}
 		catch (Exception Ex)
 		{
 			BuildCommand.LogWarning("RequestLatestBuild failed for {0}. {1}", Culture, Ex);
+			return;
+		}
+		if (String.IsNullOrEmpty(LatestBuildXml))
+		{
+			Console.WriteLine("[IGNORED] '{0}' has no build data ({1})", XLocFilename, Culture);
 			return;
 		}
 
@@ -121,7 +126,7 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 					if (GameFileElem != null)
 					{
 						var GameFileNameElem = GameFileElem["Name"];
-						if (GameFileNameElem != null && GameFileNameElem.InnerText == XLocFilename)
+						if (GameFileNameElem != null && GameFileNameElem.InnerText.Equals(XLocFilename, StringComparison.OrdinalIgnoreCase))
 						{
 							IsCorrectFile = true;
 						}
@@ -140,7 +145,11 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 			}
 		}
 
-		if (!String.IsNullOrEmpty(POFileUri))
+		if (String.IsNullOrEmpty(POFileUri))
+		{
+			Console.WriteLine("[IGNORED] '{0}' was not found in the build data ({1})", XLocFilename, Culture);
+		}
+		else
 		{
 			var DestinationDirectory = new DirectoryInfo(CommandUtils.CombinePaths(RootWorkingDirectory, ProjectImportInfo.DestinationPath));
 			var CultureDirectory = (ProjectImportInfo.bUseCultureDirectory) ? new DirectoryInfo(Path.Combine(DestinationDirectory.FullName, Culture)) : DestinationDirectory;
@@ -283,7 +292,7 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 		}
 	}
 
-	private XLocApiClient CreateXLocApiClient()
+	protected XLocApiClient CreateXLocApiClient()
 	{
 		var Binding = new BasicHttpBinding();
 		Binding.Name = "basicHttpXLocApi";
@@ -294,25 +303,25 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 		Binding.AllowCookies = false;
 		Binding.BypassProxyOnLocal = false;
 		Binding.HostNameComparisonMode = HostNameComparisonMode.StrongWildcard;
-		Binding.MaxBufferSize = 65536;
-		Binding.MaxBufferPoolSize = 524288;
-		Binding.MaxReceivedMessageSize = 65536;
+		Binding.MaxBufferSize = 2147483647;
+		Binding.MaxBufferPoolSize = 5242880;
+		Binding.MaxReceivedMessageSize = 2147483647;
 		Binding.MessageEncoding = WSMessageEncoding.Text;
 		Binding.TextEncoding = Encoding.UTF8;
 		Binding.TransferMode = TransferMode.Buffered;
 		Binding.UseDefaultWebProxy = true;
 		Binding.ReaderQuotas.MaxDepth = 32;
-		Binding.ReaderQuotas.MaxStringContentLength = 65536;
-		Binding.ReaderQuotas.MaxArrayLength = 16384;
+		Binding.ReaderQuotas.MaxStringContentLength = 2147483647;
+		Binding.ReaderQuotas.MaxArrayLength = 65536;
 		Binding.ReaderQuotas.MaxBytesPerRead = 4096;
-		Binding.ReaderQuotas.MaxNameTableCharCount = 16384;
+		Binding.ReaderQuotas.MaxNameTableCharCount = 65536;
 
 		var Endpoint = new EndpointAddress(new Uri(String.Format("http://{0}/api/XLocApiService.svc", Config.Server)));
 
 		return new XLocApiClient(Binding, Endpoint);
 	}
 
-	private TransferServiceClient CreateTransferServiceClient()
+	protected TransferServiceClient CreateTransferServiceClient()
 	{
 		var Binding = new BasicHttpBinding();
 		Binding.Name = "transfer";
@@ -324,12 +333,12 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 		return new TransferServiceClient(Binding, Endpoint);
 	}
 
-	private string RequestAuthToken(XLocApiClient XLocApiClient)
+	protected string RequestAuthToken(XLocApiClient XLocApiClient)
 	{
 		return XLocApiClient.GetAuthToken(Config.APIKey, XLocUtils.MD5HashString(Config.APIKey + Config.APISecret));
 	}
 
-	private string RequestAuthTokenWithRetry(XLocApiClient XLocApiClient)
+	protected string RequestAuthTokenWithRetry(XLocApiClient XLocApiClient)
 	{
 		const int MAX_COUNT = 3;
 
@@ -354,9 +363,9 @@ public abstract class XLocLocalizationProvider : LocalizationProvider
 		}
 	}
 
-	private string RequestLatestBuild(XLocApiClient XLocApiClient, string AuthToken, string LanguageId)
+	protected string RequestLatestBuild(XLocApiClient XLocApiClient, string AuthToken, string LanguageId, string RemoteFilename)
 	{
-		return XLocApiClient.GetLatestBuild(Config.APIKey, AuthToken, XLocUtils.MD5HashString(Config.APIKey + Config.APISecret + Config.LocalizationId + LanguageId), Config.LocalizationId, LanguageId);
+		return XLocApiClient.GetLatestBuildByFile(Config.APIKey, AuthToken, XLocUtils.MD5HashString(Config.APIKey + Config.APISecret + Config.LocalizationId + LanguageId + RemoteFilename), Config.LocalizationId, LanguageId, RemoteFilename);
 	}
 
 	private string GetXLocFilename(string BaseFilename)

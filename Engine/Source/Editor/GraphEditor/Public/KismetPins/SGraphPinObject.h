@@ -23,6 +23,7 @@ public:
 protected:
 	//~ Begin SGraphPin Interface
 	virtual TSharedRef<SWidget>	GetDefaultValueWidget() override;
+	virtual bool DoesWidgetHandleSettingEditingEnabled() const override { return true; }
 	//~ End SGraphPin Interface
 
 	/** Delegate to be called when the use current selected item in asset browser button is clicked */
@@ -50,6 +51,8 @@ protected:
 	virtual TSharedRef<SWidget> GenerateAssetPicker();
 	/** Called to validate selection from picker window */
 	virtual void OnAssetSelectedFromPicker(const struct FAssetData& AssetData);
+	/** Called when enter is pressed when items are selected in the picker window */
+	void OnAssetEnterPressedInPicker(const TArray<FAssetData>& InSelectedAssets);
 
 	/** Used to update the combo button text */
 	FText OnGetComboTextValue() const;

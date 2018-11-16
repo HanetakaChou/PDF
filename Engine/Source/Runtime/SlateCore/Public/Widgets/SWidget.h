@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Attribute.h"
+#include "Misc/FrameValue.h"
 #include "Stats/Stats.h"
 #include "Styling/SlateColor.h"
 #include "Layout/SlateRect.h"
@@ -20,6 +21,7 @@
 #include "Input/PopupMethodReply.h"
 #include "Types/ISlateMetaData.h"
 #include "Types/WidgetActiveTimerDelegate.h"
+#include "Textures/SlateShaderResource.h"
 #include "SlateGlobals.h"
 
 class FActiveTimerHandle;
@@ -34,6 +36,21 @@ class FWidgetPath;
 class IToolTip;
 class SWidget;
 struct FSlateBrush;
+
+/** Widget update flags for fast path.  Work in progress, do not modify */
+enum class EWidgetUpdateFlags : uint8
+{
+	None = 0,
+
+	NeedsTick = 1 << 2,
+
+	NeedsActiveTimerUpdate = 1 << 3,
+
+	NeedsRepaint = 1 << 4,
+
+	All = 0xff
+};
+ENUM_CLASS_FLAGS(EWidgetUpdateFlags)
 
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("STAT_SlateVeryVerboseStatGroupTester"), STAT_SlateVeryVerboseStatGroupTester, STATGROUP_SlateVeryVerbose, SLATECORE_API);
 
@@ -107,21 +124,51 @@ public:
 /**
  * The different types of invalidation that are possible for a widget.
  */
-enum class EInvalidateWidget
+enum class EInvalidateWidget : uint8
 {
+	/** Not actually used, but defining it. */
+	None = 0,
+
 	/**
-	 * Use Layout invalidation if you're changing a normal property involving painting or sizing.
+	 * Use Layout invalidation sizing.
 	 */
-	Layout,
+	Layout = 1 << 0,
+
+	/**
+	 * Use when the painting of widget has been altered, but nothing affecting sizing.
+	 */
+	Paint = 1 << 1,
+
+	/**
+	 * Use if just the volatility of the widget has been adjusted.
+	 */
+	Volatility = 1 << 2,
+
+	/**
+	 * Use Paint invalidation if you're changing a normal property involving painting or sizing.
+	 * Additionally if the property that was changed affects Volatility in anyway, it's important
+	 * that you invalidate volatility so that it can be recalculated and cached.
+	 */
+	PaintAndVolatility = Paint | Volatility,
 	/**
 	 * Use Layout invalidation if you're changing a normal property involving painting or sizing.
 	 * Additionally if the property that was changed affects Volatility in anyway, it's important
 	 * that you invalidate volatility so that it can be recalculated and cached.
 	 */
-	LayoutAndVolatility
+	LayoutAndVolatility = Layout | Volatility,
+
+	/**
+	 * Changing visibility affects layout, paint, and volatility
+	 */
+	Visibility = Layout | Paint | Volatility,
+
+	/**
+	 * Do not use this ever unless you know what you are doing
+	 */
+	All = 0xff
 };
 
-
+ENUM_CLASS_FLAGS(EInvalidateWidget)
 
 /**
  * An ILayoutCache implementor is responsible for caching a the hierarchy of widgets it is drawing.
@@ -559,6 +606,20 @@ public:
 	virtual FReply OnTouchEnded(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent);
 
 	/**
+	 * Called when a touchpad touch force changes
+	 * 
+	 * @param InTouchEvent	The touch event generated
+	 */
+	virtual FReply OnTouchForceChanged(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent);
+
+	/**
+	 * Called when a touchpad touch first moves after TouchStarted
+	 * 
+	 * @param InTouchEvent	The touch event generated
+	 */
+	virtual FReply OnTouchFirstMove(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent);
+
+	/**
 	 * Called when motion is detected (controller or device)
 	 * e.g. Someone tilts or shakes their controller.
 	 * 
@@ -616,67 +677,55 @@ public:
 	 */
 	virtual EWindowZone::Type GetWindowZoneOverride() const;
 
-	//
+
+public:
+	//	
 	// LAYOUT
 	//
 
-	public:
-	
 	/** DEPRECATED version of SlatePrepass that assumes no scaling beyond AppScale*/
+	//DEPRECATED(4.20, "SlatePrepass requires a layout scale to be accurate.")
 	void SlatePrepass();
 
 	/**
-	 * Descends to leafmost widgets in the hierarchy and gathers desired sizes on the way up.
+	 * Descends to leaf-most widgets in the hierarchy and gathers desired sizes on the way up.
 	 * i.e. Caches the desired size of all of this widget's children recursively, then caches desired size for itself.
 	 */
 	void SlatePrepass(float LayoutScaleMultiplier);
 
-#if SLATE_DEFERRED_DESIRED_SIZE
-	private:
-	FORCEINLINE void InvalidateDesiredSize(float LayoutScaleMultiplier)
-	{
-		bCachedDesiredSize = false;
-		DesiredSizeScaleMultiplier = LayoutScaleMultiplier;
-	}
+	void SetCanTick(bool bInCanTick) { bInCanTick ? AddUpdateFlags(EWidgetUpdateFlags::NeedsTick) : RemoveUpdateFlags(EWidgetUpdateFlags::NeedsTick); }
+	bool GetCanTick() const { return HasAnyUpdateFlags(EWidgetUpdateFlags::NeedsTick); }
 
-	public:
+	virtual void ChildLayoutChanged(EInvalidateWidget InvalidateReason);
+
+public:
+	void InvalidatePrepass();
+
 	/** @return the DesiredSize that was computed the last time CacheDesiredSize() was called. */
-	FORCEINLINE const FVector2D& GetDesiredSize() const
-	{
-		if ( !bCachedDesiredSize && ensureMsgf(!bUpdatingDesiredSize, TEXT("The layout is cyclically dependent.  A child widget can not ask the desired size of a parent while the parent is asking the desired size of its children.")) )
-		{
-			bUpdatingDesiredSize = true;
+	FVector2D GetDesiredSize() const;
 
-			// Cache this widget's desired size.
-			const_cast<SWidget*>(this)->CacheDesiredSize(DesiredSizeScaleMultiplier);
+#if SLATE_PARENT_POINTERS
+public:
+	void AssignParentWidget(TSharedPtr<SWidget> InParent);
+	bool ConditionallyDetatchParentWidget(SWidget* InExpectedParent);
+	/**  */
+	virtual bool ValidatePathToChild(SWidget* InChild) { return true; }
 
-			bUpdatingDesiredSize = false;
-		}
-
-		return DesiredSize;
-	}
-#else
-	public:
-	FORCEINLINE const FVector2D& GetDesiredSize() const { return DesiredSize; }
+	FORCEINLINE bool IsParentValid() const { return ParentWidgetPtr.IsValid(); }
+	FORCEINLINE TSharedPtr<SWidget> GetParentWidget() const { return ParentWidgetPtr.Pin(); }
 #endif
 
+	/**
+	* Calculates what if any clipping state changes need to happen when drawing this widget.
+	* @return the culling rect that should be used going forward.
+	*/
+	FSlateRect CalculateCullingAndClippingRules(const FGeometry& AllottedGeometry, const FSlateRect& IncomingCullingRect, bool& bClipToBounds, bool& bAlwaysClip, bool& bIntersectClipBounds) const;
+protected:
 	/**
 	 * The system calls this method. It performs a breadth-first traversal of every visible widget and asks
 	 * each widget to cache how big it needs to be in order to present all of its content.
 	 */
-	protected: virtual void CacheDesiredSize(float);
-	
-	/**
-	 * Explicitly set the desired size. This is highly advanced functionality that is meant
-	 * to be used in conjunction with overriding CacheDesiredSize. Use ComputeDesiredSize() instead.
-	 */
-	protected: void Advanced_SetDesiredSize(const FVector2D& InDesiredSize)
-	{
-		DesiredSize = InDesiredSize;
-#if SLATE_DEFERRED_DESIRED_SIZE
-		bCachedDesiredSize = true;
-#endif
-	}
+	virtual void CacheDesiredSize(float InLayoutScaleMultiplier);
 
 	/**
 	 * Compute the ideal size necessary to display this widget. For aggregate widgets (e.g. panels) this size should include the
@@ -691,18 +740,46 @@ public:
 	 *
 	 * @return The desired size.
 	 */
-private:
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const = 0;
 
-public:
-	/**
-	 * Calculates what if any clipping state changes need to happen when drawing this widget.
-	 * @return the culling rect that should be used going forward.
-	 */
-	FSlateRect CalculateCullingAndClippingRules(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, bool& bClipToBounds, bool& bAlwaysClip, bool& bIntersectClipBounds) const;
+	bool HasAnyUpdateFlags(EWidgetUpdateFlags FlagsToCheck) const
+	{
+		return EnumHasAnyFlags(UpdateFlags, FlagsToCheck);
+	}
 
 private:
+	/**
+	 * Explicitly set the desired size. This is highly advanced functionality that is meant
+	 * to be used in conjunction with overriding CacheDesiredSize. Use ComputeDesiredSize() instead.
+	 */
+	void Advanced_SetDesiredSize(const FVector2D& InDesiredSize)
+	{
+		if (GSlateLayoutCaching)
+		{
+			DesiredSize = InDesiredSize;
+
+			bNeedsDesiredSize = false;
+		}
+		else
+		{
+			DesiredSize = InDesiredSize;
+			//ensure(DesiredSize.GetValue().Y >= 0);
+		}
+	}
+
+	void LayoutChanged(EInvalidateWidget InvalidateReason);
+
 	void CreateStatID() const;
+
+	void AddUpdateFlags(EWidgetUpdateFlags FlagsToAdd)
+	{
+		UpdateFlags |= FlagsToAdd;
+	}
+
+	void RemoveUpdateFlags(EWidgetUpdateFlags FlagsToRemove)
+	{
+		UpdateFlags &= (~FlagsToRemove);
+	}
 
 public:
 
@@ -738,11 +815,8 @@ public:
 	 * @param AllottedGeometry    The geometry allotted for this widget by its parent.
 	 * @param ArrangedChildren    The array to which to add the WidgetGeometries that represent the arranged children.
 	 */
-	FORCEINLINE void ArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
-	{
-		OnArrangeChildren(AllottedGeometry, ArrangedChildren);
-	}
-
+	void ArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const;
+	
 	/**
 	 * Every widget that has children must implement this method. This allows for iteration over the Widget's
 	 * children regardless of how they are actually stored.
@@ -809,17 +883,14 @@ public:
 	 */
 	bool HasMouseCaptureByUser(int32 UserIndex, TOptional<int32> PointerIndex = TOptional<int32>()) const;
 
+protected:
 	/** Called when this widget had captured the mouse, but that capture has been revoked for some reason. */
-	virtual void OnMouseCaptureLost();
+	DEPRECATED(4.20, "Please use OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)")
+	void OnMouseCaptureLost() { }
 
-	/**
-	 * Ticks this widget and all of it's child widgets.  Should not be called directly.
-	 *
-	 * @param  AllottedGeometry The space allotted for this widget
-	 * @param  InCurrentTime  Current absolute real time
-	 * @param  InDeltaTime  Real time passed since last tick
-	 */
-	void TickWidgetsRecursively( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime );
+public:
+	/** Called when this widget had captured the mouse, but that capture has been revoked for some reason. */
+	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent);
 
 	/**
 	 * Sets the enabled state of this widget
@@ -831,7 +902,7 @@ public:
 		if ( !EnabledState.IdenticalTo(InEnabledState) )
 		{
 			EnabledState = InEnabledState;
-			Invalidate(EInvalidateWidget::LayoutAndVolatility);
+			Invalidate(EInvalidateWidget::PaintAndVolatility);
 		}
 	}
 
@@ -885,7 +956,7 @@ public:
 		if ( !Visibility.IdenticalTo(InVisibility) )
 		{
 			Visibility = InVisibility;
-			Invalidate(EInvalidateWidget::LayoutAndVolatility);
+			Invalidate(EInvalidateWidget::Visibility);
 		}
 	}
 
@@ -919,16 +990,7 @@ public:
 	 * Invalidates the widget from the view of a layout caching widget that may own this widget.
 	 * will force the owning widget to redraw and cache children on the next paint pass.
 	 */
-	FORCEINLINE void Invalidate(EInvalidateWidget Invalidate)
-	{
-		const bool bWasVolatile = IsVolatileIndirectly() || IsVolatile();
-		const bool bVolatilityChanged = Invalidate == EInvalidateWidget::LayoutAndVolatility ? Advanced_InvalidateVolatility() : false;
-
-		if ( bWasVolatile == false || bVolatilityChanged )
-		{
-			Advanced_ForceInvalidateLayout();
-		}
-	}
+	void Invalidate(EInvalidateWidget InvalidateReason);
 
 	/**
 	 * Recalculates volatility of the widget and caches the result.  Should be called any time 
@@ -941,12 +1003,16 @@ public:
 
 protected:
 
+#if SLATE_CULL_WIDGETS
 	/**
 	 * Tests if an arranged widget should be culled.
 	 * @param MyCullingRect the culling rect of the widget currently doing the culling.
 	 * @param ArrangedChild the arranged widget in the widget currently attempting to cull children.
 	 */
 	bool IsChildWidgetCulled(const FSlateRect& MyCullingRect, const FArrangedWidget& ArrangedChild) const;
+#else
+	FORCEINLINE bool IsChildWidgetCulled(const FSlateRect&, const FArrangedWidget&) const { return false; }
+#endif
 
 protected:
 
@@ -983,8 +1049,16 @@ public:
 	/** @param InOpacity The opacity of the widget during rendering. */
 	FORCEINLINE void SetRenderOpacity(float InRenderOpacity)
 	{
-		RenderOpacity = InRenderOpacity;
-		Invalidate(EInvalidateWidget::Layout);
+		if(RenderOpacity != InRenderOpacity)
+		{
+			RenderOpacity = InRenderOpacity;
+			Invalidate(EInvalidateWidget::Paint);
+		}
+	}
+
+	FORCEINLINE void SetTag(FName InTag)
+	{
+		Tag = InTag;
 	}
 
 	/** @return the render transform of the widget. */
@@ -996,8 +1070,11 @@ public:
 	/** @param InTransform the render transform to set for the widget (transforms from widget's local space). TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
 	FORCEINLINE void SetRenderTransform(TAttribute<TOptional<FSlateRenderTransform>> InTransform)
 	{
-		RenderTransform = InTransform;
-		Invalidate(EInvalidateWidget::LayoutAndVolatility);
+		if(!RenderTransform.IdenticalTo(InTransform))
+		{
+			RenderTransform = InTransform;
+			Invalidate(EInvalidateWidget::LayoutAndVolatility);
+		}
 	}
 
 	/** @return the pivot point of the render transform. */
@@ -1009,7 +1086,11 @@ public:
 	/** @param InTransformPivot Sets the pivot point of the widget's render transform (in normalized local space). */
 	FORCEINLINE void SetRenderTransformPivot(TAttribute<FVector2D> InTransformPivot)
 	{
-		RenderTransformPivot = InTransformPivot;
+		if (!RenderTransformPivot.IdenticalTo(InTransformPivot))
+		{
+			RenderTransformPivot = InTransformPivot;
+			Invalidate(EInvalidateWidget::LayoutAndVolatility);
+		}
 	}
 
 	/**
@@ -1074,7 +1155,7 @@ public:
 	/**
 	 * Used by Slate to set the runtime debug info about this widget.
 	 */
-	void SetDebugInfo( const ANSICHAR* InType, const ANSICHAR* InFile, int32 OnLine );
+	void SetDebugInfo( const ANSICHAR* InType, const ANSICHAR* InFile, int32 OnLine, size_t InAllocSize );
 	
 	/**
 	 * Get the metadata of the type provided.
@@ -1174,6 +1255,9 @@ public:
 	 * being used to advise how to layout a dependent object the current frame.
 	 */
 	const FGeometry& GetCachedGeometry() const { return CachedGeometry; }
+
+	/** Is this widget derivative of SWindow */
+	virtual bool Advanced_IsWindow() const { return false; }
 
 protected:
 
@@ -1297,7 +1381,7 @@ protected:
 	 */
 	void CachePrepass(const TWeakPtr<ILayoutCache>& LayoutCache);
 
-protected:
+public:
 	/**
 	 * Registers an "active timer" delegate that will execute at some regular interval. TickFunction will not be called until the specified interval has elapsed once.
 	 * A widget can register as many delegates as it needs. Be careful when registering to avoid duplicate active timers.
@@ -1341,9 +1425,6 @@ protected:
 	/** Is this widget hovered? */
 	uint8 bIsHovered : 1;
 
-	/** Can the widget ever be ticked. */
-	uint8 bCanTick : 1;
-
 	/** Can the widget ever support keyboard focus */
 	uint8 bCanSupportFocus : 1;
 
@@ -1360,17 +1441,7 @@ protected:
 	  * really do the clipping.
 	  */
 	uint8 bClippingProxy : 1;
-
-#if SLATE_DEFERRED_DESIRED_SIZE
-	/** Has the desired size of the widget been cached? */
-	uint8 bCachedDesiredSize : 1;
-
-	/** Are we currently updating the desired size? */
-	mutable uint8 bUpdatingDesiredSize : 1;
-#endif
-
 private:
-
 	/**
 	 * Whether this widget is a "tool tip force field".  That is, tool-tips should never spawn over the area
 	 * occupied by this widget, and will instead be repelled to an outside edge
@@ -1386,28 +1457,33 @@ private:
 	/** If we're owned by a volatile widget, we need inherit that volatility and use as part of our volatility, but don't cache it. */
 	mutable uint8 bInheritedVolatility : 1;
 
+	/** Are we currently updating the desired size? */
+	uint8 bNeedsPrepass : 1;
+
+	uint8 bNeedsDesiredSize : 1;
+
+	/** Are we currently updating the desired size? */
+	mutable uint8 bUpdatingDesiredSize : 1;
+
 protected:
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	DEPRECATED(4.21, "Setting bCanTick on a widget directly is deprecated and will not function.  Call SetCanTick instead")
+	uint8 bCanTick : 1;
+#endif
+
 	/**
 	 * Set to true if all content of the widget should clip to the bounds of this widget.
 	 */
 	EWidgetClipping Clipping;
 
-	/**
-	 * Can be used to enlarge the culling bounds of this widget (pre-intersection), this can be useful if you've got
-	 * children that you know are using rendering transforms to render outside their standard bounds, if that happens
-	 * it's possible the parent might be culled before the descendant widget is entirely off screen.  For those cases,
-	 * you should extend the bounds of the culling area to add a bit more slack to how culling is performed to this panel.
-	 */
-	FMargin CullingBoundsExtension;
 
 private:
+	EWidgetUpdateFlags UpdateFlags;
 
-	/**
-	 * Stores the ideal size this widget wants to be.
-	 * This member is intentionally private, because only the very base class (Widget) can write DesiredSize.
-	 * See CacheDesiredSize(), ComputeDesiredSize()
-	 */
-	FVector2D DesiredSize;
+	/** Stores the ideal size this widget wants to be. */
+	TOptional<FVector2D> DesiredSize;
+
+	float PrepassLayoutScaleMultiplier;
 
 	/**
 	 * Stores the cached Tick Geometry of the widget.  This information can and will be outdated, that's the
@@ -1416,15 +1492,17 @@ private:
 	 */
 	mutable FGeometry CachedGeometry;
 
-private:
 	/** The list of active timer handles for this widget. */
 	TArray<TSharedRef<FActiveTimerHandle>> ActiveTimers;
 
-#if SLATE_DEFERRED_DESIRED_SIZE
-	float DesiredSizeScaleMultiplier;
-#endif
-
 protected:
+	/**
+	* Can be used to enlarge the culling bounds of this widget (pre-intersection), this can be useful if you've got
+	* children that you know are using rendering transforms to render outside their standard bounds, if that happens
+	* it's possible the parent might be culled before the descendant widget is entirely off screen.  For those cases,
+	* you should extend the bounds of the culling area to add a bit more slack to how culling is performed to this panel.
+	*/
+	FMargin CullingBoundsExtension;
 
 	/** Whether or not this widget is enabled */
 	TAttribute< bool > EnabledState;
@@ -1442,7 +1520,6 @@ protected:
 	TAttribute< FVector2D > RenderTransformPivot;
 
 protected:
-
 	/** Debugging information on the type of widget we're creating for the Widget Reflector. */
 	FName TypeOfWidget;
 
@@ -1470,16 +1547,20 @@ private:
 	/** The current layout cache that may need to invalidated by changes to this widget. */
 	mutable TWeakPtr<ILayoutCache> LayoutCache;
 
+#if SLATE_PARENT_POINTERS
+	TWeakPtr<SWidget> ParentWidgetPtr;
+#endif
+
 private:
 	// Events
 	TMap<FName, FPointerEventHandler> PointerEvents;
-
 
 	FNoReplyPointerEventHandler MouseEnterHandler;
 	FSimpleNoReplyPointerEventHandler MouseLeaveHandler;
 
 private:
-	STAT(mutable TStatId				StatID;)
+	STAT(mutable TStatId StatID;)
+	STAT(size_t AllocSize;)
 };
 
 //=================================================================

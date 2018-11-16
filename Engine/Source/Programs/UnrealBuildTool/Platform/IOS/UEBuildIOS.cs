@@ -8,9 +8,92 @@ using System.IO;
 using System.Linq;
 using System.Xml;
 using Tools.DotNETCommon;
+using Microsoft.Win32;
 
 namespace UnrealBuildTool
 {
+	/// <summary>
+	/// IOS-specific target settings
+	/// </summary>
+	public class IOSTargetRules
+	{
+		/// <summary>
+		/// Don't generate crashlytics data
+		/// </summary>
+		[CommandLine("-skipcrashlytics")]
+		public bool bSkipCrashlytics = false;
+
+		/// <summary>
+		/// Manual override for the provision to use. Should be a full path.
+		/// </summary>
+		[CommandLine("-ImportProvision=")]
+		public string ImportProvision = null;
+
+		/// <summary>
+		/// Imports the given certificate (inc private key) into a temporary keychain before signing.
+		/// </summary>
+		[CommandLine("-ImportCertificate=")]
+		public string ImportCertificate = null;
+
+		/// <summary>
+		/// Password for the imported certificate
+		/// </summary>
+		[CommandLine("-ImportCertificatePassword=")]
+		public string ImportCertificatePassword = null;
+	}
+
+	/// <summary>
+	/// Read-only wrapper for IOS-specific target settings
+	/// </summary>
+	public class ReadOnlyIOSTargetRules
+	{
+		/// <summary>
+		/// The private mutable settings object
+		/// </summary>
+		private IOSTargetRules Inner;
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="Inner">The settings object to wrap</param>
+		public ReadOnlyIOSTargetRules(IOSTargetRules Inner)
+		{
+			this.Inner = Inner;
+		}
+
+		/// <summary>
+		/// Accessors for fields on the inner TargetRules instance
+		/// </summary>
+		#region Read-only accessor properties 
+#if !__MonoCS__
+#pragma warning disable CS1591
+#endif
+		public bool bSkipCrashlytics
+		{
+			get { return Inner.bSkipCrashlytics; }
+		}
+
+		public string ImportProvision
+		{
+			get { return Inner.ImportProvision; }
+		}
+
+		public string ImportCertificate
+		{
+			get { return Inner.ImportCertificate; }
+		}
+
+		public string ImportCertificatePassword
+		{
+			get { return Inner.ImportCertificatePassword; }
+		}
+
+#if !__MonoCS__
+#pragma warning restore CS1591
+#endif
+		#endregion
+	}
+
 	/// <summary>
 	/// Stores project-specific IOS settings. Instances of this object are cached by IOSPlatform.
 	/// </summary>
@@ -25,12 +108,14 @@ namespace UnrealBuildTool
 		/// Whether to generate a dSYM file or not.
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGeneratedSYMFile")]
+		[CommandLine("-skipgeneratedsymfile", Value="false")]
 		public readonly bool bGeneratedSYMFile = true;
 
 		/// <summary>
 		/// Whether to generate a dSYM bundle or not.
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGeneratedSYMBundle")]
+		[CommandLine("-skipgeneratedsymbundle", Value = "false")]
 		public readonly bool bGeneratedSYMBundle = false;
 
         /// <summary>
@@ -130,6 +215,12 @@ namespace UnrealBuildTool
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableRemoteNotificationsSupport")]
         public readonly bool bNotificationsEnabled = false;
 
+        /// <summary>
+        /// true if notifications are enabled
+        /// </summary>
+        [ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableBackgroundFetch")]
+        public readonly bool bBackgroundFetchEnabled = false;
+
 		/// <summary>
 		/// The bundle identifier
 		/// </summary>
@@ -207,12 +298,12 @@ namespace UnrealBuildTool
 			{
 				switch (MinimumIOSVersion)
 				{
-					case "IOS_10":
-						return "10.0";
 					case "IOS_11":
 						return "11.0";
+					case "IOS_12":
+						return "12.0";
 					default:
-						return "9.0";
+						return "10.0";
 				}
 			}
 		}
@@ -267,11 +358,16 @@ namespace UnrealBuildTool
     class IOSProvisioningData
     {
 		public string SigningCertificate;
-		public string MobileProvision;
+		public FileReference MobileProvisionFile;
         public string MobileProvisionUUID;
         public string MobileProvisionName;
         public string TeamUUID;
 		public bool bHaveCertificate = false;
+
+		public string MobileProvision
+		{
+			get { return (MobileProvisionFile == null)? null : MobileProvisionFile.GetFileName(); }
+		}
 
 		public IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution)
 			: this(ProjectSettings, false, bForDistribution)
@@ -281,7 +377,7 @@ namespace UnrealBuildTool
 		protected IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bIsTVOS, bool bForDistribtion)
 		{
             SigningCertificate = ProjectSettings.SigningCertificate;
-            MobileProvision = ProjectSettings.MobileProvision;
+            string MobileProvision = ProjectSettings.MobileProvision;
 
 			FileReference ProjectFile = ProjectSettings.ProjectFile;
             if (!string.IsNullOrEmpty(SigningCertificate))
@@ -314,13 +410,31 @@ namespace UnrealBuildTool
                 bHaveCertificate = true;
             }
 
-            if (string.IsNullOrEmpty(MobileProvision) // no provision specified
-                || !File.Exists((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac ? (Environment.GetEnvironmentVariable("HOME") + "/Library/MobileDevice/Provisioning Profiles/") : (Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "/Apple Computer/MobileDevice/Provisioning Profiles/")) + MobileProvision) // file doesn't exist
-                || !bHaveCertificate) // certificate doesn't exist
+			if(!string.IsNullOrEmpty(MobileProvision))
+			{
+				DirectoryReference MobileProvisionDir;
+				if(BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+				{
+					MobileProvisionDir = DirectoryReference.Combine(new DirectoryReference(Environment.GetEnvironmentVariable("HOME")), "Library", "MobileDevice", "Provisioning Profiles");
+				}
+				else
+				{
+					MobileProvisionDir = DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.LocalApplicationData), "Apple Computer", "MobileDevice", "Provisioning Profiles");
+				}
+
+				FileReference PossibleMobileProvisionFile = FileReference.Combine(MobileProvisionDir, MobileProvision);
+				if(FileReference.Exists(PossibleMobileProvisionFile))
+				{
+					MobileProvisionFile = PossibleMobileProvisionFile;
+				}
+			}
+
+            if (MobileProvisionFile == null || !bHaveCertificate)
             {
 
                 SigningCertificate = "";
                 MobileProvision = "";
+				MobileProvisionFile = null;
                 Log.TraceLog("Provision not specified or not found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game") + ", searching for compatible match...");
                 Process IPPProcess = new Process();
                 if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
@@ -342,16 +456,27 @@ namespace UnrealBuildTool
                     IPPProcess.ErrorDataReceived += new DataReceivedEventHandler(IPPDataReceivedHandler);
                 }
                 Utils.RunLocalProcess(IPPProcess);
-                Log.TraceLog("Provision found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game") + ", Provision: " + MobileProvision + " Certificate: " + SigningCertificate);
+				if(MobileProvisionFile != null)
+				{
+					Log.TraceLog("Provision found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game") + ", Provision: " + MobileProvisionFile + " Certificate: " + SigningCertificate);
+				}
             }
+
             // add to the dictionary
             SigningCertificate = SigningCertificate.Replace("\"", "");
 
             // read the provision to get the UUID
-            string filename = (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac ? (Environment.GetEnvironmentVariable("HOME") + "/Library/MobileDevice/Provisioning Profiles/") : (Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "/Apple Computer/MobileDevice/Provisioning Profiles/")) + MobileProvision;
-            if (File.Exists(filename))
+			if(MobileProvisionFile == null)
+			{
+				Log.TraceLog("No matching provision file was discovered for {0}. Please ensure you have a compatible provision installed.", ProjectFile);
+			}
+			else if(!FileReference.Exists(MobileProvisionFile))
+			{
+				Log.TraceLog("Selected mobile provision for {0} ({1}) was not found. Please ensure you have a compatible provision installed.", ProjectFile, MobileProvisionFile);
+			}
+			else
             {
-				byte[] AllBytes = File.ReadAllBytes(filename);
+				byte[] AllBytes = FileReference.ReadAllBytes(MobileProvisionFile);
 
 				uint StartIndex = (uint)AllBytes.Length;
 				uint EndIndex = (uint)AllBytes.Length;
@@ -422,16 +547,13 @@ namespace UnrealBuildTool
 					Log.TraceLog("Failed to parse the mobile provisioning profile.");
 				}
             }
-            else
-            {
-                Log.TraceLog("No matching provision file was discovered. Please ensure you have a compatible provision installed.");
-            }
 		}
 
         void IPPDataReceivedHandler(Object Sender, DataReceivedEventArgs Line)
         {
             if ((Line != null) && (Line.Data != null))
             {
+				Log.TraceLog("{0}", Line.Data);
                 if (!string.IsNullOrEmpty(SigningCertificate))
                 {
                     if (Line.Data.Contains("CERTIFICATE-") && Line.Data.Contains(SigningCertificate))
@@ -448,7 +570,10 @@ namespace UnrealBuildTool
                         cindex += "CERTIFICATE-".Length;
                         SigningCertificate = Line.Data.Substring(cindex, pindex - cindex - 1);
                         pindex += "PROVISION-".Length;
-                        MobileProvision = Line.Data.Substring(pindex);
+						if(pindex < Line.Data.Length)
+						{
+							MobileProvisionFile = new FileReference(Line.Data.Substring(pindex));
+						}
                     }
                 }
             }
@@ -496,13 +621,12 @@ namespace UnrealBuildTool
             Target.bCompileSimplygon = false;
             Target.bCompileSimplygonSSF = false;
 			Target.bBuildDeveloperTools = false;
+
+			Target.bDeployAfterCompile = true;
 		}
 
 		public override void ValidateTarget(TargetRules Target)
 		{
-			Target.bUsePCHFiles = false;
-			Target.bDeployAfterCompile = true;
-
 			// we assume now we are building with IOS8 or later
 			if (Target.bCompileAgainstEngine)
 			{
@@ -554,10 +678,6 @@ namespace UnrealBuildTool
 					return "";
 				case UEBuildBinaryType.StaticLibrary:
 					return ".a";
-				case UEBuildBinaryType.Object:
-					return ".o";
-				case UEBuildBinaryType.PrecompiledHeader:
-					return ".gch";
 			}
 			return base.GetBinaryExtension(InBinaryType);
 		}
@@ -578,6 +698,12 @@ namespace UnrealBuildTool
 			return new IOSProjectSettings(ProjectFile);
 		}
 
+		public IOSProvisioningData ReadProvisioningData(FileReference ProjectFile, bool bForDistribution = false)
+		{
+			IOSProjectSettings ProjectSettings = ReadProjectSettings(ProjectFile);
+			return ReadProvisioningData(ProjectSettings, bForDistribution);
+		}
+
 		public IOSProvisioningData ReadProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution = false)
         {
 			string ProvisionKey = ProjectSettings.BundleIdentifier + " " + bForDistribution.ToString();
@@ -596,20 +722,20 @@ namespace UnrealBuildTool
 			return new IOSProvisioningData(ProjectSettings, bForDistribution);
 		}
 
-		public override string GetDebugInfoExtension(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
+		public override string[] GetDebugInfoExtensions(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
 		{
 			IOSProjectSettings ProjectSettings = ReadProjectSettings(InTarget.ProjectFile);
 
 			if(ProjectSettings.bGeneratedSYMBundle)
 			{
-				return ".dSYM.zip";
+				return new string[] {".dSYM.zip"};
 			}
 			else if (ProjectSettings.bGeneratedSYMFile)
             {
-                return ".dSYM";
+                return new string[] {".dSYM"};
             }
 
-            return "";
+            return new string [] {};
 		}
 
 		public override bool CanUseXGE()
@@ -632,11 +758,22 @@ namespace UnrealBuildTool
 			IOSToolChain.PostBuildSync(Target);
 		}
 
-		public override void PostCodeGeneration(UHTManifest Manifest)
+		public bool HasCustomIcons(DirectoryReference ProjectDirectoryName)
 		{
-			IOSToolChain.PostCodeGeneration(Manifest);
+			string IconDir = Path.Combine(ProjectDirectoryName.FullName, "Build", "IOS", "Resources", "Graphics");
+			if(Directory.Exists(IconDir))
+			{
+				foreach (string f in Directory.EnumerateFiles(IconDir))
+				{
+					if (f.Contains("Icon") && Path.GetExtension(f).Contains(".png"))
+					{
+						return true;
+					}
+				}
+			}
+			return false;
 		}
-		
+
 		/// <summary>
 		/// Check for the default configuration
 		/// return true if the project uses the default build config
@@ -647,13 +784,19 @@ namespace UnrealBuildTool
 				"bDevForArmV7", "bDevForArm64", "bDevForArmV7S", "bShipForArmV7", 
 				"bShipForArm64", "bShipForArmV7S", "bShipForBitcode", "bGeneratedSYMFile",
 				"bGeneratedSYMBundle", "bEnableRemoteNotificationsSupport", "bEnableCloudKitSupport",
-                "bGenerateCrashReportSymbols"
+                "bGenerateCrashReportSymbols", "bEnableBackgroundFetch"
             };
 			string[] StringKeys = new string[] {
 				"MinimumiOSVersion", 
 				"AdditionalLinkerFlags",
 				"AdditionalShippingLinkerFlags"
 			};
+
+			// check for custom icons
+			if (HasCustomIcons(ProjectDirectoryName))
+			{
+				return false;
+			}
 
 			// look up iOS specific settings
 			if (!DoProjectSettingsMatchDefault(Platform, ProjectDirectoryName, "/Script/IOSRuntimeSettings.IOSRuntimeSettings",
@@ -667,14 +810,13 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Whether the editor should be built for this platform or not
+		/// Check for the build requirement due to platform requirements
+		/// return true if the project requires a build
 		/// </summary>
-		/// <param name="InPlatform"> The UnrealTargetPlatform being built</param>
-		/// <param name="InConfiguration">The UnrealTargetConfiguration being built</param>
-		/// <returns>bool   true if the editor should be built, false if not</returns>
-		public override bool ShouldNotBuildEditor(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration)
+		public override bool RequiresBuild(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName)
 		{
-			return true;
+			// check for custom icons
+			return HasCustomIcons(ProjectDirectoryName);
 		}
 
 		public override bool BuildRequiresCookedData(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration)
@@ -686,11 +828,6 @@ namespace UnrealBuildTool
 		{
 			// This platform currently always compiles monolithic
 			return true;
-		}
-
-		public override bool UseAbsolutePathsInUnityFiles()
-		{
-			return false;
 		}
 
 		/// <summary>
@@ -711,8 +848,8 @@ namespace UnrealBuildTool
 					{
 						if (Target.bBuildDeveloperTools)
 						{
-							Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("IOSTargetPlatform");
-							Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("TVOSTargetPlatform");
+							Rules.DynamicallyLoadedModuleNames.Add("IOSTargetPlatform");
+							Rules.DynamicallyLoadedModuleNames.Add("TVOSTargetPlatform");
 						}
 					}
 					else if (ModuleName == "TargetPlatform")
@@ -722,7 +859,7 @@ namespace UnrealBuildTool
 						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatASTC");
 						if (Target.bBuildDeveloperTools && Target.bCompileAgainstEngine)
 						{
-							Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("AudioFormatADPCM");
+							Rules.DynamicallyLoadedModuleNames.Add("AudioFormatADPCM");
 						}
 					}
 				}
@@ -732,26 +869,16 @@ namespace UnrealBuildTool
 				{
 					if (Target.bForceBuildTargetPlatforms)
 					{
-						Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("IOSTargetPlatform");
-						Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("TVOSTargetPlatform");
+						Rules.DynamicallyLoadedModuleNames.Add("IOSTargetPlatform");
+						Rules.DynamicallyLoadedModuleNames.Add("TVOSTargetPlatform");
 					}
 
 					if (bBuildShaderFormats)
 					{
-						Rules.PlatformSpecificDynamicallyLoadedModuleNames.Add("MetalShaderFormat");
+						Rules.DynamicallyLoadedModuleNames.Add("MetalShaderFormat");
 					}
 				}
 			}
-		}
-
-		/// <summary>
-		/// Converts the passed in path from UBT host to compiler native format.
-		/// </summary>
-		/// <param name="OriginalPath">The path to convert</param>
-		/// <returns>The path in native format for the toolchain</returns>
-		public override string ConvertPath(string OriginalPath)
-		{
-			return IOSToolChain.ConvertPath(OriginalPath);
 		}
 
 		/// <summary>
@@ -774,13 +901,13 @@ namespace UnrealBuildTool
 		{
 			CompileEnvironment.Definitions.Add("PLATFORM_IOS=1");
 			CompileEnvironment.Definitions.Add("PLATFORM_APPLE=1");
+			CompileEnvironment.Definitions.Add("GLES_SILENCE_DEPRECATION=1");  // suppress GLES "deprecated" warnings until a proper solution is implemented (see UE-65643)
 
 			CompileEnvironment.Definitions.Add("WITH_TTS=0");
 			CompileEnvironment.Definitions.Add("WITH_SPEECH_RECOGNITION=0");
 			CompileEnvironment.Definitions.Add("WITH_DATABASE_SUPPORT=0");
 			CompileEnvironment.Definitions.Add("WITH_EDITOR=0");
 			CompileEnvironment.Definitions.Add("USE_NULL_RHI=0");
-			CompileEnvironment.Definitions.Add("REQUIRES_ALIGNED_INT_ACCESS");
 
 			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
 			if (ProjectSettings.bNotificationsEnabled)
@@ -791,6 +918,14 @@ namespace UnrealBuildTool
 			{
 				CompileEnvironment.Definitions.Add("NOTIFICATIONS_ENABLED=0");
 			}
+            if (ProjectSettings.bBackgroundFetchEnabled)
+            {
+                CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=1");
+            }
+            else
+            {
+                CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=0");
+            }
 
 			CompileEnvironment.Definitions.Add("UE_DISABLE_FORCE_INLINE=" + (ProjectSettings.bDisableForceInline ? "1" : "0"));
 
@@ -803,8 +938,21 @@ namespace UnrealBuildTool
 				CompileEnvironment.Definitions.Add("WITH_SIMULATOR=0");
 			}
 
+			// if the project has an Oodle compression Dll, enable the decompressor on IOS
+			if (Target.ProjectFile != null)
+			{
+				DirectoryReference ProjectDir = DirectoryReference.GetParentDirectory(Target.ProjectFile);
+				string OodleDllPath = DirectoryReference.Combine(ProjectDir, "Binaries/ThirdParty/Oodle/Mac/libUnrealPakPlugin.dylib").FullName;
+				if (File.Exists(OodleDllPath))
+				{
+					Log.TraceVerbose("        Registering custom oodle compressor for {0}", UnrealTargetPlatform.IOS.ToString());
+					CompileEnvironment.Definitions.Add("REGISTER_OODLE_CUSTOM_COMPRESSOR=1");
+				}
+			}
+
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("GameKit"));
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("StoreKit"));
+			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("DeviceCheck"));
 		}
 
 		/// <summary>
@@ -847,17 +995,52 @@ namespace UnrealBuildTool
 			if (!Utils.IsRunningOnMono)
 			{
 				// check to see if iTunes is installed
-				string dllPath = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "iTunesMobileDeviceDLL", null) as string;
+				string dllPath = Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "iTunesMobileDeviceDLL", null) as string;
 				if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
 				{
-					dllPath = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "MobileDeviceDLL", null) as string;
+					dllPath = Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "MobileDeviceDLL", null) as string;
 					if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
 					{
-						return SDKStatus.Invalid;
+						dllPath = FindWindowsStoreITunesDLL();
+
+						if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
+						{
+							return SDKStatus.Invalid;
+						}
 					}
 				}
 			}
 			return SDKStatus.Valid;
+		}
+
+		static string FindWindowsStoreITunesDLL()
+		{
+			string InstallPath = null;
+
+			string PackagesKeyName = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\PackageRepository\\Packages";
+
+			RegistryKey PackagesKey = Registry.LocalMachine.OpenSubKey(PackagesKeyName);
+			if (PackagesKey != null)
+			{
+				string[] PackageSubKeyNames = PackagesKey.GetSubKeyNames();
+
+				foreach (string PackageSubKeyName in PackageSubKeyNames)
+				{
+					if (PackageSubKeyName.Contains("AppleInc.iTunes") && (PackageSubKeyName.Contains("_x64") || PackageSubKeyName.Contains("_x86")))
+					{
+						string FullPackageSubKeyName = PackagesKeyName + "\\" + PackageSubKeyName;
+
+						RegistryKey iTunesKey = Registry.LocalMachine.OpenSubKey(FullPackageSubKeyName);
+						if (iTunesKey != null)
+						{
+							InstallPath = (string)iTunesKey.GetValue("Path") + "\\AMDS32\\MobileDevice.dll";
+							break;
+						}
+					}
+				}
+			}
+
+			return InstallPath;
 		}
 	}
 
@@ -879,18 +1062,8 @@ namespace UnrealBuildTool
 			// Register this build platform for IOS
 			Log.TraceVerbose("        Registering for {0}", UnrealTargetPlatform.IOS.ToString());
 			UEBuildPlatform.RegisterBuildPlatform(new IOSPlatform(SDK));
-			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.Unix);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.Apple);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.IOS);
-
-			if (IOSPlatform.IOSArchitecture == "-simulator")
-			{
-				UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.Simulator);
-			}
-			else
-			{
-				UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.Device);
-			}
 		}
 	}
 }

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -17,6 +17,8 @@
 #include "Internationalization/ITextData.h"
 #include "Misc/Optional.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/IsConstructible.h"
+#include "Templates/AndOrNot.h"
 
 class FFormatArgumentValue;
 class FTextFormatData;
@@ -108,7 +110,6 @@ namespace EFormatArgumentType
 	};
 }
 
-class FFormatArgumentValue;
 typedef TMap<FString, FFormatArgumentValue, FDefaultSetAllocator, FLocKeyMapFuncs<FFormatArgumentValue>> FFormatNamedArguments;
 typedef TArray<FFormatArgumentValue> FFormatOrderedArguments;
 
@@ -132,6 +133,14 @@ enum ERoundingMode
 
 
 	// Add new enum types at the end only! They are serialized by index.
+};
+
+enum EMemoryUnitStandard
+{
+	/* International Electrotechnical Commission (MiB) 1024-based */
+	IEC,
+	/* International System of Units 1000-based */
+	SI
 };
 
 struct CORE_API FNumberFormattingOptions
@@ -159,7 +168,7 @@ struct CORE_API FNumberFormattingOptions
 	int32 MaximumFractionalDigits;
 	FNumberFormattingOptions& SetMaximumFractionalDigits( int32 InValue ){ MaximumFractionalDigits = InValue; return *this; }
 
-	friend FArchive& operator<<(FArchive& Ar, FNumberFormattingOptions& Value);
+	friend void operator<<(FStructuredArchive::FSlot Slot, FNumberFormattingOptions& Value);
 
 	/** Get the hash code to use for the given formatting options */
 	friend uint32 GetTypeHash( const FNumberFormattingOptions& Key );
@@ -181,7 +190,7 @@ struct CORE_API FNumberParsingOptions
 	bool UseGrouping;
 	FNumberParsingOptions& SetUseGrouping( bool InValue ){ UseGrouping = InValue; return *this; }
 
-	friend FArchive& operator<<(FArchive& Ar, FNumberParsingOptions& Value);
+	friend void operator<<(FStructuredArchive::FSlot Slot, FNumberParsingOptions& Value);
 
 	/** Get the hash code to use for the given parsing options */
 	friend uint32 GetTypeHash( const FNumberParsingOptions& Key );
@@ -357,7 +366,12 @@ public:
 	/**
 	 * Generate an FText that represents the passed number as a memory size in the current culture
 	 */
-	static FText AsMemory(uint64 NumBytes, const FNumberFormattingOptions* const Options = NULL, const FCulturePtr& TargetCulture = NULL);
+	static FText AsMemory(uint64 NumBytes, const FNumberFormattingOptions* const Options = NULL, const FCulturePtr& TargetCulture = NULL, EMemoryUnitStandard UnitStandard = EMemoryUnitStandard::IEC);
+
+	/**
+	 * Generate an FText that represents the passed number as a memory size in the current culture
+	 */
+	static FText AsMemory(uint64 NumBytes, EMemoryUnitStandard UnitStandard);
 
 	/**
 	 * Attempts to find an existing FText using the representation found in the loc tables for the specified namespace and key
@@ -472,13 +486,18 @@ public:
 	static FText Format(FTextFormat Fmt, const FFormatOrderedArguments& InArguments);
 	static FText Format(FTextFormat Fmt, FFormatOrderedArguments&& InArguments);
 
-	DEPRECATED(4.13, "The version of FText::Format taking FFormatArgumentData was internal to Blueprints and has been deprecated for C++ usage. Please use one of the other FText::Format(...) functions.")
-	static FText Format(FTextFormat Fmt, TArray< struct FFormatArgumentData > InArguments);
+	template <typename... ArgTypes>
+	static FORCEINLINE FText Format(FTextFormat Fmt, ArgTypes... Args)
+	{
+		static_assert(TAnd<TIsConstructible<FFormatArgumentValue, ArgTypes>...>::Value, "Invalid argument type passed to FText::Format");
+		static_assert(sizeof...(Args) > 0, "FText::Format expects at least one non-format argument"); // we do this to ensure that people don't call Format for no good reason
 
-	static FText Format(FTextFormat Fmt, FFormatArgumentValue v1);
-	static FText Format(FTextFormat Fmt, FFormatArgumentValue v1, FFormatArgumentValue v2);
-	static FText Format(FTextFormat Fmt, FFormatArgumentValue v1, FFormatArgumentValue v2, FFormatArgumentValue v3);
-	static FText Format(FTextFormat Fmt, FFormatArgumentValue v1, FFormatArgumentValue v2, FFormatArgumentValue v3, FFormatArgumentValue v4);
+		// We do this to force-select the correct overload, because overload resolution will cause compile
+		// errors when it tries to instantiate the FFormatNamedArguments overloads.
+		FText (*CorrectFormat)(FTextFormat, FFormatOrderedArguments&&) = Format;
+
+		return CorrectFormat(MoveTemp(Fmt), FFormatOrderedArguments{ MoveTemp(Args)... });
+	}
 
 	/**
 	 * FormatNamed allows you to pass name <-> value pairs to the function to format automatically
@@ -531,7 +550,8 @@ private:
 
 	FText( FString&& InSourceString, const FString& InNamespace, const FString& InKey, uint32 InFlags=0 );
 
-	static void SerializeText( FArchive& Ar, FText& Value );
+	static void SerializeText(FArchive& Ar, FText& Value);
+	static void SerializeText(FStructuredArchive::FSlot Slot, FText& Value);
 
 	/** Returns the source string of the FText */
 	const FString& GetSourceString() const;
@@ -571,6 +591,9 @@ public:
 	friend class FTextInspector;
 	friend class FStringTableRegistry;
 	friend class FArchive;
+	friend class FArchiveFromStructuredArchive;
+	friend class FJsonArchiveInputFormatter;
+	friend class FJsonArchiveOutputFormatter;
 	friend class UTextProperty;
 	friend class FFormatArgumentValue;
 	friend class FTextHistory_NamedFormat;
@@ -643,7 +666,7 @@ public:
 		UIntValue = (uint64)Value;
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FFormatArgumentValue& Value);
+	friend void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentValue& Value);
 
 	FString ToFormattedString(const bool bInRebuildText, const bool bInRebuildAsSource) const;
 	void ToFormattedString(const bool bInRebuildText, const bool bInRebuildAsSource, FString& OutResult) const;
@@ -715,7 +738,7 @@ struct CORE_API FFormatArgumentData
 
 	void ResetValue();
 
-	friend FArchive& operator<<(FArchive& Ar, FFormatArgumentData& Value);
+	friend void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value);
 
 	FString ArgumentName;
 

@@ -7,6 +7,7 @@ StreamingTexture.cpp: Definitions of classes used for texture.
 #include "Streaming/StreamingTexture.h"
 #include "Misc/App.h"
 #include "Streaming/StreamingManagerTexture.h"
+#include "HAL/FileManager.h"
 
 FStreamingTexture::FStreamingTexture(UTexture2D* InTexture, const int32 NumStreamedMips[TEXTUREGROUP_MAX], const FTextureStreamingSettings& Settings)
 : Texture(InTexture)
@@ -14,7 +15,7 @@ FStreamingTexture::FStreamingTexture(UTexture2D* InTexture, const int32 NumStrea
 	UpdateStaticData(Settings);
 	UpdateDynamicData(NumStreamedMips, Settings, false);
 
-	InstanceRemovedTimestamp = -FLT_MAX;
+	InstanceRemovedTimestamp = FApp::GetCurrentTime();
 	DynamicBoostFactor = 1.f;
 
 	bHasUpdatePending = InTexture && InTexture->bHasStreamingUpdatePending;
@@ -33,6 +34,8 @@ FStreamingTexture::FStreamingTexture(UTexture2D* InTexture, const int32 NumStrea
 
 void FStreamingTexture::UpdateStaticData(const FTextureStreamingSettings& Settings)
 {
+
+	OptionalBulkDataFilename = TEXT("");
 	if (Texture)
 	{
 		LODGroup = (TextureGroup)Texture->LODGroup;
@@ -44,9 +47,19 @@ void FStreamingTexture::UpdateStaticData(const FTextureStreamingSettings& Settin
 		bIsCharacterTexture = (LODGroup == TEXTUREGROUP_Character || LODGroup == TEXTUREGROUP_CharacterSpecular || LODGroup == TEXTUREGROUP_CharacterNormalMap);
 		bIsTerrainTexture = (LODGroup == TEXTUREGROUP_Terrain_Heightmap || LODGroup == TEXTUREGROUP_Terrain_Weightmap);
 
+		NumNonOptionalMips = MipCount - Texture->CalcNumOptionalMips();
+		OptionalMipsState = (NumNonOptionalMips == MipCount) ? EOptionalMipsState::NoOptionalMips : EOptionalMipsState::NotCached;
+
 		for (int32 MipIndex=0; MipIndex < MAX_TEXTURE_MIP_COUNT; ++MipIndex)
 		{
 			TextureSizes[MipIndex] = Texture->CalcTextureMemorySize(FMath::Min(MipIndex + 1, MipCount));
+		}
+		const FString* PtrBulkDataFilename = nullptr;
+		const int32 OptionalMipCount = MipCount - NumNonOptionalMips;
+		const int32 OptionalMipIndex = OptionalMipCount - 1; // just here so it's clear why this -1 is here
+		if (Texture->GetMipDataFilename(OptionalMipIndex, PtrBulkDataFilename))
+		{
+			OptionalBulkDataFilename = *PtrBulkDataFilename;
 		}
 	}
 	else
@@ -56,6 +69,8 @@ void FStreamingTexture::UpdateStaticData(const FTextureStreamingSettings& Settin
 		MipCount = 0;
 		BudgetMipBias = 0;
 		BoostFactor = 1.f;
+		NumNonOptionalMips = MipCount;
+		OptionalMipsState = EOptionalMipsState::NoOptionalMips;
 
 		bIsCharacterTexture = false;
 		bIsTerrainTexture = false;
@@ -65,6 +80,17 @@ void FStreamingTexture::UpdateStaticData(const FTextureStreamingSettings& Settin
 			TextureSizes[MipIndex] = 0;
 		}
 	}
+}
+
+void FStreamingTexture::UpdateOptionalMipsState_Async()
+{
+	// Here we do a lazy update where we check if the highres mip file exists only if it could be useful to do so.
+	// This requires texture to be at max resolution before the optional mips .
+	if (OptionalMipsState == EOptionalMipsState::NotCached && !OptionalBulkDataFilename.IsEmpty())
+	{
+		OptionalMipsState = IFileManager::Get().FileExists(*OptionalBulkDataFilename) ? EOptionalMipsState::HasOptionalMips : EOptionalMipsState::NoOptionalMips;
+	}
+
 }
 
 void FStreamingTexture::UpdateDynamicData(const int32 NumStreamedMips[TEXTUREGROUP_MAX], const FTextureStreamingSettings& Settings, bool bWaitForMipFading)
@@ -98,8 +124,24 @@ void FStreamingTexture::UpdateDynamicData(const int32 NumStreamedMips[TEXTUREGRO
 			LODBias += BudgetMipBias;
 		}
 
-		// The max mip count is affected by the texture bias and cinematic bias settings.
-		MaxAllowedMips = FMath::Clamp<int32>(FMath::Min<int32>(MipCount - LODBias, GMaxTextureMipCount), NumNonStreamingMips, MipCount);
+		// Update MaxAllowedMips in an atomic way to possible bad interaction with the async task.
+		{
+			// The max mip count is affected by the texture bias and cinematic bias settings.
+			// don't set MaxAllowdMips more then once as it could be read by async texture task
+			int32 TempMaxAllowedMips = FMath::Clamp<int32>(FMath::Min<int32>(MipCount - LODBias, GMaxTextureMipCount), NumNonStreamingMips, MipCount);
+			if (NumNonOptionalMips < MipCount)
+			{
+				// If the optional mips are not available, or if we shouldn't load then now, clamp the possible mips requested. 
+				// (when the non-optional mips are not yet loaded, loading optional mips generates cross files requests).
+				// This is not bullet proof though since the texture could have a pending stream-out request.
+				if (OptionalMipsState != EOptionalMipsState::HasOptionalMips || ResidentMips < NumNonOptionalMips)
+				{
+					TempMaxAllowedMips = FMath::Min(TempMaxAllowedMips, NumNonOptionalMips);
+				}
+			}
+			MaxAllowedMips = TempMaxAllowedMips;
+		}
+	
 
 		if (NumStreamedMips[LODGroup] > 0)
 		{
@@ -120,6 +162,8 @@ void FStreamingTexture::UpdateDynamicData(const int32 NumStreamedMips[TEXTUREGRO
 		RequestedMips = 0;
 		MinAllowedMips = 0;
 		MaxAllowedMips = 0;
+		NumNonOptionalMips = 0;
+		OptionalMipsState = EOptionalMipsState::NotCached;
 		LastRenderTime = FLT_MAX;	
 	}
 }
@@ -332,18 +376,50 @@ void FStreamingTexture::CancelPendingMipChangeRequest()
 
 void FStreamingTexture::StreamWantedMips(FStreamingManagerTexture& Manager)
 {
-	if (Texture && WantedMips != ResidentMips)
+	StreamWantedMips_Internal(Manager, false);
+}
+
+void FStreamingTexture::CacheStreamingMetaData()
+{
+	bCachedForceFullyLoadHeuristic = bForceFullyLoadHeuristic;
+	CachedWantedMips = WantedMips;
+	CachedVisibleWantedMips = VisibleWantedMips;
+}
+
+void FStreamingTexture::StreamWantedMipsUsingCachedData(FStreamingManagerTexture& Manager)
+{
+	StreamWantedMips_Internal(Manager, true);
+}
+
+void FStreamingTexture::StreamWantedMips_Internal(FStreamingManagerTexture& Manager, bool bUseCachedData)
+{
+	if (Texture && !Texture->HasPendingUpdate())
 	{
-		const bool bShouldPrioritizeAsyncIORequest = (bForceFullyLoadHeuristic || bIsTerrainTexture || bIsCharacterTexture) && WantedMips <= VisibleWantedMips;
-		if (WantedMips < ResidentMips)
-		{
-			Texture->StreamOut(WantedMips);
+		const uint32 bLocalForceFullyLoadHeuristic = bUseCachedData ? bCachedForceFullyLoadHeuristic : bForceFullyLoadHeuristic;
+		const int32 LocalVisibleWantedMips = bUseCachedData ? CachedVisibleWantedMips : VisibleWantedMips;
+		// Update ResidentMips now as it is guarantied to not change here (since no pending requests).
+		ResidentMips = Texture->GetNumResidentMips();
+
+		// Prevent streaming-in optional mips and non optional mips as they are from different files.
+		int32 LocalWantedMips = bUseCachedData ? CachedWantedMips : WantedMips;
+		if (ResidentMips < NumNonOptionalMips && LocalWantedMips > NumNonOptionalMips)
+		{ 
+			LocalWantedMips = NumNonOptionalMips;
 		}
-		else // WantedMips > ResidentMips
+
+		if (LocalWantedMips != ResidentMips)
 		{
-			Texture->StreamIn(WantedMips, bShouldPrioritizeAsyncIORequest);
+			if (LocalWantedMips < ResidentMips)
+			{
+				Texture->StreamOut(LocalWantedMips);
+			}
+			else // WantedMips > ResidentMips
+			{
+				const bool bShouldPrioritizeAsyncIORequest = (bLocalForceFullyLoadHeuristic || bIsTerrainTexture || bIsCharacterTexture) && LocalWantedMips <= LocalVisibleWantedMips;
+				Texture->StreamIn(LocalWantedMips, bShouldPrioritizeAsyncIORequest);
+			}
+			UpdateStreamingStatus(false);
+			TrackTextureEvent(this, Texture, bLocalForceFullyLoadHeuristic != 0, &Manager);
 		}
-		UpdateStreamingStatus(false);
-		TrackTextureEvent( this, Texture, bForceFullyLoadHeuristic != 0, &Manager );
 	}
 }

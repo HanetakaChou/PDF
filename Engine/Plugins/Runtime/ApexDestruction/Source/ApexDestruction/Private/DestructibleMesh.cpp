@@ -8,7 +8,7 @@
 #include "RawIndexBuffer.h"
 #include "DestructibleFractureSettings.h"
 #include "GPUSkinVertexFactory.h"
-#include "FrameworkObjectVersion.h"
+#include "UObject/FrameworkObjectVersion.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "StaticMeshResources.h"
 #include "PhysXPublic.h"
@@ -49,9 +49,8 @@ void UDestructibleMesh::PostLoad()
 	const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
 	check(MaxGPUSkinBones <= FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones);
 	// if this doesn't have the right MAX GPU Bone count, recreate it. 
-	for(int32 LodIndex=0; LodIndex<LODInfo.Num(); LodIndex++)
+	for(int32 LodIndex=0; LodIndex<GetLODNum(); LodIndex++)
 	{
-		FSkeletalMeshLODInfo& ThisLODInfo = LODInfo[LodIndex];
 		FSkeletalMeshLODRenderData& ThisLODData = MeshResource->LODRenderData[LodIndex];
 
 		// Check that we list the root bone as an active bone.
@@ -181,7 +180,7 @@ void UDestructibleMesh::Serialize(FArchive& Ar)
 			ApexDestructibleAsset = (apex::DestructibleAsset*)ApexAsset;
 			// Release our temporary objects
 			Serializer->release();
-			GApexSDK->releaseMemoryReadStream( *Stream );
+            GApexSDK->releaseMemoryReadStream(*Stream);
 #endif
 		}
 		if (Ar.CustomVer(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::CacheDestructibleOverlaps)
@@ -200,6 +199,7 @@ void UDestructibleMesh::Serialize(FArchive& Ar)
 					physx::PxFileBuf* Stream = GApexSDK->createMemoryReadStream( Buffer.GetData(), Size );
 					ModuleCachedData* cacheData = GApexSDK->getCachedData().getCacheForModule(GApexModuleDestructible->getModuleID());
 					cacheData->deserializeSingleAsset(*ApexDestructibleAsset, *Stream);
+                    GApexSDK->releaseMemoryReadStream(*Stream);
 				}
 #endif
 			}
@@ -677,7 +677,8 @@ bool UDestructibleMesh::BuildFractureSettingsFromStaticMesh(UStaticMesh* StaticM
 			int32 SectionMaterialIndex = INDEX_NONE;
 			for (int32 MaterialIndex = 0; MaterialIndex < MeshMaterials.Num(); ++MaterialIndex)
 			{
-				if (MeshMaterials[MaterialIndex]->GetFName() == CurrentStaticMesh->GetMaterial(Section.MaterialIndex)->GetFName())
+				UMaterialInterface* CurrentMeshMaterial = CurrentStaticMesh->GetMaterial(Section.MaterialIndex);
+				if (MeshMaterials[MaterialIndex] && CurrentMeshMaterial && (MeshMaterials[MaterialIndex]->GetFName() == CurrentMeshMaterial->GetFName()))
 				{
 					SectionMaterialIndex = MaterialIndex;
 					break;

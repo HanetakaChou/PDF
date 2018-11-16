@@ -5,8 +5,9 @@
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "SCheckBox.h"
+#include "Widgets/Input/SCheckBox.h"
 
+#define LOCTEXT_NAMESPACE "SWidgetReflector"
 
 /* SMultiColumnTableRow overrides
  *****************************************************************************/
@@ -28,9 +29,10 @@ TSharedRef<SWidget> SReflectorTreeWidgetItem::GenerateWidgetForColumn(const FNam
 
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
-		.VAlign(VAlign_Center)
 		[
 			SNew(SExpanderArrow, SharedThis(this))
+			.IndentAmount(16)
+			.ShouldDrawWires(true)
 		]
 
 		+ SHorizontalBox::Slot()
@@ -111,16 +113,28 @@ TSharedRef<SWidget> SReflectorTreeWidgetItem::GenerateWidgetForColumn(const FNam
 	else if (ColumnName == NAME_Address )
 	{
 		const FText Address = FText::FromString(WidgetInfo->GetWidgetAddress());
-		
-		return SNew(SBox)
-			.HAlign(HAlign_Left)
-			.VAlign(VAlign_Center)
+		const FString ConditionalBreakPoint = FString::Printf(TEXT("this == (SWidget*)%s"), *WidgetInfo->GetWidgetAddress());
+
+		return SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
 			.Padding(FMargin(2.0f, 0.0f))
 			[
 				SNew(SHyperlink)
-				.ToolTipText(NSLOCTEXT("SWidgetReflector", "ClickToCopy", "Click to copy address."))
+				.ToolTipText(LOCTEXT("ClickToCopyBreakpoint", "Click to copy conditional breakpoint for this instance."))
+				.Text(LOCTEXT("CBP", "[CBP]"))
+				.OnNavigate_Lambda([ConditionalBreakPoint](){ FPlatformApplicationMisc::ClipboardCopy(*ConditionalBreakPoint); })
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(FMargin(0, 0, 2, 0))
+			[
+				SNew(SHyperlink)
+				.ToolTipText(LOCTEXT("ClickToCopy", "Click to copy address."))
 				.Text(Address)
-				.OnNavigate_Lambda([Address](){ FPlatformApplicationMisc::ClipboardCopy(*Address.ToString()); })
+				.OnNavigate_Lambda([Address]() { FPlatformApplicationMisc::ClipboardCopy(*Address.ToString()); })
 			];
 	}
 	else
@@ -148,3 +162,5 @@ void SReflectorTreeWidgetItem::HandleHyperlinkNavigate()
 		OnAccessSourceCode.Execute(GetWidgetFile(), GetWidgetLineNumber(), 0);
 	}
 }
+
+#undef LOCTEXT_NAMESPACE

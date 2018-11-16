@@ -7,6 +7,7 @@
 #include "Misc/PackageName.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/UObjectThreadContext.h"
+#include "UObject/CoreRedirects.h"
 #include "Misc/RedirectCollector.h"
 
 FSoftObjectPath::FSoftObjectPath(const UObject* InObject)
@@ -48,19 +49,19 @@ void FSoftObjectPath::SetPath(FString Path)
 		{
 			// Possibly an ExportText path. Trim the ClassName.
 			Path = FPackageName::ExportTextPathToObjectPath(Path);
-	}
+		}
 
 		int32 ColonIndex = INDEX_NONE;
 
 		if (Path.FindChar(':', ColonIndex))
-	{
+		{
 			// Has a subobject, split on that then create a name from the temporary path
 			SubPathString = Path.Mid(ColonIndex + 1);
 			Path.RemoveAt(ColonIndex, Path.Len() - ColonIndex);
 			AssetPathName = *Path;
-	}
-	else
-	{
+		}
+		else
+		{
 			// No Subobject
 			AssetPathName = *Path;
 			SubPathString.Empty();
@@ -68,14 +69,32 @@ void FSoftObjectPath::SetPath(FString Path)
 	}
 }
 
-bool FSoftObjectPath::PreSavePath()
+#if WITH_EDITOR
+	extern bool* GReportSoftObjectPathRedirects;
+#endif
+
+bool FSoftObjectPath::PreSavePath(bool* bReportSoftObjectPathRedirects)
 {
 #if WITH_EDITOR
+	if (IsNull())
+	{
+		return false;
+	}
+
 	FName FoundRedirection = GRedirectCollector.GetAssetPathRedirection(AssetPathName);
 
 	if (FoundRedirection != NAME_None)
 	{
+		if (AssetPathName != FoundRedirection && bReportSoftObjectPathRedirects)
+		{
+			*bReportSoftObjectPathRedirects = true;
+		}
 		AssetPathName = FoundRedirection;
+		return true;
+	}
+
+	if (FixupCoreRedirects())
+	{
 		return true;
 	}
 #endif // WITH_EDITOR
@@ -97,13 +116,21 @@ bool FSoftObjectPath::Serialize(FArchive& Ar)
 	return true;
 }
 
+bool FSoftObjectPath::Serialize(FStructuredArchive::FSlot Slot)
+{
+	// Archivers will call back into SerializePath for the various fixups
+	Slot << *this;
+
+	return true;
+}
+
 void FSoftObjectPath::SerializePath(FArchive& Ar)
 {
 	bool bSerializeInternals = true;
 #if WITH_EDITOR
 	if (Ar.IsSaving())
 	{
-		PreSavePath();
+		PreSavePath(false ? GReportSoftObjectPathRedirects : nullptr);
 	}
 
 	// Only read serialization options in editor as it is a bit slow
@@ -112,7 +139,7 @@ void FSoftObjectPath::SerializePath(FArchive& Ar)
 	ESoftObjectPathSerializeType SerializeType = ESoftObjectPathSerializeType::AlwaysSerialize;
 
 	FSoftObjectPathThreadContext& ThreadContext = FSoftObjectPathThreadContext::Get();
-	ThreadContext.GetSerializationOptions(PackageName, PropertyName, CollectType, SerializeType);
+	ThreadContext.GetSerializationOptions(PackageName, PropertyName, CollectType, SerializeType, &Ar);
 
 	if (SerializeType == ESoftObjectPathSerializeType::NeverSerialize)
 	{
@@ -151,13 +178,22 @@ void FSoftObjectPath::SerializePath(FArchive& Ar)
 		if (Ar.IsPersistent())
 		{
 			PostLoadPath();
+
+			// If we think it's going to work, we try to do the pre-save fixup now. This is important because it helps with blueprint CDO save determinism with redirectors
+			// It's important that the entire CDO hierarchy gets fixed up before an instance in a map gets saved otherwise the delta serialization will save too much
+			// If the asset registry hasn't fully loaded this won't necessarily work, but it won't do any harm
+			// This will never work in -game builds or on initial load so don't try
+			if (GIsEditor && !GIsInitialLoad)
+			{
+				PreSavePath(nullptr);
+			}
 		}
 		if (Ar.GetPortFlags()&PPF_DuplicateForPIE)
-	{
-		// Remap unique ID if necessary
-		// only for fixing up cross-level references, inter-level references handled in FDuplicateDataReader
-		FixupForPIE();
-	}
+		{
+			// Remap unique ID if necessary
+			// only for fixing up cross-level references, inter-level references handled in FDuplicateDataReader
+			FixupForPIE();
+		}
 	}
 #endif // WITH_EDITOR
 }
@@ -167,10 +203,10 @@ bool FSoftObjectPath::operator==(FSoftObjectPath const& Other) const
 	return AssetPathName == Other.AssetPathName && SubPathString == Other.SubPathString;
 }
 
-FSoftObjectPath& FSoftObjectPath::operator=(FSoftObjectPath const& Other)
+FSoftObjectPath& FSoftObjectPath::operator=(FSoftObjectPath Other)
 {
 	AssetPathName = Other.AssetPathName;
-	SubPathString = Other.SubPathString;
+	SubPathString = MoveTemp(Other.SubPathString);
 	return *this;
 }
 
@@ -181,7 +217,7 @@ bool FSoftObjectPath::ExportTextItem(FString& ValueStr, FSoftObjectPath const& D
 		return false;
 	}
 
-	if (IsValid())
+	if (!IsNull())
 	{
 		// Fixup any redirectors
 		FSoftObjectPath Temp = *this;
@@ -198,7 +234,7 @@ bool FSoftObjectPath::ExportTextItem(FString& ValueStr, FSoftObjectPath const& D
 
 bool FSoftObjectPath::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText)
 {
-	FString ImportedPath = TEXT("");
+	FString ImportedPath;
 	const TCHAR* NewBuffer = UPropertyHelpers::ReadToken(Buffer, ImportedPath, 1);
 	if (!NewBuffer)
 	{
@@ -232,8 +268,20 @@ bool FSoftObjectPath::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObj
 
 	SetPath(MoveTemp(ImportedPath));
 
-	// Consider this a load, so Config string references get cooked
-	PostLoadPath();
+#if WITH_EDITOR
+	if (Parent && IsEditorOnlyObject(Parent))
+	{
+		// We're probably reading config for an editor only object, we need to mark this reference as editor only
+		FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::EditorOnlyCollect, ESoftObjectPathSerializeType::AlwaysSerialize);
+
+		PostLoadPath();
+	}
+	else
+#endif
+	{
+		// Consider this a load, so Config string references get cooked
+		PostLoadPath();
+	}
 
 	return true;
 }
@@ -248,18 +296,18 @@ bool FSoftObjectPath::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObj
  * @param Ar Archive to serialize from.
  */
 template <class TypePolicy>
-bool SerializeFromMismatchedTagTemplate(FString& Output, const FPropertyTag& Tag, FArchive& Ar)
+bool SerializeFromMismatchedTagTemplate(FString& Output, const FPropertyTag& Tag, FStructuredArchive::FSlot Slot)
 {
 	if (Tag.Type == TypePolicy::GetTypeName())
 	{
 		typename TypePolicy::Type* ObjPtr = nullptr;
-		Ar << ObjPtr;
+		Slot << ObjPtr;
 		if (ObjPtr)
 		{
 			Output = ObjPtr->GetPathName();
 		}
 		else
-	{
+		{
 			Output = FString();
 		}
 		return true;
@@ -267,15 +315,15 @@ bool SerializeFromMismatchedTagTemplate(FString& Output, const FPropertyTag& Tag
 	else if (Tag.Type == NAME_StrProperty)
 	{
 		FString String;
-		Ar << String;
+		Slot << String;
 
 		Output = String;
-	return true;
-}
+		return true;
+	}
 	return false;
 }
 
-bool FSoftObjectPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar)
+bool FSoftObjectPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot)
 {
 	struct UObjectTypePolicy
 	{
@@ -285,9 +333,9 @@ bool FSoftObjectPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag,
 
 	FString Path = ToString();
 
-	bool bReturn = SerializeFromMismatchedTagTemplate<UObjectTypePolicy>(Path, Tag, Ar);
+	bool bReturn = SerializeFromMismatchedTagTemplate<UObjectTypePolicy>(Path, Tag, Slot);
 
-	if (Ar.IsLoading())
+	if (Slot.GetUnderlyingArchive().IsLoading())
 	{
 		SetPath(MoveTemp(Path));
 		PostLoadPath();
@@ -300,9 +348,22 @@ UObject* FSoftObjectPath::TryLoad() const
 {
 	UObject* LoadedObject = nullptr;
 
-	if ( IsValid() )
+	if (!IsNull())
 	{
 		LoadedObject = LoadObject<UObject>(nullptr, *ToString());
+
+#if WITH_EDITOR
+		// Look at core redirects if we didn't find the object
+		if (!LoadedObject)
+		{
+			FSoftObjectPath FixupObjectPath = *this;
+			if (FixupObjectPath.FixupCoreRedirects())
+			{
+				LoadedObject = LoadObject<UObject>(nullptr, *FixupObjectPath.ToString());
+			}
+		}
+#endif
+
 		while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(LoadedObject))
 		{
 			LoadedObject = Redirector->DestinationObject;
@@ -316,7 +377,7 @@ UObject* FSoftObjectPath::ResolveObject() const
 {
 	// Don't try to resolve if we're saving a package because StaticFindObject can't be used here
 	// and we usually don't want to force references to weak pointers while saving.
-	if (!IsValid() || GIsSavingPackage)
+	if (IsNull() || GIsSavingPackage)
 	{
 		return nullptr;
 	}
@@ -327,9 +388,7 @@ UObject* FSoftObjectPath::ResolveObject() const
 	{
 		// If we are in PIE and this hasn't already been fixed up, we need to fixup at resolution time. We cannot modify the path as it may be somewhere like a blueprint CDO
 		FSoftObjectPath FixupObjectPath = *this;
-		FixupObjectPath.FixupForPIE();
-
-		if (FixupObjectPath.AssetPathName != AssetPathName)
+		if (FixupObjectPath.FixupForPIE())
 		{
 			PathString = FixupObjectPath.ToString();
 		}
@@ -337,6 +396,20 @@ UObject* FSoftObjectPath::ResolveObject() const
 #endif
 
 	UObject* FoundObject = FindObject<UObject>(nullptr, *PathString);
+
+#if WITH_EDITOR
+	// Look at core redirects if we didn't find the object
+	if (!FoundObject)
+	{
+		FSoftObjectPath FixupObjectPath = *this;
+		if (FixupObjectPath.FixupCoreRedirects())
+		{
+			PathString = FixupObjectPath.ToString();
+			FoundObject = FindObject<UObject>(nullptr, *PathString);
+		}
+	}
+#endif
+
 	while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(FoundObject))
 	{
 		FoundObject = Redirector->DestinationObject;
@@ -361,35 +434,68 @@ void FSoftObjectPath::ClearPIEPackageNames()
 	PIEPackageNames.Empty();
 }
 
-void FSoftObjectPath::FixupForPIE()
+bool FSoftObjectPath::FixupForPIE(int32 PIEInstance)
 {
 #if WITH_EDITOR
-	if (GPlayInEditorID != INDEX_NONE && IsValid())
+	if (PIEInstance != INDEX_NONE && !IsNull())
 	{
-		FString Path = ToString();
+		const FString Path = ToString();
 
 		// Determine if this reference has already been fixed up for PIE
 		const FString ShortPackageOuterAndName = FPackageName::GetLongPackageAssetName(Path);
 		if (!ShortPackageOuterAndName.StartsWith(PLAYWORLD_PACKAGE_PREFIX))
 		{
 			// Name of the ULevel subobject of UWorld, set in InitializeNewWorld
-			bool bIsChildOfLevel = SubPathString.StartsWith(TEXT("PersistentLevel."));
+			const bool bIsChildOfLevel = SubPathString.StartsWith(TEXT("PersistentLevel."));
 
-			FString PIEPath = FString::Printf(TEXT("%s/%s_%d_%s"), *FPackageName::GetLongPackagePath(Path), PLAYWORLD_PACKAGE_PREFIX, GPlayInEditorID, *ShortPackageOuterAndName);
-			FName PIEPackage = FName(*FPackageName::ObjectPathToPackageName(PIEPath));
+			FString PIEPath = FString::Printf(TEXT("%s/%s_%d_%s"), *FPackageName::GetLongPackagePath(Path), PLAYWORLD_PACKAGE_PREFIX, PIEInstance, *ShortPackageOuterAndName);
+			const FName PIEPackage = (!bIsChildOfLevel ? FName(*FPackageName::ObjectPathToPackageName(PIEPath)) : NAME_None);
 
 			// Duplicate if this an already registered PIE package or this looks like a level subobject reference
 			if (bIsChildOfLevel || PIEPackageNames.Contains(PIEPackage))
-				{
-					// Need to prepend PIE prefix, as we're in PIE and this refers to an object in a PIE package
-					SetPath(MoveTemp(PIEPath));
+			{
+				// Need to prepend PIE prefix, as we're in PIE and this refers to an object in a PIE package
+				SetPath(MoveTemp(PIEPath));
+
+				return true;
 			}
 		}
 	}
 #endif
+	return false;
 }
 
-bool FSoftClassPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar)
+bool FSoftObjectPath::FixupForPIE()
+{
+	return FixupForPIE(GPlayInEditorID);
+}
+
+bool FSoftObjectPath::FixupCoreRedirects()
+{
+	FString OldString = ToString();
+	FCoreRedirectObjectName OldName = FCoreRedirectObjectName(OldString);
+
+	// Always try the object redirect, this will pick up any package redirects as well
+	// For things that look like native objects, try all types as we don't know which it would be
+	const bool bIsNative = OldString.StartsWith(TEXT("/Script/"));
+	FCoreRedirectObjectName NewName = FCoreRedirects::GetRedirectedName(bIsNative ? ECoreRedirectFlags::Type_AllMask : ECoreRedirectFlags::Type_Object, OldName);
+
+	if (OldName != NewName)
+	{
+		// Only do the fixup if the old object isn't in memory, this avoids false positives
+		UObject* FoundOldObject = FindObject<UObject>(nullptr, *OldString);
+
+		if (!FoundOldObject)
+		{
+			SetPath(NewName.ToString());
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool FSoftClassPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot)
 {
 	struct UClassTypePolicy
 	{
@@ -400,21 +506,21 @@ bool FSoftClassPath::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, 
 
 	FString Path = ToString();
 
-	bool bReturn = SerializeFromMismatchedTagTemplate<UClassTypePolicy>(Path, Tag, Ar);
+	bool bReturn = SerializeFromMismatchedTagTemplate<UClassTypePolicy>(Path, Tag, Slot);
 
-	if (Ar.IsLoading())
+	if (Slot.GetUnderlyingArchive().IsLoading())
 	{
 		SetPath(MoveTemp(Path));
 		PostLoadPath();
-				}
+	}
 
 	return bReturn;
-			}
+}
 
 UClass* FSoftClassPath::ResolveClass() const
 {
 	return Cast<UClass>(ResolveObject());
-		}
+}
 
 FSoftClassPath FSoftClassPath::GetOrCreateIDForClass(const UClass *InClass)
 {
@@ -422,7 +528,7 @@ FSoftClassPath FSoftClassPath::GetOrCreateIDForClass(const UClass *InClass)
 	return FSoftClassPath(InClass);
 }
 
-bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName, FName& OutPropertyName, ESoftObjectPathCollectType& OutCollectType, ESoftObjectPathSerializeType& OutSerializeType) const
+bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName, FName& OutPropertyName, ESoftObjectPathCollectType& OutCollectType, ESoftObjectPathSerializeType& OutSerializeType, FArchive* Archive) const
 {
 	FName CurrentPackageName, CurrentPropertyName;
 	ESoftObjectPathCollectType CurrentCollectType = ESoftObjectPathCollectType::AlwaysCollect;
@@ -458,34 +564,55 @@ bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName
 		bFoundAnything = true;
 	}
 	
-	// Check UObject thread context as a backup
+	
+	// Check UObject thread context as a backup, this only works for loads
 	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
 	if (ThreadContext.SerializedObject)
 	{
 		FLinkerLoad* Linker = ThreadContext.SerializedObject->GetLinker();
+
 		if (Linker)
 		{
 			if (CurrentPackageName == NAME_None)
 			{
 				CurrentPackageName = FName(*FPackageName::FilenameToLongPackageName(Linker->Filename));
 			}
-			if (Linker->GetSerializedProperty() && CurrentPropertyName == NAME_None)
+			if (Archive == nullptr)
 			{
-				CurrentPropertyName = Linker->GetSerializedProperty()->GetFName();
+				// Use archive from linker if it wasn't passed in
+				Archive = Linker;
 			}
-#if WITH_EDITORONLY_DATA
-			bool bEditorOnly = Linker->IsEditorOnlyPropertyOnTheStack();
-#else
-			bool bEditorOnly = false;
-#endif
-			// If we were always collect before and not overridden by stack options, set to editor only
-			if (bEditorOnly && CurrentCollectType == ESoftObjectPathCollectType::AlwaysCollect)
-			{
-				CurrentCollectType = ESoftObjectPathCollectType::EditorOnlyCollect;
-	}
-
 			bFoundAnything = true;
 		}
+	}
+
+	// Check archive for property/editor only info, this works for any serialize if passed in
+	if (Archive)
+	{
+		UProperty* CurrentProperty = Archive->GetSerializedProperty();
+			
+		if (CurrentProperty && CurrentPropertyName == NAME_None)
+		{
+			CurrentPropertyName = CurrentProperty->GetFName();
+		}
+		bool bEditorOnly = false;
+#if WITH_EDITOR
+		bEditorOnly = Archive->IsEditorOnlyPropertyOnTheStack();
+
+		static FName UntrackedName = TEXT("Untracked");
+		if (CurrentProperty && CurrentProperty->HasMetaData(UntrackedName))
+		{
+			// Property has the Untracked metadata, so set to never collect references
+			CurrentCollectType = ESoftObjectPathCollectType::NeverCollect;
+		}
+#endif
+		// If we were always collect before and not overridden by stack options, set to editor only
+		if (bEditorOnly && CurrentCollectType == ESoftObjectPathCollectType::AlwaysCollect)
+		{
+			CurrentCollectType = ESoftObjectPathCollectType::EditorOnlyCollect;
+		}
+
+		bFoundAnything = true;
 	}
 
 	if (bFoundAnything)

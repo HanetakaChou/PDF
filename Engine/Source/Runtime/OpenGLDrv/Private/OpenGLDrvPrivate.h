@@ -82,6 +82,17 @@ DECLARE_MEMORY_STAT_EXTERN(TEXT("Uniform buffer pool memory"),STAT_OpenGLFreeUni
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Emulated Uniform buffer time"), STAT_OpenGLEmulatedUniformBufferTime,STATGROUP_OpenGLRHI, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Uniform buffer pool num free"),STAT_OpenGLNumFreeUniformBuffers,STATGROUP_OpenGLRHI, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Time for first draw of shader programs"), STAT_OpenGLShaderFirstDrawTime,STATGROUP_OpenGLRHI, );
+DECLARE_MEMORY_STAT_EXTERN(TEXT("Program binary memory"), STAT_OpenGLProgramBinaryMemory, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("GL Program count"), STAT_OpenGLProgramCount, STATGROUP_OpenGLRHI, );
+
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Program LRU cache eviction time"), STAT_OpenGLShaderLRUEvictTime, STATGROUP_OpenGLRHI, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Program LRU cache miss time"), STAT_OpenGLShaderLRUMissTime, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Program LRU count"), STAT_OpenGLShaderLRUProgramCount, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Program LRU evicted count"), STAT_OpenGLShaderLRUEvictedProgramCount, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Program LRU evicted by scope"), STAT_OpenGLShaderLRUScopeEvictedProgramCount, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Program LRU miss count"), STAT_OpenGLShaderLRUMissCount, STATGROUP_OpenGLRHI, );
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Program LRU evictions saved by latency"), STAT_OpenGLShaderLRUEvictionDelaySavedCount, STATGROUP_OpenGLRHI, );
+DECLARE_MEMORY_STAT_EXTERN(TEXT("Program LRU binary memory"), STAT_OpenGLShaderLRUProgramMemory, STATGROUP_OpenGLRHI, );
 
 #if OPENGLRHI_DETAILED_STATS
 DECLARE_CYCLE_STAT_EXTERN(TEXT("DrawPrimitive Time"),STAT_OpenGLDrawPrimitiveTime,STATGROUP_OpenGLRHI, );
@@ -144,6 +155,11 @@ int32 PlatformGlGetError();
 EOpenGLCurrentContext PlatformOpenGLCurrentContext(FPlatformOpenGLDevice* Device);
 
 /**
+ * Retrieve the address of the OpenGL context currently in use.
+ */
+void* PlatformOpenGLCurrentContextHandle(FPlatformOpenGLDevice* Device);
+
+/**
  * Get new occlusion query from current context. This is provided from a cache inside the context
  * if some entries are in there, and created otherwise. All other released queries present in the
  * cache are deleted at the same time (as this is the earliest possible occasion when the context
@@ -194,6 +210,11 @@ void PlatformDestroyOpenGLDevice(FPlatformOpenGLDevice* Device);
  * transfer the rendering results to screen by rendering thread, inside RHIEndDrawingViewport().
  */
 FPlatformOpenGLContext* PlatformCreateOpenGLContext(FPlatformOpenGLDevice* Device, void* InWindowHandle);
+
+/**
+ * Get rendering OpenGL context on current thread.
+ */
+FPlatformOpenGLContext* PlatformGetOpenGLRenderingContext(FPlatformOpenGLDevice* Device);
 
 /**
  * Destroy a viewport OpenGL context.
@@ -503,6 +524,9 @@ inline bool OpenGLShaderPlatformNeedsBindLocation(const EShaderPlatform InShader
 			return false;
 
 		case SP_OPENGL_SM4:
+#if PLATFORM_LUMINGL4
+			return false;
+#endif
 		case SP_OPENGL_PCES2:
 		case SP_OPENGL_ES2_ANDROID:
 		case SP_OPENGL_ES2_WEBGL:
@@ -522,6 +546,13 @@ inline bool OpenGLShaderPlatformSeparable(const EShaderPlatform InShaderPlatform
 	{
 		case SP_OPENGL_SM5:
 		case SP_OPENGL_SM4:
+#if PLATFORM_LUMINGL4
+// Only desktop shader platforms can use separable shaders for now,
+// the generated code relies on macros supplied at runtime to determine whether
+// shaders may be separable and/or linked.
+// although Lumin gl4 supports desktop gl feature level, it is not capable of compiling shaders.
+			return false;
+#endif		
 		case SP_OPENGL_PCES2:
 		case SP_OPENGL_PCES3_1:
 			return true;

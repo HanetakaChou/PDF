@@ -29,7 +29,8 @@ FBitWriter::FBitWriter( int64 InMaxBits, bool InAllowResize /*=false*/ )
 
 	AllowResize = InAllowResize;
 	FMemory::Memzero(Buffer.GetData(), Buffer.Num());
-	ArIsPersistent = ArIsSaving = 1;
+	this->SetIsSaving(true);
+	this->SetIsPersistent(true);
 
 	// This class is exclusively used by the netcode
 	ArIsNetArchive = true;
@@ -44,6 +45,9 @@ FBitWriter::FBitWriter(void)
 	, AllowResize(false)
 	, bAllowOverflow(false)
 {
+	this->SetIsSaving(true);
+	this->SetIsPersistent(true);
+
 	// This class is exclusively used by the netcode
 	ArIsNetArchive = true;
 }
@@ -56,7 +60,11 @@ void FBitWriter::Reset(void)
 	FArchive::Reset();
 	Num = 0;
 	FMemory::Memzero(Buffer.GetData(), Buffer.Num());
-	ArIsPersistent = ArIsSaving = 1;
+	this->SetIsSaving(true);
+	this->SetIsPersistent(true);
+
+	// This class is exclusively used by the netcode
+	ArIsNetArchive = true;
 }
 
 void FBitWriter::SerializeBits( void* Src, int64 LengthBits )
@@ -83,6 +91,19 @@ void FBitWriter::SerializeBits( void* Src, int64 LengthBits )
 		SetOverflowed(LengthBits);
 	}
 }
+void FBitWriter::SerializeBitsWithOffset( void* Src, int32 SourceBit, int64 LengthBits )
+{
+	if( AllowAppend(LengthBits) )
+	{
+		appBitsCpy(Buffer.GetData(), Num, (uint8*)Src, SourceBit, LengthBits);
+		Num += LengthBits;
+	}
+	else
+	{
+		SetOverflowed(LengthBits);
+	}
+}
+
 void FBitWriter::Serialize( void* Src, int64 LengthBytes )
 {
 	//warning: Copied and pasted from FBitWriter::SerializeBits
@@ -210,6 +231,7 @@ void FBitWriterMark::Pop( FBitWriter& Writer )
 	Writer.ArIsError = Overflowed;
 	Writer.Num       = Num;
 }
+
 /** Copies the last section into a buffer. Does not clear the FBitWriter like ::Pop does */
 void FBitWriterMark::Copy( FBitWriter& Writer, TArray<uint8> &Buffer )
 {
@@ -224,10 +246,3 @@ void FBitWriterMark::Copy( FBitWriter& Writer, TArray<uint8> &Buffer )
 		appBitsCpy(Buffer.GetData(), 0, Writer.Buffer.GetData(), Num, Writer.Num - Num);
 	}
 }
-
-/** Pops the BitWriter back to the start but doesn't clear what was written. */
-void FBitWriterMark::PopWithoutClear( FBitWriter& Writer )
-{
-	Writer.Num = Num;
-}
-

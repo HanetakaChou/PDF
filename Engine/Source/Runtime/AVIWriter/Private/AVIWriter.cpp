@@ -20,8 +20,8 @@ IMPLEMENT_MODULE(FAVIWriterModule, AVIWriter);
 
 #if PLATFORM_WINDOWS && !UE_BUILD_MINIMAL
 
-#include "WindowsHWrapper.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 typedef TCHAR* PTCHAR;
 #pragma warning(push)
 #pragma warning(disable : 4263) // 'function' : member function does not override any base class virtual member function
@@ -32,12 +32,19 @@ typedef TCHAR* PTCHAR;
 	#pragma warning(disable:6101)  // Returning uninitialized memory '*lpdwExitCode'.  A successful path through the function does not set the named _Out_ parameter.
 	#pragma warning(disable:28204) // 'Func' has an override at 'file' and only the override is annotated for _Param_(N): when an override is annotated, the base (this function) should be similarly annotated.
 #endif
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreorder"
+#endif
 #include <streams.h>
 #include <dshow.h>
 #include <initguid.h>
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 #pragma warning(pop)
 
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
 #include "CapturePin.h"
 #include "CaptureSource.h"
@@ -276,7 +283,24 @@ public:
 			}
 
 			IAMVideoCompression* CompressionImpl = nullptr;
-			if(EncodingFilter && SUCCEEDED(EncodingFilter->QueryInterface(IID_IAMVideoCompression, (void **)&CompressionImpl)))
+			if (EncodingFilter)
+			{
+				IEnumPins* pEnum = nullptr;
+				IPin* pPin = nullptr;
+				EncodingFilter->EnumPins(&pEnum);
+				while (S_OK == pEnum->Next(1, &pPin, NULL))
+				{
+					hr = pPin->QueryInterface(IID_IAMVideoCompression, (void**)&CompressionImpl);
+					pPin->Release();
+					if (SUCCEEDED(hr)) // Found the interface.
+					{
+						break;
+					}
+				}
+				pEnum->Release();
+			}
+
+			if (CompressionImpl)
 			{
 				CompressionImpl->put_Quality(Options.CompressionQuality.GetValue());
 				CompressionImpl->Release();
@@ -353,8 +377,10 @@ public:
 			FString Directory = Options.OutputFilename;
 			FString Ext = FPaths::GetExtension(Directory, true);
 
+			int32 FPS = FMath::RoundToInt(double(Options.CaptureFramerateNumerator) / Options.CaptureFramerateDenominator);
+
 			// Keep 3 seconds worth of frames in memory
-			CapturedFrames.Reset(new FCapturedFrames(Directory.LeftChop(Ext.Len()) + TEXT("_tmp"), Options.CaptureFPS * 3));
+			CapturedFrames.Reset(new FCapturedFrames(Directory.LeftChop(Ext.Len()) + TEXT("_tmp"), FPS * 3));
 
 			hr = Control->Run();
 
@@ -485,9 +511,11 @@ public:
 			FString Directory = Options.OutputFilename;
 			FString Ext = FPaths::GetExtension(Directory, true);
 
+			int32 FPS = FMath::RoundToInt(double(Options.CaptureFramerateNumerator) / Options.CaptureFramerateDenominator);
+
 			// Keep 3 seconds worth of frames in memory
-			CapturedFrames.Reset(new FCapturedFrames(Directory.LeftChop(Ext.Len()) + TEXT("_tmp"), Options.CaptureFPS * 3));
-			
+			CapturedFrames.Reset(new FCapturedFrames(Directory.LeftChop(Ext.Len()) + TEXT("_tmp"), FPS * 3));
+
 			bCapturing = true;
 			ThreadTaskFuture = Async<void>(EAsyncExecution::Thread, [this]{	TaskThread(); });
 		}
@@ -542,8 +570,7 @@ public:
 				void* Data = CVPixelBufferGetBaseAddress(PixelBuffer);
 				FMemory::Memcpy(Data, CurrentFrame.FrameData.GetData(), CurrentFrame.FrameData.Num()*sizeof(FColor));
 				CVPixelBufferUnlockBaseAddress(PixelBuffer, 0);
-				
-				CMTime PresentTime = CurrentFrame.FrameIndex > 0 ? CMTimeMake(CurrentFrame.FrameIndex, Options.CaptureFPS) : kCMTimeZero;
+				CMTime PresentTime = CurrentFrame.FrameIndex > 0 ? CMTimeMake(CurrentFrame.FrameIndex * Options.CaptureFramerateDenominator, Options.CaptureFramerateNumerator) : kCMTimeZero;
 				BOOL OK = [AVFPixelBufferAdaptorRef appendPixelBuffer:PixelBuffer withPresentationTime:PresentTime];
 				check(OK);
 				
@@ -788,7 +815,7 @@ void FAVIWriter::Update(double FrameTimeSeconds, TArray<FColor> FrameData)
 {
 	if (bCapturing && FrameData.Num())
 	{
-		double FrameLength = 1.0 / Options.CaptureFPS;
+		double FrameLength = double(Options.CaptureFramerateDenominator) / Options.CaptureFramerateNumerator;
 		double FrameStart = FrameNumber * FrameLength;
 		FCapturedFrame Frame(FrameStart, FrameStart + FrameLength, FrameNumber, MoveTemp(FrameData));
 

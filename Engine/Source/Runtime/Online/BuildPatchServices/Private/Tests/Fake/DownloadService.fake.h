@@ -2,9 +2,9 @@
 #pragma once
 
 #include "Tests/Mock/DownloadService.mock.h"
-#include "IHttpResponse.h"
-#include "Async.h"
-#include "Future.h"
+#include "Interfaces/IHttpResponse.h"
+#include "Async/Async.h"
+#include "Async/Future.h"
 #include "Serialization/MemoryWriter.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -75,7 +75,7 @@ namespace BuildPatchServices
 								FMemoryWriter Ar(MockDownload->Data);
 								Ar << ResponseFile.Get<3>();
 								Ar.Close();
-								MockDownload->Data.AddUninitialized(ResponseFile.Get<3>().DataSize);
+								MockDownload->Data.AddUninitialized(ResponseFile.Get<3>().DataSizeCompressed);
 								RequestFile.Get<4>().ExecuteIfBound(RequestFile.Get<1>(), MockDownload->Data.Num() / 3);
 								RequestFile.Get<4>().ExecuteIfBound(RequestFile.Get<1>(), MockDownload->Data.Num() / 2);
 								RequestFile.Get<4>().ExecuteIfBound(RequestFile.Get<1>(), MockDownload->Data.Num());

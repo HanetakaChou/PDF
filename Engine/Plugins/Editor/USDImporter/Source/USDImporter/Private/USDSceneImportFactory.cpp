@@ -5,13 +5,13 @@
 #include "ActorFactories/ActorFactoryEmptyActor.h"
 #include "Engine/Selection.h"
 #include "ScopedTransaction.h"
-#include "ILayers.h"
+#include "Layers/ILayers.h"
 #include "IAssetRegistry.h"
 #include "AssetRegistryModule.h"
 #include "IUSDImporterModule.h"
 #include "USDConversionUtils.h"
 #include "ObjectTools.h"
-#include "ScopedSlowTask.h"
+#include "Misc/ScopedSlowTask.h"
 #include "PackageTools.h"
 #include "Editor.h"
 #include "PropertySetter.h"
@@ -21,6 +21,7 @@
 
 #define LOCTEXT_NAMESPACE "USDImportPlugin"
 
+#if 0
 UUSDSceneImportFactory::UUSDSceneImportFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -219,6 +220,7 @@ void UUSDSceneImportFactory::OnActorSpawned(AActor* SpawnedActor, const FActorSp
 		PropertySetter.ApplyPropertiesToActor(SpawnedActor, SpawnData.ActorPrim, TEXT(""));
 	}
 }
+#endif
 
 void FUSDSceneImportContext::Init(UObject* InParent, const FString& InName, IUsdStage* InStage)
 {

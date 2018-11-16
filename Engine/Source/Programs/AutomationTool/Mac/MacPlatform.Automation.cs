@@ -44,11 +44,14 @@ public class MacPlatform : Platform
 	{
 		// Files with DebugFileExtensions should always be DebugNonUFS
 		List<string> DebugExtensions = GetDebugFileExtensions();
-		foreach(FileReference InputFile in DirectoryReference.EnumerateFiles(InPath, "*", SearchOption.AllDirectories))
+		if(DirectoryExists(InPath.FullName))
 		{
-			StagedFileReference OutputFile = StagedFileReference.Combine(NewName, InputFile.MakeRelativeTo(InPath));
-			StagedFileType FileType = DebugExtensions.Any(x => InputFile.HasExtension(x))? StagedFileType.DebugNonUFS : StagedFileType.NonUFS;
-			SC.StageFile(FileType, InputFile, OutputFile);
+			foreach (FileReference InputFile in DirectoryReference.EnumerateFiles(InPath, "*", SearchOption.AllDirectories))
+			{
+				StagedFileReference OutputFile = StagedFileReference.Combine(NewName, InputFile.MakeRelativeTo(InPath));
+				StagedFileType FileType = DebugExtensions.Any(x => InputFile.HasExtension(x)) ? StagedFileType.DebugNonUFS : StagedFileType.NonUFS;
+				SC.StageFile(FileType, InputFile, OutputFile);
+			}
 		}
 	}
 
@@ -137,10 +140,12 @@ public class MacPlatform : Platform
 							BootstrapExeName = SC.ShortProjectName + ".app";
 						}
 
-						string AppPath = Executable.Path.FullName.Substring(0, Executable.Path.FullName.LastIndexOf(".app/") + 4);
+						string AppSuffix = ".app" + Path.DirectorySeparatorChar;
+
+						string AppPath = Executable.Path.FullName.Substring(0, Executable.Path.FullName.LastIndexOf(AppSuffix) + AppSuffix.Length);
 						foreach (var DestPath in StagedFiles)
 						{
-							string AppRelativePath = DestPath.Name.Substring(0, DestPath.Name.LastIndexOf(".app/") + 4);
+							string AppRelativePath = DestPath.Name.Substring(0, DestPath.Name.LastIndexOf(AppSuffix) + AppSuffix.Length);
 							StageBootstrapExecutable(SC, BootstrapExeName, AppPath, AppRelativePath, BootstrapArguments);
 						}
 					}
@@ -380,6 +385,8 @@ public class MacPlatform : Platform
 				Directory.CreateDirectory(CombinePaths(TargetPath, "Engine", "Binaries", "Mac"));
 				Directory.CreateDirectory(CombinePaths(TargetPath, SC.ShortProjectName, "Binaries", "Mac"));
 			}
+
+			Run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f " + BundlePath, null, ERunOptions.Default);
 		}
 	}
 
@@ -409,13 +416,6 @@ public class MacPlatform : Platform
 
 	public override bool IsSupported { get { return true; } }
 
-	public override bool ShouldUseManifestForUBTBuilds(string AddArgs)
-	{
-		// don't use the manifest to set up build products if we are compiling Mac under Windows and we aren't going to copy anything back to the PC
-		bool bIsBuildingRemotely = UnrealBuildTool.BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac;
-		bool bUseManifest = !bIsBuildingRemotely || AddArgs.IndexOf("-CopyAppBundleBackToDevice", StringComparison.InvariantCultureIgnoreCase) > 0;
-		return bUseManifest;
-	}
 	public override List<string> GetDebugFileExtensions()
 	{
 		return new List<string> { ".dSYM" };
@@ -440,22 +440,22 @@ public class MacPlatform : Platform
 		{
 			// Sign everything we built
 			List<FileReference> FilesToSign = GetExecutableNames(SC);
-			Log("RuntimeProjectRootDir: " + SC.RuntimeProjectRootDir);
+			LogInformation("RuntimeProjectRootDir: " + SC.RuntimeProjectRootDir);
 			foreach (var Exe in FilesToSign)
 			{
-				Log("Signing: " + Exe);
+				LogInformation("Signing: " + Exe);
 				string AppBundlePath = "";
 				if (Exe.IsUnderDirectory(DirectoryReference.Combine(SC.RuntimeProjectRootDir, "Binaries", SC.PlatformDir)))
 				{
-					Log("Starts with Binaries");
+					LogInformation("Starts with Binaries");
 					AppBundlePath = CombinePaths(SC.RuntimeProjectRootDir.FullName, "Binaries", SC.PlatformDir, Path.GetFileNameWithoutExtension(Exe.FullName) + ".app");
 				}
 				else if (Exe.IsUnderDirectory(DirectoryReference.Combine(SC.RuntimeRootDir, "Engine/Binaries", SC.PlatformDir)))
 				{
-					Log("Starts with Engine/Binaries");
+					LogInformation("Starts with Engine/Binaries");
 					AppBundlePath = CombinePaths("Engine/Binaries", SC.PlatformDir, Path.GetFileNameWithoutExtension(Exe.FullName) + ".app");
 				}
-				Log("Signing: " + AppBundlePath);
+				LogInformation("Signing: " + AppBundlePath);
 				CodeSign.SignMacFileOrFolder(AppBundlePath);
 			}
 

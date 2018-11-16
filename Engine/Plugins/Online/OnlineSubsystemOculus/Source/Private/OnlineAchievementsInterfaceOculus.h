@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "OnlineAchievementsInterface.h"
+#include "Interfaces/OnlineAchievementsInterface.h"
 #include "OnlineIdentityOculus.h"
 #include "OnlineSubsystemOculusPackage.h"
 
@@ -38,17 +38,17 @@ struct FOnlineAchievementDescOculus : FOnlineAchievementDesc
 struct FOnlineAchievementOculus : FOnlineAchievement
 {
 	FOnlineAchievementOculus(const ovrAchievementProgressHandle& AchievementProgress) :
-		bIsUnlocked(ovr_AchievementProgress_GetIsUnlocked(AchievementProgress)),
 		Count(ovr_AchievementProgress_GetCount(AchievementProgress)),
-		Bitfield(ovr_AchievementProgress_GetBitfield(AchievementProgress))
+		Bitfield(ovr_AchievementProgress_GetBitfield(AchievementProgress)),
+		bIsUnlocked(ovr_AchievementProgress_GetIsUnlocked(AchievementProgress))
 	{
 		FString AchievementName(ovr_AchievementProgress_GetName(AchievementProgress));
 		Id = AchievementName;
 	}
 
 	FOnlineAchievementOculus(const FOnlineAchievementDescOculus& AchievementDesc) :
-		bIsUnlocked(false),
-		Count(0)
+		Count(0),
+		bIsUnlocked(false)
 	{
 		Id = AchievementDesc.Title.ToString();
 		Progress = 0;
@@ -105,7 +105,7 @@ public:
 	/**
 	* Default destructor
 	*/
-	virtual ~FOnlineAchievementsOculus() = default;
+	virtual ~FOnlineAchievementsOculus();
 
 	// Begin IOnlineAchievements interface
 	virtual void WriteAchievements(const FUniqueNetId& PlayerId, FOnlineAchievementsWriteRef& WriteObject, const FOnAchievementsWrittenDelegate& Delegate = FOnAchievementsWrittenDelegate()) override;

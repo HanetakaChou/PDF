@@ -22,6 +22,9 @@ struct FStackEntry;
  */
 class FGCArrayPool
 {
+private:
+	// allows sharing a singleton between all compilation units while still having an inlined getter
+	COREUOBJECT_API static FGCArrayPool* GetGlobalSingleton();
 public:
 
 	/**
@@ -30,17 +33,11 @@ public:
 	 */
 	FORCEINLINE static FGCArrayPool& Get()
 	{
-		static FAutoConsoleCommandWithOutputDevice GCDumpPoolCommand(
-			TEXT("gc.DumpPoolStats"),
-			TEXT("Dumps count and size of GC Pools"),
-			FConsoleCommandWithOutputDeviceDelegate::CreateStatic(&FGCArrayPool::DumpStats)
-		);
-
 		static FGCArrayPool* Singleton = nullptr;
 
 		if (!Singleton)
 		{
-			Singleton = new FGCArrayPool();
+			Singleton = GetGlobalSingleton();
 		}
 		return *Singleton;
 	}
@@ -188,6 +185,7 @@ public:
 	{
 		TArray<FGCArrayStruct*> AllArrays;
 		Pool.PopAll(AllArrays);
+		int32 Index = 0;
 		for (FGCArrayStruct* ArrayStruct : AllArrays)
 		{
 			for (UObject** WeakReference : ArrayStruct->WeakReferences)
@@ -199,7 +197,8 @@ public:
 				}
 			}
 			ArrayStruct->WeakReferences.Reset();
-			if (bClearPools)
+			if (bClearPools 
+				|| Index % 7 == 3) // delete 1/7th of them just to keep things from growing too much between full purges
 			{
 				delete ArrayStruct;
 			}
@@ -207,6 +206,7 @@ public:
 			{
 				Pool.Push(ArrayStruct);
 			}
+			Index++;
 		}
 	}
 
@@ -632,6 +632,10 @@ private:
 					UE_LOG(LogGarbage, Fatal, TEXT("%s does not yet have a token stream assembled."), *GetFullNameSafe(CurrentObject->GetClass()));
 				}
 #endif
+				if (!bParallel)
+				{
+					ReferenceProcessor.SetCurrentObject(CurrentObject);
+				}
 
 				// Get pointer to token stream and jump to the start.
 				FGCReferenceTokenStream* RESTRICT TokenStream = &CurrentObject->GetClass()->ReferenceTokenStream;
@@ -778,7 +782,7 @@ private:
 						void*         Map = StackEntryData + ReferenceInfo.Offset;
 						UMapProperty* MapProperty = (UMapProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						MapProperty->SerializeItem(ReferenceCollector.GetVerySlowReferenceCollectorArchive(), Map, nullptr);
+						MapProperty->SerializeItem(FStructuredArchiveFromArchive(ReferenceCollector.GetVerySlowReferenceCollectorArchive()).GetSlot(), Map, nullptr);
 					}
 					break;
 					case GCRT_AddTSetReferencedObjects:
@@ -786,7 +790,7 @@ private:
 						void*         Set = StackEntryData + ReferenceInfo.Offset;
 						USetProperty* SetProperty = (USetProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						SetProperty->SerializeItem(ReferenceCollector.GetVerySlowReferenceCollectorArchive(), Set, nullptr);
+						SetProperty->SerializeItem(FStructuredArchiveFromArchive(ReferenceCollector.GetVerySlowReferenceCollectorArchive()).GetSlot(), Set, nullptr);
 					}
 					break;
 					case GCRT_EndOfPointer:
@@ -877,4 +881,75 @@ EndLoop:
 
 		ArrayPool.ReturnToPool(&NewObjectsToSerializeStruct);
 	}
+};
+
+
+/** Default implementation for reference collector that can be used with TFastReferenceCollector */
+template <typename ReferenceProcessorType, bool bIgnoringArchetypeRef = false, bool bIgnoringTransient = false>
+class TDefaultReferenceCollector : public FReferenceCollector
+{
+	ReferenceProcessorType& Processor;
+	FGCArrayStruct& ObjectArrayStruct;
+
+public:
+	TDefaultReferenceCollector(ReferenceProcessorType& InProcessor, FGCArrayStruct& InObjectArrayStruct)
+		: Processor(InProcessor)
+		, ObjectArrayStruct(InObjectArrayStruct)
+	{
+	}
+	virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const UProperty* ReferencingProperty) override
+	{
+		Processor.HandleTokenStreamObjectReference(ObjectArrayStruct.ObjectsToSerialize, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, false);
+	}
+	virtual void HandleObjectReferences(UObject** InObjects, const int32 ObjectNum, const UObject* ReferencingObject, const UProperty* InReferencingProperty) override
+	{
+		for (int32 ObjectIndex = 0; ObjectIndex < ObjectNum; ++ObjectIndex)
+		{
+			UObject*& Object = InObjects[ObjectIndex];
+			Processor.HandleTokenStreamObjectReference(ObjectArrayStruct.ObjectsToSerialize, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, false);
+		}
+	}
+	virtual bool IsIgnoringArchetypeRef() const override
+	{
+		return bIgnoringArchetypeRef;
+	}
+	virtual bool IsIgnoringTransient() const override
+	{
+		return bIgnoringTransient;
+	}
+};
+
+/** Simple single-threaded base implementation for reference processor that can be used with FFastReferenceCollector */
+class FSimpleReferenceProcessorBase
+{
+public:
+	FORCEINLINE int32 GetMinDesiredObjectsPerSubTask() const
+	{
+		// We only support single-threaded processing at the moment.
+		return 0;
+	}
+	FORCEINLINE volatile bool IsRunningMultithreaded() const
+	{
+		// We only support single-threaded processing at the moment.
+		return false;
+	}
+	FORCEINLINE void SetIsRunningMultithreaded(bool bIsParallel)
+	{
+		// We only support single-threaded processing at the moment.
+		check(!bIsParallel);
+	}
+	void UpdateDetailedStats(UObject* CurrentObject, uint32 DeltaCycles)
+	{
+		// Do nothing
+	}
+	void LogDetailedStatsSummary()
+	{
+		// Do nothing
+	}
+	void SetCurrentObject(UObject* Obj)
+	{
+		// Do nothing
+	}
+	// Implement this in your derived class, don't make this virtual as it will affect performance!
+	//FORCEINLINE void HandleTokenStreamObjectReference(TArray<UObject*>& ObjectsToSerialize, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, bool bAllowReferenceElimination);
 };

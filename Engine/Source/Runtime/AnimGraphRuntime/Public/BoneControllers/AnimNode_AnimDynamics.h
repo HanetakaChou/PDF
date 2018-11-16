@@ -9,10 +9,22 @@
 #include "Animation/AnimPhysicsSolver.h"
 #include "BonePose.h"
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
+#include "Animation/AnimInstanceProxy.h"
 #include "AnimNode_AnimDynamics.generated.h"
 
 class UAnimInstance;
 class USkeletalMeshComponent;
+
+extern TAutoConsoleVariable<int32> CVarEnableDynamics;
+extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarLODThreshold;
+extern TAutoConsoleVariable<int32> CVarEnableWind;
+
+#if ENABLE_ANIM_DRAW_DEBUG
+
+extern TAutoConsoleVariable<int32> CVarShowDebug;
+extern TAutoConsoleVariable<FString> CVarDebugBone;
+
+#endif
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Anim Dynamics Overall"), STAT_AnimDynamicsOverall, STATGROUP_Physics, ANIMGRAPHRUNTIME_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Anim Dynamics Wind Data Update"), STAT_AnimDynamicsWindData, STATGROUP_Physics, ANIMGRAPHRUNTIME_API);
@@ -79,12 +91,19 @@ struct FAnimPhysConstraintSetup
 	: LinearXLimitType(AnimPhysLinearConstraintType::Limited)
 	, LinearYLimitType(AnimPhysLinearConstraintType::Limited)
 	, LinearZLimitType(AnimPhysLinearConstraintType::Limited)
+	, LinearAxesMin(ForceInitToZero)
+	, LinearAxesMax(ForceInitToZero)
 	, AngularConstraintType(AnimPhysAngularConstraintType::Angular)
 	, TwistAxis(AnimPhysTwistAxis::AxisX)
 	, ConeAngle(0.0f)
 	, AngularXAngle_DEPRECATED(0.0f)
 	, AngularYAngle_DEPRECATED(0.0f)
 	, AngularZAngle_DEPRECATED(0.0f)
+	, AngularLimitsMin(ForceInitToZero)
+	, AngularLimitsMax(ForceInitToZero)
+	, AngularTargetAxis(AnimPhysTwistAxis::AxisX)
+	, AngularTarget(ForceInitToZero)
+	, bLinearFullyLocked(false)
 	{}
 
 	/** Whether to limit the linear X axis */
@@ -240,8 +259,16 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_AnimDynamics : public FAnimNode_SkeletalCo
 	FVector LocalJointOffset;
 
 	/** Scale for gravity, higher values increase forces due to gravity */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Setup, meta = (PinHiddenByDefault))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Setup, meta = (PinHiddenByDefault, EditCondition = "!bUseGravityOverride"))
 	float GravityScale;
+
+	/** Gravity Override Value */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Setup, meta = (PinHiddenByDefault, EditCondition = "bUseGravityOverride"))
+	FVector GravityOverride;
+
+	/** Use gravity override value vs gravity scale */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Setup, meta = (InlineEditConditionToggle))
+	bool bUseGravityOverride;
 
 	/** If true the body will attempt to spring back to its initial position */
 	UPROPERTY(EditAnywhere, Category = Setup)
@@ -269,6 +296,18 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_AnimDynamics : public FAnimNode_SkeletalCo
 	/** Scale to apply to calculated wind velocities in the solver */
 	UPROPERTY(EditAnywhere, Category = Wind)
 	float WindScale;
+
+	/** When using non-world-space sim, this controls how much of the components world-space acceleration is passed on to the local-space simulation. */
+	UPROPERTY(EditAnywhere, Category = Settings)
+	FVector ComponentLinearAccScale;
+
+	/** When using non-world-space sim, this applies a 'drag' to the bodies in the local space simulation, based on the components world-space velocity. */
+	UPROPERTY(EditAnywhere, Category = Settings)
+	FVector ComponentLinearVelScale;
+
+	/** When using non-world-space sim, this is an overall clamp on acceleration derived from ComponentLinearAccScale and ComponentLinearVelScale, to ensure it is not too large. */
+	UPROPERTY(EditAnywhere, Category = Settings)
+	FVector	ComponentAppliedLinearAccClamp;
 
 	/** If true, the override value will be used for linear damping */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Setup)
@@ -355,13 +394,14 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_AnimDynamics : public FAnimNode_SkeletalCo
 	virtual void UpdateInternal(const FAnimationUpdateContext& Context) override;
 	virtual void EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms) override;
 	virtual void GatherDebugData(FNodeDebugData& DebugData) override;
-	virtual bool HasPreUpdate() const override { return true; }
+	virtual bool HasPreUpdate() const override;
 	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
-	virtual bool NeedsDynamicReset() const { return true; }
-	virtual void ResetDynamics() { RequestInitialise(); }
+	virtual bool NeedsDynamicReset() const override { return true; }
+	virtual void ResetDynamics(ETeleportType InTeleportType) override { RequestInitialise(InTeleportType); }
+	virtual int32 GetLODThreshold() const override;
 	// End of FAnimNode_SkeletalControlBase interface
 
-	void RequestInitialise() { bRequiresInit = true; }
+	void RequestInitialise(ETeleportType InTeleportType);
 	void InitPhysics(FComponentSpacePoseContext& Output);
 	void TermPhysics();
 
@@ -395,6 +435,8 @@ private:
 
 	// Given a transform in simulation space, convert it back to component space
 	FTransform GetComponentSpaceTransformFromSimSpace(AnimPhysSimSpaceType SimSpace, FComponentSpacePoseContext& Output, const FTransform& InSimTransform);
+	FTransform GetComponentSpaceTransformFromSimSpace(AnimPhysSimSpaceType SimSpace, FComponentSpacePoseContext& Output, const FTransform& InSimTransform, const FTransform& InCompWorldSpaceTM, const FTransform& InActorWorldSpaceTM);
+
 	// Given a transform in component space, convert it to the current sim space
 	FTransform GetSimSpaceTransformFromComponentSpace(AnimPhysSimSpaceType SimSpace, FComponentSpacePoseContext& Output, const FTransform& InComponentTransform);
 
@@ -405,7 +447,7 @@ private:
 
 	// We can't get clean bone positions unless we are in the evaluate step.
 	// Requesting an init or reinit sets this flag for us to pick up during evaluate
-	bool bRequiresInit;
+	ETeleportType InitTeleportType;
 
 	// Maximum time to consider when accumulating time debt to avoid spiraling
 	static const float MaxTimeDebt;
@@ -415,9 +457,6 @@ private:
 
 	// Current amount of time debt
 	float TimeDebt;
-
-	// Current time dilation
-	float CurrentTimeDilation;
 
 	// Cached physics settings. We cache these on initialise to avoid the cost of accessing UPhysicsSettings a lot each frame
 	float MaxPhysicsDeltaTime;
@@ -459,4 +498,22 @@ private:
 
 	// Gravity direction in sim space
 	FVector SimSpaceGravityDirection;
+
+	// Previous component & actor transforms, used to account for teleports
+	FTransform PreviousCompWorldSpaceTM;
+	FTransform PreviousActorWorldSpaceTM;
+	
+	// Previous linear velocity to resolve world accelerations when not using world space simulation
+	FVector PreviousComponentLinearVelocity;
+
+	//////////////////////////////////////////////////////////////////////////
+	// Live debug
+	//////////////////////////////////////////////////////////////////////////
+#if ENABLE_ANIM_DRAW_DEBUG
+	void DrawBodies(FComponentSpacePoseContext& InContext, const TArray<FAnimPhysRigidBody*>& InBodies);
+
+	int32 FilteredBoneIndex;
+#endif
+public: 
+	static bool IsAnimDynamicsSystemEnabledFor(int32 InLOD);
 };

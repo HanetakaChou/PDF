@@ -60,7 +60,8 @@ public:
 		}
 		else
 		{
-			return SCheckBox::OnMouseButtonUp(InMyGeometry, InMouseEvent);
+			SCheckBox::OnMouseButtonUp(InMyGeometry, InMouseEvent);
+			return FReply::Handled().ReleaseMouseCapture();
 		}
 	}
 
@@ -412,6 +413,7 @@ void SFilterList::Construct( const FArguments& InArgs )
 	AllFrontendFilters.Add( MakeShareable(new FFrontendFilter_UsedInAnyLevel(DefaultCategory)) );
 	AllFrontendFilters.Add( MakeShareable(new FFrontendFilter_NotUsedInAnyLevel(DefaultCategory)) );
 	AllFrontendFilters.Add( MakeShareable(new FFrontendFilter_ArbitraryComparisonOperation(DefaultCategory)) );
+	AllFrontendFilters.Add(MakeShareable(new FFrontendFilter_Recent(DefaultCategory)));
 
 	// Add any global user-defined frontend filters
 	for (TObjectIterator<UContentBrowserFrontEndFilterExtension> ExtensionIt(RF_NoFlags); ExtensionIt; ++ExtensionIt)
@@ -491,6 +493,11 @@ FReply SFilterList::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointer
 	}
 
 	return FReply::Unhandled();
+}
+
+const TArray<UClass*>& SFilterList::GetInitialClassFilters()
+{
+	return InitialClassFilters;
 }
 
 bool SFilterList::HasAnyFilters() const
@@ -903,6 +910,7 @@ void SFilterList::RemoveFilter(const TSharedRef<SFilter>& FilterToRemove)
 		// Update the frontend filters collection
 		const TSharedRef<FFrontendFilter>& FrontendFilter = FilterToRemove->GetFrontendFilter().ToSharedRef();
 		SetFrontendFilterActive(FrontendFilter, false);
+		OnFilterChanged.ExecuteIfBound();
 	}
 }
 
@@ -1172,7 +1180,7 @@ TSharedRef<SWidget> SFilterList::MakeAddFilterMenu(EAssetTypeCategories::Type Me
 	MenuBuilder.EndSection(); //ContentBrowserFilterMiscAsset
 
 	FDisplayMetrics DisplayMetrics;
-	FSlateApplication::Get().GetDisplayMetrics( DisplayMetrics );
+	FSlateApplication::Get().GetCachedDisplayMetrics( DisplayMetrics );
 
 	const FVector2D DisplaySize(
 		DisplayMetrics.PrimaryDisplayWorkAreaRect.Right - DisplayMetrics.PrimaryDisplayWorkAreaRect.Left,

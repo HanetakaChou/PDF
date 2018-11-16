@@ -16,15 +16,19 @@ USequenceRecorderSettings::USequenceRecorderSettings(const FObjectInitializer& O
 	bImmersiveMode = false;
 	SequenceLength = FAnimationRecordingSettings::DefaultMaximumLength;
 	RecordingDelay = 4.0f;
-	SequenceName = TEXT("RecordedSequence");
+	bAllowLooping = false;
 	AnimationSubDirectory = TEXT("Animations");
 	AudioSubDirectory = TEXT("Audio");
 	AudioGain = 0.0f;
-	SequenceRecordingBasePath.Path = TEXT("/Game/Cinematics/Sequences");
+	AudioTrackName = NSLOCTEXT("SequenceRecorder", "DefaultAudioTrackName", "Recorded Audio");
+	bReplaceRecordedAudio = true;
 	bRecordNearbySpawnedActors = true;
 	NearbyActorRecordingProximity = 5000.0f;
 	bRecordWorldSettingsActor = true;
 	bReduceKeys = true;
+	bAutoSaveAsset = false;
+	GlobalTimeDilation = 1.0f;
+	bIgnoreTimeDilation = false;
 
 	ClassesAndPropertiesToRecord.Add(FPropertiesToRecordForClass(USkeletalMeshComponent::StaticClass()));
 	ClassesAndPropertiesToRecord.Add(FPropertiesToRecordForClass(UStaticMeshComponent::StaticClass()));
@@ -39,13 +43,4 @@ void USequenceRecorderSettings::PostEditChangeChainProperty(struct FPropertyChan
 	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 
 	SaveConfig();
-
-	if (PropertyChangedEvent.Property)
-	{
-		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USequenceRecorderSettings, SequenceName) ||
-			PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USequenceRecorderSettings, SequenceRecordingBasePath))
-		{
-			FSequenceRecorder::Get().RefreshNextSequence();
-		}
-	}
 }

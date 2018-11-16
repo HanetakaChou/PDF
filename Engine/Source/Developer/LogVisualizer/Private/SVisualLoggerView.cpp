@@ -11,7 +11,6 @@
 #include "SVisualLoggerSectionOverlay.h"
 #include "SVisualLoggerTimeline.h"
 #include "SVisualLoggerTimelinesContainer.h"
-#include "ITimeSlider.h"
 #include "SVisualLoggerTimeSlider.h"
 #include "VisualLoggerTimeSliderController.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -86,8 +85,8 @@ void SVisualLoggerView::Construct(const FArguments& InArgs, const TSharedRef<FUI
 
 	// Create the top and bottom sliders
 	const bool bMirrorLabels = true;
-	TSharedRef<ITimeSlider> TopTimeSlider = SNew(SVisualLoggerTimeSlider, FLogVisualizer::Get().GetTimeSliderController().ToSharedRef()).MirrorLabels(bMirrorLabels);
-	TSharedRef<ITimeSlider> BottomTimeSlider = SNew(SVisualLoggerTimeSlider, FLogVisualizer::Get().GetTimeSliderController().ToSharedRef()).MirrorLabels(bMirrorLabels);
+	TSharedRef<SVisualLoggerTimeSlider> TopTimeSlider = SNew(SVisualLoggerTimeSlider, FLogVisualizer::Get().GetTimeSliderController().ToSharedRef()).MirrorLabels(bMirrorLabels);
+	TSharedRef<SVisualLoggerTimeSlider> BottomTimeSlider = SNew(SVisualLoggerTimeSlider, FLogVisualizer::Get().GetTimeSliderController().ToSharedRef()).MirrorLabels(bMirrorLabels);
 
 	TSharedRef<SScrollBar> ScrollBar =
 		SNew(SScrollBar)
@@ -434,7 +433,7 @@ TSharedRef<SWidget> SVisualLoggerView::MakeClassesFilterMenu()
 
 
 	FDisplayMetrics DisplayMetrics;
-	FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
+	FSlateApplication::Get().GetCachedDisplayMetrics(DisplayMetrics);
 
 	const FVector2D DisplaySize(
 		DisplayMetrics.PrimaryDisplayWorkAreaRect.Right - DisplayMetrics.PrimaryDisplayWorkAreaRect.Left,

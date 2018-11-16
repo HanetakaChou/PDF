@@ -3,6 +3,10 @@
 #include "Kismet/DataTableFunctionLibrary.h"
 #include "Engine/CurveTable.h"
 
+#if WITH_EDITOR
+#include "Misc/FileHelper.h"
+#endif //WITH_EDITOR
+
 UDataTableFunctionLibrary::UDataTableFunctionLibrary(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -26,6 +30,19 @@ void UDataTableFunctionLibrary::EvaluateCurveTableRow(UCurveTable* CurveTable, F
 	}
 }
 
+bool UDataTableFunctionLibrary::DoesDataTableRowExist(UDataTable* Table, FName RowName)
+{
+	if (!Table)
+	{
+		return false;
+	}
+	else if (Table->RowStruct == nullptr)
+	{
+		return false;
+	}
+	return Table->GetRowMap().Find(RowName) != nullptr;
+}
+
 TArray<FString> UDataTableFunctionLibrary::GetDataTableColumnAsString(const UDataTable* DataTable, FName PropertyName)
 {
 	if (DataTable && PropertyName != NAME_None)
@@ -36,7 +53,7 @@ TArray<FString> UDataTableFunctionLibrary::GetDataTableColumnAsString(const UDat
 	return TArray<FString>();
 }
 
-bool UDataTableFunctionLibrary::Generic_GetDataTableRowFromName(UDataTable* Table, FName RowName, void* OutRowPtr)
+bool UDataTableFunctionLibrary::Generic_GetDataTableRowFromName(const UDataTable* Table, FName RowName, void* OutRowPtr)
 {
 	bool bFoundRow = false;
 
@@ -44,11 +61,11 @@ bool UDataTableFunctionLibrary::Generic_GetDataTableRowFromName(UDataTable* Tabl
 	{
 		void* RowPtr = Table->FindRowUnchecked(RowName);
 
-		if (RowPtr != NULL)
+		if (RowPtr != nullptr)
 		{
-			UScriptStruct* StructType = Table->RowStruct;
+			const UScriptStruct* StructType = Table->GetRowStruct();
 
-			if (StructType != NULL)
+			if (StructType != nullptr)
 			{
 				StructType->CopyScriptStruct(OutRowPtr, RowPtr);
 				bFoundRow = true;
@@ -77,3 +94,98 @@ void UDataTableFunctionLibrary::GetDataTableRowNames(UDataTable* Table, TArray<F
 		OutRowNames.Empty();
 	}
 }
+
+
+#if WITH_EDITOR
+bool UDataTableFunctionLibrary::FillDataTableFromCSVString(UDataTable* DataTable, const FString& InString)
+{
+	if (!DataTable)
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't fill an invalid DataTable."));
+		return false;
+	}
+
+	bool bResult = true;
+	if (InString.Len() == 0)
+	{
+		DataTable->EmptyTable();
+	}
+	else
+	{
+		TArray<FString> Errors = DataTable->CreateTableFromCSVString(InString);
+		if (Errors.Num())
+		{
+			for (const FString& Error : Errors)
+			{
+				UE_LOG(LogDataTable, Warning, TEXT("%s"), *Error);
+			}
+		}
+		bResult = Errors.Num() == 0;
+	}
+	return bResult;
+}
+
+bool UDataTableFunctionLibrary::FillDataTableFromCSVFile(UDataTable* DataTable, const FString& InFilePath)
+{
+	if (!DataTable)
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't fill an invalid DataTable."));
+		return false;
+	}
+
+	FString Data;
+	if (!FFileHelper::LoadFileToString(Data, *InFilePath))
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't load the file '%s'."), *InFilePath);
+		return false;
+	}
+
+	return FillDataTableFromCSVString(DataTable, Data);
+}
+
+bool UDataTableFunctionLibrary::FillDataTableFromJSONString(UDataTable* DataTable, const FString& InString)
+{
+	if (!DataTable)
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't fill an invalid DataTable."));
+		return false;
+	}
+
+	bool bResult = true;
+	if (InString.Len() == 0)
+	{
+		DataTable->EmptyTable();
+	}
+	else
+	{
+		TArray<FString> Errors = DataTable->CreateTableFromJSONString(InString);
+		if (Errors.Num())
+		{
+			for (const FString& Error : Errors)
+			{
+				UE_LOG(LogDataTable, Warning, TEXT("%s"), *Error);
+			}
+		}
+		bResult = Errors.Num() == 0;
+	}
+	return bResult;
+}
+
+bool UDataTableFunctionLibrary::FillDataTableFromJSONFile(UDataTable* DataTable, const FString& InFilePath)
+{
+	if (!DataTable)
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't fill an invalid DataTable."));
+		return false;
+	}
+
+	FString Data;
+	if (!FFileHelper::LoadFileToString(Data, *InFilePath))
+	{
+		UE_LOG(LogDataTable, Error, TEXT("Can't load the file '%s'."), *InFilePath);
+		return false;
+	}
+
+	return FillDataTableFromJSONString(DataTable, Data);
+}
+#endif //WITH_EDITOR

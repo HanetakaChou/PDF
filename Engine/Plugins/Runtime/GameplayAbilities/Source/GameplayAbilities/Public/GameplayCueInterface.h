@@ -23,8 +23,10 @@ class GAMEPLAYABILITIES_API IGameplayCueInterface
 {
 	GENERATED_IINTERFACE_BODY()
 
+	/** Handle a single gameplay cue */
 	virtual void HandleGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters);
 
+	/** Wrapper that handles multiple cues */
 	virtual void HandleGameplayCues(AActor *Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters);
 
 	/** Returns true if the actor can currently accept gameplay cues associated with the given tag. Returns true by default. Allows actors to opt out of cues in cases such as pending death */
@@ -44,8 +46,10 @@ class GAMEPLAYABILITIES_API IGameplayCueInterface
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Ability|GameplayCue")
 	virtual void ForwardGameplayCueToParent();
 
+	/** Calls the UFunction override for a specific gameplay cue */
 	static void DispatchBlueprintCustomHandler(AActor* Actor, UFunction* Func, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters);
 
+	/** Clears internal cache of what classes implement which functions */
 	static void ClearTagToFunctionMap();
 
 	IGameplayCueInterface() : bForwardToParent(false) {}
@@ -53,7 +57,6 @@ class GAMEPLAYABILITIES_API IGameplayCueInterface
 private:
 	/** If true, keep checking for additional handlers */
 	bool bForwardToParent;
-
 };
 
 
@@ -64,8 +67,6 @@ private:
  *	
  *	Essentially provides bare necessities to replicate GameplayCue Tags.
  */
-
-
 struct FActiveGameplayCueContainer;
 
 USTRUCT(BlueprintType)
@@ -162,4 +163,60 @@ struct FGameplayCueTag
 	{
 		return GameplayCueTag.IsValid();
 	}
+};
+
+/** 
+ *	An alternative way to replicating gameplay cues. This does not use fast TArray serialization and does not serialize gameplaycue parameters. The parameters are created on the receiving side with default information.
+ *	This will be more efficient with server cpu but will take more bandwidth when the array changes.
+ *	
+ *	To use, put this on your replication proxy actor (such a the pawn). Call SetOwner, PreReplication and RemoveallCues in the appropriate places.
+ */
+USTRUCT()
+struct GAMEPLAYABILITIES_API FMinimalGameplayCueReplicationProxy
+{
+	GENERATED_BODY()
+
+	FMinimalGameplayCueReplicationProxy();
+
+	/** Set Owning ASC. This is what the GC callbacks are called on.  */
+	void SetOwner(UAbilitySystemComponent* ASC);
+
+	/** Copies data in from an FActiveGameplayCueContainer (such as the one of the ASC). You must call this manually from PreReplication. */
+	void PreReplication(const FActiveGameplayCueContainer& SourceContainer);
+
+	/** Custom NetSerialization to pack the entire array */
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	/** Will broadcast the OnRemove event for all currently active cues */
+	void RemoveAllCues();
+
+	/** Called to init parameters */
+	TFunction<void(FGameplayCueParameters&, UAbilitySystemComponent*)> InitGameplayCueParametersFunc;
+
+	bool operator==(const FMinimalGameplayCueReplicationProxy& Other) const { return LastSourceArrayReplicationKey == Other.LastSourceArrayReplicationKey; }
+	bool operator!=(const FMinimalGameplayCueReplicationProxy& Other) const { return !(*this == Other); }
+
+private:
+
+	enum { NumInlineTags = 16 };
+
+	TArray< FGameplayTag, TInlineAllocator<NumInlineTags> >	ReplicatedTags;
+	TArray< FGameplayTag, TInlineAllocator<NumInlineTags> >	LocalTags;
+	TBitArray< TInlineAllocator<NumInlineTags> >			LocalBitMask;
+
+	UPROPERTY()
+	UAbilitySystemComponent* Owner = nullptr;
+
+	int32 LastSourceArrayReplicationKey = -1;
+};
+
+template<>
+struct TStructOpsTypeTraits< FMinimalGameplayCueReplicationProxy > : public TStructOpsTypeTraitsBase2< FMinimalGameplayCueReplicationProxy >
+{
+	enum
+	{
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
+		WithIdenticalViaEquality = true,
+	};
 };

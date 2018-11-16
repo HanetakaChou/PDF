@@ -15,6 +15,7 @@
 #include "GameFramework/Actor.h"
 #include "CollisionQueryParams.h"
 #include "SceneTypes.h"
+#include "Engine/EngineTypes.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "AI/Navigation/NavRelevantInterface.h"
@@ -209,16 +210,31 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting)
 	TEnumAsByte<EIndirectLightingCacheQuality> IndirectLightingCacheQuality;
 
-#if WITH_EDITORONLY_DATA
-	/** If true, and if World setting has bEnableHierarchicalLOD equal to true, then this component will be included when generating a Proxy mesh for the parent Actor */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = HLOD, meta = (DisplayName = "Include Component for HLOD Mesh generation"))
-	uint8 bEnableAutoLODGeneration : 1;
-#endif 
 	/** Controls the type of lightmap used for this component. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting)
 	ELightmapType LightmapType;
 
+#if WITH_EDITORONLY_DATA
+	/** If true, and if World setting has bEnableHierarchicalLOD equal to true, then this component will be included when generating a Proxy mesh for the parent Actor */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = HLOD, meta = (DisplayName = "Include Component for HLOD Mesh generation"))
+	uint8 bEnableAutoLODGeneration : 1;
+
+	/** Use the Maximum LOD Mesh (imposter) instead of including Mesh data from this component in the Proxy Generation process */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = HLOD)
+	uint8 bUseMaxLODAsImposter: 1;
+
+	/** Which specific HLOD levels this component should be excluded from */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = HLOD)
+	TArray<int32> ExcludeForSpecificHLODLevels;
+#endif 
+
 public:
+
+	/**
+	 * When enabled this object will not be culled by distance. This is ignored if a child of a HLOD.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=LOD)
+	uint8 bNeverDistanceCull:1;
 
 	/** Whether this primitive is referenced by a FLevelTextureManager  */
 	mutable uint8 bAttachedToStreamingManagerAsStatic : 1;
@@ -226,6 +242,8 @@ public:
 	mutable uint8 bAttachedToStreamingManagerAsDynamic : 1;
 	/** Whether this primitive is handled as dynamic, although it could have no references */
 	mutable uint8 bHandledByStreamingManagerAsDynamic : 1;
+	/** When true, texture streaming manager won't update the component state. Used to perform early exits when updating component. */
+	mutable uint8 bIgnoreStreamingManagerUpdate : 1;
 
 	/** Whether this primitive is referenced by the streaming manager and should sent callbacks when detached or destroyed */
 	FORCEINLINE bool IsAttachedToStreamingManager() const { return !!(bAttachedToStreamingManagerAsStatic | bAttachedToStreamingManagerAsDynamic); }
@@ -245,9 +263,18 @@ public:
 	 * @see [Overlap Events](https://docs.unrealengine.com/latest/INT/Engine/Physics/Collision/index.html#overlapandgenerateoverlapevents)
 	 * @see UpdateOverlaps(), BeginComponentOverlap(), EndComponentOverlap()
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Collision)
-	uint8 bGenerateOverlapEvents:1;
 
+	UFUNCTION(BlueprintGetter)
+	bool GetGenerateOverlapEvents() const;
+
+	UFUNCTION(BlueprintSetter)
+	void SetGenerateOverlapEvents(bool bInGenerateOverlapEvents);
+
+private:
+	UPROPERTY(EditAnywhere, BlueprintGetter = GetGenerateOverlapEvents, BlueprintSetter = SetGenerateOverlapEvents, Category = Collision)
+	uint8 bGenerateOverlapEvents : 1;
+
+public:
 	/**
 	 * If true, this component will generate individual overlaps for each overlapping physics body if it is a multi-body component. When false, this component will
 	 * generate only one overlap, regardless of how many physics bodies it has and how many of them are overlapping another component/body. This flag has no
@@ -452,6 +479,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Physics)
 	uint8 bApplyImpulseOnDamage : 1;
 
+	/** True if physics should be replicated to autonomous proxies. This should be true for
+		server-authoritative simulations, and false for client authoritative simulations. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Physics)
+	uint8 bReplicatePhysicsToAutonomousProxy : 1;
+
 	// General flags.
 	
 	/** If this is True, this component must always be loaded on clients, even if Hidden and CollisionEnabled is NoCollision. */
@@ -480,8 +512,10 @@ public:
 	TEnumAsByte<EHasCustomNavigableGeometry::Type> bHasCustomNavigableGeometry;
 
 private:
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TEnumAsByte<enum ECanBeCharacterBase> CanBeCharacterBase_DEPRECATED;
+#endif
 
 	FMaskFilter MoveIgnoreMask;
 
@@ -753,9 +787,12 @@ public:
 	*/
 	void GetOverlappingActors(TSet<AActor*>& OverlappingActors, TSubclassOf<AActor> ClassFilter=nullptr) const;
 
-	/** Returns list of components this component is overlapping. */
+	/** Returns unique list of components this component is overlapping. */
 	UFUNCTION(BlueprintPure, Category="Collision", meta=(UnsafeDuringActorConstruction="true"))
-	void GetOverlappingComponents(TArray<UPrimitiveComponent*>& InOverlappingComponents) const;
+	void GetOverlappingComponents(TArray<UPrimitiveComponent*>& OutOverlappingComponents) const;
+
+	/** Returns unique set of components this component is overlapping. */
+	void GetOverlappingComponents(TSet<UPrimitiveComponent*>& OutOverlappingComponents) const;
 
 	/** Returns list of components this component is overlapping. */
 	const TArray<FOverlapInfo>& GetOverlapInfos() const;
@@ -767,8 +804,14 @@ public:
 	 * @param bDoNotifies				True to dispatch being/end overlap notifications when these events occur.
 	 * @param OverlapsAtEndLocation		If non-null, the given list of overlaps will be used as the overlaps for this component at the current location, rather than checking for them with a scene query.
 	 *									Generally this should only be used if this component is the RootComponent of the owning actor and overlaps with other descendant components have been verified.
+	 * @return							True if we can skip calling this in the future (i.e. no useful work is being done.)
 	 */
-	virtual void UpdateOverlaps(TArray<FOverlapInfo> const* NewPendingOverlaps=nullptr, bool bDoNotifies=true, const TArray<FOverlapInfo>* OverlapsAtEndLocation=nullptr) override;
+	virtual bool UpdateOverlapsImpl(TArray<FOverlapInfo> const* NewPendingOverlaps=nullptr, bool bDoNotifies=true, const TArray<FOverlapInfo>* OverlapsAtEndLocation=nullptr) override;
+
+#if WITH_EDITOR
+	/** Update the Bounds of the component.*/
+	virtual void UpdateBounds() override;
+#endif
 
 	/** Update current physics volume for this component, if bShouldUpdatePhysicsVolume is true. Overridden to use the overlaps to find the physics volume. */
 	virtual void UpdatePhysicsVolume( bool bTriggerNotifiers ) override;
@@ -817,7 +860,7 @@ public:
 	 *	Event called when something starts to overlaps this component, for example a player walking into a trigger.
 	 *	For events when objects have a blocking collision, for example a player hitting a wall, see 'Hit' events.
 	 *
-	 *	@note Both this component and the other one must have bGenerateOverlapEvents set to true to generate overlap events.
+	 *	@note Both this component and the other one must have GetGenerateOverlapEvents() set to true to generate overlap events.
 	 *	@note When receiving an overlap from another object's movement, the directions of 'Hit.Normal' and 'Hit.ImpactNormal'
 	 *	will be adjusted to indicate force from the other object against this object.
 	 */
@@ -826,7 +869,7 @@ public:
 
 	/** 
 	 *	Event called when something stops overlapping this component 
-	 *	@note Both this component and the other one must have bGenerateOverlapEvents set to true to generate overlap events.
+	 *	@note Both this component and the other one must have GetGenerateOverlapEvents() set to true to generate overlap events.
 	 */
 	UPROPERTY(BlueprintAssignable, Category="Collision")
 	FComponentEndOverlapSignature OnComponentEndOverlap;
@@ -927,7 +970,7 @@ public:
 	 * @param ElementIndex - The index of the skin to replace the material for.  If invalid, the material is unchanged and NULL is returned.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
-	virtual class UMaterialInstanceDynamic* CreateDynamicMaterialInstance(int32 ElementIndex, class UMaterialInterface* SourceMaterial = NULL);
+	virtual class UMaterialInstanceDynamic* CreateDynamicMaterialInstance(int32 ElementIndex, class UMaterialInterface* SourceMaterial = NULL, FName OptionalName = NAME_None);
 
 	/** 
 	 * Try and retrieve the material applied to a particular collision face of mesh. Used with face index returned from collision trace. 
@@ -1109,7 +1152,7 @@ public:
 	 *  @param bAccelChange If true, Torque is taken as a change in angular acceleration instead of a physical torque (i.e. mass will have no effect).
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))
-	void AddTorqueInRadians(FVector Torque, FName BoneName = NAME_None, bool bAccelChange = false);
+	virtual void AddTorqueInRadians(FVector Torque, FName BoneName = NAME_None, bool bAccelChange = false);
 
 	/**
 	 *	Add a torque to a single rigid body.
@@ -1132,7 +1175,7 @@ public:
 	 *	@param BoneName			If a SkeletalMeshComponent, name of body to modify velocity of. 'None' indicates root body.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))
-	void SetPhysicsLinearVelocity(FVector NewVel, bool bAddToCurrent = false, FName BoneName = NAME_None);
+	virtual void SetPhysicsLinearVelocity(FVector NewVel, bool bAddToCurrent = false, FName BoneName = NAME_None);
 
 	/** 
 	 *	Get the linear velocity of a single body. 
@@ -1182,7 +1225,7 @@ public:
 	 *	@param BoneName			If a SkeletalMeshComponent, name of body to modify angular velocity of. 'None' indicates root body.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))
-	void SetPhysicsAngularVelocityInRadians(FVector NewAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None);
+	virtual void SetPhysicsAngularVelocityInRadians(FVector NewAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None);
 
 	/**
 	 *	Set the angular velocity of a single body.
@@ -1241,7 +1284,7 @@ public:
 	 */
 	DEPRECATED(4.18, "Use GetPhysicsAngularVelocityInDegrees instead.")
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use GetPhysicsAngularVelocityInDegrees instead"))	
-	FVector GetPhysicsAngularVelocity(FName BoneName = NAME_None)
+	FVector GetPhysicsAngularVelocity(FName BoneName = NAME_None) const
 	{
 		return GetPhysicsAngularVelocityInDegrees(BoneName);
 	}
@@ -1251,7 +1294,7 @@ public:
 	 *	@param BoneName			If a SkeletalMeshComponent, name of body to get velocity of. 'None' indicates root body.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))	
-	FVector GetPhysicsAngularVelocityInDegrees(FName BoneName = NAME_None)
+	FVector GetPhysicsAngularVelocityInDegrees(FName BoneName = NAME_None) const
 	{
 		return FMath::RadiansToDegrees(GetPhysicsAngularVelocityInRadians(BoneName));
 	}
@@ -1261,7 +1304,7 @@ public:
 	 *	@param BoneName			If a SkeletalMeshComponent, name of body to get velocity of. 'None' indicates root body.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))	
-	FVector GetPhysicsAngularVelocityInRadians(FName BoneName = NAME_None);
+	FVector GetPhysicsAngularVelocityInRadians(FName BoneName = NAME_None) const;
 
 	/**
 	*	Get the center of mass of a single body. In the case of a welded body this will return the center of mass of the entire welded body (including its parent and children)
@@ -1349,9 +1392,46 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Collision")	
 	virtual void SetCollisionObjectType(ECollisionChannel Channel);
 
-	/** Perform a line trace against a single component */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(DisplayName = "Line Trace Component", ScriptName = "LineTraceComponent", bTraceComplex="true", UnsafeDuringActorConstruction="true"))	
-	bool K2_LineTraceComponent(FVector TraceStart, FVector TraceEnd, bool bTraceComplex, bool bShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit);
+	/** Perform a line trace against a single component
+	 * @param TraceStart The start of the trace in world-space
+	 * @param TraceEnd The end of the trace in world-space
+	 * @param bTraceComplex Whether or not to trace the complex physics representation or just the simple representation
+	 * @param bShowTrace Whether or not to draw the trace in the world (for debugging)
+	 * @param bPersistentShowTrace Whether or not to make the debugging draw stay in the world permanently
+	 */
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(DisplayName = "Line Trace Component", ScriptName = "LineTraceComponent", bTraceComplex="true", bPersistentShowTrace="false", UnsafeDuringActorConstruction="true"))	
+	bool K2_LineTraceComponent(FVector TraceStart, FVector TraceEnd, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit);
+
+	/** Perform a sphere trace against a single component
+	* @param TraceStart The start of the trace in world-space
+	* @param TraceEnd The end of the trace in world-space
+	* @param SphereRadius Radius of the sphere to trace against the component
+	* @param bTraceComplex Whether or not to trace the complex physics representation or just the simple representation
+	* @param bShowTrace Whether or not to draw the trace in the world (for debugging)
+	* @param bPersistentShowTrace Whether or not to make the debugging draw stay in the world permanently
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (DisplayName = "Sphere Trace Component", ScriptName = "SphereTraceComponent", bTraceComplex = "true", bPersistentShowTrace="false", UnsafeDuringActorConstruction = "true"))
+	bool K2_SphereTraceComponent(FVector TraceStart, FVector TraceEnd, float SphereRadius, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit);
+
+	/** Perform a box overlap against a single component as an AABB (No rotation)
+	* @param InBoxCentre The centre of the box to overlap with the component
+	* @param InBox Description of the box to use in the overlap
+	* @param bTraceComplex Whether or not to trace the complex physics representation or just the simple representation
+	* @param bShowTrace Whether or not to draw the trace in the world (for debugging)
+	* @param bPersistentShowTrace Whether or not to make the debugging draw stay in the world permanently
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (DisplayName = "Box Overlap Component", ScriptName = "BoxOverlapComponent", bTraceComplex = "true", bPersistentShowTrace="false", UnsafeDuringActorConstruction = "true"))
+	bool K2_BoxOverlapComponent(FVector InBoxCentre, const FBox InBox, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit);
+
+	/** Perform a sphere overlap against a single component
+	* @param InSphereCentre The centre of the sphere to overlap with the component
+	* @param InSphereRadius The Radius of the sphere to overlap with the component
+	* @param bTraceComplex Whether or not to trace the complex physics representation or just the simple representation
+	* @param bShowTrace Whether or not to draw the trace in the world (for debugging)
+	* @param bPersistentShowTrace Whether or not to make the debugging draw stay in the world permanently
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (DisplayName = "Sphere Overlap Component", ScriptName = "SphereOverlapComponent", bTraceComplex = "true", bPersistentShowTrace="false", UnsafeDuringActorConstruction = "true"))
+	bool K2_SphereOverlapComponent(FVector InSphereCentre, float InSphereRadius, bool bTraceComplex, bool bShowTrace, bool bPersistentShowTrace, FVector& HitLocation, FVector& HitNormal, FName& BoneName, FHitResult& OutHit);
 
 	/** Sets the bRenderCustomDepth property and marks the render state dirty. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
@@ -1376,6 +1456,13 @@ public:
 public:
 	static int32 CurrentTag;
 
+	/**
+	 * Count of all component overlap events (begin or end) ever generated for any components.
+	 * Changes to this number within a scope can also be a simple way to know if any events were triggered.
+	 * It can also be useful for identifying performance issues due to high numbers of events.
+	 */
+	static uint32 GlobalOverlapEventsCounter;
+
 	/** The primitive's scene info. */
 	FPrimitiveSceneProxy* SceneProxy;
 	
@@ -1395,7 +1482,7 @@ public:
 #if WITH_EDITOR
 	virtual const int32 GetNumUncachedStaticLightingInteractions() const override; // recursive function
 	/** This function is used to create hierarchical LOD for the level. You can decide to opt out if you don't want. */
-	virtual const bool ShouldGenerateAutoLOD() const;
+	virtual const bool ShouldGenerateAutoLOD(const int32 HierarchicalLevelIndex) const;
 #endif
 
 	//~ Begin UActorComponent Interface
@@ -1735,13 +1822,15 @@ protected:
 	virtual void OnCreatePhysicsState() override;
 	virtual void OnDestroyPhysicsState() override;
 	virtual void OnActorEnableCollisionChanged() override;
+
+public:
 	/**
 	 * Called to get the Component To World Transform from the Root BodyInstance
 	 * This needs to be virtual since SkeletalMeshComponent Root has to undo its own transform
 	 * Without this, the root LocalToAtom is overridden by physics simulation, causing kinematic velocity to 
 	 * accelerate simulation
 	 *
-	 * @param : UseBI - root body instsance
+	 * @param : UseBI - root body instance
 	 * @return : New GetComponentTransform() to use
 	 */
 	virtual FTransform GetComponentTransformFromBodyInstance(FBodyInstance* UseBI);
@@ -1771,6 +1860,7 @@ public:
 	virtual bool CanEditChange(const UProperty* InProperty) const override;
 	virtual void UpdateCollisionProfile();
 #endif // WITH_EDITOR
+	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
@@ -1839,7 +1929,7 @@ public:
 	 * Dispatch notification for wake events and propagate to any welded bodies
 	 */
 
-	void DispatchWakeEvents(int32 WakeEvent, FName BoneName);
+	void DispatchWakeEvents(ESleepEvent WakeEvent, FName BoneName);
 
 	/**
 	 * Set collision params on OutParams (such as CollisionResponse, bTraceAsyncScene) to match the settings on this PrimitiveComponent.
@@ -2067,17 +2157,6 @@ protected:
 
 private:
 	
-	/**
-	 *	Applies a RigidBodyState struct to this Actor.
-	 *	When we get an update for the physics, we try to do it smoothly if it is less than ..DeltaThreshold.
-	 *	We directly fix ..InterpAlpha * error. The rest is fixed by altering the velocity to correct the actor over 1.0/..RecipFixTime seconds.
-	 *	So if ..InterpAlpha is 1, we will always just move the actor directly to its correct position (as it the error was over ..DeltaThreshold)
-	 *	If ..InterpAlpha is 0, we will correct just by changing the velocity.
-	 *
-	 * Returns true if restored state is matching requested one (no velocity corrections required)
-	 */
-	bool ApplyRigidBodyState(const FRigidBodyState& NewState, const FRigidBodyErrorCorrection& ErrorCorrection, FVector& OutDeltaPos, FName BoneName = NAME_None);
-
 	/** Check if mobility is set to non-static. If BodyInstanceRequiresSimulation is non-null we check that it is simulated. Triggers a PIE warning if conditions fails */
 	void WarnInvalidPhysicsOperations_Internal(const FText& ActionText, const FBodyInstance* BodyInstanceRequiresSimulation, FName BoneName) const;
 
@@ -2087,7 +2166,7 @@ public:
 	 * Applies RigidBodyState only if it needs to be updated
 	 * NeedsUpdate flag will be removed from UpdatedState after all velocity corrections are finished
 	 */
-	bool ConditionalApplyRigidBodyState(FRigidBodyState& UpdatedState, const FRigidBodyErrorCorrection& ErrorCorrection, FVector& OutDeltaPos, FName BoneName = NAME_None);
+	void SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, const FName BoneName = NAME_None);
 
 	/** 
 	 *	Get the state of the rigid body responsible for this Actor's physics, and fill in the supplied FRigidBodyState struct based on it.
@@ -2299,4 +2378,9 @@ FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::K2_IsQueryCollisionEnabled() co
 FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::K2_IsPhysicsCollisionEnabled() const
 {
 	return IsPhysicsCollisionEnabled();
+}
+
+FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::GetGenerateOverlapEvents() const
+{
+	return bGenerateOverlapEvents;
 }

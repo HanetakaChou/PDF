@@ -32,14 +32,12 @@ static TAutoConsoleVariable<int32> CVarUnbuiltNumWholeSceneDynamicShadowCascades
 	TEXT("DynamicShadowCascades to use when using CSM to preview unbuilt lighting from a directional light"),
 	ECVF_RenderThreadSafe);
 
-/**
- * The directional light policy for TMeshLightingDrawingPolicy.
- */
-class FDirectionalLightPolicy
-{
-public:
-	typedef FLightSceneInfo SceneInfoType;
-};
+static TAutoConsoleVariable<float> CVarCSMShadowDistanceFadeoutMultiplier(
+	TEXT("r.Shadow.CSMShadowDistanceFadeoutMultiplier"),
+	1.0f,
+	TEXT("Multiplier for the CSM distance fade"),
+	ECVF_RenderThreadSafe | ECVF_Scalability );
+
 
 /**
  * The scene info for a directional light.
@@ -50,6 +48,8 @@ public:
 
 	/** Whether to occlude fog and atmosphere inscattering with screenspace blurred occlusion from this light. */
 	bool bEnableLightShaftOcclusion;
+
+	bool bUseInsetShadowsForMovableObjects;
 
 	/** 
 	 * Controls how dark the occlusion masking is, a value of 1 results in no darkening term.
@@ -90,13 +90,14 @@ public:
 	/** see UDirectionalLightComponent::ShadowDistanceFadeoutFraction */
 	float ShadowDistanceFadeoutFraction;
 
-	bool bUseInsetShadowsForMovableObjects;
-
 	/** If greater than WholeSceneDynamicShadowRadius, a cascade will be created to support ray traced distance field shadows covering up to this distance. */
 	float DistanceFieldShadowDistance;
 
 	/** Light source angle in degrees. */
 	float LightSourceAngle;
+
+	/** Light source angle in degrees. */
+	float LightSourceSoftAngle;
 
 	/** Determines how far shadows can be cast, in world units.  Larger values increase the shadowing cost. */
 	float TraceDistance;
@@ -105,6 +106,7 @@ public:
 	FDirectionalLightSceneProxy(const UDirectionalLightComponent* Component):
 		FLightSceneProxy(Component),
 		bEnableLightShaftOcclusion(Component->bEnableLightShaftOcclusion),
+		bUseInsetShadowsForMovableObjects(Component->bUseInsetShadowsForMovableObjects),
 		OcclusionMaskDarkness(Component->OcclusionMaskDarkness),
 		OcclusionDepthRange(Component->OcclusionDepthRange),
 		LightShaftOverrideDirection(Component->LightShaftOverrideDirection),
@@ -112,9 +114,9 @@ public:
 		CascadeDistributionExponent(Component->CascadeDistributionExponent),
 		CascadeTransitionFraction(Component->CascadeTransitionFraction),
 		ShadowDistanceFadeoutFraction(Component->ShadowDistanceFadeoutFraction),
-		bUseInsetShadowsForMovableObjects(Component->bUseInsetShadowsForMovableObjects),
 		DistanceFieldShadowDistance(Component->bUseRayTracedDistanceFieldShadows ? Component->DistanceFieldShadowDistance : 0),
 		LightSourceAngle(Component->LightSourceAngle),
+		LightSourceSoftAngle(Component->LightSourceSoftAngle),
 		TraceDistance(FMath::Clamp(Component->TraceDistance, 1000.0f, 1000000.0f))
 	{
 		LightShaftOverrideDirection.Normalize();
@@ -176,11 +178,11 @@ public:
 		LightParameters.NormalizedLightTangent = -GetDirection();
 
 		LightParameters.SpotAngles = FVector2D(0, 0);
-		LightParameters.LightSourceRadius = 0.0f;
-		LightParameters.LightSoftSourceRadius = 0.0f;
+		LightParameters.SpecularScale = SpecularScale;
+		LightParameters.LightSourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceAngle ) );
+		LightParameters.LightSoftSourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceSoftAngle ) );
 		LightParameters.LightSourceLength = 0.0f;
-		// Prevent 0 Roughness which causes NaNs in Vis_SmithJointApprox
-		LightParameters.LightMinRoughness = FMath::Max(MinRoughness, .02f);
+		LightParameters.SourceTexture = GWhiteTexture;
 	}
 
 	virtual float GetLightSourceAngle() const override
@@ -323,7 +325,7 @@ public:
 	    
 		// The far distance for the dynamic to static fade is the range of the directional light.
 		// The near distance is placed at a depth of 90% of the light's range.
-		const float NearDistance = FarDistance - FarDistance * ShadowDistanceFadeoutFraction;
+		const float NearDistance = FarDistance - FarDistance * ( ShadowDistanceFadeoutFraction * CVarCSMShadowDistanceFadeoutMultiplier.GetValueOnAnyThread() );
 		return FVector2D(NearDistance, 1.0f / FMath::Max<float>(FarDistance - NearDistance, KINDA_SMALL_NUMBER));
 	}
 
@@ -751,7 +753,8 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 	DistanceFieldShadowDistance = 30000.0f;
 	TraceDistance = 10000.0f;
 	FarShadowDistance = 300000.0f;
-	LightSourceAngle = 1;
+	LightSourceAngle = 0.5357f;		// Angle of earth's sun
+	LightSourceSoftAngle = 0.0f;
 
 	DynamicShadowCascades = 3;
 	CascadeDistributionExponent = 3.0f;

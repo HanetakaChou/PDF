@@ -202,6 +202,10 @@
 	#define ENABLE_STATNAMEDEVENTS	0
 #endif
 
+#ifndef ENABLE_STATNAMEDEVENTS_UOBJECT
+	#define ENABLE_STATNAMEDEVENTS_UOBJECT 0
+#endif
+
 /*--------------------------------------------------------------------------------
 	Basic options that by default depend on the build configuration and platform
 
@@ -273,11 +277,16 @@
 	#define LOOKING_FOR_PERF_ISSUES (0 && !(UE_BUILD_SHIPPING))
 #endif
 
-/** Enable the use of the network profiler as long as we are a build that includes stats */
-#define USE_NETWORK_PROFILER         STATS
+/** Enable the use of the network profiler as long as we are not a Shipping or Test build */
+#ifndef USE_NETWORK_PROFILER
+#define USE_NETWORK_PROFILER !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif
 
 /** Enable UberGraphPersistentFrame feature. It can speed up BP compilation (re-instancing) in editor, but introduce an unnecessary overhead in runtime. */
 #define USE_UBER_GRAPH_PERSISTENT_FRAME 1
+
+/** Enable validation of the Uber Graph's persistent frame's layout, this is useful to detect uber graph frame related corruption */
+#define VALIDATE_UBER_GRAPH_PERSISTENT_FRAME (!(UE_BUILD_SHIPPING || UE_BUILD_TEST)) && USE_UBER_GRAPH_PERSISTENT_FRAME
 
 /** Enable fast calls for event thunks into an event graph that have no parameters  */
 #define UE_BLUEPRINT_EVENTGRAPH_FASTCALLS 1
@@ -289,9 +298,16 @@
 #define USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS (USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING && 0)
 
 // 0 (default), set this to 1 to get draw events with "TOGGLEDRAWEVENTS" "r.ShowMaterialDrawEvents" and the "ProfileGPU" command working in test
-#define ALLOW_PROFILEGPU_IN_TEST 0
+#ifndef ALLOW_PROFILEGPU_IN_TEST
+	#define ALLOW_PROFILEGPU_IN_TEST 0
+#endif
+
+#ifndef ALLOW_PROFILEGPU_IN_SHIPPING
+	#define ALLOW_PROFILEGPU_IN_SHIPPING 0
+#endif
+
 // draw events with "TOGGLEDRAWEVENTS" "r.ShowMaterialDrawEvents" (for ProfileGPU, Pix, Razor, RenderDoc, ...) and the "ProfileGPU" command are normally compiled out for TEST and SHIPPING
-#define WITH_PROFILEGPU (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_TEST && ALLOW_PROFILEGPU_IN_TEST))
+#define WITH_PROFILEGPU (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_TEST && ALLOW_PROFILEGPU_IN_TEST) || (UE_BUILD_SHIPPING && ALLOW_PROFILEGPU_IN_SHIPPING))
 
 #ifndef ALLOW_CHEAT_CVARS_IN_TEST
 	#define ALLOW_CHEAT_CVARS_IN_TEST 1
@@ -311,3 +327,9 @@
 #endif
 
 #define USE_HITCH_DETECTION (ALLOW_HITCH_DETECTION && !WITH_EDITORONLY_DATA && !IS_PROGRAM && !UE_BUILD_DEBUG)
+
+// Controls whether shipping builds create backups of the most recent log file.
+// All other configurations always create backups.
+#ifndef PRESERVE_LOG_BACKUPS_IN_SHIPPING
+	#define PRESERVE_LOG_BACKUPS_IN_SHIPPING 1
+#endif

@@ -7,6 +7,8 @@
 #include "Engine/World.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/LevelStreaming.h"
+#include "LevelUtils.h"
 
 static const FName SequencerActorTag(TEXT("SequencerActor"));
 
@@ -20,6 +22,25 @@ UClass* FLevelSequenceActorSpawner::GetSupportedTemplateType() const
 	return AActor::StaticClass();
 }
 
+ULevelStreaming* GetLevelStreaming(FString SafeLevelName, UWorld& World)
+{
+	if (FPackageName::IsShortPackageName(SafeLevelName))
+	{
+		// Make sure MyMap1 and Map1 names do not resolve to a same streaming level
+		SafeLevelName = TEXT("/") + SafeLevelName;
+	}
+
+	for (ULevelStreaming* LevelStreaming : World.GetStreamingLevels())
+	{
+		if (LevelStreaming && LevelStreaming->GetWorldAssetPackageName().EndsWith(SafeLevelName, ESearchCase::IgnoreCase))
+		{
+			return LevelStreaming;
+		}
+	}
+
+	return nullptr;
+}
+
 UObject* FLevelSequenceActorSpawner::SpawnObject(FMovieSceneSpawnable& Spawnable, FMovieSceneSequenceIDRef TemplateID, IMovieScenePlayer& Player)
 {
 	AActor* ObjectTemplate = Cast<AActor>(Spawnable.GetObjectTemplate());
@@ -27,9 +48,6 @@ UObject* FLevelSequenceActorSpawner::SpawnObject(FMovieSceneSpawnable& Spawnable
 	{
 		return nullptr;
 	}
-
-	// @todo sequencer: We should probably spawn these in a specific sub-level!
-	// World->CurrentLevel = ???;
 
 	const EObjectFlags ObjectFlags = RF_Transient;
 
@@ -43,10 +61,28 @@ UObject* FLevelSequenceActorSpawner::SpawnObject(FMovieSceneSpawnable& Spawnable
 		WorldContext = GWorld;
 	}
 
+	ULevelStreaming* LevelStreaming = GetLevelStreaming(Spawnable.GetLevelName().ToString(), *WorldContext);
+	if (LevelStreaming && LevelStreaming->GetWorldAsset().IsValid())
+	{
+		WorldContext = LevelStreaming->GetWorldAsset().Get();
+	}
+	else if (Spawnable.GetLevelName() != NAME_None)
+	{
+		UE_LOG(LogMovieScene, Warning, TEXT("Can't find sublevel '%s' to spawn '%s' into"), *Spawnable.GetLevelName().ToString(), *Spawnable.GetName());
+	}
+
+	// Construct the object with the same name that we will set later on the actor to avoid renaming it inside SetActorLabel
+	FName SpawnName =
+#if WITH_EDITOR
+		MakeUniqueObjectName(WorldContext->PersistentLevel, ObjectTemplate->GetClass(), *Spawnable.GetName());
+#else
+		NAME_None;
+#endif
+
 	// Spawn the puppet actor
 	FActorSpawnParameters SpawnInfo;
 	{
-		SpawnInfo.Name = NAME_None;
+		SpawnInfo.Name = SpawnName;
 		SpawnInfo.ObjectFlags = ObjectFlags;
 		SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		// @todo: Spawning with a non-CDO template is fraught with issues
@@ -105,17 +141,25 @@ UObject* FLevelSequenceActorSpawner::SpawnObject(FMovieSceneSpawnable& Spawnable
 		// Explicitly set RF_Transactional on spawned actors so we can undo/redo properties on them. We don't add this as a spawn flag since we don't want to transact spawn/destroy events.
 		SpawnedActor->SetFlags(RF_Transactional);
 
-		for (UActorComponent* Component : TInlineComponentArray<UActorComponent*>(SpawnedActor))
+		for (UActorComponent* Component : SpawnedActor->GetComponents())
 		{
-			Component->SetFlags(RF_Transactional);
+			if (Component)
+			{
+				Component->SetFlags(RF_Transactional);
+			}
 		}
-	}
-
-	SpawnedActor->SetActorLabel(Spawnable.GetName());
+	}	
 #endif
 
 	const bool bIsDefaultTransform = true;
 	SpawnedActor->FinishSpawning(SpawnTransform, bIsDefaultTransform);
+
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		SpawnedActor->SetActorLabel(Spawnable.GetName());
+	}
+#endif
 
 	return SpawnedActor;
 }
@@ -133,9 +177,12 @@ void FLevelSequenceActorSpawner::DestroySpawnedObject(UObject& Object)
 	{
 		// Explicitly remove RF_Transactional on spawned actors since we don't want to trasact spawn/destroy events
 		Actor->ClearFlags(RF_Transactional);
-		for (UActorComponent* Component : TInlineComponentArray<UActorComponent*>(Actor))
+		for (UActorComponent* Component : Actor->GetComponents())
 		{
-			Component->ClearFlags(RF_Transactional);
+			if (Component)
+			{
+				Component->ClearFlags(RF_Transactional);
+			}
 		}
 	}
 #endif

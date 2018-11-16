@@ -1,22 +1,27 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "AndroidWebBrowserWidget.h"
+
+#if USE_ANDROID_JNI
+
 #include "AndroidWebBrowserWindow.h"
 #include "AndroidWebBrowserDialog.h"
-#include "AndroidJSScripting.h"
-#include "AndroidApplication.h"
-#include "AndroidWindow.h"
-#include "AndroidJava.h"
-#include "Async.h"
-#include "ScopeLock.h"
+#include "MobileJS/MobileJSScripting.h"
+#include "Android/AndroidApplication.h"
+#include "Android/AndroidWindow.h"
+#include "Android/AndroidJava.h"
+#include "Async/Async.h"
+#include "Misc/ScopeLock.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
 #include "ExternalTexture.h"
-#include "SlateTextures.h"
+#include "Slate/SlateTextures.h"
 #include "SlateMaterialBrush.h"
-#include "SharedPointer.h"
+#include "Templates/SharedPointer.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "WebBrowserTextureSample.h"
+#include "WebBrowserModule.h"
+#include "IWebBrowserSingleton.h"
 
 // For UrlDecode
 #include "Http.h"
@@ -24,7 +29,7 @@
 #include <jni.h>
 
 FCriticalSection SAndroidWebBrowserWidget::WebControlsCS;
-TMap<jlong, TWeakPtr<SAndroidWebBrowserWidget>> SAndroidWebBrowserWidget::AllWebControls;
+TMap<int64, TWeakPtr<SAndroidWebBrowserWidget>> SAndroidWebBrowserWidget::AllWebControls;
 
 TSharedPtr<SAndroidWebBrowserWidget> SAndroidWebBrowserWidget::GetWidgetPtr(JNIEnv* JEnv, jobject Jobj)
 {
@@ -93,18 +98,19 @@ SAndroidWebBrowserWidget::~SAndroidWebBrowserWidget()
 	}
 
 	FScopeLock L(&WebControlsCS);
-	AllWebControls.Remove(reinterpret_cast<jlong>(this));
+	AllWebControls.Remove(reinterpret_cast<int64>(this));
 }
 
 void SAndroidWebBrowserWidget::Construct(const FArguments& Args)
 {
 	{
 		FScopeLock L(&WebControlsCS);
-		AllWebControls.Add(reinterpret_cast<jlong>(this), StaticCastSharedRef<SAndroidWebBrowserWidget>(AsShared()));
+		AllWebControls.Add(reinterpret_cast<int64>(this), StaticCastSharedRef<SAndroidWebBrowserWidget>(AsShared()));
 	}
 
-	IsAndroid3DBrowser = true;
 	WebBrowserWindowPtr = Args._WebBrowserWindow;
+	IsAndroid3DBrowser = true;
+
 	HistorySize = 0;
 	HistoryPosition = 0;
 	
@@ -121,21 +127,28 @@ void SAndroidWebBrowserWidget::Construct(const FArguments& Args)
 	// create external texture
 	WebBrowserTexture = NewObject<UWebBrowserTexture>((UObject*)GetTransientPackage(), NAME_None, RF_Transient | RF_Public);
 
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("SAndroidWebBrowserWidget::Construct0"));
 	if (WebBrowserTexture != nullptr)
 	{
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("SAndroidWebBrowserWidget::Construct01"));
+
 		WebBrowserTexture->UpdateResource();
 		WebBrowserTexture->AddToRoot();
 	}
 
 	// create wrapper material
-	UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/WebBrowserWidget/WebTexture_M"), nullptr, LOAD_None, nullptr);
-	if (Material)
+	IWebBrowserSingleton* WebBrowserSingleton = IWebBrowserModule::Get().GetSingleton();
+	
+	UMaterialInterface* DefaultWBMaterial = Args._UseTransparency? WebBrowserSingleton->GetDefaultTranslucentMaterial(): WebBrowserSingleton->GetDefaultMaterial();
+	if (WebBrowserSingleton && DefaultWBMaterial)
 	{
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("SAndroidWebBrowserWidget::Construct1"));
 		// create wrapper material
-		WebBrowserMaterial = UMaterialInstanceDynamic::Create(Material, nullptr);
+		WebBrowserMaterial = UMaterialInstanceDynamic::Create(DefaultWBMaterial, nullptr);
 
 		if (WebBrowserMaterial)
 		{
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("SAndroidWebBrowserWidget::Construct2"));
 			WebBrowserMaterial->SetTextureParameterValue("SlateUI", WebBrowserTexture);
 			WebBrowserMaterial->AddToRoot();
 
@@ -154,13 +167,17 @@ void SAndroidWebBrowserWidget::Construct(const FArguments& Args)
 
 void SAndroidWebBrowserWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	if (WebBrowserWindowPtr.IsValid() && WebBrowserWindowPtr.Pin()->GetParentWindow().IsValid())
+	if(WebBrowserWindowPtr.IsValid())
 	{
-		bool ShouldSetAndroid3DBrowser = WebBrowserWindowPtr.Pin()->GetParentWindow().Get()->IsVirtualWindow();
-		if(IsAndroid3DBrowser != ShouldSetAndroid3DBrowser)
+		WebBrowserWindowPtr.Pin()->SetTickLastFrame();
+		if (WebBrowserWindowPtr.Pin()->GetParentWindow().IsValid())
 		{
-			IsAndroid3DBrowser = ShouldSetAndroid3DBrowser;
-			JavaWebBrowser->SetAndroid3DBrowser(IsAndroid3DBrowser);
+			bool ShouldSetAndroid3DBrowser = WebBrowserWindowPtr.Pin()->GetParentWindow().Get()->IsVirtualWindow();
+			if (IsAndroid3DBrowser != ShouldSetAndroid3DBrowser)
+			{
+				IsAndroid3DBrowser = ShouldSetAndroid3DBrowser;
+				JavaWebBrowser->SetAndroid3DBrowser(IsAndroid3DBrowser);
+			}
 		}
 	}
 
@@ -384,7 +401,9 @@ void SAndroidWebBrowserWidget::Tick(const FGeometry& AllottedGeometry, const dou
 
 int32 SAndroidWebBrowserWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
-	if (IsAndroid3DBrowser && WebBrowserBrush.IsValid())
+	bool bIsVisible = !WebBrowserWindowPtr.IsValid() || WebBrowserWindowPtr.Pin()->IsVisible();
+
+	if (bIsVisible && IsAndroid3DBrowser && WebBrowserBrush.IsValid())
 	{
 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), WebBrowserBrush.Get(), ESlateDrawEffect::None);
 	}
@@ -437,7 +456,6 @@ void SAndroidWebBrowserWidget::GoForward()
 	JavaWebBrowser->GoForward();
 }
 
-
 bool SAndroidWebBrowserWidget::CanGoBack()
 {
 	return HistoryPosition > 1;
@@ -446,6 +464,11 @@ bool SAndroidWebBrowserWidget::CanGoBack()
 bool SAndroidWebBrowserWidget::CanGoForward()
 {
 	return HistoryPosition < HistorySize-1;
+}
+
+void SAndroidWebBrowserWidget::SetWebBrowserVisibility(bool InIsVisible)
+{
+	JavaWebBrowser->SetVisibility(InIsVisible);
 }
 
 jbyteArray SAndroidWebBrowserWidget::HandleShouldInterceptRequest(jstring JUrl)
@@ -458,7 +481,7 @@ jbyteArray SAndroidWebBrowserWidget::HandleShouldInterceptRequest(jstring JUrl)
 
 	FString Response;
 	bool bOverrideResponse = false;
-	int32 Position = Url.Find(*FAndroidJSScripting::JSMessageTag, ESearchCase::CaseSensitive);
+	int32 Position = Url.Find(*FMobileJSScripting::JSMessageTag, ESearchCase::CaseSensitive);
 	if (Position >= 0)
 	{
 		AsyncTask(ENamedThreads::GameThread, [Url, Position, this]()
@@ -469,7 +492,7 @@ jbyteArray SAndroidWebBrowserWidget::HandleShouldInterceptRequest(jstring JUrl)
 				if (BrowserWindow.IsValid())
 				{
 					FString Origin = Url.Left(Position);
-					FString Message = Url.RightChop(Position + FAndroidJSScripting::JSMessageTag.Len());
+					FString Message = Url.RightChop(Position + FMobileJSScripting::JSMessageTag.Len());
 
 					TArray<FString> Params;
 					Message.ParseIntoArray(Params, TEXT("/"), false);
@@ -736,3 +759,5 @@ JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onReceiv
 		Widget->HandleReceivedTitle(Title);
 	}
 }
+
+#endif // USE_ANDROID_JNI

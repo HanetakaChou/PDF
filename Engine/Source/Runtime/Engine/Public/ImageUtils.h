@@ -130,6 +130,9 @@ public:
 	 *
 	 */
 	ENGINE_API static bool ExportRenderTarget2DAsPNG(UTextureRenderTarget2D* TexRT, FArchive& Ar);
+
+	ENGINE_API static bool ExportRenderTarget2DAsEXR(UTextureRenderTarget2D* TexRT, FArchive& Ar);
+
 	/**
 	* Exports a UTexture2D as an HDR image on the disk.
 	*
@@ -140,6 +143,16 @@ public:
 	*/
 	ENGINE_API static bool ExportTexture2DAsHDR(UTexture2D* TexRT, FArchive& Ar);
 
+	/**
+	 * Imports a texture file from disk and creates Texture2D from it
+	 */
+	ENGINE_API static UTexture2D* ImportFileAsTexture2D(const FString& Filename);
+
+	/**
+	 * Imports a texture a buffer and creates Texture2D from it
+	 */
+	ENGINE_API static UTexture2D* ImportBufferAsTexture2D(const TArray<uint8>& Buffer);
+	
 	/**
 	* Exports a UTextureRenderTargetCube as an HDR image on the disk.
 	*
@@ -159,4 +172,5 @@ public:
 	*
 	*/
 	ENGINE_API static bool ExportTextureCubeAsHDR(UTextureCube* TexRT, FArchive& Ar);
+
 };

@@ -8,6 +8,9 @@
 #include "Delegates/Delegate.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/ThreadSingleton.h"
+#include "StatsCommon.h"
+#include "ProfilingDebugging/UMemoryDefines.h"
+#include "Stats/Stats2.h"
 
 /** 
  *	Unreal Engine Stats system
@@ -289,16 +292,6 @@
  *				}
  */
 
-#define FORCEINLINE_STATS FORCEINLINE
-//#define FORCEINLINE_STATS FORCEINLINE_DEBUGGABLE
-#define checkStats(x)
-
-#if !defined(STATS)
-#error "STATS must be defined as either zero or one."
-#endif
-
-#include "ProfilingDebugging/UMemoryDefines.h"
-
 struct TStatId;
 
 // used by the profiler
@@ -323,7 +316,9 @@ enum EStatType
 	#define STAT(x)
 #endif
 
-#include "Stats/Stats2.h"
+#ifndef USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION
+#define USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION 1
+#endif
 
 #if STATS
 
@@ -397,11 +392,41 @@ struct TStatId
 	}
 };
 
+#if USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
+extern CORE_API bool GHitchDetected;
+
+class FLightweightStatScope
+{
+	const PROFILER_CHAR* StatString;
+public:
+	FORCEINLINE FLightweightStatScope(const PROFILER_CHAR* InStat)
+	{
+		StatString = GHitchDetected ? nullptr : InStat;
+	}
+
+	FORCEINLINE ~FLightweightStatScope()
+	{
+		if (GHitchDetected && StatString)
+		{
+			ReportHitch();
+		}
+	}
+
+	CORE_API void ReportHitch();
+};
+
+#endif
+
 class FScopeCycleCounter
 {
 public:
 	FORCEINLINE FScopeCycleCounter(TStatId InStatId, bool bAlways = false)
-		: bPop(false)
+		: 
+#if USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
+		StatScope(InStatId.StatString),
+#endif
+		
+		bPop(false)
 	{
 		if (GCycleStatsShouldEmitNamedEvents && InStatId.IsValidStat())
 		{
@@ -418,6 +443,9 @@ public:
 		}
 	}
 private:
+#if USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
+	FLightweightStatScope StatScope;
+#endif
 	bool bPop;
 };
 
@@ -440,11 +468,7 @@ FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 {
 }
 
-// Remove all the macros
 
-#ifndef USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION
-#define USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION 1
-#endif
 
 #if ENABLE_STATNAMEDEVENTS
 
@@ -486,7 +510,7 @@ public:
 
 	FORCEINLINE ~FLightweightStatScope()
 	{
-		if (GHitchDetected && StatString && IsInGameThread())
+		if (GHitchDetected && StatString)
 		{
 			ReportHitch();
 		}
@@ -614,13 +638,13 @@ struct FDynamicStats
 			TStatGroup::GetGroupName(),
 			TStatGroup::GetGroupCategory(),
 			TStatGroup::GetDescription(),
-			true, EStatDataType::ST_int64, true );
+			true, EStatDataType::ST_int64, true, false );
 
 		TStatId StatID = IStatGroupEnableManager::Get().GetHighPerformanceEnableForStat( StatNameOrDescription,
 			TStatGroup::GetGroupName(),
 			TStatGroup::GetGroupCategory(),
 			TStatGroup::DefaultEnable,
-			true, EStatDataType::ST_int64, nullptr, true );
+			true, EStatDataType::ST_int64, nullptr, true, false );
 
 		return StatID;
 #endif // STATS
@@ -646,13 +670,13 @@ struct FDynamicStats
 			TStatGroup::GetGroupName(),
 			TStatGroup::GetGroupCategory(),
 			TStatGroup::GetDescription(),
-			false, EStatDataType::ST_int64, false, MemRegion);
+			false, EStatDataType::ST_int64, false, false, MemRegion);
 
 		TStatId StatID = IStatGroupEnableManager::Get().GetHighPerformanceEnableForStat(StatNameOrDescription,
 			TStatGroup::GetGroupName(),
 			TStatGroup::GetGroupCategory(),
 			TStatGroup::DefaultEnable,
-			false, EStatDataType::ST_int64, *StatNameOrDescription.ToString(), false, MemRegion);
+			false, EStatDataType::ST_int64, *StatNameOrDescription.ToString(), false, false, MemRegion);
 
 		return StatID;
 #endif // STATS

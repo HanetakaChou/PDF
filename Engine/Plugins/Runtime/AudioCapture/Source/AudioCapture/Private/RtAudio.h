@@ -1,3 +1,6 @@
+#include "AudioCapture.h"
+
+#if PLATFORM_WINDOWS
 /************************************************************************/
 /*! \class RtAudio
     \brief Realtime audio i/o C++ classes.
@@ -46,7 +49,7 @@
 #define __RTAUDIO_H
 
 #if PLATFORM_WINDOWS
-#include "WindowsHWrapper.h"
+#include "Windows/WindowsHWrapper.h"
 
 #ifndef __WINDOWS_DS__
 #define __WINDOWS_DS__
@@ -1189,3 +1192,4 @@ public:
 // End:
 //
 // vim: et sts=2 sw=2
+#endif // PLATFORM_WINDOWS

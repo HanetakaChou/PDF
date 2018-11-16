@@ -29,6 +29,7 @@ class IDetailCustomization;
 class IDetailKeyframeHandler;
 class IDetailPropertyExtensionHandler;
 class SDetailNameArea;
+class IPropertyGenerationUtilities;
 
 
 
@@ -44,9 +45,11 @@ struct FDetailFilter
 		, bShowAllAdvanced(false)
 		, bShowOnlyDiffering(false)
 		, bShowAllChildrenIfCategoryMatches(true)
+		, bShowKeyable(false)
+		, bShowAnimated(false)
 	{}
 
-	bool IsEmptyFilter() const { return FilterStrings.Num() == 0 && bShowOnlyModifiedProperties == false && bShowAllAdvanced == false && bShowOnlyDiffering == false && bShowAllChildrenIfCategoryMatches == false; }
+	bool IsEmptyFilter() const { return FilterStrings.Num() == 0 && bShowOnlyModifiedProperties == false && bShowAllAdvanced == false && bShowOnlyDiffering == false && bShowAllChildrenIfCategoryMatches == false && bShowKeyable == false && bShowAnimated == false; }
 
 	/** Any user search terms that items must match */
 	TArray<FString> FilterStrings;
@@ -58,6 +61,10 @@ struct FDetailFilter
 	bool bShowOnlyDiffering;
 	/** If we should show all the children if their category name matches the search */
 	bool bShowAllChildrenIfCategoryMatches;
+	/** If we should only show keyable properties */
+	bool bShowKeyable;
+	/** If we should only show animated properties */
+	bool bShowAnimated;
 	TSet<FPropertyPath> WhitelistedProperties;
 };
 
@@ -160,7 +167,8 @@ public:
 	virtual void UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> InRootPropertyNode, FDetailLayoutData& LayoutData, bool bIsExternal) override;
 	virtual FNotifyHook* GetNotifyHook() const override { return DetailsViewArgs.NotifyHook; }
 	virtual const FCustomPropertyTypeLayoutMap& GetCustomPropertyTypeLayoutMap() const { return InstancedTypeToLayoutMap; }
-	void SaveExpandedItems( TSharedRef<FPropertyNode> StartNode ) override;
+	virtual void SaveExpandedItems( TSharedRef<FPropertyNode> StartNode ) override;
+	virtual void RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode) override;
 
 	virtual bool IsConnected() const = 0;
 	virtual FRootPropertyNodeList& GetRootNodes() = 0;
@@ -202,13 +210,6 @@ public:
 	virtual FReply OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent) override;
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
 	// End of SWidget interface
-
-
-	/**
-	* Restores the expansion state of property nodes for the selected object set
-	*/
-	void RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode);
-
 
 protected:
 	/**
@@ -270,6 +271,12 @@ protected:
 
 	/** @return true if show all advanced is checked */
 	bool IsShowAllChildrenIfCategoryMatchesChecked() const { return CurrentFilter.bShowAllChildrenIfCategoryMatches; }
+	
+	/** @return true if show keyable is checked */
+	bool IsShowKeyableChecked() const { return CurrentFilter.bShowKeyable; }
+	
+	/** @return true if show animated is checked */
+	bool IsShowAnimatedChecked() const { return CurrentFilter.bShowAnimated; }
 
 	/** Called when show only modified is clicked */
 	void OnShowOnlyModifiedClicked();
@@ -282,6 +289,12 @@ protected:
 
 	/** Called when show all children if category matches is clicked */
 	void OnShowAllChildrenIfCategoryMatchesClicked();
+
+	/** Called when show keyable is clicked */
+	void OnShowKeyableClicked();
+	
+	/** Calledw when show animated is clicked */
+	void OnShowAnimatedClicked();
 
 	/**
 	* Updates the details with the passed in filter
@@ -355,6 +368,8 @@ protected:
 	bool bHasOpenColorPicker;
 	/** Settings for this view */
 	TSharedPtr<class IPropertyUtilities> PropertyUtilities;
+	/** Gets internal utilities for generating property layouts. */
+	TSharedPtr<IPropertyGenerationUtilities> PropertyGenerationUtilities;
 	/** The name area which is not recreated when selection changes */
 	TSharedPtr<class SDetailNameArea> NameArea;
 	/** Asset pool for rendering and managing asset thumbnails visible in this view*/

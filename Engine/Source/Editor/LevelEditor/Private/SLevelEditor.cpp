@@ -46,7 +46,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "SActorDetails.h"
 #include "GameFramework/WorldSettings.h"
-#include "LayoutExtender.h"
+#include "Framework/Docking/LayoutExtender.h"
 #include "HierarchicalLODOutlinerModule.h"
 
 
@@ -130,7 +130,7 @@ void SLevelEditor::BindCommands()
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::ToggleVR ),
 		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::ToggleVR_CanExecute ),
 		FIsActionChecked::CreateStatic( &FLevelEditorActionCallbacks::ToggleVR_IsChecked ),
-		FIsActionButtonVisible::CreateStatic(&FLevelEditorActionCallbacks::ToggleVR_CanExecute));
+		FIsActionButtonVisible::CreateStatic(&FLevelEditorActionCallbacks::ToggleVR_IsButtonActive));
 
 	LevelEditorCommands->MapAction(
 		Actions.WorldProperties,
@@ -719,12 +719,7 @@ TSharedRef<SDockTab> SLevelEditor::SpawnLevelEditorTab( const FSpawnTabArgs& Arg
 			.Label(Label)
 			.ToolTip(IDocumentation::Get()->CreateToolTip(Label, nullptr, "Shared/Editor/HLOD", "main"))
 			[
-				SNew(SBorder)
-				.Padding(0)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))				
-				[
-					HLODModule.CreateHLODOutlinerWidget()
-				]
+				HLODModule.CreateHLODOutlinerWidget()
 			];
 	}
 	else if( TabIdentifier == WorldBrowserHierarchyTab )

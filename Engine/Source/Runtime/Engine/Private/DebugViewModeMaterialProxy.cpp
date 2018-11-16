@@ -134,7 +134,7 @@ FDebugViewModeMaterialProxy::FDebugViewModeMaterialProxy(UMaterialInterface* InM
 
 		// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
 		// This is necessary as we change FMaterial attributes like GetShadingModel(), which factor into the ShouldCache functions that determine dependent shader types
-		ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes);
+		ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, GMaxRHIShaderPlatform);
 	}
 
 	ResourceId.Usage = InUsage;
@@ -147,15 +147,16 @@ bool FDebugViewModeMaterialProxy::RequiresSynchronousCompilation() const
 	return bSynchronousCompilation;
 }
 
-const FMaterial* FDebugViewModeMaterialProxy::GetMaterial(ERHIFeatureLevel::Type FeatureLevel) const
+void FDebugViewModeMaterialProxy::GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial) const
 {
 	if (GetRenderingThreadShaderMap())
 	{
-		return this;
+		OutMaterialRenderProxy = this;
+		OutMaterial = this;
 	}
 	else
 	{
-		return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterial(FeatureLevel);
+		UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(false)->GetMaterialWithFallback(FeatureLevel, OutMaterialRenderProxy, OutMaterial);
 	}
 }
 

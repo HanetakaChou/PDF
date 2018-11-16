@@ -1,6 +1,6 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "StringTableCore.h"
+#include "Internationalization/StringTableCore.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ConfigCacheIni.h"
@@ -48,6 +48,18 @@ const FString& FStringTableEntry::GetSourceString() const
 FTextDisplayStringPtr FStringTableEntry::GetDisplayString() const
 {
 	return DisplayString;
+}
+
+const FString& FStringTableEntry::GetPlaceholderSourceString()
+{
+	static const FString MissingSourceString = TEXT("<MISSING STRING TABLE ENTRY>");
+	return MissingSourceString;
+}
+
+FTextDisplayStringRef FStringTableEntry::GetPlaceholderDisplayString()
+{
+	static const FTextDisplayStringRef MissingDisplayString = MakeShared<FString, ESPMode::ThreadSafe>(TEXT("<MISSING STRING TABLE ENTRY>"));
+	return MissingDisplayString;
 }
 
 
@@ -587,10 +599,10 @@ void FStringTableRedirects::RedirectTableIdAndKey(FName& InOutTableId, FString& 
 }
 
 
-void FStringTableReferenceCollection::CollectAssetReferences(const FName InTableId, FArchive& InAr)
+void FStringTableReferenceCollection::CollectAssetReferences(const FName InTableId, FStructuredArchive::FRecord Record)
 {
-	if (InAr.IsObjectReferenceCollector())
+	if (Record.GetUnderlyingArchive().IsObjectReferenceCollector())
 	{
-		IStringTableEngineBridge::CollectStringTableAssetReferences(InTableId, InAr);
+		IStringTableEngineBridge::CollectStringTableAssetReferences(InTableId, Record.EnterField(FIELD_NAME_TEXT("AssetReferences")));
 	}
 }

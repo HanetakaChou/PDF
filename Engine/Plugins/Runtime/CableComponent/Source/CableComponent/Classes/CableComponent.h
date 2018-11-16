@@ -40,7 +40,8 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void SendRenderDynamicData_Concurrent() override;
 	virtual void CreateRenderState_Concurrent() override;
-	//~ Begin UActorComponent Interface.
+	virtual void ApplyWorldOffset(const FVector& InOffset, bool bWorldShift) override;
+	//~ End UActorComponent Interface.
 
 	//~ Begin USceneComponent Interface.
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
@@ -48,7 +49,7 @@ public:
 	virtual bool HasAnySockets() const override;
 	virtual bool DoesSocketExist(FName InSocketName) const override;
 	virtual FTransform GetSocketTransform(FName InSocketName, ERelativeTransformSpace TransformSpace = RTS_World) const override;
-	//~ Begin USceneComponent Interface.
+	//~ End USceneComponent Interface.
 
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;

@@ -25,8 +25,8 @@
 #include "Matinee/InterpGroupInst.h"
 #include "Net/OnlineEngineInterface.h"
 #include "SceneManagement.h"
-#include "PhysicsPublic.h"
-#include "SkeletalMeshRenderData.h"
+#include "Physics/PhysicsInterfaceCore.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "HAL/PlatformApplicationMisc.h"
 
 #include "IHeadMountedDisplay.h"
@@ -89,7 +89,18 @@ FLocalPlayerContext::FLocalPlayerContext( const FLocalPlayerContext& InPlayerCon
 
 bool FLocalPlayerContext::IsValid() const
 {
-	return LocalPlayer.IsValid() && GetWorld() && GetPlayerController() && GetLocalPlayer() && GetPlayerController()->Player;
+	if (ULocalPlayer* LocalPlayerPtr = LocalPlayer.Get())
+	{
+		if (UWorld* WorldPtr = GetWorld())
+		{
+			if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController))
+			{
+				return (PC->Player != nullptr);
+			}
+		}
+	}
+
+	return false;
 }
 
 bool FLocalPlayerContext::IsInitialized() const
@@ -105,52 +116,59 @@ UWorld* FLocalPlayerContext::GetWorld() const
 		return WorldPtr;
 	}
 
-	check( LocalPlayer.IsValid() );
-	return LocalPlayer->GetWorld();
+	return GetLocalPlayer()->GetWorld();
 }
 
 ULocalPlayer* FLocalPlayerContext::GetLocalPlayer() const
 {
-	check( LocalPlayer.IsValid() );
-	return LocalPlayer.Get();
+	ULocalPlayer* LocalPlayerPtr = LocalPlayer.Get();
+	check(LocalPlayerPtr);
+	return LocalPlayerPtr;
 }
 
 APlayerController* FLocalPlayerContext::GetPlayerController() const
 {
-	check( LocalPlayer.IsValid() );
+	ULocalPlayer* LocalPlayerPtr = GetLocalPlayer();
 	UWorld* WorldPtr = World.Get();
-	return WorldPtr != nullptr ? LocalPlayer->GetPlayerController(WorldPtr) : LocalPlayer->PlayerController;
+	return (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController);
 }
 
 class AGameStateBase* FLocalPlayerContext::GetGameState() const
 {
-	UWorld* WorldPtr = World.Get();
-	if (WorldPtr != nullptr)
+	AGameStateBase* GameState = nullptr;
+
+	if (UWorld* WorldPtr = World.Get())
 	{
-		return WorldPtr->GetGameState();
+		GameState = WorldPtr->GetGameState();
+	}
+	else
+	{
+		ULocalPlayer* LocalPlayerPtr = GetLocalPlayer();
+		if (UWorld* LocalPlayerWorld = LocalPlayerPtr->GetWorld())
+		{
+			GameState = LocalPlayerWorld->GetGameState();
+		}
 	}
 
-	check(LocalPlayer.IsValid());
-	UWorld* LocalPlayerWorld = LocalPlayer->GetWorld();
-	return LocalPlayerWorld ? LocalPlayerWorld->GetGameState() : NULL;
+	return GameState;
 }
 
 APlayerState* FLocalPlayerContext::GetPlayerState() const
 {
 	APlayerController* PC = GetPlayerController();
-	return PC ? PC->PlayerState : NULL;
+	return PC ? PC->PlayerState : nullptr;
 }
 
 AHUD* FLocalPlayerContext::GetHUD() const
 {
 	APlayerController* PC = GetPlayerController();
-	return PC ? PC->MyHUD : NULL;
+	return PC ? PC->MyHUD : nullptr;
 }
 
 class APawn* FLocalPlayerContext::GetPawn() const
 {
 	APlayerController* PC = GetPlayerController();
-	return PC ? PC->GetPawn() : NULL;
+	return PC ? PC->GetPawn() : nullptr;
 }
 
 void FLocalPlayerContext::SetLocalPlayer( const ULocalPlayer* InLocalPlayer )
@@ -167,11 +185,26 @@ void FLocalPlayerContext::SetPlayerController( const APlayerController* InPlayer
 
 bool FLocalPlayerContext::IsFromLocalPlayer(const AActor* ActorToTest) const
 {
-	return (ActorToTest != nullptr) &&
-		IsValid() &&
-		(ActorToTest == GetPlayerController() ||
-		ActorToTest == GetPlayerState() ||
-		ActorToTest == GetPawn());
+	if (ActorToTest)
+	{
+		if (ULocalPlayer* LocalPlayerPtr = LocalPlayer.Get())
+		{
+			if (UWorld* WorldPtr = GetWorld())
+			{
+				if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController))
+				{
+					if (   ActorToTest == PC
+					    || ActorToTest == PC->GetPawn()
+					    || ActorToTest == PC->PlayerState)
+					{
+						return true;
+					}
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 
@@ -649,7 +682,7 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo, EStereoscopicPass
 	{
 		if (PlayerController->PlayerCameraManager != NULL)
 		{
-			OutViewInfo = PlayerController->PlayerCameraManager->CameraCache.POV;
+			OutViewInfo = PlayerController->PlayerCameraManager->GetCameraCachePOV();
 			OutViewInfo.FOV = PlayerController->PlayerCameraManager->GetFOVAngle();
 			PlayerController->GetPlayerViewPoint(/*out*/ OutViewInfo.Location, /*out*/ OutViewInfo.Rotation);
 		}
@@ -663,6 +696,9 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo, EStereoscopicPass
 	{
 		ViewExt->SetupViewPoint(PlayerController, OutViewInfo);
 	};
+
+	// We store the originally desired FOV as other classes may adjust to account for ultra-wide aspect ratios
+	OutViewInfo.DesiredFOV = OutViewInfo.FOV;
 }
 
 bool ULocalPlayer::CalcSceneViewInitOptions(
@@ -797,6 +833,8 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	OutViewLocation = ViewInfo.Location;
 	OutViewRotation = ViewInfo.Rotation;
 	ViewInitOptions.bUseFieldOfViewForLOD = ViewInfo.bUseFieldOfViewForLOD;
+	ViewInitOptions.FOV = ViewInfo.FOV;
+	ViewInitOptions.DesiredFOV = ViewInfo.DesiredFOV;
 
 	// Fill out the rest of the view init options
 	ViewInitOptions.ViewFamily = ViewFamily;
@@ -841,6 +879,11 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 		//	CAMERA OVERRIDE
 		//	NOTE: Matinee works through this channel
 		View->OverridePostProcessSettings(ViewInfo.PostProcessSettings, ViewInfo.PostProcessBlendWeight);
+
+		if (PlayerController->PlayerCameraManager)
+		{
+			PlayerController->PlayerCameraManager->UpdatePhotographyPostProcessing(View->FinalPostProcessSettings);
+		}
 
 		View->EndFinalPostprocessSettings(ViewInitOptions);
 	}
@@ -1043,16 +1086,16 @@ bool ULocalPlayer::GetProjectionData(FViewport* Viewport, EStereoscopicPass Ster
     {
 		auto XRCamera = GEngine->XRSystem.IsValid() ? GEngine->XRSystem->GetXRCamera() : nullptr;
 		if (XRCamera.IsValid())
-    {
-		AActor* ViewTarget = PlayerController->GetViewTarget();
-		const bool bHasActiveCamera = ViewTarget && ViewTarget->HasActiveCameraComponent();
+		{
+			AActor* ViewTarget = PlayerController->GetViewTarget();
+			const bool bHasActiveCamera = ViewTarget && ViewTarget->HasActiveCameraComponent();
 			XRCamera->UseImplicitHMDPosition(bHasActiveCamera);
 		}
 
 		if (GEngine->StereoRenderingDevice.IsValid())
 		{
-        GEngine->StereoRenderingDevice->CalculateStereoViewOffset(StereoPass, ViewInfo.Rotation, GetWorld()->GetWorldSettings()->WorldToMeters, StereoViewLocation);
-    }
+			GEngine->StereoRenderingDevice->CalculateStereoViewOffset(StereoPass, ViewInfo.Rotation, GetWorld()->GetWorldSettings()->WorldToMeters, StereoViewLocation);
+		}
     }
 
 	// Create the view matrix
@@ -1137,14 +1180,13 @@ bool ULocalPlayer::HandleListMoveBodyCommand( const TCHAR* Cmd, FOutputDevice& A
 
 bool ULocalPlayer::HandleListAwakeBodiesCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
-	ListAwakeRigidBodies(true, GetWorld());
+	GetWorld()->GetPhysicsScene()->ListAwakeRigidBodies(true);
 	return true;
 }
 
-
 bool ULocalPlayer::HandleListSimBodiesCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
-	ListAwakeRigidBodies(false, GetWorld());
+	GetWorld()->GetPhysicsScene()->ListAwakeRigidBodies(false);
 	return true;
 }
 
@@ -1228,16 +1270,14 @@ bool ULocalPlayer::HandleListPawnComponentsCommand( const TCHAR* Cmd, FOutputDev
 		APawn *Pawn = *It;
 		UE_LOG(LogPlayerManagement, Log, TEXT("Components for pawn: %s (collision component: %s)"),*Pawn->GetName(),*Pawn->GetRootComponent()->GetName());
 
-		TInlineComponentArray<UActorComponent*> Components;
-		Pawn->GetComponents(Components);
-
-		for (int32 CompIdx = 0; CompIdx < Components.Num(); CompIdx++)
+		int32 CompIdx = 0;
+		for (UActorComponent* Comp : Pawn->GetComponents())
 		{
-			UActorComponent *Comp = Components[CompIdx];
-			if (Comp->IsRegistered())
+			if (Comp && Comp->IsRegistered())
 			{
 				UE_LOG(LogPlayerManagement, Log, TEXT("  %d: %s"),CompIdx,*Comp->GetName());
 			}
+			++CompIdx;
 		}
 	}
 	return true;
@@ -1537,18 +1577,18 @@ FString ULocalPlayer::GetNickname() const
 	return TEXT("");
 }
 
-TSharedPtr<const FUniqueNetId> ULocalPlayer::GetUniqueNetIdFromCachedControllerId() const
+FUniqueNetIdRepl ULocalPlayer::GetUniqueNetIdFromCachedControllerId() const
 {
 	UWorld* World = GetWorld();
 	if (World != nullptr)
 	{
-		return UOnlineEngineInterface::Get()->GetUniquePlayerId(World, ControllerId);
+		return FUniqueNetIdRepl(UOnlineEngineInterface::Get()->GetUniquePlayerId(World, ControllerId));
 	}
 
-	return nullptr;
+	return FUniqueNetIdRepl();
 }
 
-TSharedPtr<const FUniqueNetId> ULocalPlayer::GetCachedUniqueNetId() const
+FUniqueNetIdRepl ULocalPlayer::GetCachedUniqueNetId() const
 {
 	return CachedUniqueNetId;
 }
@@ -1558,11 +1598,11 @@ void ULocalPlayer::SetCachedUniqueNetId(TSharedPtr<const FUniqueNetId> NewUnique
 	CachedUniqueNetId = NewUniqueNetId;
 }
 
-TSharedPtr<const FUniqueNetId> ULocalPlayer::GetPreferredUniqueNetId() const
+FUniqueNetIdRepl ULocalPlayer::GetPreferredUniqueNetId() const
 {
 	// Prefer the cached unique net id (only if it's valid)
 	// This is for backwards compatibility for games that don't yet cache the unique id properly
-	if (GetCachedUniqueNetId().IsValid() && GetCachedUniqueNetId()->IsValid())
+	if (GetCachedUniqueNetId().IsValid())
 	{
 		return GetCachedUniqueNetId();
 	}
@@ -1574,23 +1614,8 @@ TSharedPtr<const FUniqueNetId> ULocalPlayer::GetPreferredUniqueNetId() const
 bool ULocalPlayer::IsCachedUniqueNetIdPairedWithControllerId() const
 {
 	// Get the UniqueNetId that is paired with the controller
-	TSharedPtr<const FUniqueNetId> UniqueIdFromController = GetUniqueNetIdFromCachedControllerId();
-
-	if (CachedUniqueNetId.IsValid() != UniqueIdFromController.IsValid())
-	{
-		// Definitely can't match if one is valid and not the other
-		return false;
-	}
-
-	if (!CachedUniqueNetId.IsValid())
-	{
-		// Both are invalid, technically they match
-		check(!UniqueIdFromController.IsValid());
-		return true;
-	}
-
-	// Both are valid, ask them if they match
-	return *CachedUniqueNetId == *UniqueIdFromController;
+	FUniqueNetIdRepl UniqueIdFromController = GetUniqueNetIdFromCachedControllerId();
+	return (CachedUniqueNetId == UniqueIdFromController);
 }
 
 UWorld* ULocalPlayer::GetWorld() const

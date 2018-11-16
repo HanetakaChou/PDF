@@ -1,7 +1,7 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/EdModeTileMap.h"
-#include "AI/Navigation/NavigationSystem.h"
+#include "NavigationSystem.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/Selection.h"
 #include "EditorModeManager.h"
@@ -54,7 +54,7 @@ void FTileMapDirtyRegion::PushToNavSystem() const
 	{
 		if (Component->IsNavigationRelevant())
 		{
-			if (UNavigationSystem* NavSys = UNavigationSystem::GetCurrent(Component))
+			if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Component))
 			{
 				NavSys->AddDirtyArea(DirtyRegionInWorldSpace, ENavigationDirtyFlag::All);
 			}
@@ -170,7 +170,9 @@ void FEdModeTileMap::Enter()
 	CursorPreviewComponent->TileMap->InitializeNewEmptyTileMap();
 	CursorPreviewComponent->TranslucencySortPriority = 99999;
 	CursorPreviewComponent->bShowPerTileGridWhenSelected = false;
+	CursorPreviewComponent->bShowPerTileGridWhenUnselected = false;
 	CursorPreviewComponent->bShowPerLayerGridWhenSelected = false;
+	CursorPreviewComponent->bShowPerLayerGridWhenUnselected = false;
 	CursorPreviewComponent->bShowOutlineWhenUnselected = false;
 	CursorPreviewComponent->UpdateBounds();
 	CursorPreviewComponent->AddToRoot();
@@ -230,7 +232,7 @@ void FEdModeTileMap::FlushPendingDirtyRegions()
 	{
 		if (Component)
 		{
-			UNavigationSystem::UpdateComponentInNavOctree(*Component);
+			FNavigationSystem::UpdateComponentData(*Component);
 		}		
 	}
 
@@ -689,7 +691,7 @@ bool FEdModeTileMap::UseActiveToolAtLocation(const FViewportCursorLocation& Ray)
 
 bool FEdModeTileMap::BlitLayer(UPaperTileLayer* SourceLayer, UPaperTileLayer* TargetLayer, FBox& OutDirtyRect, int32 OffsetX, int32 OffsetY, bool bBlitEmptyTiles)
 {
-	FScopedTransaction Transaction(LOCTEXT("TileMapPaintAction", "Tile Painting"));
+	FScopedTransaction Transaction(LOCTEXT("TileMapPaintActionTransaction", "Tile Painting"));
 
 	const int32 LayerCoord = TargetLayer->GetLayerIndex();
 
@@ -824,7 +826,7 @@ bool FEdModeTileMap::EraseTiles(const FViewportCursorLocation& Ray)
 		UPaperTileMap* TileMap = Layer->GetTileMap();
 		const int32 LayerCoord = Layer->GetLayerIndex();
 
-		FScopedTransaction Transaction( LOCTEXT("TileMapEraseAction", "Tile Erasing") );
+		FScopedTransaction Transaction( LOCTEXT("TileMapEraseActionTransaction", "Tile Erasing") );
 
 		for (int32 Y = 0; Y < BrushWidth; ++Y)
 		{
@@ -954,7 +956,7 @@ bool FEdModeTileMap::FloodFillTiles(const FViewportCursorLocation& Ray)
 		}
 		
 		// Now the reachability map should be populated, so we can use it to flood fill
-		FScopedTransaction Transaction( LOCTEXT("TileMapFloodFillAction", "Tile Paint Bucket") );
+		FScopedTransaction Transaction( LOCTEXT("TileMapFloodFillActionTransaction", "Tile Paint Bucket") );
 
 		// Figure out where the top left square of the map starts in the pattern, based on the seed point
 		UPaperTileLayer* SourceLayer = GetSourceInkLayer();
@@ -1037,7 +1039,7 @@ bool FEdModeTileMap::PaintTilesWithTerrain(const FViewportCursorLocation& Ray)
 
 		if ((DestTileX >= 0) && (DestTileY >= 0) && (DestTileX < TileMap->MapWidth) & (DestTileY < TileMap->MapHeight))
 		{
-			FScopedTransaction Transaction(LOCTEXT("TileMapTerrainBrushAction", "Terrain Brush"));
+			FScopedTransaction Transaction(LOCTEXT("TileMapTerrainBrushActionTransaction", "Terrain Brush"));
 
 			for (int32 OY = -1; OY <= 1; ++OY)
 			{
@@ -1108,13 +1110,32 @@ void FEdModeTileMap::SetActivePaint(UPaperTileSet* TileSet, FIntPoint TopLeft, F
 		bHasValidInkSource = true;
 	}
 
-	DestructiveResizePreviewComponent(Dimensions.X, Dimensions.Y);
+	FIntPoint Scale(1, 1);
+	if (TileSet != nullptr)
+	{
+		Scale.X = FMath::Max(1, TileSet->GetTileSize().X / CursorPreviewComponent->TileMap->TileWidth);
+		Scale.Y = FMath::Max(1, TileSet->GetTileSize().Y / CursorPreviewComponent->TileMap->TileHeight);
+	}
+
+	DestructiveResizePreviewComponent(Dimensions.X * Scale.X, Dimensions.Y * Scale.Y);
 
 	UPaperTileMap* PreviewMap = CursorPreviewComponent->TileMap;
 	UPaperTileLayer* PreviewLayer = GetSourceInkLayer();
-	for (int32 Y = 0; Y < PreviewMap->MapHeight; ++Y)
+
+	// Empty the preview layer (when selecting tiles from a tile set with a larger tile size than the map, there will be gaps in what is setup below)
+	FPaperTileInfo EmptyCell;
+	for (int32 Y = 0; Y < PreviewLayer->GetLayerHeight(); ++Y)
 	{
-		for (int32 X = 0; X < PreviewMap->MapWidth; ++X)
+		for (int32 X = 0; X < PreviewLayer->GetLayerWidth(); ++X)
+		{
+			PreviewLayer->SetCell(X, Y, EmptyCell);
+		}
+	}
+
+	// Copy the selection into the preview ink layer
+	for (int32 Y = 0; Y < FMath::Max(1, Dimensions.Y); ++Y)
+	{
+		for (int32 X = 0; X < FMath::Max(1, Dimensions.X); ++X)
 		{
 			FPaperTileInfo TileInfo;
 
@@ -1127,7 +1148,7 @@ void FEdModeTileMap::SetActivePaint(UPaperTileSet* TileSet, FIntPoint TopLeft, F
 				TileInfo.TileSet = TileSet;
 			}
 
-			PreviewLayer->SetCell(X, Y, TileInfo);
+			PreviewLayer->SetCell(X * Scale.X, Y * Scale.Y + Scale.Y - 1, TileInfo);
 		}
 	}
 

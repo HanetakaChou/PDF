@@ -4,7 +4,7 @@
 ConsoleManager.cpp: console command handling
 =============================================================================*/
 
-#include "ConsoleManager.h"
+#include "HAL/ConsoleManager.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
 #include "Stats/Stats.h"
@@ -132,16 +132,21 @@ public:
 				GetSetByTCHAR((EConsoleVariableFlags)OldPri),
 				*GetString()
 				);
-
-			// If it was set by an ini that has to be hand edited, it is not an issue if a lower priority system tried and failed to set it afterwards
-			const bool bIntentionallyIgnored = (OldPri & (ECVF_SetByConsoleVariablesIni | ECVF_SetByCommandline | ECVF_SetBySystemSettingsIni)) != 0;
-
-			if (bIntentionallyIgnored)
+				
+			if (OldPri == ECVF_SetByConsoleVariablesIni || OldPri == ECVF_SetByCommandline || OldPri == ECVF_SetBySystemSettingsIni)
 			{
+				// Set by an ini that has to be hand edited, a deliberate fail
 				UE_LOG(LogConsoleManager, Verbose, TEXT("%s"), *Message);
+			}
+			else if (NewPri == ECVF_SetByScalability && OldPri == ECVF_SetByDeviceProfile)
+			{
+				// Set by a device profile and attempted to update in scalability,
+				// not a warning but very helpful to know when this happens
+				UE_LOG(LogConsoleManager, Log, TEXT("%s"), *Message);
 			}
 			else
 			{
+				// Treat as a warning unless we're intentionally ignoring this priority interaction		
 				UE_LOG(LogConsoleManager, Warning, TEXT("%s"), *Message);
 			}
 		}
@@ -1865,6 +1870,12 @@ static TAutoConsoleVariable<int32> CVarMobileEnableMovableLightCSMShaderCulling(
 	TEXT("1: Primitives lit by movable directional light render with the CSM shader when determined to be within CSM range. (default)"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
+static TAutoConsoleVariable<float> CVarsCSMDebugHint(
+	TEXT("r.Mobile.Shadow.CSMDebugHint"),
+	0.0f,
+	TEXT(""),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
 static TAutoConsoleVariable<int32> CVarMobileAllowDistanceFieldShadows(
 	TEXT("r.Mobile.AllowDistanceFieldShadows"),
 	1,
@@ -1879,6 +1890,14 @@ static TAutoConsoleVariable<int32> CVarMobileAllowMovableDirectionalLights(
 	TEXT("1: Generate shader permutations to render movable directional lights. (default)"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
+static TAutoConsoleVariable<int32> CVarMobileSkyLightPermutation(
+	TEXT("r.Mobile.SkyLightPermutation"),
+	0,
+	TEXT("0: Generate both sky-light and non-skylight permutations. (default)\n")
+	TEXT("1: Generate only non-skylight permutations.\n")
+	TEXT("2: Generate only skylight permutations"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
 static TAutoConsoleVariable<int32> CVarMobileHDR32bppMode(
 	TEXT("r.MobileHDR32bppMode"),
 	0,
@@ -1887,6 +1906,20 @@ static TAutoConsoleVariable<int32> CVarMobileHDR32bppMode(
 	TEXT("2: Force Mobile 32bpp HDR with RGBE encoding mode. (device must support framebuffer fetch)\n")
 	TEXT("3: Force Mobile 32bpp HDR with direct RGBA8 rendering."),
 	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarMobileForceFullPrecisionInPS(
+	TEXT("r.Mobile.ForceFullPrecisionInPS"),
+	0,
+	TEXT("0: Use precision specified in shader code (default)\n")
+	TEXT("1: Force use of high precision in pixel shaders.\n"),
+	ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarMobileAllowDitheredLODTransition(
+	TEXT("r.Mobile.AllowDitheredLODTransition"),
+	0,
+	TEXT("Whether to support 'Dithered LOD Transition' material option on mobile platforms"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
 
 static TAutoConsoleVariable<int32> CVarSetClearSceneMethod(
 	TEXT("r.ClearSceneMethod"),
@@ -2024,14 +2057,6 @@ static TAutoConsoleVariable<float> CVarScreenPercentage(
 	TEXT("<0 is treated like 100."),
 	ECVF_Scalability | ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarSeparateTranslucencyScreenPercentage(
-	TEXT("r.SeparateTranslucencyScreenPercentage"),
-	100.0f,
-	TEXT("Render separate translucency at this percentage of the full resolution.\n")
-	TEXT("in percent, >0 and <=100, larger numbers are possible (supersampling).")
-	TEXT("<0 is treated like 100."),
-	ECVF_Scalability | ECVF_Default);
-
 static TAutoConsoleVariable<int32> CVarHighResScreenshotDelay(
 	TEXT("r.HighResScreenshotDelay"),
 	4,
@@ -2127,21 +2152,6 @@ static TAutoConsoleVariable<FString> CVarNetPackageMapDebugObject(
 	TEXT(""),
 	TEXT("Debugs PackageMap serialization of object")
 	TEXT("Partial name of object to debug"),
-	ECVF_Default);
-
-static TAutoConsoleVariable<FString> CVarNetReplicationDebugProperty(
-	TEXT("net.Replication.DebugProperty"),
-	TEXT(""),
-	TEXT("Debugs Replication of property by name")
-	TEXT("Partial name of property to debug"),
-	ECVF_Default);
-
-static TAutoConsoleVariable<int32> CVarNetRPCDebug(
-	TEXT("net.RPC.Debug"),
-	0,
-	TEXT("Print all RPC bunches sent over the network\n")
-	TEXT(" 0: no print.\n")
-	TEXT(" 1: Print bunches as they are sent."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarNetMontageDebug(
@@ -2256,14 +2266,6 @@ static TAutoConsoleVariable<int32> CVarPS4MixeedModeShaderDebugInfo(
 	TEXT(" 1: Mixed mode)"),
 	ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarPS4DumpShaderSDB(
-	TEXT("r.PS4DumpShaderSDB"),
-	0,
-	TEXT("Whether to dump shader sdb files used for shader association.\n")
-	TEXT(" 0: Disabled\n")
-	TEXT(" 1: Enabled)"),
-	ECVF_ReadOnly);
-
 static TAutoConsoleVariable<int32> CVarDontLimitOnBattery(
 	TEXT("r.DontLimitOnBattery"),
 	0,
@@ -2276,16 +2278,58 @@ static TAutoConsoleVariable<float> CVarViewDistanceScale(
 	1.0f,
 	TEXT("Controls the view distance scale. A primitive's MaxDrawDistance is scaled by this value.\n")
 	TEXT("Higher values will increase view distance but at a performance cost.\n")
-	TEXT("Default = 1. Value should be in the range [0.0f, 1.0f]."),
+	TEXT("Default = 1."),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<float> CVarViewDistanceScale_NoScalability(
-	TEXT("r.ViewDistanceScaleNoScalability"),
-	1.0f,
-	TEXT("An additional multiplier to r.ViewDistanceScale, but not affected by scalability settings.\n")
-	TEXT("Higher values will increase view distance but at a performance cost.\n")
-	TEXT("Default = 1. Value should be in the range [0.0f, 1.0f]."),
+static TAutoConsoleVariable<int32> CVarViewDistanceScaleApplySecondaryScale(
+	TEXT("r.ViewDistanceScale.ApplySecondaryScale"),
+	0,
+	TEXT("If true applies the secondary view distance scale to primitive draw distances.\n")
+	TEXT("Default = 0."),
 	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarViewDistanceScaleSecondaryScale(
+	TEXT("r.ViewDistanceScale.SecondaryScale"),
+	1.0f,
+	TEXT("Controls the secondary view distance scale, Default = 1.0.\n")
+	TEXT("This is an optional scale intended to allow some features or gamemodes to opt-in.\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarViewDistanceScale_FieldOfViewMinAngle(
+	TEXT("r.ViewDistanceScale.FieldOfViewMinAngle"),
+	45.0f,
+	TEXT("Scales the scene view distance scale with camera field of view.\n")
+	TEXT("Minimum angle of the blend range.\n")
+	TEXT("Applies the minimum scale when the camera is at or below this angle."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarViewDistanceScale_FieldOfViewMinAngleScale(
+	TEXT("r.ViewDistanceScale.FieldOfViewMinAngleScale"),
+	1.0f,
+	TEXT("Scales the scene view distance scale with camera field of view.\n")
+	TEXT("This value is applied when the camera is at or below the minimum angle."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarViewDistanceScale_FieldOfViewMaxAngle(
+	TEXT("r.ViewDistanceScale.FieldOfViewMaxAngle"),
+	90.0f,
+	TEXT("Scales the scene view distance scale with camera field of view.\n")
+	TEXT("Maximum angle of the blend range.\n")
+	TEXT("Applies the maximum scale when the camera is at or above this angle."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarViewDistanceScale_FieldOfViewMaxAngleScale(
+	TEXT("r.ViewDistanceScale.FieldOfViewMaxAngleScale"),
+	1.0f,
+	TEXT("Scales the scene view distance scale with camera field of view.\n")
+	TEXT("This value is applied when the camera is at or above the maximum angle."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarViewDistanceScale_FieldOfViewAffectsHLOD(
+	TEXT("r.ViewDistanceScale.FieldOfViewAffectsHLOD"),
+	0,
+	TEXT("If enabled, applies the field of view scaling to HLOD draw distances as well as non-HLODs."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarLightFunctionQuality(
 	TEXT("r.LightFunctionQuality"),
@@ -2339,6 +2383,14 @@ static TAutoConsoleVariable<int32> CVarDetailMode(
 	TEXT(" 1: medium, show all object with DetailMode medium or higher\n")
 	TEXT(" 2: high, show all objects (default)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarCookOutUnusedDetailModeComponents(
+	TEXT("r.CookOutUnusedDetailModeComponents"),
+	0,
+	TEXT("If set, components which are not relevant for the current detail mode will be cooked out.\n")
+	TEXT(" 0: keep components even if not relevant for the current detail mode.\n")
+	TEXT(" 1: cook out components not relevant for the current detail mode.\n"),
+	ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarDBuffer(
 	TEXT("r.DBuffer"),
@@ -2433,10 +2485,37 @@ static TAutoConsoleVariable<int32> CVarDisableOpenGLES31Support(
 	TEXT("  1 = OpenGLES 3.1 will be disabled, OpenGL ES2 fall back will be used."),
 	ECVF_ReadOnly);
 
+static TAutoConsoleVariable<int32> CVarDisableAndroidGLASTCSupport(
+	TEXT("r.Android.DisableASTCSupport"),
+	0,
+	TEXT("Disable support for ASTC Texture compression if OpenGL driver supports it. (Android Only)\n")
+	TEXT("  0 = ASTC texture compression will be used if driver supports it [default]\n")
+	TEXT("  1 = ASTC texture compression will not be used."),
+	ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarDisableOpenGLTextureStreamingSupport(
+	TEXT("r.OpenGL.DisableTextureStreamingSupport"),
+	0,
+	TEXT("Disable support for texture streaming on OpenGL.\n")
+	TEXT("  0 = Texture streaming will be used if device supports it [default]\n")
+	TEXT("  1 = Texture streaming will be disabled."),
+	ECVF_ReadOnly);
+
 static TAutoConsoleVariable<int32> CVarAndroidOverrideExternalTextureSupport(
 	TEXT("r.Android.OverrideExternalTextureSupport"),
 	0,
 	TEXT("Override external texture support for OpenGLES API. (Android Only)\n")
+	TEXT("  0 = normal detection used [default]\n")
+	TEXT("  1 = disable external texture support\n")
+	TEXT("  2 = force ImageExternal100 (version #100 with GL_OES_EGL_image_external)\n")
+	TEXT("  3 = force ImageExternal300 (version #300 with GL_OES_EGL_image_external)\n")
+	TEXT("  4 = force ImageExternalESSL300 (version #300 with GL_OES_EGL_image_external_essl3)"),
+	ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarLuminOverrideExternalTextureSupport(
+	TEXT("r.Lumin.OverrideExternalTextureSupport"),
+	0,
+	TEXT("Override external texture support for OpenGLES API. (Lumin Only)\n")
 	TEXT("  0 = normal detection used [default]\n")
 	TEXT("  1 = disable external texture support\n")
 	TEXT("  2 = force ImageExternal100 (version #100 with GL_OES_EGL_image_external)\n")
@@ -2450,3 +2529,19 @@ static TAutoConsoleVariable<int32> GLSLCvar(
 	TEXT("2 to use ES GLSL\n1 to use GLSL\n0 to use SPIRV")
 );
 
+static TAutoConsoleVariable<FString> CVarCustomUnsafeZones(
+	TEXT("r.CustomUnsafeZones"),
+	TEXT(""),
+	TEXT("Allows you to set custom unsafe zones. Define them based on Portrait (P) or Landscape (L) for a device oriented 'upright'.")
+	TEXT("Unsafe zones may be either fixed or free, depending on if they move along with the rotation of the device.")
+	TEXT("Format is (P:fixed[x1, y1][width, height]), semicolon-separated for each custom unsafe zone. +Values add from 0, -Values subtract from Height or Width"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLightingQuality(
+	TEXT("r.SkyLightingQuality"),
+	1,
+	TEXT("Defines the sky lighting quality which allows to adjust for performance.\n")
+	TEXT("<=0: off (fastest)\n")
+	TEXT("  1: on\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);

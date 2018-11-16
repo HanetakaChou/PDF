@@ -14,14 +14,13 @@ class UUserDefinedEnum;
 class UUserDefinedStruct;
 struct Rect;
 
-extern const FName BlueprintEditorAppName;
-
 class IBlueprintEditor;
 class FBlueprintEditor;
 class UUserDefinedEnum;
 class UUserDefinedStruct;
 class IDetailCustomization;
 class FKismetCompilerContext;
+struct FBlueprintDebugger;
 
 /** Delegate used to customize variable display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
@@ -64,6 +63,9 @@ public:
 
 	/** Invokes the Find and Replace UI */
 	virtual void SummonFindAndReplaceUI() = 0;
+
+	/** Tries to open the specified graph and bring it's document to the front (note: this can return NULL) */
+	virtual TSharedPtr<class SGraphEditor> OpenGraphAndBringToFront(class UEdGraph* Graph) = 0;
 
 	virtual void RefreshEditors(ERefreshBlueprintEditorReason::Type Reason = ERefreshBlueprintEditorReason::UnknownReason) = 0;
 
@@ -233,4 +235,7 @@ private:
 
 	/** Reference to keep our custom configuration panel alive */
 	TSharedPtr<SWidget> ConfigurationPanel;
+
+	/** Blueprint debugger state - refactor into SBlueprintDebugger if needed */
+	TUniquePtr<FBlueprintDebugger> BlueprintDebugger;
 };

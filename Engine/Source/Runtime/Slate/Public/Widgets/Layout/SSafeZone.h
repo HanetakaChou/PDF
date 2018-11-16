@@ -92,14 +92,13 @@ public:
 
 	SSafeZone()
 	{
-		bCanTick = false;
+		SetCanTick(false);
 		bCanSupportFocus = false;
 	}
 	virtual ~SSafeZone();
 
 	void Construct( const FArguments& InArgs );
 	
-	void SafeAreaUpdated();
 	void SetTitleSafe( bool bIsTitleSafe );
 	void SetSafeAreaScale(FMargin InSafeAreaScale);
 
@@ -109,16 +108,18 @@ public:
 
 #if WITH_EDITOR
 	void SetOverrideScreenInformation(TOptional<FVector2D> InScreenSize, TOptional<float> InOverrideDpiScale);
+	void DebugSafeAreaUpdated(const FMargin& NewSafeZone, bool bShouldRecacheMetrics);
 #endif
 
 	virtual void OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const override;
 	virtual FVector2D ComputeDesiredSize(float LayoutScale) const override;
 
-	static void SetSafeZoneScale(float InScale);
-	static float GetSafeZoneScale();
+	static void SetGlobalSafeZoneScale(float InScale);
+	static float GetGlobalSafeZoneScale();
 
 private:
 
+	void UpdateSafeMargin() const;
 	FMargin ComputeScaledSafeMargin(float Scale) const;
 
 	/** Cached values from the args */
@@ -135,9 +136,11 @@ private:
 	TOptional<float> OverrideDpiScale;
 #endif
 
+	/** Does the SafeMargin need an update? */
+	mutable bool bSafeMarginNeedsUpdate;
+
 	/** Screen space margin */
-	FMargin SafeMargin;
+	mutable FMargin SafeMargin;
 
 	FDelegateHandle OnSafeFrameChangedHandle;
-	static float SafeZoneScale;
 };

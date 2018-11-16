@@ -22,7 +22,7 @@ struct FPrimaryAssetType
 	operator const FName&() const { return Name; }
 
 	/** Returns internal Name explicitly, not normally needed */
-	FName GetName()
+	FName GetName() const
 	{
 		return Name;
 	}
@@ -58,10 +58,15 @@ struct FPrimaryAssetType
 	/** UStruct Overrides */
 	bool ExportTextItem(FString& ValueStr, FPrimaryAssetType const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const;
 	bool ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText);
-	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot);
+
+	friend inline uint32 GetTypeHash(const FPrimaryAssetType& Key)
+	{
+		return GetTypeHash(Key.Name);
+	}
 
 private:
-	friend COREUOBJECT_API UScriptStruct* Z_Construct_UScriptStruct_FPrimaryAssetType();
+	friend struct Z_Construct_UScriptStruct_FPrimaryAssetType_Statics;
 
 	/** The FName representing this type */
 	FName Name;
@@ -112,7 +117,14 @@ struct FPrimaryAssetId
 	/** Returns string version of this identifier in Type:Name format */
 	FString ToString() const
 	{
-		return FString::Printf(TEXT("%s:%s"), *PrimaryAssetType.ToString(), *PrimaryAssetName.ToString());
+		if (IsValid())
+		{
+			return FString::Printf(TEXT("%s:%s"), *PrimaryAssetType.ToString(), *PrimaryAssetName.ToString());
+		}
+		else
+		{
+			return FString();
+		}
 	}
 
 	/** Converts from Type:Name format */
@@ -141,7 +153,7 @@ struct FPrimaryAssetId
 	/** UStruct Overrides */
 	bool ExportTextItem(FString& ValueStr, FPrimaryAssetId const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const;
 	bool ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText);
-	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot);
 
 	friend inline uint32 GetTypeHash(const FPrimaryAssetId& Key)
 	{
@@ -152,5 +164,5 @@ struct FPrimaryAssetId
 		return Hash;
 	}
 
-	friend COREUOBJECT_API UScriptStruct* Z_Construct_UScriptStruct_FPrimaryAssetId();
+	friend struct Z_Construct_UScriptStruct_FPrimaryAssetId_Statics;
 };

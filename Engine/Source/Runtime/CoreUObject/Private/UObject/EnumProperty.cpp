@@ -3,7 +3,7 @@
 #include "UObject/EnumProperty.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UObjectThreadContext.h"
-#include "PropertyTag.h"
+#include "UObject/PropertyTag.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/IsSigned.h"
 #include "Algo/Find.h"
@@ -11,10 +11,10 @@
 namespace UE4EnumProperty_Private
 {
 	template <typename OldIntType>
-	void ConvertIntToEnumProperty(FArchive& Ar, UEnumProperty* EnumProp, UNumericProperty* UnderlyingProp, UEnum* Enum, void* Obj)
+	void ConvertIntToEnumProperty(FStructuredArchive::FSlot Slot, UEnumProperty* EnumProp, UNumericProperty* UnderlyingProp, UEnum* Enum, void* Obj)
 	{
 		OldIntType OldValue;
-		Ar << OldValue;
+		Slot << OldValue;
 
 		using LargeIntType = typename TChooseClass<TIsSigned<OldIntType>::Value, int64, uint64>::Result;
 
@@ -25,7 +25,7 @@ namespace UE4EnumProperty_Private
 				LogClass,
 				Warning,
 				TEXT("Failed to find valid enum value '%s' for enum type '%s' when converting property '%s' during property loading - setting to '%s'"),
-				*Lex::ToString(OldValue),
+				*LexToString(OldValue),
 				*Enum->GetName(),
 				*EnumProp->GetName(),
 				*Enum->GetNameByValue(Enum->GetMaxEnumValue()).ToString()
@@ -52,7 +52,7 @@ UEnumProperty::UEnumProperty(const FObjectInitializer& ObjectInitializer, UEnum*
 	UnderlyingProp = nullptr;
 }
 
-UEnumProperty::UEnumProperty(const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, uint64 InFlags, UEnum* InEnum)
+UEnumProperty::UEnumProperty(const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, EPropertyFlags InFlags, UEnum* InEnum)
 	: UProperty(ObjectInitializer, EC_CppProperty, InOffset, InFlags | CPF_HasGetValueTypeHash)
 	, Enum(InEnum)
 {
@@ -70,23 +70,26 @@ void UEnumProperty::AddCppProperty(UProperty* Inner)
 	}
 }
 
-void UEnumProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaults ) const
+void UEnumProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const
 {
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
+
 	check(UnderlyingProp);
 
-	if (Enum && Ar.UseToResolveEnumerators())
+	if (Enum && UnderlyingArchive.UseToResolveEnumerators())
 	{
+		Slot.EnterStream();
 		int64 IntValue = UnderlyingProp->GetSignedIntPropertyValue(Value);
-		int64 ResolvedIndex = Enum->ResolveEnumerator(Ar, IntValue);
+		int64 ResolvedIndex = Enum->ResolveEnumerator(UnderlyingArchive, IntValue);
 		UnderlyingProp->SetIntPropertyValue(Value, ResolvedIndex);
 		return;
 	}
 
 	// Loading
-	if (Ar.IsLoading())
+	if (UnderlyingArchive.IsLoading())
 	{
 		FName EnumValueName;
-		Ar << EnumValueName;
+		Slot << EnumValueName;
 
 		int64 NewEnumValue = 0;
 
@@ -95,7 +98,7 @@ void UEnumProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaul
 			// Make sure enum is properly populated
 			if (Enum->HasAnyFlags(RF_NeedLoad))
 			{
-				Ar.Preload(Enum);
+				UnderlyingArchive.Preload(Enum);
 			}
 
 			// There's no guarantee EnumValueName is still present in Enum, in which case Value will be set to the enum's max value.
@@ -114,7 +117,7 @@ void UEnumProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaul
 		UnderlyingProp->SetIntPropertyValue(Value, NewEnumValue);
 	}
 	// Saving
-	else if (Ar.IsSaving())
+	else if (UnderlyingArchive.IsSaving())
 	{
 		FName EnumValueName;
 		if (Enum)
@@ -127,11 +130,11 @@ void UEnumProperty::SerializeItem( FArchive& Ar, void* Value, void const* Defaul
 			}
 		}
 
-		Ar << EnumValueName;
+		Slot << EnumValueName;
 	}
 	else
 	{
-		UnderlyingProp->SerializeItem(Ar, Value, Defaults);
+		UnderlyingProp->SerializeItem(Slot, Value, Defaults);
 	}
 }
 
@@ -264,7 +267,7 @@ const TCHAR* UEnumProperty::ImportText_Internal(const TCHAR* InBuffer, void* Dat
 			if (EnumIndex == INDEX_NONE && (Temp.IsNumeric() && !Algo::Find(Temp, TEXT('.'))))
 			{
 				int64 EnumValue = INDEX_NONE;
-				Lex::FromString(EnumValue, *Temp);
+				LexFromString(EnumValue, *Temp);
 				EnumIndex = Enum->GetIndexByValue(EnumValue);
 			}
 			if (EnumIndex != INDEX_NONE)
@@ -335,15 +338,12 @@ bool UEnumProperty::SameType(const UProperty* Other) const
 	return Super::SameType(Other) && static_cast<const UEnumProperty*>(Other)->Enum == Enum;
 }
 
-bool UEnumProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, bool& bOutAdvanceProperty)
+EConvertFromTypeResult UEnumProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot , uint8* Data, UStruct* DefaultsStruct)
 {
 	if ((Enum == nullptr) || (UnderlyingProp == nullptr))
 	{
-		bOutAdvanceProperty = false;
-		return false;
+		return EConvertFromTypeResult::UseSerializeItem;
 	}
-
-	bOutAdvanceProperty = true;
 
 	if (Tag.Type == NAME_ByteProperty)
 	{
@@ -360,18 +360,18 @@ bool UEnumProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8
 				InnerPropertyTag.EnumName = Enum->GetFName();
 				InnerPropertyTag.ArrayIndex = 0;
 
-				PreviousValue = (uint8)UNumericProperty::ReadEnumAsInt64(Ar, DefaultsStruct, InnerPropertyTag);
+				PreviousValue = (uint8)UNumericProperty::ReadEnumAsInt64(Slot, DefaultsStruct, InnerPropertyTag);
 			}
 			else
 			{
 				// a byte property gained an enum
-				Ar << PreviousValue;
+				Slot << PreviousValue;
 			}
 		}
 		else
 		{
 			// attempt to find the old enum and get the byte value from the serialized enum name
-			PreviousValue = (uint8)UNumericProperty::ReadEnumAsInt64(Ar, DefaultsStruct, Tag);
+			PreviousValue = (uint8)UNumericProperty::ReadEnumAsInt64(Slot, DefaultsStruct, Tag);
 		}
 
 		// now copy the value into the object's address space
@@ -379,38 +379,38 @@ bool UEnumProperty::ConvertFromType(const FPropertyTag& Tag, FArchive& Ar, uint8
 	}
 	else if (Tag.Type == NAME_Int8Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<int8>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<int8>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_Int16Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<int16>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<int16>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_IntProperty)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<int32>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<int32>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_Int64Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<int64>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<int64>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_UInt16Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint16>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint16>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_UInt32Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint32>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint32>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else if (Tag.Type == NAME_UInt64Property)
 	{
-		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint64>(Ar, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+		UE4EnumProperty_Private::ConvertIntToEnumProperty<uint64>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
 	else
 	{
-		bOutAdvanceProperty = false;
+		return EConvertFromTypeResult::UseSerializeItem;
 	}
 
-	return bOutAdvanceProperty;
+	return EConvertFromTypeResult::Converted;
 }
 
 uint32 UEnumProperty::GetValueTypeHashInternal(const void* Src) const

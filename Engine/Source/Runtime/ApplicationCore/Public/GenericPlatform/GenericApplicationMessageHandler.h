@@ -337,17 +337,39 @@ public:
     {
     }
 
+	DEPRECATED(4.20, "This function signature is deprecated, use OnTouchStarted that takes a Force")
 	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, int32 TouchIndex, int32 ControllerId )
+	{
+		return OnTouchStarted(Window, Location, 1.0f, TouchIndex, ControllerId);
+	}
+
+	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId )
 	{
 		return false;
 	}
 
+	DEPRECATED(4.20, "This function signature is deprecated, use OnTouchMoved that takes a Force")
 	virtual bool OnTouchMoved( const FVector2D& Location, int32 TouchIndex, int32 ControllerId )
+	{
+		return OnTouchMoved(Location, 1.0f, TouchIndex, ControllerId);
+	}
+
+	virtual bool OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId )
 	{
 		return false;
 	}
 
 	virtual bool OnTouchEnded( const FVector2D& Location, int32 TouchIndex, int32 ControllerId )
+	{
+		return false;
+	}
+
+	virtual bool OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId)
+	{
+		return false;
+	}
+
+	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId)
 	{
 		return false;
 	}
@@ -396,6 +418,11 @@ public:
 	{
 
 	}
+
+	virtual void SignalSystemDPIChanged(const TSharedRef< FGenericWindow >& Window)
+	{
+
+	}	
 
 	virtual void OnMovedWindow( const TSharedRef< FGenericWindow >& Window, const int32 X, const int32 Y )
 	{

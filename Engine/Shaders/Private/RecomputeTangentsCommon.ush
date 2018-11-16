@@ -23,12 +23,14 @@ uint NumTriangles;
 
 //
 
-Buffer<float4> TangentInputBuffer;
+Buffer<SNORM float4> TangentInputBuffer;
 Buffer<float2> UVsInputBuffer;
-RWBuffer<float4> TangentBufferUAV;
+RWBuffer<SNORM float4> TangentBufferUAV;
 
 // in vertices
 uint InputStreamStart;
+uint NumTexCoords;
+uint SelectedTexCoord;
 
 // index input ----------------------------
 

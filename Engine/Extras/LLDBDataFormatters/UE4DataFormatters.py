@@ -62,7 +62,7 @@ def UE4FNameSummaryProvider(valobj,dict):
     if IndexVal >= 1048576:
         return 'name=Invalid'
     else:
-        Expr = '(char*)(((FNameEntry***)FName::GetNameTableForDebuggerVisualizers_MT())['+str(IndexVal)+' / 16384]['+str(IndexVal)+' % 16384])->AnsiName'
+        Expr = '(char*)(((FNameEntry***)GFNameTableForDebuggerVisualizers_MT)['+str(IndexVal)+' / 16384]['+str(IndexVal)+' % 16384])->AnsiName'
         FNameRef = valobj.CreateValueFromExpression(str(IndexVal), Expr)
         assert FNameRef != None
         Val = FNameRef.GetSummary()
@@ -77,7 +77,7 @@ def UE4FMinimalNameSummaryProvider(valobj,dict):
     if IndexVal >= 1048576:
         return 'name=Invalid'
     else:
-        Expr = '(char*)(((FNameEntry***)FName::GetNameTableForDebuggerVisualizers_MT())['+str(IndexVal)+' / 16384]['+str(IndexVal)+' % 16384])->AnsiName'
+        Expr = '(char*)(((FNameEntry***)GFNameTableForDebuggerVisualizers_MT)['+str(IndexVal)+' / 16384]['+str(IndexVal)+' % 16384])->AnsiName'
         FNameRef = valobj.CreateValueFromExpression(str(IndexVal), Expr)
         assert FNameRef != None
         Val = FNameRef.GetSummary()
@@ -487,10 +487,10 @@ class UE4SetSynthProvider:
             HasObject = 0
             if self.SecondaryDataDataVal > 0:
                 Expr = '(bool)((((int*)'+str(self.SecondaryDataDataVal)+')['+str(index)+'/32] >> '+str(index)+') & 1)'
-                HasObject = self.AllocationFlagsSecondaryDataData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
+                HasObject = 1 ##self.AllocationFlagsSecondaryDataData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
             else:
                 Expr = '(bool)((((int*)'+str(self.AllocationFlagsInlineDataAddr)+')['+str(index)+'/32] >> '+str(index)+') & 1)'
-                HasObject = self.AllocationFlagsInlineData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
+                HasObject = 1 ##self.AllocationFlagsInlineData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
 
             if HasObject == 1:
                 return self.AllocatorInstanceData.CreateChildAtOffset('['+str(index)+']',offset,self.ElementType)
@@ -577,12 +577,12 @@ class UE4MapSynthProvider:
         try:
             offset = index * self.ElementTypeSize
             HasObject = 0
-            if self.SecondaryDataDataVal > 0:
+            if self.SecondaryDataDataVal != 0:
                 Expr = '(bool)((((unsigned int*)'+str(self.SecondaryDataDataVal)+')['+str(index)+'/32] >> '+str(index)+') & 1)'
-                HasObject = self.AllocationFlagsSecondaryDataData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
+                HasObject = 1 ##self.AllocationFlagsSecondaryDataData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
             else:
                 Expr = '(bool)((((unsigned int*)'+str(self.AllocationFlagsInlineDataAddr)+')['+str(index)+'/32] >> '+str(index)+') & 1)'
-                HasObject = self.AllocationFlagsInlineData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
+                HasObject = 1 ##self.AllocationFlagsInlineData.CreateValueFromExpression('['+str(index)+']', Expr).GetValueAsUnsigned(0)
             
             if HasObject == 1:
                 return self.AllocatorInstanceData.CreateChildAtOffset('['+str(index)+']',offset,self.ElementType)

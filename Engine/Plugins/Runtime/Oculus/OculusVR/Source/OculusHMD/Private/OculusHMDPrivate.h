@@ -4,7 +4,7 @@
 #include "IOculusHMDModule.h"
 #include "OculusFunctionLibrary.h"
 #include "StereoRendering.h"
-#include "RunnableThread.h"
+#include "HAL/RunnableThread.h"
 #include "RHI.h"
 #include <functional>
 
@@ -31,13 +31,13 @@
 #endif
 
 #if PLATFORM_WINDOWS
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 
 #include "OVR_Plugin.h"
 
 #if PLATFORM_WINDOWS
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 #if PLATFORM_SUPPORTS_PRAGMA_PACK
@@ -114,25 +114,6 @@ namespace OculusHMD
 	FORCEINLINE ovrpRecti ToOvrpRecti(const FIntRect& rect)
 	{
 		return ovrpRecti { { rect.Min.X, rect.Min.Y }, { rect.Size().X, rect.Size().Y } };
-	}
-
-	FORCEINLINE int32 ViewIndexFromStereoPass(const EStereoscopicPass StereoPassType) {
-		switch (StereoPassType)
-		{
-		case eSSP_LEFT_EYE:
-		case eSSP_FULL:
-			return 0;
-
-		case eSSP_RIGHT_EYE:
-			return 1;
-
-		case eSSP_MONOSCOPIC_EYE:
-			return 2;
-
-		default:
-			check(0);
-			return -1;
-		}
 	}
 
 	/** Helper that converts ovrTrackedDeviceType to ETrackedDeviceType */
@@ -268,18 +249,6 @@ namespace OculusHMD
 #endif
 	}
 
-
-	/** Called from Game thread to execute a function on the Render thread. */
-	void ExecuteOnRenderThread(const std::function<void()>& Function);
-	void ExecuteOnRenderThread_DoNotWait(const std::function<void()>& Function);
-	void ExecuteOnRenderThread(const std::function<void(FRHICommandListImmediate&)>& Function);
-	void ExecuteOnRenderThread_DoNotWait(const std::function<void(FRHICommandListImmediate&)>& Function);
-
-	/** Called from Render thread to execute a function on the RHI thread. */
-	void ExecuteOnRHIThread(const std::function<void()>& Function);
-	void ExecuteOnRHIThread_DoNotWait(const std::function<void()>& Function);
-	void ExecuteOnRHIThread(const std::function<void(FRHICommandList&)>& Function);
-	void ExecuteOnRHIThread_DoNotWait(const std::function<void(FRHICommandList&)>& Function);
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	/** Tests if Oculus service is running */

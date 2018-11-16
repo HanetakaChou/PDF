@@ -44,6 +44,14 @@ public:
 	{ }
 
 	/**
+	 * Shuts down the socket, making it unusable for reads and/or writes. This does not close the socket!
+	 *
+	 * @param Types
+	 * @return true if successful, false otherwise.
+	 */
+	virtual bool Shutdown(ESocketShutdownMode Mode) = 0;
+
+	/**
 	 * Closes the socket
 	 *
 	 * @return true if it closes without errors, false otherwise.
@@ -142,21 +150,31 @@ public:
 	/**
 	 * Reads a chunk of data from the socket and gathers the source address.
 	 *
+	 * A return value of 'true' does not necessarily mean that data was returned.
+	 * Callers must check the 'BytesRead' parameter for the actual amount of data
+	 * returned. A value of zero indicates that there was no data available for reading.
+	 *
 	 * @param Data The buffer to read into.
 	 * @param BufferSize The max size of the buffer.
 	 * @param BytesRead Will indicate how many bytes were read from the socket.
 	 * @param Source Will contain the receiving the address of the sender of the data.
 	 * @param Flags The receive flags.
+	 * @return true on success, false in case of a closed socket or an unrecoverable error.
 	 */
 	virtual bool RecvFrom(uint8* Data, int32 BufferSize, int32& BytesRead, FInternetAddr& Source, ESocketReceiveFlags::Type Flags = ESocketReceiveFlags::None);
 
 	/**
 	 * Reads a chunk of data from a connected socket
 	 *
+	 * A return value of 'true' does not necessarily mean that data was returned.
+	 * Callers must check the 'BytesRead' parameter for the actual amount of data
+	 * returned. A value of zero indicates that there was no data available for reading.
+	 *
 	 * @param Data The buffer to read into
 	 * @param BufferSize The max size of the buffer
 	 * @param BytesRead Will indicate how many bytes were read from the socket
 	 * @param Flags the receive flags
+	 * @return true on success, false in case of a closed socket or an unrecoverable error.
 	 */
 	virtual bool Recv(uint8* Data, int32 BufferSize, int32& BytesRead, ESocketReceiveFlags::Type Flags = ESocketReceiveFlags::None);
 

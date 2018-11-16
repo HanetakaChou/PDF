@@ -1,110 +1,46 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Curl/CurlHttpManager.h"
-#include "HAL/PlatformFilemanager.h"
-#include "HAL/FileManager.h"
-#include "Misc/CommandLine.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/LocalTimestampDirectoryVisitor.h"
-#include "Misc/OutputDeviceRedirector.h"
-#include "Curl/CurlHttpThread.h"
-#include "Curl/CurlHttp.h"
-#include "Http.h"
-#include "Modules/ModuleManager.h"
-#include "Misc/OutputDeviceRedirector.h"
 
 #if WITH_LIBCURL
 
+#include "HAL/PlatformFilemanager.h"
+#include "HAL/FileManager.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/FileHelper.h"
+#include "Misc/LocalTimestampDirectoryVisitor.h"
+#include "Misc/Paths.h"
+
+#include "Curl/CurlHttpThread.h"
+#include "Curl/CurlHttp.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "HttpModule.h"
+
+#if WITH_SSL
+#include "Modules/ModuleManager.h"
+#include "Ssl.h"
+#include <openssl/crypto.h>
+#endif
+
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
-
-#if PLATFORM_WINDOWS
-#include "SslModule.h"
-#endif
-
-#if PLATFORM_WINDOWS
-#include "AllowWindowsPlatformTypes.h"
-
-// recreating parts of winhttp.h in here because winhttp.h and wininet.h do not play well with each other.
-#if defined(_WIN64)
-#include <pshpack8.h>
-#else
-#include <pshpack4.h>
-#endif
-
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
-#if !defined(_WINHTTP_INTERNAL_)
-#define WINHTTPAPI DECLSPEC_IMPORT
-#else
-#define WINHTTPAPI
-
-#endif
-
-// WinHttpOpen dwAccessType values (also for WINHTTP_PROXY_INFO::dwAccessType)
-#define WINHTTP_ACCESS_TYPE_DEFAULT_PROXY               0
-#define WINHTTP_ACCESS_TYPE_NO_PROXY                    1
-#define WINHTTP_ACCESS_TYPE_NAMED_PROXY                 3
-#define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY             4
-
-typedef struct
-{
-	DWORD  dwAccessType;      // see WINHTTP_ACCESS_* types below
-	LPWSTR lpszProxy;         // proxy server list
-	LPWSTR lpszProxyBypass;   // proxy bypass list
-}
-WINHTTP_PROXY_INFO, *LPWINHTTP_PROXY_INFO;
-WINHTTPAPI BOOL WINAPI WinHttpGetDefaultProxyConfiguration(WINHTTP_PROXY_INFO* pProxyInfo);
-
-typedef struct
-{
-	BOOL    fAutoDetect;
-	LPWSTR  lpszAutoConfigUrl;
-	LPWSTR  lpszProxy;
-	LPWSTR  lpszProxyBypass;
-} WINHTTP_CURRENT_USER_IE_PROXY_CONFIG;
-WINHTTPAPI BOOL WINAPI WinHttpGetIEProxyConfigForCurrentUser(WINHTTP_CURRENT_USER_IE_PROXY_CONFIG* pProxyConfig);
-
-#if defined(__cplusplus)
-}
-#endif
-
-#include "HideWindowsPlatformTypes.h"
-#endif
 
 CURLM* FCurlHttpManager::GMultiHandle = NULL;
 CURLSH* FCurlHttpManager::GShareHandle = NULL;
 
 FCurlHttpManager::FCurlRequestOptions FCurlHttpManager::CurlRequestOptions;
 
-#if PLATFORM_LINUX	// known to be available for Linux libcurl+libcrypto bundle at least
-extern "C"
-{
-void CRYPTO_get_mem_functions(
-		void *(**m)(size_t, const char *, int),
-		void *(**r)(void *, size_t, const char *, int),
-		void (**f)(void *, const char *, int));
-int CRYPTO_set_mem_functions(
-		void *(*m)(size_t, const char *, int),
-		void *(*r)(void *, size_t, const char *, int),
-		void (*f)(void *, const char *, int));
-}
-#endif // PLATFORM_LINUX
-
 // set functions that will init the memory
 namespace LibCryptoMemHooks
 {
-	void* (*ChainedMalloc)(size_t Size, const char* Src, int Line) = nullptr;
-	void* (*ChainedRealloc)(void* Ptr, const size_t Size, const char* Src, int Line) = nullptr;
-	void (*ChainedFree)(void* Ptr, const char* Src, int Line) = nullptr;
+	void* (*ChainedMalloc)(size_t Size) = nullptr;
+	void* (*ChainedRealloc)(void* Ptr, const size_t Size) = nullptr;
+	void (*ChainedFree)(void* Ptr) = nullptr;
 	bool bMemoryHooksSet = false;
 
 	/** This malloc will init the memory, keeping valgrind happy */
-	void* MallocWithInit(size_t Size, const char* Src, int Line)
+	void* MallocWithInit(size_t Size)
 	{
 		void* Result = FMemory::Malloc(Size);
 		if (LIKELY(Result))
@@ -116,7 +52,7 @@ namespace LibCryptoMemHooks
 	}
 
 	/** This realloc will init the memory, keeping valgrind happy */
-	void* ReallocWithInit(void* Ptr, const size_t Size, const char* Src, int Line)
+	void* ReallocWithInit(void* Ptr, const size_t Size)
 	{
 		size_t CurrentUsableSize = FMemory::GetAllocSize(Ptr);
 		void* Result = FMemory::Realloc(Ptr, Size);
@@ -129,7 +65,7 @@ namespace LibCryptoMemHooks
 	}
 
 	/** This realloc will init the memory, keeping valgrind happy */
-	void Free(void* Ptr, const char* Src, int Line)
+	void Free(void* Ptr)
 	{
 		return FMemory::Free(Ptr);
 	}
@@ -137,10 +73,10 @@ namespace LibCryptoMemHooks
 	void SetMemoryHooks()
 	{
 		// do not set this in Shipping until we prove that the change in OpenSSL behavior is safe
-#if PLATFORM_LINUX && !UE_BUILD_SHIPPING
+#if PLATFORM_UNIX && !UE_BUILD_SHIPPING && WITH_SSL
 		CRYPTO_get_mem_functions(&ChainedMalloc, &ChainedRealloc, &ChainedFree);
 		CRYPTO_set_mem_functions(MallocWithInit, ReallocWithInit, Free);
-#endif // PLATFORM_LINUX && !UE_BUILD_SHIPPING
+#endif // PLATFORM_UNIX && !UE_BUILD_SHIPPING && WITH_SSL
 
 		bMemoryHooksSet = true;
 	}
@@ -151,9 +87,9 @@ namespace LibCryptoMemHooks
 		if (LibCryptoMemHooks::bMemoryHooksSet)
 		{
 			// do not set this in Shipping until we prove that the change in OpenSSL behavior is safe
-#if PLATFORM_LINUX && !UE_BUILD_SHIPPING
+#if PLATFORM_UNIX && !UE_BUILD_SHIPPING && WITH_SSL
 			CRYPTO_set_mem_functions(LibCryptoMemHooks::ChainedMalloc, LibCryptoMemHooks::ChainedRealloc, LibCryptoMemHooks::ChainedFree);
-#endif // PLATFORM_LINUX && !UE_BUILD_SHIPPING
+#endif // PLATFORM_UNIX && !UE_BUILD_SHIPPING && WITH_SSL
 
 			bMemoryHooksSet = false;
 			ChainedMalloc = nullptr;
@@ -161,63 +97,6 @@ namespace LibCryptoMemHooks
 			ChainedFree = nullptr;
 		}
 	}
-}
-
-bool IsUnsignedInteger(const FString& InString)
-{
-	bool bResult = true;
-	for(auto CharacterIter: InString)
-	{
-		if (!FChar::IsDigit(CharacterIter))
-		{
-			bResult = false;
-			break;
-		}
-	}
-	return bResult;
-}
-
-bool IsValidIPv4Address(const FString& InString)
-{
-	bool bResult = false;
-
-	FString Temp = InString;
-	FString AStr, BStr, CStr, DStr, PortStr;
-
-	bool bWasPatternMatched = false;
-	if (Temp.Split(TEXT("."), &AStr, &Temp))
-	{
-		if (Temp.Split(TEXT("."), &BStr, &Temp))
-		{
-			if (Temp.Split(TEXT("."), &CStr, &Temp))
-			{
-				if (Temp.Split(TEXT(":"), &DStr, &PortStr))
-				{
-					bWasPatternMatched = true;
-				}
-			}
-		}
-	}
-
-	if (bWasPatternMatched)
-	{
-		if (IsUnsignedInteger(AStr) && IsUnsignedInteger(BStr) && IsUnsignedInteger(CStr) && IsUnsignedInteger(DStr) && IsUnsignedInteger(PortStr))
-		{
-			uint32 A, B, C, D, Port;
-			Lex::FromString(A, *AStr);
-			Lex::FromString(B, *BStr);
-			Lex::FromString(C, *CStr);
-			Lex::FromString(D, *DStr);
-			Lex::FromString(Port, *PortStr);
-
-			if (A < 256 && B < 256 && C < 256 && D < 256 && Port < 65536)
-			{
-				bResult = true;
-			}
-		}
-	}
-
-	return bResult;
 }
 
 void FCurlHttpManager::InitCurl()
@@ -228,16 +107,22 @@ void FCurlHttpManager::InitCurl()
 		return;
 	}
 
+	int32 CurlInitFlags = CURL_GLOBAL_ALL;
 #if WITH_SSL
-	// Make sure ssl is loaded so that we can use the shared cert pool
-	FModuleManager::LoadModuleChecked<class FSslModule>("SSL");
+	// Make sure SSL is loaded so that we can use the shared cert pool, and to globally initialize OpenSSL if possible
+	FSslModule& SslModule = FModuleManager::LoadModuleChecked<FSslModule>("SSL");
+	if (SslModule.GetSslManager().InitializeSsl())
+	{
+		// Do not need Curl to initialize its own SSL
+		CurlInitFlags = CurlInitFlags & ~(CURL_GLOBAL_SSL);
+	}
 #endif // #if WITH_SSL
 
 	// Override libcrypt functions to initialize memory since OpenSSL triggers multiple valgrind warnings due to this.
 	// Do this before libcurl/libopenssl/libcrypto has been inited.
 	LibCryptoMemHooks::SetMemoryHooks();
 
-	CURLcode InitResult = curl_global_init_mem(CURL_GLOBAL_ALL, CurlMalloc, CurlFree, CurlRealloc, CurlStrdup, CurlCalloc);
+	CURLcode InitResult = curl_global_init_mem(CurlInitFlags, CurlMalloc, CurlFree, CurlRealloc, CurlStrdup, CurlCalloc);
 	if (InitResult == 0)
 	{
 		curl_version_info_data * VersionInfo = curl_version_info(CURLVERSION_NOW);
@@ -288,6 +173,17 @@ void FCurlHttpManager::InitCurl()
 			UE_LOG(LogInit, Fatal, TEXT("Could not initialize create libcurl multi handle! HTTP transfers will not function properly."));
 		}
 
+		int32 MaxTotalConnections = 0;
+		if (GConfig->GetInt(TEXT("HTTP.Curl"), TEXT("MaxTotalConnections"), MaxTotalConnections, GEngineIni) && MaxTotalConnections > 0)
+		{
+			const CURLMcode SetOptResult = curl_multi_setopt(GMultiHandle, CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(MaxTotalConnections));
+			if (SetOptResult != CURLM_OK)
+			{
+				UE_LOG(LogInit, Warning, TEXT("Failed to set libcurl max total connections options (%d), error %d ('%s')"),
+					MaxTotalConnections, static_cast<int32>(SetOptResult), StringCast<TCHAR>(curl_multi_strerror(SetOptResult)).Get());
+			}
+		}
+
 		GShareHandle = curl_share_init();
 		if (NULL != GShareHandle)
 		{
@@ -306,220 +202,32 @@ void FCurlHttpManager::InitCurl()
 	}
 
 	// Init curl request options
-
-	FString ProxyAddress;
-	if (FParse::Value(FCommandLine::Get(), TEXT("httpproxy="), ProxyAddress))
-	{
-		if (!ProxyAddress.IsEmpty())
-		{
-			CurlRequestOptions.bUseHttpProxy = true;
-			CurlRequestOptions.HttpProxyAddress = ProxyAddress;
-		}
-		else
-		{
-			UE_LOG(LogInit, Warning, TEXT(" Libcurl: -httpproxy has been passed as a parameter, but the address doesn't seem to be valid"));
-		}
-	}
-
-#if PLATFORM_WINDOWS
-	// Look for the default machine wide proxy setting
-	if (ProxyAddress.Len() == 0)
-	{
-		// Retrieve the default proxy configuration.
-		WINHTTP_PROXY_INFO DefaultProxyInfo;
-		memset(&DefaultProxyInfo, 0, sizeof(DefaultProxyInfo));
-		WinHttpGetDefaultProxyConfiguration(&DefaultProxyInfo);
-
-		if (DefaultProxyInfo.lpszProxy != nullptr)
-		{
-			FString TempProxy(DefaultProxyInfo.lpszProxy);
-			if (IsValidIPv4Address(TempProxy))
-			{
-				ProxyAddress = TempProxy;
-			}
-			else
-			{
-				if (TempProxy.Split(TEXT("https="), nullptr, &TempProxy))
-				{
-					TempProxy.Split(TEXT(";"), &TempProxy, nullptr);
-					if (IsValidIPv4Address(TempProxy))
-					{
-						ProxyAddress = TempProxy;
-					}
-				}
-			}
-		}
-	}
-
-	// Look for the proxy setting for the current user. Charles proxies count in here.
-	if (ProxyAddress.Len() == 0)
-	{
-		WINHTTP_CURRENT_USER_IE_PROXY_CONFIG IeProxyInfo;
-		memset(&IeProxyInfo, 0, sizeof(IeProxyInfo));
-		WinHttpGetIEProxyConfigForCurrentUser(&IeProxyInfo);
-
-		if (IeProxyInfo.lpszProxy != nullptr)
-		{
-			FString TempProxy(IeProxyInfo.lpszProxy);
-			if (IsValidIPv4Address(TempProxy))
-			{
-				ProxyAddress = TempProxy;
-			}
-			else
-			{
-				if (TempProxy.Split(TEXT("https="), nullptr, &TempProxy))
-				{
-					TempProxy.Split(TEXT(";"), &TempProxy, nullptr);
-					if (IsValidIPv4Address(TempProxy))
-					{
-						ProxyAddress = TempProxy;
-					}
-				}
-			}
-		}
-	}
-#elif PLATFORM_ANDROID
-	// Look for the default machine wide proxy setting
-	if (ProxyAddress.Len() == 0)
-	{
-		extern int32 AndroidThunkCpp_GetMetaDataInt(const FString& Key);
-		extern FString AndroidThunkCpp_GetMetaDataString(const FString& Key);
-
-		FString ProxyHost = AndroidThunkCpp_GetMetaDataString(TEXT("ue4.http.proxy.proxyHost"));
-		int32 ProxyPort = AndroidThunkCpp_GetMetaDataInt(TEXT("ue4.http.proxy.proxyPort"));
-
-		if (ProxyPort != -1 && !ProxyHost.IsEmpty())
-		{
-			ProxyAddress = FString::Printf(TEXT("%s:%d"), *ProxyHost, ProxyPort);
-		}
-	}
-#endif
-
-	if (ProxyAddress.Len() > 0)
-	{
-		CurlRequestOptions.bUseHttpProxy = true;
-		CurlRequestOptions.HttpProxyAddress = ProxyAddress;
-	}
-
 	if (FParse::Param(FCommandLine::Get(), TEXT("noreuseconn")))
 	{
 		CurlRequestOptions.bDontReuseConnections = true;
 	}
 
-	// discover cert location
-	if (PLATFORM_LINUX)	// only relevant to Linux (for now?), not #ifdef'ed to keep the code checked by the compiler when compiling for other platforms
-	{
-		static const char * KnownBundlePaths[] =
-		{
-			"/etc/pki/tls/certs/ca-bundle.crt",
-			"/etc/ssl/certs/ca-certificates.crt",
-			"/etc/ssl/ca-bundle.pem",
-			nullptr
-		};
-
-		for (const char ** CurrentBundle = KnownBundlePaths; *CurrentBundle; ++CurrentBundle)
-		{
-			FString FileName(*CurrentBundle);
-			UE_LOG(LogInit, Log, TEXT(" Libcurl: checking if '%s' exists"), *FileName);
-
-			if (FPaths::FileExists(FileName))
-			{
-				CurlRequestOptions.CertBundlePath = *CurrentBundle;
-				break;
-			}
-		}
-		if (CurlRequestOptions.CertBundlePath == nullptr)
-		{
-			UE_LOG(LogInit, Log, TEXT(" Libcurl: did not find a cert bundle in any of known locations, TLS may not work"));
-		}
-	}
-#if PLATFORM_ANDROID
-	// used #if here to protect against GExternalFilePath only available on Android
-	else
-	if (PLATFORM_ANDROID)
-	{
-		const int32 PathLength = 200;
-		static ANSICHAR capath[PathLength] = { 0 };
-
-		// if file does not already exist, create local PEM file with system trusted certificates
-		extern FString GExternalFilePath;
-		FString PEMFilename = GExternalFilePath / TEXT("ca-bundle.pem");
-		if (!FPaths::FileExists(PEMFilename))
-		{
-			FString Contents;
-
-			IFileManager* FileManager = &IFileManager::Get();
-			auto Ar = TUniquePtr<FArchive>(FileManager->CreateFileWriter(*PEMFilename, 0));
-			if (Ar)
-			{
-				// check for override ca-bundle.pem embedded in game content
-				FString OverridePEMFilename = FPaths::ProjectContentDir() + TEXT("CurlCertificates/ca-bundle.pem");
-				if (FFileHelper::LoadFileToString(Contents, *OverridePEMFilename))
-				{
-					const TCHAR* StrPtr = *Contents;
-					auto Src = StringCast<ANSICHAR>(StrPtr, Contents.Len());
-					Ar->Serialize((ANSICHAR*)Src.Get(), Src.Length() * sizeof(ANSICHAR));
-				}
-				else
-				{
-					// gather all the files in system certificates directory
-					TArray<FString> directoriesToIgnoreAndNotRecurse;
-					FLocalTimestampDirectoryVisitor Visitor(FPlatformFileManager::Get().GetPlatformFile(), directoriesToIgnoreAndNotRecurse, directoriesToIgnoreAndNotRecurse, false);
-					FileManager->IterateDirectory(TEXT("/system/etc/security/cacerts"), Visitor);
-
-					for (TMap<FString, FDateTime>::TIterator TimestampIt(Visitor.FileTimes); TimestampIt; ++TimestampIt)
-					{
-						// read and append the certificate file contents
-						const FString CertFilename = TimestampIt.Key();
-						if (FFileHelper::LoadFileToString(Contents, *CertFilename))
-						{
-							const TCHAR* StrPtr = *Contents;
-							auto Src = StringCast<ANSICHAR>(StrPtr, Contents.Len());
-							Ar->Serialize((ANSICHAR*)Src.Get(), Src.Length() * sizeof(ANSICHAR));
-						}
-					}
-
-					// add optional additional certificates
-					FString OptionalPEMFilename = FPaths::ProjectContentDir() + TEXT("CurlCertificates/ca-additions.pem");
-					if (FFileHelper::LoadFileToString(Contents, *OptionalPEMFilename))
-					{
-						const TCHAR* StrPtr = *Contents;
-						auto Src = StringCast<ANSICHAR>(StrPtr, Contents.Len());
-						Ar->Serialize((ANSICHAR*)Src.Get(), Src.Length() * sizeof(ANSICHAR));
-					}
-				}
-
-				FPlatformString::Strncpy(capath, TCHAR_TO_ANSI(*PEMFilename), PathLength);
-				CurlRequestOptions.CertBundlePath = capath;
-				UE_LOG(LogInit, Log, TEXT(" Libcurl: using generated PEM file: '%s'"), *PEMFilename);
-			}
-		}
-		else
-		{
-			FPlatformString::Strncpy(capath, TCHAR_TO_ANSI(*PEMFilename), PathLength);
-			CurlRequestOptions.CertBundlePath = capath;
-			UE_LOG(LogInit, Log, TEXT(" Libcurl: using existing PEM file: '%s'"), *PEMFilename);
-		}
-
-		if (CurlRequestOptions.CertBundlePath == nullptr)
-		{
-			UE_LOG(LogInit, Log, TEXT(" Libcurl: failed to generate a PEM cert bundle, TLS may not work"));
-		}
-	}
+#if WITH_SSL
+	// Set default verify peer value based on availability of certificates
+	CurlRequestOptions.bVerifyPeer = SslModule.GetCertificateManager().HasCertificatesAvailable();
 #endif
 
-	// set certificate verification (disable to allow self-signed certificates)
-	if (CurlRequestOptions.CertBundlePath == nullptr)
+	bool bVerifyPeer = true;
+	if (GConfig->GetBool(TEXT("/Script/Engine.NetworkSettings"), TEXT("n.VerifyPeer"), bVerifyPeer, GEngineIni))
 	{
-		CurlRequestOptions.bVerifyPeer = false;
+		CurlRequestOptions.bVerifyPeer = bVerifyPeer;
 	}
-	else
+
+	bool bAcceptCompressedContent = true;
+	if (GConfig->GetBool(TEXT("HTTP"), TEXT("AcceptCompressedContent"), bAcceptCompressedContent, GEngineIni))
 	{
-		bool bVerifyPeer = true;
-		if (GConfig->GetBool(TEXT("/Script/Engine.NetworkSettings"), TEXT("n.VerifyPeer"), bVerifyPeer, GEngineIni))
-		{
-			CurlRequestOptions.bVerifyPeer = bVerifyPeer;
-		}
+		CurlRequestOptions.bAcceptCompressedContent = bAcceptCompressedContent;
+	}
+
+	int32 ConfigBufferSize = 0;
+	if (GConfig->GetInt(TEXT("HTTP.Curl"), TEXT("BufferSize"), ConfigBufferSize, GEngineIni) && ConfigBufferSize > 0)
+	{
+		CurlRequestOptions.BufferSize = ConfigBufferSize;
 	}
 
 	CurlRequestOptions.MaxHostConnections = FHttpModule::Get().GetHttpMaxConnectionsPerServer();
@@ -529,7 +237,7 @@ void FCurlHttpManager::InitCurl()
 		if (SetOptResult != CURLM_OK)
 		{
 			FUTF8ToTCHAR Converter(curl_multi_strerror(SetOptResult));
-			UE_LOG(LogHttp, Warning, TEXT("Failed to set max host connections options (%d), error %d ('%s')"),
+			UE_LOG(LogInit, Warning, TEXT("Failed to set max host connections options (%d), error %d ('%s')"),
 				CurlRequestOptions.MaxHostConnections, (int32)SetOptResult, Converter.Get());
 			CurlRequestOptions.MaxHostConnections = 0;
 		}
@@ -569,23 +277,20 @@ void FCurlHttpManager::FCurlRequestOptions::Log()
 		bVerifyPeer ? TEXT("") : TEXT("NOT ")
 		);
 
+	const FString& ProxyAddress = FHttpModule::Get().GetProxyAddress();
+	const bool bUseHttpProxy = !ProxyAddress.IsEmpty();
 	UE_LOG(LogInit, Log, TEXT(" - bUseHttpProxy = %s  - Libcurl will %suse HTTP proxy"),
 		bUseHttpProxy ? TEXT("true") : TEXT("false"),
 		bUseHttpProxy ? TEXT("") : TEXT("NOT ")
 		);	
 	if (bUseHttpProxy)
 	{
-		UE_LOG(LogInit, Log, TEXT(" - HttpProxyAddress = '%s'"), *HttpProxyAddress);
+		UE_LOG(LogInit, Log, TEXT(" - HttpProxyAddress = '%s'"), *ProxyAddress);
 	}
 
 	UE_LOG(LogInit, Log, TEXT(" - bDontReuseConnections = %s  - Libcurl will %sreuse connections"),
 		bDontReuseConnections ? TEXT("true") : TEXT("false"),
 		bDontReuseConnections ? TEXT("NOT ") : TEXT("")
-		);
-
-	UE_LOG(LogInit, Log, TEXT(" - CertBundlePath = %s  - Libcurl will %s"),
-		(CertBundlePath != nullptr) ? *FString(CertBundlePath) : TEXT("nullptr"),
-		(CertBundlePath != nullptr) ? TEXT("set CURLOPT_CAINFO to it") : TEXT("use whatever was configured at build time.")
 		);
 
 	UE_LOG(LogInit, Log, TEXT(" - MaxHostConnections = %d  - Libcurl will %slimit the number of connections to a host"),
@@ -594,6 +299,8 @@ void FCurlHttpManager::FCurlRequestOptions::Log()
 		);
 
 	UE_LOG(LogInit, Log, TEXT(" - LocalHostAddr = %s"), LocalHostAddr.IsEmpty() ? TEXT("Default") : *LocalHostAddr);
+
+	UE_LOG(LogInit, Log, TEXT(" - BufferSize = %d"), CurlRequestOptions.BufferSize);
 }
 
 
@@ -608,6 +315,12 @@ void FCurlHttpManager::ShutdownCurl()
 	curl_global_cleanup();
 
 	LibCryptoMemHooks::UnsetMemoryHooks();
+
+#if WITH_SSL
+	// Shutdown OpenSSL
+	FSslModule& SslModule = FModuleManager::LoadModuleChecked<FSslModule>("SSL");
+	SslModule.GetSslManager().ShutdownSsl();
+#endif // #if WITH_SSL
 }
 
 FHttpThread* FCurlHttpManager::CreateHttpThread()
@@ -615,4 +328,8 @@ FHttpThread* FCurlHttpManager::CreateHttpThread()
 	return new FCurlHttpThread();
 }
 
+bool FCurlHttpManager::SupportsDynamicProxy() const
+{
+	return true;
+}
 #endif //WITH_LIBCURL

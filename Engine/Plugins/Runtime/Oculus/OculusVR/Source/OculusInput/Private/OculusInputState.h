@@ -68,6 +68,15 @@ enum class EOculusTouchCapacitiveAxes
 	TotalAxisCount
 };
 
+enum class EOculusTouchpadButton // GearVR HMT side touchpad
+{
+	Touchpad,
+	Back,
+
+	/** Total number of touchpad buttons */
+	TotalButtonCount
+};
+
 
 //-------------------------------------------------------------------------------------------------
 // FOculusKey
@@ -100,6 +109,11 @@ struct FOculusKey
 	static const FKey OculusRemote_VolumeUp;
 	static const FKey OculusRemote_VolumeDown;
 	static const FKey OculusRemote_Home;
+
+	static const FKey OculusTouchpad_Touchpad;
+	static const FKey OculusTouchpad_Touchpad_X;
+	static const FKey OculusTouchpad_Touchpad_Y;
+	static const FKey OculusTouchpad_Back;
 };
 
 
@@ -136,6 +150,11 @@ struct FOculusKeyNames
 	static const FName OculusRemote_VolumeUp;
 	static const FName OculusRemote_VolumeDown;
 	static const FName OculusRemote_Home;
+
+	static const FName OculusTouchpad_Touchpad;
+	static const FName OculusTouchpad_Touchpad_X;
+	static const FName OculusTouchpad_Touchpad_Y;
+	static const FName OculusTouchpad_Back;
 };
 
 
@@ -148,6 +167,9 @@ struct FOculusButtonState
 	/** The Unreal button this maps to.  Different depending on whether this is the Left or Right hand controller */
 	FName Key;
 
+	/** The Unreal button this maps to.  Different depending on whether this is the Left or Right hand controller */
+	FName EmulatedKey;
+
 	/** Whether we're pressed or not.  While pressed, we will generate repeat presses on a timer */
 	bool bIsPressed;
 
@@ -158,6 +180,7 @@ struct FOculusButtonState
 	/** Default constructor that just sets sensible defaults */
 	FOculusButtonState()
 		: Key( NAME_None ),
+		  EmulatedKey( NAME_None ),
 		  bIsPressed( false ),
 		  NextRepeatTime( 0.0 )
 	{
@@ -224,6 +247,12 @@ struct FOculusTouchControllerState
 	/** Haptic amplitude (zero to disable) */
 	float HapticAmplitude;
 
+	/** Force feedback haptic frequency (zero to disable) */
+	float ForceFeedbackHapticFrequency;
+
+	/** Force feedback haptic amplitude (zero to disable) */
+	float ForceFeedbackHapticAmplitude;
+
 	/** Number of times that controller was recentered (for mobile controllers) */
 	int RecenterCount;
 
@@ -239,6 +268,8 @@ struct FOculusTouchControllerState
 		  bPlayingHapticEffect( false ),
 		  HapticFrequency( 0.0f ),
 		  HapticAmplitude( 0.0f ),
+		  ForceFeedbackHapticFrequency(0.0f),
+		  ForceFeedbackHapticAmplitude(0.0f),
 		  RecenterCount(0)
 	{
 		for( FOculusButtonState& Button : Buttons )
@@ -303,14 +334,14 @@ struct FOculusRemoteControllerState
 		Buttons[(int32)EOculusRemoteControllerButton::Home].Key = FOculusKeyNames::OculusRemote_Home;
 	}
 
-	void ReinitButtonsForGamepadCompat()
+	void MapKeysToGamepad()
 	{
-		Buttons[(int32)EOculusRemoteControllerButton::DPad_Up].Key = FGamepadKeyNames::DPadUp;
-		Buttons[(int32)EOculusRemoteControllerButton::DPad_Down].Key = FGamepadKeyNames::DPadDown;
-		Buttons[(int32)EOculusRemoteControllerButton::DPad_Left].Key = FGamepadKeyNames::DPadLeft;
-		Buttons[(int32)EOculusRemoteControllerButton::DPad_Right].Key = FGamepadKeyNames::DPadRight;
-		Buttons[(int32)EOculusRemoteControllerButton::Enter].Key = FGamepadKeyNames::SpecialRight;
-		Buttons[(int32)EOculusRemoteControllerButton::Back].Key = FGamepadKeyNames::SpecialLeft;
+		Buttons[(int32)EOculusRemoteControllerButton::DPad_Up].EmulatedKey = FGamepadKeyNames::DPadUp;
+		Buttons[(int32)EOculusRemoteControllerButton::DPad_Down].EmulatedKey = FGamepadKeyNames::DPadDown;
+		Buttons[(int32)EOculusRemoteControllerButton::DPad_Left].EmulatedKey = FGamepadKeyNames::DPadLeft;
+		Buttons[(int32)EOculusRemoteControllerButton::DPad_Right].EmulatedKey = FGamepadKeyNames::DPadRight;
+		Buttons[(int32)EOculusRemoteControllerButton::Enter].EmulatedKey = FGamepadKeyNames::SpecialRight;
+		Buttons[(int32)EOculusRemoteControllerButton::Back].EmulatedKey = FGamepadKeyNames::SpecialLeft;
 	}
 };
 
@@ -327,7 +358,6 @@ struct FOculusTouchControllerPair
 	/** Current device state for either hand */
 	FOculusTouchControllerState ControllerStates[ 2 ];
 
-
 	/** Default constructor that sets up sensible defaults */
 	FOculusTouchControllerPair()
 		: UnrealControllerIndex( INDEX_NONE ),
@@ -338,6 +368,30 @@ struct FOculusTouchControllerPair
 	}
 };
 
+//-------------------------------------------------------------------------------------------------
+// FOculusTouchpadState
+//-------------------------------------------------------------------------------------------------
+struct FOculusTouchpadState
+{
+	/** Button states */
+	FOculusButtonState Buttons[(int32)EOculusTouchpadButton::TotalButtonCount];
+
+	/** Touchpad state */
+	FVector2D TouchpadPosition;
+
+	FOculusTouchpadState()
+		: TouchpadPosition(FVector2D::ZeroVector)
+	{
+		for (FOculusButtonState& Button : Buttons)
+		{
+			Button.bIsPressed = false;
+			Button.NextRepeatTime = 0.0;
+		}
+
+		Buttons[(int32)EOculusTouchpadButton::Touchpad].Key = FOculusKeyNames::OculusTouchpad_Touchpad;
+		Buttons[(int32)EOculusTouchpadButton::Back].Key = FOculusKeyNames::OculusTouchpad_Back;
+	}
+};
 
 } // namespace OculusInput
 

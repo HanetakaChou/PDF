@@ -22,7 +22,7 @@ Version: 4.9
 이 머티리얼 망을 확인하기 위해서는, 콘텐츠 브라우저에서 **M_Tree_Leaf_Base_Solid** 머티리얼을 (더블클릭하여) 열어 주시기 바랍니다.
 [/REGION]
 
-씬의 나무 꼭대기 근처에는 떠다니는 붓 획으로 보이는 것이 나뭇잎의 느낌을 냅니다. 이 효과는 마스크드 머티리얼에 템포럴 안티앨리어싱을 합치는 것으로 가능했습니다.
+씬의 나무 꼭대기 근처에는 떠다니는 붓 획으로 보이는 것이 나뭇잎의 느낌을 냅니다. 이 효과는 마스크드 머티리얼에 템포럴 안티에일리어싱을 합치는 것으로 가능했습니다.
 
 
 
@@ -41,15 +41,6 @@ DitherTemporalAA 노드를 사용하지 않은 나무의 모습은 이렇습니�
 	[/PARAM]
 	[PARAM:after]
 	![Without DitherTemporalAA](NonDitheredStrokes.png)(%Dither%)
-	[/PARAM]
-[/OBJECT]
-
-[OBJECT:ComparisonSlider]
-	[PARAM:before]
-	![DitherTemporalAA 켜고](DitheredStrokes.png)(%Dither%)
-	[/PARAM]
-	[PARAM:after]
-	![DitherTemporalAA 끄고](NonDitheredStrokes.png)(%Dither%)
 	[/PARAM]
 [/OBJECT]
 

@@ -78,11 +78,6 @@ public:
 	unsigned initial_values;
 };
 
-unsigned constprop_hash_table_pointer_hash(const void *key)
-{
-    return (unsigned)((uintptr_t)key >> 4);
-}
-
 class constprop_hash_table
 {
 public:
@@ -90,7 +85,7 @@ public:
 	: acp_ht(nullptr)
 	, mem_ctx(imem_ctx)
 	{
-		this->acp_ht = hash_table_ctor(1543, constprop_hash_table_pointer_hash, hash_table_pointer_compare);
+		this->acp_ht = hash_table_ctor(1543, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 	}
 	
 	~constprop_hash_table()
@@ -192,8 +187,9 @@ public:
 		progress = false;
 		mem_ctx = ralloc_context(0);
 		this->acp = new constprop_hash_table(mem_ctx);
-        this->kills = hash_table_ctor(1024, constprop_hash_table_pointer_hash, hash_table_pointer_compare);
+        this->kills = hash_table_ctor(1543, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 		this->killed_all = false;
+		this->conservative_propagation = true;
 	}
 	~ir_constant_propagation_visitor()
 	{
@@ -226,6 +222,8 @@ public:
 	bool progress;
 
 	bool killed_all;
+
+	bool conservative_propagation;
 
 	void *mem_ctx;
 };
@@ -348,7 +346,7 @@ ir_constant_propagation_visitor::visit_enter(ir_function_signature *ir)
 	bool orig_killed_all = this->killed_all;
 
 	this->acp = new constprop_hash_table(mem_ctx);
-	this->kills = hash_table_ctor(1024, constprop_hash_table_pointer_hash, hash_table_pointer_compare);;
+	this->kills = hash_table_ctor(1543, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 	this->killed_all = false;
 
 	visit_list_elements(this, &ir->body);
@@ -409,11 +407,17 @@ ir_constant_propagation_visitor::visit_enter(ir_call *ir)
 		else
 		{
 			has_out_params = true;
+			ir_variable* param_var = param->as_variable();
+			if (param_var && !conservative_propagation)
+			{
+				//todo: can probably be less aggressive here by tracking what components the function actually writes to.
+				kill(param_var, ~0);
+			}
 		}
 		sig_param_iter.next();
 	}
 
-	if (!ir->callee->is_builtin || has_out_params)
+	if (!ir->callee->is_builtin || (has_out_params && conservative_propagation))
 	{
 		/* Since we're unlinked, we don't (necssarily) know the side effects of
 		* this call.  So kill all copies.
@@ -441,7 +445,7 @@ ir_constant_propagation_visitor::handle_if_block(exec_list *instructions)
 
     /* Populate the initial acp with a constant of the original */
     this->acp = constprop_hash_table::copy(*orig_acp);
-	this->kills = hash_table_ctor(1024, constprop_hash_table_pointer_hash, hash_table_pointer_compare);
+	this->kills = hash_table_ctor(1543, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 	this->killed_all = false;
 
 	visit_list_elements(this, instructions);
@@ -488,7 +492,7 @@ ir_constant_propagation_visitor::visit_enter(ir_loop *ir)
 	* cloned minus the killed entries after the first run through.
 	*/
     this->acp = new constprop_hash_table(mem_ctx);
-    this->kills = hash_table_ctor(1024, constprop_hash_table_pointer_hash, hash_table_pointer_compare);
+    this->kills = hash_table_ctor(1543, ir_hash_table_pointer_hash, ir_hash_table_pointer_compare);
 	this->killed_all = false;
 
 	visit_list_elements(this, &ir->body_instructions);
@@ -590,9 +594,10 @@ ir_constant_propagation_visitor::add_constant(ir_assignment *ir)
 /**
 * Does a constant propagation pass on the code present in the instruction stream.
 */
-bool do_constant_propagation(exec_list *instructions)
+bool do_constant_propagation(exec_list *instructions, bool conservative_propagation)
 {
 	ir_constant_propagation_visitor v;
+	v.conservative_propagation = conservative_propagation;
 
 	visit_list_elements(&v, instructions);
 

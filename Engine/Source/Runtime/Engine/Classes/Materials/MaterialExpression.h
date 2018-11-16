@@ -31,6 +31,7 @@ struct FExpressionInput
 	UPROPERTY()
 	int32 OutputIndex;
 
+#if WITH_EDITORONLY_DATA
 	/** 
 	 * optional FName of the input.  
 	 * Note that this is the only member which is not derived from the output currently connected. 
@@ -52,6 +53,7 @@ struct FExpressionInput
 
 	UPROPERTY()
 	int32 MaskA;
+#endif
 
 	/** Material expression name that this input is connected to, or None if not connected. Used only in cooked builds */
 	UPROPERTY()
@@ -75,6 +77,7 @@ struct FExpressionOutput
 	UPROPERTY()
 	FName OutputName;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	int32 Mask;
 
@@ -89,7 +92,7 @@ struct FExpressionOutput
 
 	UPROPERTY()
 	int32 MaskA;
-
+#endif
 };
 #endif
 
@@ -131,6 +134,7 @@ class ENGINE_API UMaterialExpression : public UObject
 	UPROPERTY()
 	class UMaterialFunction* Function;
 
+#if WITH_EDITORONLY_DATA
 	/** A description that level designers can add (shows in the material editor UI). */
 	UPROPERTY(EditAnywhere, Category=MaterialExpression, meta=(MultiLine=true))
 	FString Desc;
@@ -142,11 +146,13 @@ class ENGINE_API UMaterialExpression : public UObject
 	/** If true, we should update the preview next render. This is set when changing bRealtimePreview. */
 	UPROPERTY(transient)
 	uint32 bNeedToUpdatePreview:1;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Indicates that this is a 'parameter' type of expression and should always be loaded (ie not cooked away) because we might want the default parameter. */
 	UPROPERTY()
 	uint32 bIsParameterExpression:1;
 
+#if WITH_EDITORONLY_DATA
 	/** If true, the comment bubble will be visible in the graph editor */
 	UPROPERTY()
 	uint32 bCommentBubbleVisible:1;
@@ -179,15 +185,14 @@ class ENGINE_API UMaterialExpression : public UObject
 	UPROPERTY()
 	uint32 bShowOutputs:1;
 
-#if WITH_EDITORONLY_DATA
 	/** Localized categories to sort this expression into... */
 	UPROPERTY()
 	TArray<FText> MenuCategories;
-#endif // WITH_EDITORONLY_DATA
 
 	/** The expression's outputs, which are set in default properties by derived classes. */
 	UPROPERTY()
 	TArray<FExpressionOutput> Outputs;
+#endif // WITH_EDITORONLY_DATA
 
 	//~ Begin UObject Interface.
 	virtual void PostInitProperties() override;
@@ -197,10 +202,10 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditImport() override;
 	virtual bool CanEditChange( const UProperty* InProperty ) const override;
-#endif // WITH_EDITOR
 	
 	virtual bool Modify( bool bAlwaysMarkDirty=true ) override;
-	virtual void Serialize( FArchive& Ar ) override;
+#endif // WITH_EDITOR
+	virtual void Serialize( FStructuredArchive::FRecord Record ) override;
 	virtual bool NeedsLoadForClient() const override;
 	virtual bool NeedsLoadForEditorGame() const override
 	{
@@ -234,6 +239,9 @@ class ENGINE_API UMaterialExpression : public UObject
 		return NULL;
 	}
 
+	virtual bool CanReferenceTexture() const { return false; }
+
+#if WITH_EDITOR
 	/**
 	 *	Get the outputs supported by this expression.
 	 *
@@ -244,7 +252,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual FExpressionInput* GetInput(int32 InputIndex);
 	virtual FName GetInputName(int32 InputIndex) const;
 	virtual bool IsInputConnectionRequired(int32 InputIndex) const;
-#if WITH_EDITOR
 	virtual bool CanUserDeleteExpression() const
 	{
 		return true;
@@ -255,7 +262,6 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	virtual FText GetCreationDescription() const;
 	virtual FText GetCreationName() const;
-#endif
 
 	/**
 	 *	Get the width required by this expression (in the material editor).
@@ -267,7 +273,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual bool UsesLeftGutter() const;
 	virtual bool UsesRightGutter() const;
 
-#if WITH_EDITOR
 	/**
 	 *	Returns the text to display on the material expression (in the material editor).
 	 *
@@ -281,14 +286,12 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	/** Get a tooltip for the expression itself. */
 	virtual void GetExpressionToolTip(TArray<FString>& OutToolTip) {}
-#endif
 	/**
 	 *	Returns the amount of padding to use for the label.
 	 *
 	 *	@return int32			The padding (in pixels).
 	 */
 	virtual int GetLabelPadding() { return 0; }
-#if WITH_EDITOR
 	virtual int32 CompilerError(class FMaterialCompiler* Compiler, const TCHAR* pcMessage);
 #endif // WITH_EDITOR
 
@@ -297,7 +300,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	 */
 #if WITH_EDITOR
 	virtual bool NeedsRealtimePreview() { return false; }
-#endif
 
 	/**
 	 * MatchesSearchQuery: Check this expression to see if it matches the search query
@@ -306,7 +308,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	 */
 	virtual bool MatchesSearchQuery( const TCHAR* SearchQuery );
 
-#if WITH_EDITOR
 	/**
 	 * Copy the SrcExpressions into the specified material, preserving internal references.
 	 * New material expressions are created within the specified material.
@@ -317,7 +318,12 @@ class ENGINE_API UMaterialExpression : public UObject
 	/**
 	 * Marks certain expression types as outputting material attributes. Allows the material editor preview material to know if it should use its material attributes pin.
 	 */
-	virtual bool IsResultMaterialAttributes(int32 OutputIndex){return false;}
+	virtual bool IsResultMaterialAttributes(int32 OutputIndex) { return false; }
+
+	/**
+	 * If true, discards the output index when caching this expression which allows more cases to re-use the output instead of adding a separate instruction
+	 */
+	virtual bool CanIgnoreOutputIndex() { return false; }
 
 	/**
 	 * Connects the specified output to the passed material for previewing. 
@@ -403,7 +409,7 @@ class ENGINE_API UMaterialExpression : public UObject
 	* Parameter Name functions, this is requires as multiple class have ParameterName
 	* but are not UMaterialExpressionParameter due to class hierarchy. */
 	virtual bool HasAParameterName() const { return false; }
-	virtual void ValidateParameterName();
+	virtual void ValidateParameterName(const bool bAllowDuplicateName = true);
 
 	virtual FName GetParameterName() const { return NAME_None; }
 	virtual void SetParameterName(const FName& Name) {}

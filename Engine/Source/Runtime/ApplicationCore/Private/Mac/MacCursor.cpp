@@ -1,8 +1,8 @@
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
-#include "MacCursor.h"
-#include "MacWindow.h"
-#include "MacApplication.h"
+#include "Mac/MacCursor.h"
+#include "Mac/MacWindow.h"
+#include "Mac/MacApplication.h"
 #include "Math/IntRect.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
@@ -132,6 +132,7 @@ FMacCursor::FMacCursor()
 	// Set the default cursor
 	SetType(EMouseCursor::Default);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Get the IOHIDSystem so we can disable mouse acceleration
 	mach_port_t MasterPort;
 	kern_return_t KernResult = IOMasterPort(MACH_PORT_NULL, &MasterPort);
@@ -160,6 +161,7 @@ FMacCursor::FMacCursor()
 			}
 		}
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FMacCursor::~FMacCursor()
@@ -229,7 +231,7 @@ void FMacCursor::SetPosition(const int32 X, const int32 Y)
 
 	if (!bIsPositionInitialised || FIntVector(NewPos.X, NewPos.Y, 0) != FIntVector(CurrentPosition.X, CurrentPosition.Y, 0))
 	{
-		if (!bUseHighPrecisionMode || (CurrentCursor && bIsVisible))
+		if (!bUseHighPrecisionMode || (CurrentCursor && bIsVisible) || !bIsPositionInitialised)
 		{
 			WarpCursor(NewPos.X, NewPos.Y);
 		}
@@ -285,16 +287,18 @@ void FMacCursor::Lock(const RECT* const Bounds)
 	{
 		CursorClipRect.Min.X = FMath::TruncToInt(Bounds->left);
 		CursorClipRect.Min.Y = FMath::TruncToInt(Bounds->top);
-		CursorClipRect.Max.X = FMath::TruncToInt(Bounds->right) - 1;
-		CursorClipRect.Max.Y = FMath::TruncToInt(Bounds->bottom) - 1;
+		CursorClipRect.Max.X = Bounds->right > Bounds->left ? FMath::TruncToInt(Bounds->right) - 1 : Bounds->left;
+		CursorClipRect.Max.Y = Bounds->bottom > Bounds->top ? FMath::TruncToInt(Bounds->bottom) - 1 : Bounds->top;
 	}
 
 	MacApplication->OnCursorLock();
 
+	bIsPositionInitialised = false; // Force GetPosition() to update its cached position in case the cursor was warped by another app while we were in high precision mode
 	FVector2D Position = GetPosition();
 	if (UpdateCursorClipping(Position))
 	{
 		SetPosition(Position.X, Position.Y);
+		WarpCursor(Position.X, Position.Y);
 	}
 }
 
@@ -342,11 +346,10 @@ bool FMacCursor::UpdateCursorClipping(FVector2D& CursorPosition)
 void FMacCursor::UpdateVisibility()
 {
 	SCOPED_AUTORELEASE_POOL;
+	// @TODO: Remove usage of deprecated functions
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if ([NSApp isActive])
 	{
-		// @TODO: Remove usage of deprecated CGCursorIsVisible function
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 		if (CurrentCursor && bIsVisible)
 		{
 			// Enable the cursor.
@@ -371,12 +374,12 @@ void FMacCursor::UpdateVisibility()
 				IOHIDSetAccelerationWithKey(HIDInterface, CFSTR(kIOHIDMouseAccelerationType), -1);
 			}
 		}
-#pragma clang diagnostic pop
 	}
 	else if (GMacDisableMouseAcceleration && HIDInterface && bUseHighPrecisionMode && (!CurrentCursor || !bIsVisible))
 	{
 		IOHIDSetAccelerationWithKey(HIDInterface, CFSTR(kIOHIDMouseAccelerationType), SavedAcceleration);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FMacCursor::UpdateCurrentPosition(const FVector2D &Position)
@@ -431,6 +434,7 @@ void FMacCursor::SetHighPrecisionMouseMode(const bool bEnable)
 			[NSEvent setMouseCoalescingEnabled:!bUseHighPrecisionMode];
 		}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (HIDInterface && GMacDisableMouseAcceleration && (!CurrentCursor || !bIsVisible))
 		{
 			if (!bUseHighPrecisionMode)
@@ -452,6 +456,7 @@ void FMacCursor::SetHighPrecisionMouseMode(const bool bEnable)
 				IOHIDSetAccelerationWithKey(HIDInterface, CFSTR(kIOHIDMouseAccelerationType), -1);
 			}
 		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		UpdateVisibility();
 

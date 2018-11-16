@@ -32,25 +32,19 @@ bool FProjectManager::LoadProjectFile( const FString& InProjectFile )
 	TSharedPtr<FProjectDescriptor> Descriptor = MakeShareable(new FProjectDescriptor());
 	if(Descriptor->Load(InProjectFile, FailureReason))
 	{
-		// Add existing project's shader directory
-		FString RealShaderSourceDir = FPaths::Combine(FPaths::GetPath(InProjectFile), TEXT("Shaders"));
-		if (FPaths::DirectoryExists(RealShaderSourceDir))
-		{
-			FGenericPlatformProcess::AddShaderSourceDirectoryMapping(TEXT("/Project"), RealShaderSourceDir);
-		}
-
 		// Create the project
 		CurrentProject = Descriptor;
+		CurrentProjectModuleContextInfos.Reset();
 		return true;
 	}
-	
+
 #if PLATFORM_IOS
-    FString UpdatedMessage = FString::Printf(TEXT("%s\n%s"), *FailureReason.ToString(), TEXT("For troubleshooting, please go to https://docs.unrealengine.com/latest/INT/Platforms/iOS/GettingStarted/index.html"));
-    FailureReason = FText::FromString(UpdatedMessage);
+	FString UpdatedMessage = FString::Printf(TEXT("%s\n%s"), *FailureReason.ToString(), TEXT("For troubleshooting, please go to https://docs.unrealengine.com/latest/INT/Platforms/iOS/GettingStarted/index.html"));
+	FailureReason = FText::FromString(UpdatedMessage);
 #endif
 	UE_LOG(LogProjectManager, Error, TEXT("%s"), *FailureReason.ToString());
 	FMessageDialog::Open(EAppMsgType::Ok, FailureReason);
-    
+
 	return false;
 }
 
@@ -93,7 +87,7 @@ bool FProjectManager::LoadModulesForProject( const ELoadingPhase::Type LoadingPh
 					{
 						FailureMessage = FText::Format( LOCTEXT("PrimaryGameModuleCouldntBeLoaded", "The game module '{0}' could not be loaded. There may be an operating system error or the module may not be properly set up."), TextModuleName );
 					}
-					else 
+					else
 					{
 						ensure(0);	// If this goes off, the error handling code should be updated for the new enum values!
 						FailureMessage = FText::Format( LOCTEXT("PrimaryGameModuleGenericLoadFailure", "The game module '{0}' failed to load for an unspecified reason.  Please report this error."), TextModuleName );
@@ -112,10 +106,12 @@ bool FProjectManager::LoadModulesForProject( const ELoadingPhase::Type LoadingPh
 	return bSuccess;
 }
 
+#if !IS_MONOLITHIC
 bool FProjectManager::CheckModuleCompatibility(TArray<FString>& OutIncompatibleModules)
 {
-	return !CurrentProject.IsValid() || FModuleDescriptor::CheckModuleCompatibility(CurrentProject->Modules, true, OutIncompatibleModules);
+	return !CurrentProject.IsValid() || FModuleDescriptor::CheckModuleCompatibility(CurrentProject->Modules, OutIncompatibleModules);
 }
+#endif
 
 const FString& FProjectManager::GetAutoLoadProjectFileName()
 {
@@ -253,7 +249,7 @@ void FProjectManager::ClearSupportedTargetPlatformsForCurrentProject()
 	OnTargetPlatformsForCurrentProjectChangedEvent.Broadcast();
 }
 
-bool FProjectManager::IsNonDefaultPluginEnabled() const
+bool FProjectManager::HasDefaultPluginSettings() const
 {
 	// Get settings for the plugins which are currently enabled or disabled by the project file
 	TMap<FString, bool> ConfiguredPlugins;
@@ -268,22 +264,25 @@ bool FProjectManager::IsNonDefaultPluginEnabled() const
 	// Check whether the setting for any default plugin has been changed
 	for(const TSharedRef<IPlugin>& Plugin: IPluginManager::Get().GetDiscoveredPlugins())
 	{
-		bool bEnabled = Plugin->IsEnabledByDefault();
-
-		bool* EnabledPtr = ConfiguredPlugins.Find(Plugin->GetName());
-		if(EnabledPtr != nullptr)
+		if (Plugin->GetDescriptor().SupportsTargetPlatform(FPlatformMisc::GetUBTPlatform()))
 		{
-			bEnabled = *EnabledPtr;
-		}
+			bool bEnabled = Plugin->IsEnabledByDefault();
 
-		bool bEnabledInDefaultExe = (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Engine && Plugin->IsEnabledByDefault() && !Plugin->GetDescriptor().bInstalled);
-		if(bEnabled != bEnabledInDefaultExe)
-		{
-			return true;
+			bool* EnabledPtr = ConfiguredPlugins.Find(Plugin->GetName());
+			if(EnabledPtr != nullptr)
+			{
+				bEnabled = *EnabledPtr;
+			}
+
+			bool bEnabledInDefaultExe = (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Engine && Plugin->IsEnabledByDefault() && !Plugin->GetDescriptor().bInstalled);
+			if(bEnabled != bEnabledInDefaultExe)
+			{
+				return false;
+			}
 		}
 	}
 
-	return false;
+	return true;
 }
 
 bool FProjectManager::SetPluginEnabled(const FString& PluginName, bool bEnabled, FText& OutFailReason)
@@ -446,6 +445,11 @@ void FProjectManager::SetIsEnterpriseProject(bool bValue)
 	{
 		CurrentProject->bIsEnterpriseProject = bValue;
 	}
+}
+
+TArray<FModuleContextInfo>& FProjectManager::GetCurrentProjectModuleContextInfos()
+{
+	return CurrentProjectModuleContextInfos;
 }
 
 IProjectManager& IProjectManager::Get()

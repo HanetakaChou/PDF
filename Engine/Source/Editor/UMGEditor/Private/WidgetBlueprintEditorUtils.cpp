@@ -153,12 +153,19 @@ bool FWidgetBlueprintEditorUtils::VerifyWidgetRename(TSharedRef<class FWidgetBlu
 	FKismetNameValidator Validator(Blueprint);
 
 	// For variable comparison, use the slug
-	const bool bUniqueNameForVariable = ( EValidatorResult::Ok == Validator.IsValid(NewNameSlug) );
+	EValidatorResult ValidatorResult = Validator.IsValid(NewNameSlug);
 
-	if (!bUniqueNameForVariable && !bIsSameWidget)
+	if (ValidatorResult != EValidatorResult::Ok)
 	{
-		OutErrorMessage = LOCTEXT("ExistingVariableName", "Existing Variable Name");
-		return false;
+		if (bIsSameWidget && (ValidatorResult == EValidatorResult::AlreadyInUse || ValidatorResult == EValidatorResult::ExistingName))
+		{
+			// Continue successfully
+		}
+		else
+		{
+			OutErrorMessage = INameValidatorInterface::GetErrorText(NewNameString, ValidatorResult);
+			return false;
+		}
 	}
 
 	return true;
@@ -276,8 +283,12 @@ void FWidgetBlueprintEditorUtils::CreateWidgetContextMenu(FMenuBuilder& MenuBuil
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename);
+		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Duplicate);
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
+	}
+	MenuBuilder.PopCommandList();
+	{
+		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename);
 	}
 	MenuBuilder.EndSection();
 
@@ -311,8 +322,6 @@ void FWidgetBlueprintEditorUtils::CreateWidgetContextMenu(FMenuBuilder& MenuBuil
 		}
 	}
 	MenuBuilder.EndSection();
-
-	MenuBuilder.PopCommandList();
 }
 
 void FWidgetBlueprintEditorUtils::ExecuteOpenSelectedWidgetsForEdit( TSet<FWidgetReference> SelectedWidgets )
@@ -352,7 +361,7 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 		for ( FWidgetReference& Item : Widgets )
 		{
 			UWidget* WidgetTemplate = Item.GetTemplate();
-
+			WidgetTemplate->SetFlags(RF_Transactional);
 			// Find and update all binding references in the widget blueprint
 			for (int32 BindingIndex = Blueprint->Bindings.Num() - 1; BindingIndex >= 0; BindingIndex--)
 			{
@@ -367,6 +376,7 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 			UPanelWidget* Parent = WidgetTemplate->GetParent();
 			if ( Parent )
 			{
+				Parent->SetFlags(RF_Transactional);
 				Parent->Modify();
 			}
 			
@@ -390,6 +400,7 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 			UWidgetTree::GetChildWidgets(WidgetTemplate, ChildWidgets);
 			for ( UWidget* Widget : ChildWidgets )
 			{
+				Widget->SetFlags(RF_Transactional);
 				Widget->Rename(nullptr, GetTransientPackage());
 			}
 		}
@@ -702,6 +713,9 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithSelectedTemplate(TSharedRef<F
 		return;
 	}
 
+	NewReplacementWidget->SetFlags(RF_Transactional);
+	NewReplacementWidget->Modify();
+
 	if (UPanelWidget* ExistingPanel = Cast<UPanelWidget>(ThisWidget))
 	{
 		// if they are both panel widgets then call the existing replace function
@@ -714,29 +728,30 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithSelectedTemplate(TSharedRef<F
 			return;
 		}
 	}
-	
+	ThisWidget->SetFlags(RF_Transactional);
 	ThisWidget->Modify();
+	BP->WidgetTree->SetFlags(RF_Transactional);
+	BP->WidgetTree->Modify();
 
-	if (UPanelWidget* CurentParent = ThisWidget->GetParent())
+	if (UPanelWidget* CurrentParent = ThisWidget->GetParent())
 	{
-		CurentParent->Modify();
-		CurentParent->ReplaceChild(ThisWidget, NewReplacementWidget);
+		CurrentParent->SetFlags(RF_Transactional);
+		CurrentParent->Modify();
+		CurrentParent->ReplaceChild(ThisWidget, NewReplacementWidget);
 	}
 	else if (ThisWidget == BP->WidgetTree->RootWidget)
 	{
-		BP->WidgetTree->Modify();
 		BP->WidgetTree->RootWidget = NewReplacementWidget;
 	}
 	else
 	{
 		return;
 	}
-	
-	if (!bIsUserWidget)
-	{
-		// Rename the removed widget to the transient package so that it doesn't conflict with future widgets sharing the same name.
-		ThisWidget->Rename(nullptr, nullptr);
-	}
+
+	// Delete the widget that has been replaced
+	TSet<FWidgetReference> WidgetsToDelete;
+	WidgetsToDelete.Add(Widget);
+	DeleteWidgets(BP, WidgetsToDelete);
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 }
@@ -757,7 +772,9 @@ bool FWidgetBlueprintEditorUtils::CanBeReplacedWithTemplate(TSharedRef<FWidgetBl
 			}
 		}
 		UUserWidget* NewUserWidget = CastChecked<UUserWidget>(FWidgetTemplateBlueprintClass(SelectedUserWidget).Create(BP->WidgetTree));
-		return BP->IsWidgetFreeFromCircularReferences(NewUserWidget);
+		const bool bFreeFromCircularRefs = BP->IsWidgetFreeFromCircularReferences(NewUserWidget);
+		NewUserWidget->Rename(nullptr, nullptr);
+		return bFreeFromCircularRefs;
 	}
 
 	UClass* WidgetClass = BlueprintEditor->GetSelectedTemplate().Get();
@@ -842,16 +859,18 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEdit
 	for ( FWidgetReference& Item : Widgets )
 	{
 			UPanelWidget* NewReplacementWidget = CastChecked<UPanelWidget>(Template->Create(BP->WidgetTree));
-
+			Item.GetTemplate()->SetFlags(RF_Transactional);
 			Item.GetTemplate()->Modify();
 
 			if ( UPanelWidget* CurrentParent = Item.GetTemplate()->GetParent() )
 			{
+				CurrentParent->SetFlags(RF_Transactional);
 				CurrentParent->Modify();
 				CurrentParent->ReplaceChild(Item.GetTemplate(), NewReplacementWidget);
 			}
 			else if ( Item.GetTemplate() == BP->WidgetTree->RootWidget )
 			{
+				BP->WidgetTree->SetFlags(RF_Transactional);
 				BP->WidgetTree->Modify();
 				BP->WidgetTree->RootWidget = NewReplacementWidget;
 			}
@@ -862,9 +881,12 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEdit
 
 			if (UPanelWidget* ExistingPanel = Cast<UPanelWidget>(Item.GetTemplate()))
 			{
+				ExistingPanel->SetFlags(RF_Transactional);
+				ExistingPanel->Modify();
 				while (ExistingPanel->GetChildrenCount() > 0)
 				{
 					UWidget* Widget = ExistingPanel->GetChildAt(0);
+					Widget->SetFlags(RF_Transactional);
 					Widget->Modify();
 
 					NewReplacementWidget->AddChild(Widget);
@@ -885,6 +907,12 @@ void FWidgetBlueprintEditorUtils::CutWidgets(UWidgetBlueprint* BP, TSet<FWidgetR
 }
 
 void FWidgetBlueprintEditorUtils::CopyWidgets(UWidgetBlueprint* BP, TSet<FWidgetReference> Widgets)
+{
+	FString ExportedText = CopyWidgetsInternal(BP, Widgets);
+	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
+}
+
+FString FWidgetBlueprintEditorUtils::CopyWidgetsInternal(UWidgetBlueprint* BP, TSet<FWidgetReference> Widgets)
 {
 	TSet<UWidget*> TemplateWidgets;
 
@@ -926,7 +954,36 @@ void FWidgetBlueprintEditorUtils::CopyWidgets(UWidgetBlueprint* BP, TSet<FWidget
 
 	FString ExportedText;
 	FWidgetBlueprintEditorUtils::ExportWidgetsToText(FinalWidgets, /*out*/ ExportedText);
-	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
+	return ExportedText;
+}
+
+void FWidgetBlueprintEditorUtils::DuplicateWidgets(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, TSet<FWidgetReference> Widgets)
+{
+	FWidgetReference ParentWidgetRef = (Widgets.Num() == 1) ? *Widgets.CreateIterator() : FWidgetReference();
+	if (ParentWidgetRef.IsValid())
+	{
+		if (UPanelWidget* TargetWidget = Cast<UPanelWidget>(ParentWidgetRef.GetPreview()->GetParent()))
+		{
+			ParentWidgetRef = BlueprintEditor->GetReferenceFromPreview(TargetWidget);
+		}
+		else
+		{
+			ParentWidgetRef = FWidgetReference();
+		}
+	}
+
+	if (ParentWidgetRef.IsValid())
+	{
+		FString ExportedText = CopyWidgetsInternal(BP, Widgets);
+
+		FScopedTransaction Transaction(FGenericCommands::Get().Duplicate->GetDescription());
+		bool TransactionSuccesful = true;
+		PasteWidgetsInternal(BlueprintEditor, BP, ExportedText, ParentWidgetRef, NAME_None, FVector2D::ZeroVector, TransactionSuccesful);
+		if (!TransactionSuccesful)
+		{
+			Transaction.Cancel();
+		}
+	}
 }
 
 void FWidgetBlueprintEditorUtils::ExportWidgetsToText(TArray<UWidget*> WidgetsToExport, /*out*/ FString& ExportedText)
@@ -975,7 +1032,7 @@ void FWidgetBlueprintEditorUtils::ExportWidgetsToText(TArray<UWidget*> WidgetsTo
 	ExportedText = Archive;
 }
 
-void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, FWidgetReference ParentWidgetRef, FName SlotName, FVector2D PasteLocation)
+TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, FWidgetReference ParentWidgetRef, FName SlotName, FVector2D PasteLocation)
 {
 	FScopedTransaction Transaction(FGenericCommands::Get().Paste->GetDescription());
 
@@ -983,6 +1040,17 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 	FString TextToImport;
 	FPlatformApplicationMisc::ClipboardPaste(TextToImport);
 
+	bool bTransactionSuccessful = true;
+	TArray<UWidget*> PastedWidgets = PasteWidgetsInternal(BlueprintEditor, BP, TextToImport, ParentWidgetRef, SlotName, PasteLocation, bTransactionSuccessful);
+	if (!bTransactionSuccessful)
+	{
+		Transaction.Cancel();
+	}
+	return PastedWidgets;
+}
+
+TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgetsInternal(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, const FString& TextToImport, FWidgetReference ParentWidgetRef, FName SlotName, FVector2D PasteLocation, bool& bTransactionSuccessful)
+{
 	// Import the nodes
 	TSet<UWidget*> PastedWidgets;
 	TMap<FName, UWidgetSlotPair*> PastedExtraSlotData;
@@ -991,8 +1059,8 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 	// Ignore an empty set of widget paste data.
 	if ( PastedWidgets.Num() == 0 )
 	{
-		Transaction.Cancel();
-		return;
+		bTransactionSuccessful = false;
+		return TArray<UWidget*>();
 	}
 
 	TArray<UWidget*> RootPasteWidgets;
@@ -1013,19 +1081,22 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 
 		if ( ParentWidgetRef.IsValid() )
 		{
-			ParentWidget = CastChecked<UPanelWidget>(ParentWidgetRef.GetTemplate());
-		}
+			ParentWidget = Cast<UPanelWidget>(ParentWidgetRef.GetTemplate());
 
-		// TODO UMG Find paste parent, may not be the selected widget...  Maybe it should be the parent of the copied widget until,
-		// we do a paste here, from a right click menu.
+			// If the widget isn't a panel, we'll try it's parent to see if the pasted widget can be a sibling
+			if (!ParentWidget)
+			{
+				ParentWidget = ParentWidgetRef.GetTemplate()->GetParent();
+			}
+		}
 
 		if ( !ParentWidget )
 		{
 			// If we already have a root widget, then we can't replace the root.
 			if ( BP->WidgetTree->RootWidget )
 			{
-				Transaction.Cancel();
-				return;
+				bTransactionSuccessful = false;
+				return TArray<UWidget*>();
 			}
 		}
 
@@ -1047,13 +1118,28 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 					FNotificationInfo Info(LOCTEXT("NotEnoughSlots", "Can't paste contents, not enough available slots in target widget."));
 					FSlateNotificationManager::Get().AddNotification(Info);
 
-					Transaction.Cancel();
-					return;
+					bTransactionSuccessful = false;
+					return TArray<UWidget*>();
 				}
 			}
 
-			ParentWidget->Modify();
+			// A bit of a hack, but we can look at the widget's slot properties to determine if it is a canvas slot. If so, we'll try and maintain the relative positions
+			bool bShouldReproduceOffsets = true;
+			static const FName LayoutDataLabel = FName(TEXT("LayoutData"));
+			for (TPair<FName, UWidgetSlotPair*>  SlotData : PastedExtraSlotData)
+			{
+				UWidgetSlotPair* SlotDataPair = SlotData.Value;
+				TMap<FName, FString> SlotProperties;
+				SlotDataPair->GetSlotProperties(SlotProperties);
+				if (!SlotProperties.Contains(LayoutDataLabel))
+				{
+					bShouldReproduceOffsets = false;
+					break;
+				}
+			}
 
+			FVector2D FirstWidgetPosition;
+			ParentWidget->Modify();
 			for ( UWidget* NewWidget : RootPasteWidgets )
 			{
 				UPanelSlot* Slot = ParentWidget->AddChild(NewWidget);
@@ -1064,6 +1150,15 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 						TMap<FName, FString> OldSlotProperties;
 						OldSlotData->GetSlotProperties(OldSlotProperties);
 						FWidgetBlueprintEditorUtils::ImportPropertiesFromText(Slot, OldSlotProperties);
+
+						// Cache the initial position of the first widget so we can calculate offsets for additional widgets
+						if (NewWidget == RootPasteWidgets[0])
+						{
+							if (UCanvasPanelSlot* FirstCanvasSlot = Cast<UCanvasPanelSlot>(Slot))
+							{
+								FirstWidgetPosition = FirstCanvasSlot->GetPosition();
+							}
+						}
 					}
 
 					BlueprintEditor->AddPostDesignerLayoutAction(
@@ -1074,8 +1169,14 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 
 						if ( UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(PreviewSlot) )
 						{
+							FVector2D PasteOffset = FVector2D(0, 0);
+							if (bShouldReproduceOffsets)
+							{
+								PasteOffset = CanvasSlot->GetPosition()- FirstWidgetPosition;
+							}
+
 							CanvasSlot->SaveBaseLayout();
-							CanvasSlot->SetDesiredPosition(PasteLocation);
+							CanvasSlot->SetDesiredPosition(PasteLocation + PasteOffset);
 							CanvasSlot->RebaseLayout();
 						}
 
@@ -1111,8 +1212,8 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 			FNotificationInfo Info(LOCTEXT("NamedSlotsOnlyHoldOneWidget", "Can't paste content, a slot can only hold one widget at the root."));
 			FSlateNotificationManager::Get().AddNotification(Info);
 
-			Transaction.Cancel();
-			return;
+			bTransactionSuccessful = false;
+			return TArray<UWidget*>();
 		}
 
 		UWidget* NamedSlotHostWidget = ParentWidgetRef.GetTemplate();
@@ -1127,6 +1228,8 @@ void FWidgetBlueprintEditorUtils::PasteWidgets(TSharedRef<FWidgetBlueprintEditor
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	}
+
+	return RootPasteWidgets;
 }
 
 void FWidgetBlueprintEditorUtils::ImportWidgetsFromText(UWidgetBlueprint* BP, const FString& TextToImport, /*out*/ TSet<UWidget*>& ImportedWidgetSet, /*out*/ TMap<FName, UWidgetSlotPair*>& PastedExtraSlotData)
@@ -1251,6 +1354,25 @@ bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(UProperty* InProperty, bo
 		bIsOptional = InProperty->HasMetaData("BindWidgetOptional") || ( InProperty->HasMetaData("OptionalWidget") || InProperty->GetBoolMetaData("OptionalWidget") );
 
 		return bIsBindWidget;
+	}
+
+	return false;
+}
+
+bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(UProperty* InProperty)
+{
+	bool bIsOptional;
+	return IsBindWidgetAnimProperty(InProperty, bIsOptional);
+}
+
+bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(UProperty* InProperty, bool& bIsOptional)
+{
+	if (InProperty)
+	{
+		bool bIsBindWidgetAnim = InProperty->HasMetaData("BindWidgetAnim") || InProperty->HasMetaData("BindWidgetAnimOptional");
+		bIsOptional = InProperty->HasMetaData("BindWidgetAnimOptional");
+
+		return bIsBindWidgetAnim;
 	}
 
 	return false;

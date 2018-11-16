@@ -4,7 +4,7 @@
 #include "GameFramework/PlayerController.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
-#include "SceneViewport.h"
+#include "Slate/SceneViewport.h"
 #include "StereoRendering.h"
 #include "StereoRenderTargetManager.h"
 #include "IHeadMountedDisplay.h"
@@ -65,9 +65,9 @@ void FDefaultXRCamera::OverrideFOV(float& InOutFOV)
 	// The default camera does not override the FOV
 }
 
-void FDefaultXRCamera::SetupLateUpdate(const FTransform& ParentToWorld, USceneComponent* Component)
+void FDefaultXRCamera::SetupLateUpdate(const FTransform& ParentToWorld, USceneComponent* Component, bool bSkipLateUpdate)
 {
-	LateUpdate.Setup(ParentToWorld, Component);
+	LateUpdate.Setup(ParentToWorld, Component, bSkipLateUpdate);
 }
 
 void FDefaultXRCamera::CalculateStereoCameraOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation, FVector& ViewLocation)
@@ -100,7 +100,8 @@ void FDefaultXRCamera::PreRenderView_RenderThread(FRHICommandListImmediate& RHIC
 	check(IsInRenderingThread());
 
 	// Disable late update for day dream, their compositor doesn't support it.
-	const bool bDoLateUpdate = (TrackingSystem->GetSystemName() != DayDreamHMD);
+	// Also disable it if we are set to skip it.
+	const bool bDoLateUpdate = (!LateUpdate.GetSkipLateUpdate_RenderThread()) && (TrackingSystem->GetSystemName() != DayDreamHMD);
 	if (bDoLateUpdate)
 	{
 		FQuat DeviceOrientation;
@@ -190,11 +191,12 @@ void FDefaultXRCamera::PostRenderViewFamily_RenderThread(FRHICommandListImmediat
 void FDefaultXRCamera::SetupViewFamily(FSceneViewFamily& InViewFamily)
 {
 	static const auto CVarAllowMotionBlurInVR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.AllowMotionBlurInVR"));
-	const bool allowMotionBlur = (CVarAllowMotionBlurInVR && CVarAllowMotionBlurInVR->GetValueOnAnyThread() != 0);
-	const IHeadMountedDisplay* HMD = TrackingSystem->GetHMDDevice();
-	InViewFamily.EngineShowFlags.MotionBlur = allowMotionBlur;
-	InViewFamily.EngineShowFlags.HMDDistortion = HMD?HMD->GetHMDDistortionEnabled(InViewFamily.Scene->GetShadingPath()):false;
+	const bool AllowMotionBlur = (CVarAllowMotionBlurInVR && CVarAllowMotionBlurInVR->GetValueOnAnyThread() != 0);
+	const IHeadMountedDisplay* const HMD = TrackingSystem->GetHMDDevice();
+	InViewFamily.EngineShowFlags.MotionBlur = AllowMotionBlur;
+	InViewFamily.EngineShowFlags.HMDDistortion = HMD != nullptr ? HMD->GetHMDDistortionEnabled(InViewFamily.Scene->GetShadingPath()) : false;
 	InViewFamily.EngineShowFlags.StereoRendering = bCurrentFrameIsStereoRendering;
+	InViewFamily.EngineShowFlags.Rendering = HMD != nullptr ? !HMD->IsRenderingPaused() : true;
 }
 
 void FDefaultXRCamera::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView)

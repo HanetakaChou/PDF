@@ -164,7 +164,7 @@ public:
 				Vertex.TangentX = FVector(1, 0, 0);
 				Vertex.TangentZ = FVector(0, 0, 1);
 				// TangentZ.w contains the sign of the tangent basis determinant. Assume +1
-				Vertex.TangentZ.Vector.W = 255;
+				Vertex.TangentZ.Vector.W = 127;
 				Vertex.TextureCoordinate[0].X = 0.0f;
 				Vertex.TextureCoordinate[0].Y = 0.0f;
 				OutVerts.Push(Vertex);
@@ -429,7 +429,9 @@ UBrushComponent::UBrushComponent(const FObjectInitializer& ObjectInitializer)
 	bUseAsOccluder = true;
 	bUseEditorCompositing = true;
 	bCanEverAffectNavigation = true;
+#if WITH_EDITORONLY_DATA
 	PrePivot_DEPRECATED = FVector::ZeroVector;
+#endif
 }
 
 FPrimitiveSceneProxy* UBrushComponent::CreateSceneProxy()

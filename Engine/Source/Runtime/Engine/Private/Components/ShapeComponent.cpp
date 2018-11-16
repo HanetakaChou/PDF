@@ -2,8 +2,8 @@
 
 
 #include "Components/ShapeComponent.h"
-#include "AI/Navigation/NavAreas/NavArea_Obstacle.h"
-#include "AI/NavigationOctree.h"
+#include "AI/Navigation/NavAreaBase.h"
+#include "AI/NavigationSystemBase.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
@@ -19,14 +19,7 @@ UShapeComponent::UShapeComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	static const FName CollisionProfileName(TEXT("OverlapAllDynamic"));
-	BodyInstance.SetCollisionProfileName(CollisionProfileName);
-#if WITH_EDITORONLY_DATA
-	// when we deprecated this variable, we switched on for the shapecomponent collision profile
-	// the problem with adding collision profile later, the instanced data will be wiped
-	// since shape component is so popular for BP and so on, I'm adding manual support for compatibility
-	// this only works since this variable is getting deprecated. 
-	BodyInstance.ResponseToChannels_DEPRECATED.SetAllChannels(ECR_Block);
-#endif // WITH_EDITORONLY_DATA
+	SetCollisionProfileName(CollisionProfileName);
 	BodyInstance.bAutoWeld = true;	//UShapeComponent by default has auto welding
 
 	bHiddenInGame = true;
@@ -39,7 +32,10 @@ UShapeComponent::UShapeComponent(const FObjectInitializer& ObjectInitializer)
 	bHasCustomNavigableGeometry = EHasCustomNavigableGeometry::Yes;
 	bCanEverAffectNavigation = true;
 	bDynamicObstacle = false;
-	AreaClass = UNavArea_Obstacle::StaticClass();
+	AreaClass = FNavigationSystem::GetDefaultObstacleArea();
+
+	// Ignore streaming updates since GetUsedMaterials() is not implemented.
+	bIgnoreStreamingManagerUpdate = true;
 }
 
 FPrimitiveSceneProxy* UShapeComponent::CreateSceneProxy()
@@ -103,9 +99,23 @@ template <> void UShapeComponent::AddShapeToGeomArray<FKSphereElem>() { ShapeBod
 template <> void UShapeComponent::AddShapeToGeomArray<FKSphylElem>() { ShapeBodySetup->AggGeom.SphylElems.Add(FKSphylElem()); }
 
 #if WITH_PHYSX
-template <> void UShapeComponent::SetShapeToNewGeom<FKBoxElem>(PxShape* PShape) { PShape->userData = (void*)ShapeBodySetup->AggGeom.BoxElems[0].GetUserData(); }
-template <> void UShapeComponent::SetShapeToNewGeom<FKSphereElem>(PxShape* PShape) { PShape->userData = (void*)ShapeBodySetup->AggGeom.SphereElems[0].GetUserData(); }
-template <> void UShapeComponent::SetShapeToNewGeom<FKSphylElem>(PxShape* PShape) { PShape->userData = (void*)ShapeBodySetup->AggGeom.SphylElems[0].GetUserData(); }
+template <>
+void UShapeComponent::SetShapeToNewGeom<FKBoxElem>(const FPhysicsShapeHandle& Shape)
+{
+	FPhysicsInterface::SetUserData(Shape, (void*)ShapeBodySetup->AggGeom.BoxElems[0].GetUserData());
+}
+
+template <>
+void UShapeComponent::SetShapeToNewGeom<FKSphereElem>(const FPhysicsShapeHandle& Shape)
+{
+	FPhysicsInterface::SetUserData(Shape, (void*)ShapeBodySetup->AggGeom.SphereElems[0].GetUserData());
+}
+
+template <>
+void UShapeComponent::SetShapeToNewGeom<FKSphylElem>(const FPhysicsShapeHandle& Shape)
+{
+	FPhysicsInterface::SetUserData(Shape, (void*)ShapeBodySetup->AggGeom.SphylElems[0].GetUserData());
+}
 #endif
 
 template <typename ShapeElemType>
@@ -133,17 +143,17 @@ void UShapeComponent::CreateShapeBodySetupIfNeeded()
 			if(BodyInstance.IsValidBodyInstance())
 			{
 #if WITH_PHYSX
-				BodyInstance.ExecuteOnPhysicsReadWrite([this]
+				FPhysicsCommand::ExecuteWrite(BodyInstance.GetActorReferenceWithWelding(), [this](const FPhysicsActorHandle& Actor)
 				{
-					TArray<PxShape *> PShapes;
-					BodyInstance.GetAllShapes_AssumesLocked(PShapes);
+					TArray<FPhysicsShapeHandle> Shapes;
+					BodyInstance.GetAllShapes_AssumesLocked(Shapes);
 
-					for(PxShape* PShape : PShapes)	//The reason we iterate is we may have multiple scenes and thus multiple shapes, but they are all pointing to the same geometry
+					for(FPhysicsShapeHandle& Shape : Shapes)	//The reason we iterate is we may have multiple scenes and thus multiple shapes, but they are all pointing to the same geometry
 					{
 						//Update shape with the new body setup. Make sure to only update shapes owned by this body instance
-						if(BodyInstance.IsShapeBoundToBody(PShape))
+						if(BodyInstance.IsShapeBoundToBody(Shape))
 						{
-							SetShapeToNewGeom<ShapeElemType>(PShape);
+							SetShapeToNewGeom<ShapeElemType>(Shape);
 						}
 					}
 				});

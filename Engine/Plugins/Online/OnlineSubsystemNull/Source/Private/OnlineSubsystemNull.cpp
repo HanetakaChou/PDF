@@ -7,7 +7,7 @@
 #include "OnlineSessionInterfaceNull.h"
 #include "OnlineLeaderboardInterfaceNull.h"
 #include "OnlineIdentityNull.h"
-#include "VoiceInterfaceImpl.h"
+#include "VoiceInterfaceNull.h"
 #include "OnlineAchievementsInterfaceNull.h"
 
 FThreadSafeCounter FOnlineSubsystemNull::TaskCounter;
@@ -129,7 +129,12 @@ IOnlineChatPtr FOnlineSubsystemNull::GetChatInterface() const
 
 IOnlineTurnBasedPtr FOnlineSubsystemNull::GetTurnBasedInterface() const
 {
-    return nullptr;
+	return nullptr;
+}
+
+IOnlineTournamentPtr FOnlineSubsystemNull::GetTournamentInterface() const
+{
+	return nullptr;
 }
 
 bool FOnlineSubsystemNull::Tick(float DeltaTime)
@@ -186,7 +191,7 @@ bool FOnlineSubsystemNull::Init()
 
 bool FOnlineSubsystemNull::Shutdown()
 {
-	UE_LOG_ONLINE(Display, TEXT("FOnlineSubsystemNull::Shutdown()"));
+	UE_LOG_ONLINE(VeryVerbose, TEXT("FOnlineSubsystemNull::Shutdown()"));
 
 	FOnlineSubsystemImpl::Shutdown();
 

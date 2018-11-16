@@ -20,8 +20,9 @@
 #include "CoreGlobals.h"
 #include "Stats/Stats.h"
 #include "Misc/CoreStats.h"
-#include "Runtime/Core/Resources/Windows/ModuleVersionResource.h"
 #include "Windows/WindowsHWrapper.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
 	#include <shellapi.h>
@@ -108,7 +109,7 @@ FString FWindowsPlatformProcess::GenerateApplicationPath( const FString& AppName
 	FString PlatformName = GetBinariesSubdirectory();
 	FString ExecutablePath = FString::Printf(TEXT("..\\..\\..\\Engine\\Binaries\\%s\\%s"), *PlatformName, *AppName);
 
-	if (BuildConfiguration != EBuildConfigurations::Development && BuildConfiguration != EBuildConfigurations::DebugGame)
+	if (BuildConfiguration != EBuildConfigurations::Development)
 	{
 		ExecutablePath += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
 	}
@@ -123,48 +124,6 @@ void* FWindowsPlatformProcess::GetDllExport( void* DllHandle, const TCHAR* ProcN
 	check(DllHandle);
 	check(ProcName);
 	return (void*)::GetProcAddress( (HMODULE)DllHandle, TCHAR_TO_ANSI(ProcName) );
-}
-
-int32 FWindowsPlatformProcess::GetDllApiVersion( const TCHAR* Filename )
-{
-	int32 Result = -1;
-
-	// Retrieves the embedded API version from a DLL
-	check(Filename);
-	HMODULE hModule = LoadLibraryEx(Filename, NULL, LOAD_LIBRARY_AS_DATAFILE);
-	if(hModule != NULL)
-	{
-		HRSRC hResInfo = FindResource(hModule, MAKEINTRESOURCE(ID_MODULE_API_VERSION_RESOURCE), RT_RCDATA);
-		if(hResInfo != NULL)
-		{
-			HGLOBAL hResGlobal = LoadResource(hModule, hResInfo);
-			if(hResGlobal != NULL)
-			{
-				void *pResData = LockResource(hResGlobal);
-				if(pResData != NULL)
-				{
-					::DWORD Length = SizeofResource(hModule, hResInfo);
-					if(Length > 0)
-					{
-						char *Str = (char*)pResData;
-						if(Str[Length - 1] == 0)
-						{
-							char *End = Str;
-							uint64 Value = FCStringAnsi::Strtoui64(Str, &End, 10);
-							if(*End == 0 && Value <= INT_MAX)
-							{
-								Result = (int32)Value;
-							}
-						}
-					}
-					UnlockResource(pResData);
-				}
-			}
-		}
-		FreeLibrary(hModule);
-	}
-
-	return Result;
 }
 
 void FWindowsPlatformProcess::PushDllDirectory(const TCHAR* Directory)
@@ -296,24 +255,33 @@ void FWindowsPlatformProcess::LaunchURL( const TCHAR* URL, const TCHAR* Parms, F
 {
 	check(URL);
 
-	// Initialize the error to empty string.
-	if (Error)
+	if (FCoreDelegates::ShouldLaunchUrl.IsBound() && !FCoreDelegates::ShouldLaunchUrl.Execute(URL))
 	{
-		*Error = TEXT("");
-	}
-
-	// Use the default handler if we have a URI scheme name that doesn't look like a Windows path, and is not http: or https:
-	FString SchemeName;
-	if(FParse::SchemeNameFromURI(URL, SchemeName) && SchemeName.Len() > 1 && SchemeName != TEXT("http") && SchemeName != TEXT("https"))
-	{
-		LaunchDefaultHandlerForURL(URL, Error);
+		if (Error)
+		{
+			*Error = TEXT("LaunchURL cancelled by delegate");
+		}
 	}
 	else
 	{
-		FString URLParams = FString::Printf(TEXT("%s %s"), URL, Parms ? Parms : TEXT("")).TrimEnd();
-		LaunchWebURL( URLParams, Error );
-	}
+		// Initialize the error to empty string.
+		if (Error)
+		{
+			*Error = TEXT("");
+		}
 
+		// Use the default handler if we have a URI scheme name that doesn't look like a Windows path, and is not http: or https:
+		FString SchemeName;
+		if (FParse::SchemeNameFromURI(URL, SchemeName) && SchemeName.Len() > 1 && SchemeName != TEXT("http") && SchemeName != TEXT("https"))
+		{
+			LaunchDefaultHandlerForURL(URL, Error);
+		}
+		else
+		{
+			FString URLParams = FString::Printf(TEXT("%s %s"), URL, Parms ? Parms : TEXT("")).TrimEnd();
+			LaunchWebURL(URLParams, Error);
+		}
+	}
 }
 
 FProcHandle FWindowsPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild)
@@ -608,60 +576,70 @@ void FWindowsPlatformProcess::ReadFromPipes(FString* OutStrings[], HANDLE InPipe
 	}
 }
 
+#include "Windows/AllowWindowsPlatformTypes.h"
 /**
  * Executes a process, returning the return code, stdout, and stderr. This
  * call blocks until the process has returned.
  */
 bool FWindowsPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr )
 {
-	PROCESS_INFORMATION ProcInfo;
-	SECURITY_ATTRIBUTES Attr;
+	STARTUPINFOEX StartupInfoEx;
+	ZeroMemory(&StartupInfoEx, sizeof(StartupInfoEx));
+	StartupInfoEx.StartupInfo.cb = sizeof(StartupInfoEx);
+	StartupInfoEx.StartupInfo.dwX = CW_USEDEFAULT;
+	StartupInfoEx.StartupInfo.dwY = CW_USEDEFAULT;
+	StartupInfoEx.StartupInfo.dwXSize = CW_USEDEFAULT;
+	StartupInfoEx.StartupInfo.dwYSize = CW_USEDEFAULT;
+	StartupInfoEx.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+	StartupInfoEx.StartupInfo.wShowWindow = SW_SHOWMINNOACTIVE;
+	StartupInfoEx.StartupInfo.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
 
-	FString CommandLine = FString::Printf(TEXT("%s %s"), URL, Params);
+	HANDLE hStdOutRead = NULL;
+	HANDLE hStdErrRead = NULL;
+	TArray<uint8> AttributeList;
 
-	Attr.nLength = sizeof(SECURITY_ATTRIBUTES);
-	Attr.lpSecurityDescriptor = NULL;
-	Attr.bInheritHandle = true;
-
-	uint32 CreateFlags = NORMAL_PRIORITY_CLASS;
-	CreateFlags |= DETACHED_PROCESS;
-
-	uint32 dwFlags = STARTF_USESHOWWINDOW;
-	uint16 ShowWindowFlags = SW_SHOWMINNOACTIVE;
-
-	const int32 MaxPipeCount = 2;
-	HANDLE ReadablePipes[MaxPipeCount] = {0};
-	HANDLE WritablePipes[MaxPipeCount] = {0};
-	const bool bRedirectOutput = OutStdOut != NULL || OutStdErr != NULL;
-
-	if (bRedirectOutput)
+	if(OutStdOut != nullptr || OutStdErr != nullptr)
 	{
-		dwFlags |= STARTF_USESTDHANDLES;
-		for (int32 PipeIndex = 0; PipeIndex < MaxPipeCount; ++PipeIndex)
+		StartupInfoEx.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+		SECURITY_ATTRIBUTES Attr;
+		ZeroMemory(&Attr, sizeof(Attr));
+		Attr.nLength = sizeof(SECURITY_ATTRIBUTES);
+		Attr.bInheritHandle = TRUE;
+
+		verify(::CreatePipe(&hStdOutRead, &StartupInfoEx.StartupInfo.hStdOutput, &Attr, 0));
+		verify(::CreatePipe(&hStdErrRead, &StartupInfoEx.StartupInfo.hStdError, &Attr, 0));
+
+		SIZE_T BufferSize = 0;
+		if(!InitializeProcThreadAttributeList(NULL, 1, 0, &BufferSize) && GetLastError() == ERROR_INSUFFICIENT_BUFFER)
 		{
-			verify(::CreatePipe(&ReadablePipes[PipeIndex], &WritablePipes[PipeIndex], &Attr, 0));
-			verify(::SetHandleInformation(ReadablePipes[PipeIndex], /*dwMask=*/ HANDLE_FLAG_INHERIT, /*dwFlags=*/ 0));
+			AttributeList.SetNum(BufferSize);
+			StartupInfoEx.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)AttributeList.GetData();
+			verify(InitializeProcThreadAttributeList(StartupInfoEx.lpAttributeList, 1, 0, &BufferSize));
 		}
+
+		HANDLE InheritHandles[2] = { StartupInfoEx.StartupInfo.hStdOutput, StartupInfoEx.StartupInfo.hStdError };
+		verify(UpdateProcThreadAttribute(StartupInfoEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, InheritHandles, sizeof(InheritHandles), NULL, NULL));
 	}
 
 	bool bSuccess = false;
-	STARTUPINFO StartupInfo = { sizeof(STARTUPINFO), NULL, NULL, NULL,
-		(::DWORD)CW_USEDEFAULT, (::DWORD)CW_USEDEFAULT, (::DWORD)CW_USEDEFAULT, (::DWORD)CW_USEDEFAULT,
-		(::DWORD)0, (::DWORD)0, (::DWORD)0, (::DWORD)dwFlags, ShowWindowFlags, 0, NULL,
-		::GetStdHandle((::DWORD)ProcessConstants::WIN_STD_INPUT_HANDLE), WritablePipes[0], WritablePipes[1] };
-	if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), &Attr, &Attr, true, CreateFlags,
-		NULL, NULL, &StartupInfo, &ProcInfo))
+
+	FString CommandLine = FString::Printf(TEXT("%s %s"), URL, Params);
+
+	PROCESS_INFORMATION ProcInfo;
+	if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), NULL, NULL, TRUE, NORMAL_PRIORITY_CLASS | DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &StartupInfoEx.StartupInfo, &ProcInfo))
 	{
-		if (bRedirectOutput)
+		if (hStdOutRead != NULL)
 		{
-			FString* OutStrings[MaxPipeCount] = { OutStdOut, OutStdErr };
+			HANDLE ReadablePipes[2] = { hStdOutRead, hStdErrRead };
+			FString* OutStrings[2] = { OutStdOut, OutStdErr };
 			FProcHandle ProcHandle(ProcInfo.hProcess);
 			do 
 			{
-				ReadFromPipes(OutStrings, ReadablePipes, MaxPipeCount);
+				ReadFromPipes(OutStrings, ReadablePipes, 2);
 				FPlatformProcess::Sleep(0);
 			} while (IsProcRunning(ProcHandle));
-			ReadFromPipes(OutStrings, ReadablePipes, MaxPipeCount);
+			ReadFromPipes(OutStrings, ReadablePipes, 2);
 		}
 		else
 		{
@@ -669,7 +647,7 @@ bool FWindowsPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params
 		}		
 		if (OutReturnCode)
 		{
-			verify(::GetExitCodeProcess(ProcInfo.hProcess, (::DWORD*)OutReturnCode));
+			verify(::GetExitCodeProcess(ProcInfo.hProcess, (DWORD*)OutReturnCode));
 		}
 		::CloseHandle(ProcInfo.hProcess);
 		::CloseHandle(ProcInfo.hThread);
@@ -683,13 +661,6 @@ bool FWindowsPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params
 		if (OutReturnCode)
 		{
 			*OutReturnCode = ErrorCode;
-		}
-		if (bRedirectOutput)
-		{
-			for (int32 PipeIndex = 0; PipeIndex < MaxPipeCount; ++PipeIndex)
-			{
-				verify(::CloseHandle(WritablePipes[PipeIndex]));
-			}
 		}
 
 		TCHAR ErrorMessage[512];
@@ -705,16 +676,31 @@ bool FWindowsPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params
 		UE_LOG(LogWindows, Warning, TEXT("URL: %s %s"), URL, Params);
 	}
 
-	if (bRedirectOutput)
+	if(StartupInfoEx.StartupInfo.hStdOutput != NULL)
 	{
-		for (int32 PipeIndex = 0; PipeIndex < MaxPipeCount; ++PipeIndex)
-		{
-			verify(::CloseHandle(ReadablePipes[PipeIndex]));
-		}
+		CloseHandle(StartupInfoEx.StartupInfo.hStdOutput);
+	}
+	if(StartupInfoEx.StartupInfo.hStdError != NULL)
+	{
+		CloseHandle(StartupInfoEx.StartupInfo.hStdError);
+	}
+	if(hStdOutRead != NULL)
+	{
+		CloseHandle(hStdOutRead);
+	}
+	if(hStdErrRead != NULL)
+	{
+		CloseHandle(hStdErrRead);
+	}
+
+	if(StartupInfoEx.lpAttributeList != NULL)
+	{
+		DeleteProcThreadAttributeList(StartupInfoEx.lpAttributeList);
 	}
 
 	return bSuccess;
 }
+#include "Windows/HideWindowsPlatformTypes.h"
 
 bool FWindowsPlatformProcess::ExecElevatedProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode)
 {
@@ -739,35 +725,6 @@ bool FWindowsPlatformProcess::ExecElevatedProcess(const TCHAR* URL, const TCHAR*
 		bSuccess = true;
 	}
 	return bSuccess;
-}
-
-void FWindowsPlatformProcess::CleanFileCache()
-{
-	bool bShouldCleanShaderWorkingDirectory = true;
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
-	// Only clean the shader working directory if we are the first instance, to avoid deleting files in use by other instances
-	//@todo - check if any other instances are running right now
-	bShouldCleanShaderWorkingDirectory = GIsFirstInstance;
-#endif
-
-	if (bShouldCleanShaderWorkingDirectory && !FParse::Param( FCommandLine::Get(), TEXT("Multiprocess")))
-	{
-		// get shader path, and convert it to the userdirectory
-		for (const auto& SHaderSourceDirectoryEntry : FPlatformProcess::AllShaderSourceDirectoryMappings())
-		{
-			FString ShaderDir = FString(FPlatformProcess::BaseDir()) / SHaderSourceDirectoryEntry.Value;
-			FString UserShaderDir = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*ShaderDir);
-			FPaths::CollapseRelativeDirectories(ShaderDir);
-
-			// make sure we don't delete from the source directory
-			if (ShaderDir != UserShaderDir)
-			{
-				IFileManager::Get().DeleteDirectory(*UserShaderDir, false, true);
-			}
-		}
-
-		FPlatformProcess::CleanShaderWorkingDir();
-	}
 }
 
 const TCHAR* FWindowsPlatformProcess::BaseDir()
@@ -823,7 +780,7 @@ const TCHAR* FWindowsPlatformProcess::BaseDir()
 				{
 					if (Result[StringLength - 1] == TEXT('/') || Result[StringLength - 1] == TEXT('\\'))
 					{
-						if(--NumSubDirectories < 0)
+						if(--NumSubDirectories < 0) //-V547
 						{
 							break;
 						}
@@ -845,12 +802,16 @@ const TCHAR* FWindowsPlatformProcess::UserDir()
 	static FString WindowsUserDir;
 	if( !WindowsUserDir.Len() )
 	{
-		TCHAR UserPath[MAX_PATH];
-		// get the My Documents directory
-		HRESULT Ret = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, UserPath);
+		TCHAR* UserPath;
 
-		// make the base user dir path
-		WindowsUserDir = FString(UserPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/");
+		// get the My Documents directory
+		HRESULT Ret = SHGetKnownFolderPath(FOLDERID_Documents, 0, NULL, &UserPath);
+		if (SUCCEEDED(Ret))
+		{
+			// make the base user dir path
+			WindowsUserDir = FString(UserPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/");
+			CoTaskMemFree(UserPath);
+		}
 	}
 	return *WindowsUserDir;
 }
@@ -880,12 +841,16 @@ const TCHAR* FWindowsPlatformProcess::UserSettingsDir()
 	static FString WindowsUserSettingsDir;
 	if (!WindowsUserSettingsDir.Len())
 	{
-		TCHAR UserPath[MAX_PATH];
-		// get the My Documents directory
-		HRESULT Ret = SHGetFolderPath(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, UserPath);
+		TCHAR* UserPath;
 
-		// make the base user dir path
-		WindowsUserSettingsDir = FString(UserPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/");
+		// get the local AppData directory
+		HRESULT Ret = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &UserPath);
+		if (SUCCEEDED(Ret))
+		{
+			// make the base user dir path
+			WindowsUserSettingsDir = FString(UserPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/");
+			CoTaskMemFree(UserPath);
+		}
 	}
 	return *WindowsUserSettingsDir;
 }
@@ -895,13 +860,16 @@ const TCHAR* FWindowsPlatformProcess::ApplicationSettingsDir()
 	static FString WindowsApplicationSettingsDir;
 	if( !WindowsApplicationSettingsDir.Len() )
 	{
-		TCHAR ApplictionSettingsPath[MAX_PATH];
-		// get the My Documents directory
-		HRESULT Ret = SHGetFolderPath(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, ApplictionSettingsPath);
+		TCHAR* ApplictionSettingsPath;
 
-		// make the base user dir path
-		// @todo rocket this folder should be based on your company name, not just be hard coded to /Epic/
-		WindowsApplicationSettingsDir = FString(ApplictionSettingsPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/Epic/");
+		// get the local AppData directory
+		HRESULT Ret = SHGetKnownFolderPath(FOLDERID_ProgramData, 0, NULL, &ApplictionSettingsPath);
+		if (SUCCEEDED(Ret))
+		{
+			// make the base user dir path
+			WindowsApplicationSettingsDir = FString(ApplictionSettingsPath).Replace(TEXT("\\"), TEXT("/")) + TEXT("/Epic/");
+			CoTaskMemFree(ApplictionSettingsPath);
+		}
 	}
 	return *WindowsApplicationSettingsDir;
 }
@@ -955,10 +923,26 @@ void FWindowsPlatformProcess::SetCurrentWorkingDirectoryToBaseDir()
 /** Get the current working directory (only really makes sense on desktop platforms) */
 FString FWindowsPlatformProcess::GetCurrentWorkingDirectory()
 {
-	// get the current working directory (uncached)
-	TCHAR CurrentDirectory[MAX_PATH];
-	GetCurrentDirectoryW(MAX_PATH, CurrentDirectory);
-	return CurrentDirectory;
+	// Allocate the data for the string. Loop in case the variable happens to change while running, or the buffer isn't large enough.
+	FString Buffer;
+	for (uint32 Length = 128;;)
+	{
+		TArray<TCHAR>& CharArray = Buffer.GetCharArray();
+		CharArray.SetNumUninitialized(Length);
+
+		Length = ::GetCurrentDirectoryW(CharArray.Num(), CharArray.GetData());
+		if (Length == 0)
+		{
+			Buffer.Reset();
+			break;
+		}
+		if (Length < (uint32)CharArray.Num())
+		{
+			CharArray.SetNum(Length + 1);
+			break;
+		}
+	}
+	return Buffer;
 }
 
 const FString FWindowsPlatformProcess::ShaderWorkingDir()
@@ -1095,11 +1079,9 @@ bool FWindowsPlatformProcess::ResolveNetworkPath( FString InUNCPath, FString& Ou
 			// NetShareGetInfo doesn't accept const TCHAR* as the share name so copy to temp array
 			SHARE_INFO_2* BufPtr = NULL;
 			::NET_API_STATUS res;
-			TCHAR ShareNamePtr[MAX_PATH];
-			FCString::Strcpy(ShareNamePtr, ShareName.Len() + 1, *ShareName);
 
 			// Call the NetShareGetInfo function, specifying level 2
-			if ( ( res = NetShareGetInfo( NULL, ShareNamePtr, 2, (LPBYTE*)&BufPtr ) ) == ERROR_SUCCESS )
+			if ( ( res = NetShareGetInfo( NULL, ShareName.GetCharArray().GetData(), 2, (LPBYTE*)&BufPtr ) ) == ERROR_SUCCESS )
 			{
 				// Construct the local path
 				OutPath = FString( BufPtr->shi2_path ) + InUNCPath.Mid( ComputerNameLen + 1 + ShareNameLen );

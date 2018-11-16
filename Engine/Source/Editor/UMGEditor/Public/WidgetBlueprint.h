@@ -6,7 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
 #include "UObject/Class.h"
-#include "Engine/Blueprint.h"
+#include "BaseWidgetBlueprint.h"
 #include "Binding/DynamicPropertyPath.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Animation/WidgetAnimationBinding.h"
@@ -20,6 +20,9 @@ class UUserWidget;
 class UWidget;
 class UWidgetAnimation;
 class FKismetCompilerContext;
+enum class EWidgetTickFrequency : uint8;
+enum class EWidgetCompileTimeTickPrediction : uint8;
+
 
 /** */
 USTRUCT()
@@ -142,6 +145,10 @@ struct UMGEDITOR_API FDelegateEditorBinding
 		return ObjectName == Other.ObjectName && PropertyName == Other.PropertyName;
 	}
 
+	bool IsAttributePropertyBinding(class UWidgetBlueprint* Blueprint) const;
+
+	bool DoesBindingTargetExist(UWidgetBlueprint* Blueprint) const;
+
 	bool IsBindingValid(UClass* Class, class UWidgetBlueprint* Blueprint, FCompilerResultsLog& MessageLog) const;
 
 	FDelegateRuntimeBinding ToRuntimeBinding(class UWidgetBlueprint* Blueprint) const;
@@ -160,7 +167,7 @@ struct FWidgetAnimation_DEPRECATED
 	UPROPERTY()
 	TArray<FWidgetAnimationBinding> AnimationBindings;
 
-	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar);
+	bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot);
 
 };
 
@@ -169,26 +176,48 @@ struct TStructOpsTypeTraits<FWidgetAnimation_DEPRECATED> : public TStructOpsType
 {
 	enum
 	{
-		WithSerializeFromMismatchedTag = true,
+		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
 
+UENUM()
+enum class EWidgetSupportsDynamicCreation : uint8
+{
+	Default,
+	Yes,
+	No,
+};
+
+/**
+ * This represents the tickability of a widget computed at compile time
+ * It is designed as a hint so the runtime can determine if ticking needs to be enabled
+ * A lot of widgets set to WillTick means you might have a performance problem
+ */
+UENUM()
+enum class EWidgetCompileTimeTickPrediction : uint8
+{
+	/** The widget is manually set to never tick or we dont detect any animations, latent actions, and/or script or possible native tick methods */
+	WontTick,
+
+	/** This widget is set to auto tick and we detect animations, latent actions but not script or native tick methods*/
+	OnDemand,
+
+	/** This widget has an implemented script tick or native tick */
+	WillTick,
+};
 
 /**
  * The widget blueprint enables extending UUserWidget the user extensible UWidget.
  */
 UCLASS(BlueprintType)
-class UMGEDITOR_API UWidgetBlueprint : public UBlueprint
+class UMGEDITOR_API UWidgetBlueprint : public UBaseWidgetBlueprint
 {
 	GENERATED_UCLASS_BODY()
 
 public:
 
 #if WITH_EDITORONLY_DATA
-	/** A tree of the widget templates to be created */
-	UPROPERTY()
-	class UWidgetTree* WidgetTree;
-
+	
 	UPROPERTY()
 	TArray< FDelegateEditorBinding > Bindings;
 
@@ -203,11 +232,21 @@ public:
 	 * in the CDO of the UUserWidget, but a copy is stored here so that it's available in the serialized 
 	 * Tag data in the asset header for access in the FAssetData.
 	 */
-	UPROPERTY(AssetRegistrySearchable)
+	UPROPERTY(AssetRegistrySearchable, AssetRegistrySearchable)
 	FString PaletteCategory;
 
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=WidgetBlueprintOptions)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=WidgetBlueprintOptions, AssetRegistrySearchable)
 	bool bForceSlowConstructionPath;
+
+private:
+	/**
+	 * Widgets by default all support calling CreateWidget for them, however for mobile games
+	 * you may want to disable this by default, or on a per widget basis as it can save several
+	 * MB on a large game from lots of widget templates being cooked ready to make dynamic
+	 * construction faster.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=WidgetBlueprintOptions, AssetRegistrySearchable)
+	EWidgetSupportsDynamicCreation SupportDynamicCreation;
 #endif
 
 public:
@@ -215,6 +254,9 @@ public:
 	/** UObject interface */
 	virtual void PostLoad() override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+#if WITH_EDITORONLY_DATA
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+#endif // WITH_EDITORONLY_DATA
 	virtual void Serialize(FArchive& Ar) override;
 
 	UPackage* GetWidgetTemplatePackage() const;
@@ -242,22 +284,54 @@ public:
 	/** Returns true if the supplied user widget will not create a circular reference when added to this blueprint */
 	bool IsWidgetFreeFromCircularReferences(UUserWidget* UserWidget) const;
 
-	/** 
-	 * Returns collection of widgets that represent the 'source' (user edited) widgets for this 
-	 * blueprint - avoids calling virtual functions on instances and is therefore safe to use 
-	 * throughout compilation.
-	 */
-	TArray<UWidget*> GetAllSourceWidgets();
-	TArray<const UWidget*> GetAllSourceWidgets() const;
-
-	/** Identical to GetAllSourceWidgets, but as an algorithm */
-	void ForEachSourceWidget(TFunctionRef<void(UWidget*)> Fn);
-	void ForEachSourceWidget(TFunctionRef<void(const UWidget*)> Fn) const;
+	bool WidgetSupportsDynamicCreation() const;
 
 	static bool ValidateGeneratedClass(const UClass* InClass);
 	
 	static TSharedPtr<FKismetCompilerContext> GetCompilerForWidgetBP(UBlueprint* BP, FCompilerResultsLog& InMessageLog, const FKismetCompilerOptions& InCompileOptions);
 
+	void UpdateTickabilityStats(bool& OutHasLatentActions, bool& OutHasAnimations, bool& OutClassRequiresNativeTick);
+
+	bool ArePropertyBindingsAllowed() const;
+
 private:
-	void ForEachSourceWidgetImpl(TFunctionRef<void(UWidget*)> Fn) const;
+#if WITH_EDITOR
+	virtual void LoadModulesRequiredForCompilation() override;
+
+public:
+
+	/**
+	 * The total number of widgets this widget contains.  This is a good way to find the "largest" widgets.
+	 */
+	UPROPERTY(AssetRegistrySearchable)
+	int32 InclusiveWidgets;
+
+private:
+	/**
+	 * The desired tick frequency set by the user on the UserWidget's CDO.
+	 */
+	UPROPERTY(AssetRegistrySearchable)
+	EWidgetTickFrequency TickFrequency;
+
+	/**
+	 * The computed frequency that the widget will need to be ticked at.  You can find the reasons for
+	 * this decision by looking at TickPredictionReason.
+	 */
+	UPROPERTY(AssetRegistrySearchable)
+	EWidgetCompileTimeTickPrediction TickPrediction;
+
+	/**
+	 * The reasons we may need to tick this widget.
+	 */
+	UPROPERTY(AssetRegistrySearchable)
+	FString TickPredictionReason;
+
+public:
+
+	/**
+	 * The total number of property bindings.  Consider this as a performance warning.
+	 */
+	UPROPERTY(AssetRegistrySearchable)
+	int32 PropertyBindings;
+#endif
 };

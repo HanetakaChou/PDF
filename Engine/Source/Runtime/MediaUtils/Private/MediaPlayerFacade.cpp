@@ -4,6 +4,7 @@
 #include "MediaUtilsPrivate.h"
 
 #include "HAL/PlatformMath.h"
+#include "HAL/PlatformProcess.h"
 #include "IMediaCache.h"
 #include "IMediaControls.h"
 #include "IMediaModule.h"
@@ -11,8 +12,10 @@
 #include "IMediaPlayer.h"
 #include "IMediaPlayerFactory.h"
 #include "IMediaSamples.h"
+#include "IMediaTextureSample.h"
 #include "IMediaTracks.h"
 #include "IMediaView.h"
+#include "MediaPlayerOptions.h"
 #include "Math/NumericLimits.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/ScopeLock.h"
@@ -20,9 +23,33 @@
 
 #include "MediaHelpers.h"
 #include "MediaSampleCache.h"
+#include "MediaSampleQueueDepths.h"
 
-
+#define MEDIAPLAYERFACADE_DISABLE_BLOCKING 0
 #define MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS 0
+
+
+/** Time spent in media player facade closing media. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade Close"), STAT_MediaUtils_FacadeClose, STATGROUP_Media);
+
+/** Time spent in media player facade opening media. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade Open"), STAT_MediaUtils_FacadeOpen, STATGROUP_Media);
+
+/** Time spent in media player facade event processing. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade ProcessEvent"), STAT_MediaUtils_FacadeProcessEvent, STATGROUP_Media);
+
+/** Time spent in media player facade fetch tick. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade TickFetch"), STAT_MediaUtils_FacadeTickFetch, STATGROUP_Media);
+
+/** Time spent in media player facade input tick. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade TickInput"), STAT_MediaUtils_FacadeTickInput, STATGROUP_Media);
+
+/** Time spent in media player facade output tick. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade TickOutput"), STAT_MediaUtils_FacadeTickOutput, STATGROUP_Media);
+
+/** Time spent in media player facade high frequency tick. */
+DECLARE_CYCLE_STAT(TEXT("MediaUtils MediaPlayerFacade TickTickable"), STAT_MediaUtils_FacadeTickTickable, STATGROUP_Media);
+
 
 
 /* Local helpers
@@ -34,12 +61,6 @@ namespace MediaPlayerFacade
 
 	const FTimespan AudioPreroll = FTimespan::FromSeconds(1.0);
 	const FTimespan MetadataPreroll = FTimespan::FromSeconds(1.0);
-
-	const int32 MaxAudioSinkDepth = 512;
-	const int32 MaxCaptionSinkDepth = 256;
-	const int32 MaxMetadataSinkDepth = 256;
-	const int32 MaxSubtitleSinkDepth = 256;
-	const int32 MaxVideoSinkDepth = 8;
 }
 
 
@@ -47,8 +68,11 @@ namespace MediaPlayerFacade
 *****************************************************************************/
 
 FMediaPlayerFacade::FMediaPlayerFacade()
-	: Cache(new FMediaSampleCache)
+	: TimeDelay(FTimespan::Zero())
+	, BlockOnTime(FTimespan::MinValue())
+	, Cache(new FMediaSampleCache)
 	, LastRate(0.0f)
+	, NextVideoSampleTime(FTimespan::MinValue())
 { }
 
 
@@ -152,6 +176,8 @@ bool FMediaPlayerFacade::CanSeek() const
 
 void FMediaPlayerFacade::Close()
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeClose);
+
 	if (CurrentUrl.IsEmpty())
 	{
 		return;
@@ -163,6 +189,7 @@ void FMediaPlayerFacade::Close()
 		Player->Close();
 	}
 
+	BlockOnTime = FTimespan::MinValue();
 	Cache->Empty();
 	CurrentUrl.Empty();
 	LastRate = 0.0f;
@@ -262,7 +289,17 @@ TRangeSet<float> FMediaPlayerFacade::GetSupportedRates(bool Unthinned) const
 
 FTimespan FMediaPlayerFacade::GetTime() const
 {
-	return Player.IsValid() ? Player->GetControls().GetTime() : FTimespan::Zero();
+	if (!Player.IsValid())
+	{
+		return FTimespan::Zero(); // no media opened
+	}
+
+	FTimespan Result = Player->GetControls().GetTime() - TimeDelay;
+	if (Result.GetTicks() < 0)
+	{
+		Result = FTimespan::Zero();
+	}
+	return Result;
 }
 
 
@@ -386,8 +423,12 @@ bool FMediaPlayerFacade::IsReady() const
 }
 
 
-bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options)
+bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions)
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeOpen);
+
+	ActivePlayerOptions.Reset();
+
 	if (IsRunningDedicatedServer())
 	{
 		return false;
@@ -419,10 +460,16 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options)
 
 	CurrentUrl = Url;
 
+	if (PlayerOptions)
+	{
+		ActivePlayerOptions = *PlayerOptions;
+	}
+
 	// open the new media source
-	if (!Player->Open(Url, Options))
+	if (!Player->Open(Url, Options, PlayerOptions))
 	{
 		CurrentUrl.Empty();
+		ActivePlayerOptions.Reset();
 
 		return false;
 	}
@@ -466,6 +513,11 @@ bool FMediaPlayerFacade::Seek(const FTimespan& Time)
 		return false;
 	}
 
+	if (Player.IsValid() && Player->FlushOnSeekStarted())
+	{
+		FlushSinks();
+	}
+
 	return true;
 }
 
@@ -480,6 +532,12 @@ bool FMediaPlayerFacade::SelectTrack(EMediaTrackType TrackType, int32 TrackIndex
 	FlushSinks();
 
 	return true;
+}
+
+
+void FMediaPlayerFacade::SetBlockOnTime(const FTimespan& Time)
+{
+	BlockOnTime = Time;
 }
 
 
@@ -517,6 +575,17 @@ bool FMediaPlayerFacade::SetRate(float Rate)
 }
 
 
+bool FMediaPlayerFacade::SetNativeVolume(float Volume)
+{
+	if (!Player.IsValid())
+	{
+		return false;
+	}
+
+	return Player->SetNativeVolume(Volume);
+}
+
+
 bool FMediaPlayerFacade::SetTrackFormat(EMediaTrackType TrackType, int32 TrackIndex, int32 FormatIndex)
 {
 	return Player.IsValid() ? Player->GetTracks().SetTrackFormat((EMediaTrackType)TrackType, TrackIndex, FormatIndex) : false;
@@ -551,6 +620,45 @@ bool FMediaPlayerFacade::SupportsRate(float Rate, bool Unthinned) const
 /* FMediaPlayerFacade implementation
 *****************************************************************************/
 
+bool FMediaPlayerFacade::BlockOnFetch() const
+{
+#if MEDIAPLAYERFACADE_DISABLE_BLOCKING
+	return false;
+#endif
+
+	check(Player.IsValid());
+
+	if (BlockOnTime == FTimespan::MinValue())
+	{
+		return false; // no blocking requested
+	}
+
+	if (!Player->GetControls().CanControl(EMediaControl::BlockOnFetch))
+	{
+		return false; // not supported by player plug-in
+	}
+
+	if (IsPreparing())
+	{
+		return true; // block on media opening
+	}
+
+	if (!IsPlaying() || (GetRate() < 0.0f))
+	{
+		return false; // block only in forward play
+	}
+
+	const bool VideoReady = (VideoSampleSinks.Num() == 0) || (BlockOnTime < NextVideoSampleTime);
+
+	if (VideoReady)
+	{
+		return false; // video is ready
+	}
+
+	return true;
+}
+
+
 void FMediaPlayerFacade::FlushSinks()
 {
 	UE_LOG(LogMediaUtils, Verbose, TEXT("PlayerFacade %p: Flushing sinks"), this);
@@ -567,6 +675,8 @@ void FMediaPlayerFacade::FlushSinks()
 	{
 		Player->GetSamples().FlushSamples();
 	}
+
+	NextVideoSampleTime = FTimespan::MinValue();
 }
 
 
@@ -715,6 +825,8 @@ bool FMediaPlayerFacade::GetVideoTrackFormat(int32 TrackIndex, int32 FormatIndex
 
 void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event)
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeProcessEvent);
+
 	if (Event == EMediaEvent::TracksChanged)
 	{
 		SelectDefaultTracks();
@@ -739,10 +851,16 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event)
 	}
 
 	if ((Event == EMediaEvent::PlaybackEndReached) ||
-		(Event == EMediaEvent::SeekCompleted) ||
 		(Event == EMediaEvent::TracksChanged))
 	{
 		FlushSinks();
+	}
+	else if (Event == EMediaEvent::SeekCompleted)
+	{
+		if (!Player.IsValid() || Player->FlushOnSeekCompleted())
+		{
+			FlushSinks();
+		}
 	}
 
 	MediaEvent.Broadcast(Event);
@@ -760,11 +878,17 @@ void FMediaPlayerFacade::SelectDefaultTracks()
 
 	// @todo gmp: consider locale when selecting default media tracks
 
-	Tracks.SelectTrack(EMediaTrackType::Audio, 0);
-	Tracks.SelectTrack(EMediaTrackType::Caption, INDEX_NONE);
-	Tracks.SelectTrack(EMediaTrackType::Metadata, INDEX_NONE);
-	Tracks.SelectTrack(EMediaTrackType::Subtitle, INDEX_NONE);
-	Tracks.SelectTrack(EMediaTrackType::Video, 0);
+	FMediaPlayerTrackOptions TrackOptions;
+	if (ActivePlayerOptions.IsSet())
+	{
+		TrackOptions = ActivePlayerOptions.GetValue().Tracks;
+	}
+
+	Tracks.SelectTrack(EMediaTrackType::Audio, TrackOptions.Audio);
+	Tracks.SelectTrack(EMediaTrackType::Caption, TrackOptions.Caption);
+	Tracks.SelectTrack(EMediaTrackType::Metadata, TrackOptions.Metadata);
+	Tracks.SelectTrack(EMediaTrackType::Subtitle, TrackOptions.Subtitle);
+	Tracks.SelectTrack(EMediaTrackType::Video, TrackOptions.Video);
 }
 
 
@@ -773,6 +897,8 @@ void FMediaPlayerFacade::SelectDefaultTracks()
 
 void FMediaPlayerFacade::TickFetch(FTimespan DeltaTime, FTimespan Timecode)
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeTickFetch);
+
 	// let the player generate samples & process events
 	if (Player.IsValid())
 	{
@@ -807,32 +933,68 @@ void FMediaPlayerFacade::TickFetch(FTimespan DeltaTime, FTimespan Timecode)
 	// determine range of valid samples
 	TRange<FTimespan> TimeRange;
 
-	const FTimespan Time = Player->GetControls().GetTime();
+	const FTimespan CurrentTime = GetTime();
 	
 	if (Rate > 0.0f)
 	{
-		TimeRange = TRange<FTimespan>::AtMost(Time);
+		TimeRange = TRange<FTimespan>::AtMost(CurrentTime);
 	}
 	else if (Rate < 0.0f)
 	{
-		TimeRange = TRange<FTimespan>::AtLeast(Time);
+		TimeRange = TRange<FTimespan>::AtLeast(CurrentTime);
 	}
 	else
 	{
-		TimeRange = TRange<FTimespan>(Time);
+		TimeRange = TRange<FTimespan>(CurrentTime);
 	}
 
 	// process samples in range
 	IMediaSamples& Samples = Player->GetSamples();
 
-	ProcessCaptionSamples(Samples, TimeRange);
-	ProcessSubtitleSamples(Samples, TimeRange);
-	ProcessVideoSamples(Samples, TimeRange);
+	bool Blocked = false;
+	FDateTime BlockedTime;
+
+	while (true)
+	{
+		ProcessCaptionSamples(Samples, TimeRange);
+		ProcessSubtitleSamples(Samples, TimeRange);
+		ProcessVideoSamples(Samples, TimeRange);
+
+		if (!BlockOnFetch())
+		{
+			break;
+		}
+
+		if (Blocked)
+		{
+			if ((FDateTime::UtcNow() - BlockedTime) >= FTimespan::FromSeconds(MEDIAUTILS_MAX_BLOCKONFETCH_SECONDS))
+			{
+				UE_LOG(LogMediaUtils, Verbose, TEXT("PlayerFacade %p: Aborted block on fetch %s after %i seconds"),
+					this,
+					*BlockOnTime.ToString(TEXT("%h:%m:%s.%t")),
+					MEDIAUTILS_MAX_BLOCKONFETCH_SECONDS
+				);
+
+				break;
+			}
+		}
+		else
+		{
+			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Blocking on fetch %s"), this, *BlockOnTime.ToString(TEXT("%h:%m:%s.%t")));
+
+			Blocked = true;
+			BlockedTime = FDateTime::UtcNow();
+		}
+
+		FPlatformProcess::Sleep(0.0f);
+	}
 }
 
 
 void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeTickInput);
+
 	if (Player.IsValid())
 	{
 		Player->TickInput(DeltaTime, Timecode);
@@ -842,13 +1004,15 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 void FMediaPlayerFacade::TickOutput(FTimespan DeltaTime, FTimespan /*Timecode*/)
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeTickOutput);
+
 	if (!Player.IsValid())
 	{
 		return;
 	}
 
 	IMediaControls& Controls = Player->GetControls();
-	Cache->Tick(DeltaTime, Controls.GetRate(), Controls.GetTime());
+	Cache->Tick(DeltaTime, Controls.GetRate(), GetTime());
 }
 
 
@@ -857,6 +1021,8 @@ void FMediaPlayerFacade::TickOutput(FTimespan DeltaTime, FTimespan /*Timecode*/)
 
 void FMediaPlayerFacade::TickTickable()
 {
+	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeTickTickable);
+
 	if (LastRate == 0.0f)
 	{
 		return;
@@ -875,7 +1041,7 @@ void FMediaPlayerFacade::TickTickable()
 	TRange<FTimespan> AudioTimeRange;
 	TRange<FTimespan> MetadataTimeRange;
 
-	const FTimespan Time = Player->GetControls().GetTime();
+	const FTimespan Time = GetTime();
 
 	if (LastRate > 0.0f)
 	{
@@ -896,16 +1062,6 @@ void FMediaPlayerFacade::TickTickable()
 }
 
 
-/* IMediaEventSink interface
-*****************************************************************************/
-
-void FMediaPlayerFacade::ReceiveMediaEvent(EMediaEvent Event)
-{
-	UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Received media event %s"), this, *MediaUtils::EventToString(Event));
-	QueuedEvents.Enqueue(Event);
-}
-
-
 /* FMediaPlayerFacade implementation
 *****************************************************************************/
 
@@ -915,7 +1071,7 @@ void FMediaPlayerFacade::ProcessAudioSamples(IMediaSamples& Samples, TRange<FTim
 
 	while (Samples.FetchAudio(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !AudioSampleSinks.Enqueue(Sample.ToSharedRef(), MediaPlayerFacade::MaxAudioSinkDepth))
+		if (Sample.IsValid() && !AudioSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxAudioSinkDepth))
 		{
 			#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Audio sample sink overflow"), this);
@@ -931,7 +1087,7 @@ void FMediaPlayerFacade::ProcessCaptionSamples(IMediaSamples& Samples, TRange<FT
 
 	while (Samples.FetchCaption(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef(), MediaPlayerFacade::MaxCaptionSinkDepth))
+		if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxCaptionSinkDepth))
 		{
 			#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Caption sample sink overflow"), this);
@@ -947,7 +1103,7 @@ void FMediaPlayerFacade::ProcessMetadataSamples(IMediaSamples& Samples, TRange<F
 
 	while (Samples.FetchMetadata(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !MetadataSampleSinks.Enqueue(Sample.ToSharedRef(), MediaPlayerFacade::MaxMetadataSinkDepth))
+		if (Sample.IsValid() && !MetadataSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxMetadataSinkDepth))
 		{
 			#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Metadata sample sink overflow"), this);
@@ -963,7 +1119,7 @@ void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, TRange<F
 
 	while (Samples.FetchSubtitle(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef(), MediaPlayerFacade::MaxSubtitleSinkDepth))
+		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxSubtitleSinkDepth))
 		{
 			#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Subtitle sample sink overflow"), this);
@@ -979,11 +1135,36 @@ void FMediaPlayerFacade::ProcessVideoSamples(IMediaSamples& Samples, TRange<FTim
 
 	while (Samples.FetchVideo(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !VideoSampleSinks.Enqueue(Sample.ToSharedRef(), MediaPlayerFacade::MaxVideoSinkDepth))
+		if (!Sample.IsValid())
+		{
+			continue;
+		}
+
+		UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Fetched video sample %s"), this, *Sample->GetTime().ToString(TEXT("%h:%m:%s.%t")));
+
+		if (VideoSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxVideoSinkDepth))
+		{
+			if (GetRate() >= 0.0f)
+			{
+				NextVideoSampleTime = Sample->GetTime() + Sample->GetDuration();
+				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Next video sample time %s"), this, *NextVideoSampleTime.ToString(TEXT("%h:%m:%s.%t")));
+			}
+		}
+		else
 		{
 			#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Video sample sink overflow"), this);
 			#endif
 		}
 	}
+}
+
+
+/* IMediaEventSink interface
+*****************************************************************************/
+
+void FMediaPlayerFacade::ReceiveMediaEvent(EMediaEvent Event)
+{
+	UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Received media event %s"), this, *MediaUtils::EventToString(Event));
+	QueuedEvents.Enqueue(Event);
 }

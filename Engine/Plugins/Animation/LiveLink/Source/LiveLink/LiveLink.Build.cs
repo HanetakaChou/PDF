@@ -12,16 +12,17 @@ namespace UnrealBuildTool.Rules
                 "Core",
                 "CoreUObject",
                 "Engine",
+                "MovieScene",
+                "MovieSceneTracks",
                 "Projects",
 
                 "Messaging",
                 "LiveLinkInterface",
                 "LiveLinkMessageBusFramework",
-				"HeadMountedDisplay"
+				"HeadMountedDisplay",
+				"TimeManagement"
             }
             );
-
-            PrivateIncludePaths.Add("/LiveLink/Private");
         }
     }
 }

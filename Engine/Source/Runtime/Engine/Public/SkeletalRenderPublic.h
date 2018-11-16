@@ -10,6 +10,7 @@
 #include "ProfilingDebugging/ResourceSize.h"
 #include "PackedNormal.h"
 #include "RenderingThread.h"
+#include "RenderUtils.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/SkinnedMeshComponent.h"
 
@@ -29,10 +30,7 @@ struct FFinalSkinVertex
 
 	FVector GetTangentY() const
 	{
-		FVector TanX = TangentX;
-		FVector TanZ = TangentZ;
-
-		return (TanZ ^ TanX) * ((float)TangentZ.Vector.W / 127.5f - 1.0f);
+		return GenerateYAxis(TangentX, TangentZ);
 	};
 };
 
@@ -145,12 +143,6 @@ public:
 
 	/** @return if per-bone motion blur is enabled for this object. This includes is the system overwrites the skeletal mesh setting. */
 	bool ShouldUsePerBoneMotionBlur() const { return bUsePerBoneMotionBlur; }
-
-	// FDeferredCleanupInterface
-	virtual void FinishCleanup()
-	{
-		delete this;
-	}
 	
 	/** Returns the size of memory allocated by render data */
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) = 0;
@@ -189,6 +181,9 @@ public:
 
 	/** Get the skeletal mesh resource for which this mesh object was created. */
 	FORCEINLINE FSkeletalMeshRenderData& GetSkeletalMeshRenderData() const { return *SkeletalMeshRenderData; }
+
+	/** Called to notify clothing data that component transform has changed */
+	virtual void RefreshClothingTransforms(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) {};
 
 	/** Setup for rendering a specific LOD entry of the component */
 	struct FSkelMeshObjectLODInfo
@@ -238,6 +233,13 @@ public:
 	{
 		return FeatureLevel;
 	}
+
+	/**
+	 * Returns the display factor for the given LOD level
+	 *
+	 * @Param LODIndex - The LOD to get the display factor for
+	 */
+	float GetScreenSize(int32 LODIndex) const;
 
 protected:
 	/** The skeletal mesh resource with which to render. */

@@ -59,6 +59,7 @@ public:
 	//
 	virtual int32 Error(const TCHAR* Text) = 0;
 	ENGINE_API int32 Errorf(const TCHAR* Format,...);
+	virtual void AppendExpressionError(UMaterialExpression* Expression, const TCHAR* Text) = 0;
 
 	virtual int32 CallExpression(FMaterialExpressionKey ExpressionKey,FMaterialCompiler* InCompiler) = 0;
 
@@ -67,6 +68,8 @@ public:
 	virtual EMaterialQualityLevel::Type GetQualityLevel() = 0;
 
 	virtual ERHIFeatureLevel::Type GetFeatureLevel() = 0;
+
+	virtual EShaderPlatform GetShaderPlatform() = 0;
 
 	virtual EMaterialShadingModel GetMaterialShadingModel() const = 0;
 
@@ -82,10 +85,10 @@ public:
 	virtual int32 ForceCast(int32 Code,EMaterialValueType DestType,uint32 ForceCastFlags = 0) = 0;
 
 	/** Pushes a function onto the compiler's function stack, which indicates that compilation is entering a function. */
-	virtual void PushFunction(const FMaterialFunctionCompileState& FunctionState) = 0;
+	virtual void PushFunction(FMaterialFunctionCompileState* FunctionState) = 0;
 
 	/** Pops a function from the compiler's function stack, which indicates that compilation is leaving a function. */
-	virtual FMaterialFunctionCompileState PopFunction() = 0;
+	virtual FMaterialFunctionCompileState* PopFunction() = 0;
 
 	virtual int32 GetCurrentFunctionStackDepth() = 0;
 
@@ -253,7 +256,7 @@ public:
 	virtual int32 TransformVector(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A) = 0;
 	virtual int32 TransformPosition(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A) = 0;
 
-	virtual int32 DynamicParameter(FLinearColor& DefaultValue) = 0;
+	virtual int32 DynamicParameter(FLinearColor& DefaultValue, uint32 ParameterIndex = 0) = 0;
 	virtual int32 LightmapUVs() = 0;
 	virtual int32 PrecomputedAOMask()  = 0;
 
@@ -294,6 +297,7 @@ public:
 	// The compiler can run in a different state and this affects caching of sub expression, Expressions are different (e.g. View.PrevWorldViewOrigin) when using previous frame's values
 	// If possible we should re-factor this to avoid having to deal with compiler state
 	virtual bool IsCurrentlyCompilingForPreviousFrame() const { return false; }
+	virtual bool IsDevelopmentFeatureEnabled(const FName& FeatureName) const { return true; }
 };
 
 /** 
@@ -325,16 +329,18 @@ public:
 
 	virtual EShaderFrequency GetCurrentShaderFrequency() const override { return Compiler->GetCurrentShaderFrequency(); }
 	virtual int32 Error(const TCHAR* Text) override { return Compiler->Error(Text); }
+	virtual void AppendExpressionError(UMaterialExpression* Expression, const TCHAR* Text) override { return Compiler->AppendExpressionError(Expression, Text); }
 
 	virtual int32 CallExpression(FMaterialExpressionKey ExpressionKey,FMaterialCompiler* InCompiler) override { return Compiler->CallExpression(ExpressionKey,InCompiler); }
 
-	virtual void PushFunction(const FMaterialFunctionCompileState& FunctionState) override { Compiler->PushFunction(FunctionState); }
-	virtual FMaterialFunctionCompileState PopFunction() override { return Compiler->PopFunction(); }
+	virtual void PushFunction(FMaterialFunctionCompileState* FunctionState) override { Compiler->PushFunction(FunctionState); }
+	virtual FMaterialFunctionCompileState* PopFunction() override { return Compiler->PopFunction(); }
 	virtual int32 GetCurrentFunctionStackDepth() override { return Compiler->GetCurrentFunctionStackDepth(); }
 
 	virtual EMaterialValueType GetType(int32 Code) override { return Compiler->GetType(Code); }
 	virtual EMaterialQualityLevel::Type GetQualityLevel() override { return Compiler->GetQualityLevel(); }
 	virtual ERHIFeatureLevel::Type GetFeatureLevel() override { return Compiler->GetFeatureLevel(); }
+	virtual EShaderPlatform GetShaderPlatform() override { return Compiler->GetShaderPlatform(); }
 	virtual int32 ValidCast(int32 Code,EMaterialValueType DestType) override { return Compiler->ValidCast(Code, DestType); }
 	virtual int32 ForceCast(int32 Code,EMaterialValueType DestType,uint32 ForceCastFlags = 0) override
 	{ return Compiler->ForceCast(Code,DestType,ForceCastFlags); }
@@ -475,7 +481,7 @@ public:
 		return Compiler->TransformPosition(SourceCoordBasis, DestCoordBasis, A);
 	}
 
-	virtual int32 DynamicParameter(FLinearColor& DefaultValue) override { return Compiler->DynamicParameter(DefaultValue); }
+	virtual int32 DynamicParameter(FLinearColor& DefaultValue, uint32 ParameterIndex = 0) override { return Compiler->DynamicParameter(DefaultValue, ParameterIndex); }
 	virtual int32 LightmapUVs() override { return Compiler->LightmapUVs(); }
 	virtual int32 PrecomputedAOMask() override { return Compiler->PrecomputedAOMask(); }
 
@@ -553,6 +559,11 @@ public:
 	virtual int32 EyeAdaptation() override
 	{
 		return Compiler->EyeAdaptation();
+	}
+
+	virtual bool IsDevelopmentFeatureEnabled(const FName& FeatureName) const override
+	{
+		return Compiler->IsDevelopmentFeatureEnabled(FeatureName);
 	}
 
 protected:

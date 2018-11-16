@@ -36,8 +36,11 @@
 DEFINE_LOG_CATEGORY(LogGameMode);
 
 // Statically declared events for plugins to use
+FGameModeEvents::FGameModeInitializedEvent FGameModeEvents::GameModeInitializedEvent;
+FGameModeEvents::FGameModePreLoginEvent FGameModeEvents::GameModePreLoginEvent;
 FGameModeEvents::FGameModePostLoginEvent FGameModeEvents::GameModePostLoginEvent;
 FGameModeEvents::FGameModeLogoutEvent FGameModeEvents::GameModeLogoutEvent;
+FGameModeEvents::FGameModeMatchStateSetEvent FGameModeEvents::GameModeMatchStateSetEvent;
 
 AGameModeBase::AGameModeBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite")))
@@ -70,6 +73,7 @@ void AGameModeBase::InitGame(const FString& MapName, const FString& Options, FSt
 	GameSession = World->SpawnActor<AGameSession>(GetGameSessionClass(), SpawnInfo);
 	GameSession->InitOptions(Options);
 
+	FGameModeEvents::GameModeInitializedEvent.Broadcast(this);
 	if (GetNetMode() != NM_Standalone)
 	{
 		// Attempt to login, returning true means an async login is in flight
@@ -105,15 +109,17 @@ void AGameModeBase::PreInitializeComponents()
 		GameStateClass = AGameStateBase::StaticClass();
 	}
 
-	GameState = GetWorld()->SpawnActor<AGameStateBase>(GameStateClass, SpawnInfo);
-	GetWorld()->SetGameState(GameState);
+	UWorld* World = GetWorld();
+	GameState = World->SpawnActor<AGameStateBase>(GameStateClass, SpawnInfo);
+	World->SetGameState(GameState);
 	if (GameState)
 	{
 		GameState->AuthorityGameMode = this;
 	}
 
 	// Only need NetworkManager for servers in net games
-	GetWorld()->NetworkManager = GetWorldSettings()->GameNetworkManagerClass ? GetWorld()->SpawnActor<AGameNetworkManager>(GetWorldSettings()->GameNetworkManagerClass, SpawnInfo) : nullptr;
+	AWorldSettings* WorldSettings = World->GetWorldSettings();
+	World->NetworkManager = WorldSettings->GameNetworkManagerClass ? World->SpawnActor<AGameNetworkManager>(WorldSettings->GameNetworkManagerClass, SpawnInfo) : nullptr;
 
 	InitGameState();
 }
@@ -132,6 +138,17 @@ TSubclassOf<AGameSession> AGameModeBase::GetGameSessionClass() const
 
 UClass* AGameModeBase::GetDefaultPawnClassForController_Implementation(AController* InController)
 {
+#if WITH_EDITOR && DO_CHECK
+	UClass* DefaultClass = DefaultPawnClass.DebugAccessRawClassPtr();
+	if (DefaultClass)
+	{
+		if (FBlueprintSupport::IsClassPlaceholder(DefaultClass))
+		{
+			ensureMsgf(false, TEXT("Trying to spawn class that is, directly or indirectly, a placeholder"));
+			return ADefaultPawn::StaticClass();
+		}
+	}
+#endif
 	return DefaultPawnClass;
 }
 
@@ -143,7 +160,7 @@ int32 AGameModeBase::GetNumPlayers()
 	for (FConstPlayerControllerIterator Iterator = GetWorld()->GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
 		APlayerController* PlayerActor = Iterator->Get();
-		if (PlayerActor->PlayerState && !MustSpectate(PlayerActor))
+		if (PlayerActor && PlayerActor->PlayerState && !MustSpectate(PlayerActor))
 		{
 			PlayerCount++;
 		}
@@ -157,7 +174,7 @@ int32 AGameModeBase::GetNumSpectators()
 	for (FConstPlayerControllerIterator Iterator = GetWorld()->GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
 		APlayerController* PlayerActor = Iterator->Get();
-		if (PlayerActor->PlayerState && MustSpectate(PlayerActor))
+		if (PlayerActor && PlayerActor->PlayerState && MustSpectate(PlayerActor))
 		{
 			PlayerCount++;
 		}
@@ -261,7 +278,7 @@ void AGameModeBase::ForceClearUnpauseDelegates(AActor* PauseActor)
 			for (FConstPlayerControllerIterator Iterator = GetWorld()->GetPlayerControllerIterator(); Iterator; ++Iterator)
 			{
 				APlayerController* Player = Iterator->Get();
-				if (Player->PlayerState != nullptr
+				if (Player && Player->PlayerState != nullptr
 					&&	Player->PlayerState != PC->PlayerState
 					&& !Player->IsPendingKillPending() && !Player->PlayerState->IsPendingKillPending())
 				{
@@ -355,17 +372,19 @@ APlayerController* AGameModeBase::ProcessClientTravel(FString& FURL, FGuid NextM
 	APlayerController* LocalPlayerController = nullptr;
 	for (FConstPlayerControllerIterator Iterator = GetWorld()->GetPlayerControllerIterator(); Iterator; ++Iterator)
 	{
-		APlayerController* PlayerController = Iterator->Get();
-		if (Cast<UNetConnection>(PlayerController->Player) != nullptr)
+		if (APlayerController* PlayerController = Iterator->Get())
 		{
-			// Remote player
-			PlayerController->ClientTravel(FURL, TRAVEL_Relative, bSeamless, NextMapGuid);
-		}
-		else
-		{
-			// Local player
-			LocalPlayerController = PlayerController;
-			PlayerController->PreClientTravel(FURL, bAbsolute ? TRAVEL_Absolute : TRAVEL_Relative, bSeamless);
+			if (Cast<UNetConnection>(PlayerController->Player) != nullptr)
+			{
+				// Remote player
+				PlayerController->ClientTravel(FURL, TRAVEL_Relative, bSeamless, NextMapGuid);
+			}
+			else
+			{
+				// Local player
+				LocalPlayerController = PlayerController;
+				PlayerController->PreClientTravel(FURL, bAbsolute ? TRAVEL_Absolute : TRAVEL_Relative, bSeamless);
+			}
 		}
 	}
 
@@ -526,24 +545,27 @@ void AGameModeBase::SwapPlayerControllers(APlayerController* OldPC, APlayerContr
 	}
 }
 
+TSubclassOf<APlayerController> AGameModeBase::GetPlayerControllerClassToSpawnForSeamlessTravel(APlayerController* PreviousPC)
+{
+	UClass* PCClassToSpawn = PlayerControllerClass;
+
+	if (PreviousPC && ReplaySpectatorPlayerControllerClass && PreviousPC->PlayerState && PreviousPC->PlayerState->bOnlySpectator)
+	{
+		PCClassToSpawn = ReplaySpectatorPlayerControllerClass;
+	}
+
+	return PCClassToSpawn;
+}
+
 void AGameModeBase::HandleSeamlessTravelPlayer(AController*& C)
 {
 	// Default behavior is to spawn new controllers and copy data
 	APlayerController* PC = Cast<APlayerController>(C);
 	if (PC && PC->Player)
 	{
-		APlayerController* NewPC = nullptr;
-		if (PC->PlayerState && PC->PlayerState->bOnlySpectator && ReplaySpectatorPlayerControllerClass != nullptr)
-		{
-			NewPC = SpawnReplayPlayerController(PC->IsLocalPlayerController() ? ROLE_SimulatedProxy : ROLE_AutonomousProxy, PC->GetFocalLocation(), PC->GetControlRotation());
-		}
-		else
-		{
-			// We need to spawn a new PlayerController to replace the old one
-			NewPC = SpawnPlayerController(PC->IsLocalPlayerController() ? ROLE_SimulatedProxy : ROLE_AutonomousProxy, PC->GetFocalLocation(), PC->GetControlRotation());
-		}
-
-
+		// We need to spawn a new PlayerController to replace the old one
+		UClass* PCClassToSpawn = GetPlayerControllerClassToSpawnForSeamlessTravel(PC);
+		APlayerController* const NewPC = SpawnPlayerControllerCommon(PC->IsLocalPlayerController() ? ROLE_SimulatedProxy : ROLE_AutonomousProxy, PC->GetFocalLocation(), PC->GetControlRotation(), PCClassToSpawn);
 		if (NewPC)
 		{
 			PC->SeamlessTravelTo(NewPC);
@@ -612,61 +634,34 @@ void AGameModeBase::GameWelcomePlayer(UNetConnection* Connection, FString& Redir
 
 }
 
-void AGameModeBase::PreLogin(const FString& Options, const FString& Address, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& ErrorMessage)
-{
-
-}
-
 void AGameModeBase::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// Try calling deprecated version first
-	PreLogin(Options, Address, UniqueId.GetUniqueNetId(), ErrorMessage);
-	if (!ErrorMessage.IsEmpty())
+	// Login unique id must match server expected unique id type OR No unique id could mean game doesn't use them
+	const bool bUniqueIdCheckOk = (!UniqueId.IsValid() || (UniqueId.GetType() == UOnlineEngineInterface::Get()->GetDefaultOnlineSubsystemName()));
+	if (bUniqueIdCheckOk)
 	{
-		return;
+		ErrorMessage = GameSession->ApproveLogin(Options);
 	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	else
+	{
+		ErrorMessage = TEXT("incompatible_unique_net_id");
+	}
 
-	ErrorMessage = GameSession->ApproveLogin(Options);
-}
-
-APlayerController* AGameModeBase::Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const TSharedPtr<const FUniqueNetId>& UniqueId, FString& ErrorMessage)
-{
-	return nullptr;
+	FGameModeEvents::GameModePreLoginEvent.Broadcast(this, UniqueId, ErrorMessage);
 }
 
 APlayerController* AGameModeBase::Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// Try calling deprecated version first
-	APlayerController* DeprecatedController = Login(NewPlayer, InRemoteRole, Portal, Options, UniqueId.GetUniqueNetId(), ErrorMessage);
-	if (DeprecatedController)
-	{
-		return DeprecatedController;
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	ErrorMessage = GameSession->ApproveLogin(Options);
 	if (!ErrorMessage.IsEmpty())
 	{
 		return nullptr;
 	}
 
-	APlayerController* NewPlayerController = nullptr;
-	if (Options.Contains(FString(TEXT("SpectatorOnly=1"))) && ReplaySpectatorPlayerControllerClass != nullptr)
-	{
-		NewPlayerController = SpawnReplayPlayerController(InRemoteRole, FVector::ZeroVector, FRotator::ZeroRotator);
-	}
-	else
-	{
-		// We need to spawn a new PlayerController to replace the old one
-		NewPlayerController = SpawnPlayerController(InRemoteRole, FVector::ZeroVector, FRotator::ZeroRotator);
-	}
-
-	// Handle spawn failure.
+	APlayerController* const NewPlayerController = SpawnPlayerController(InRemoteRole, Options);
 	if (NewPlayerController == nullptr)
 	{
+		// Handle spawn failure.
 		UE_LOG(LogGameMode, Log, TEXT("Login: Couldn't spawn player controller of class %s"), PlayerControllerClass ? *PlayerControllerClass->GetName() : TEXT("NULL"));
 		ErrorMessage = FString::Printf(TEXT("Failed to spawn player controller"));
 		return nullptr;
@@ -682,11 +677,26 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return NewPlayerController;
 }
 
+APlayerController* AGameModeBase::SpawnPlayerController(ENetRole InRemoteRole, const FString& Options)
+{
+// calling the deprecated functions for backward compatibility, should call SpawnPlayerControllerCommon directly in the future.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (Options.Contains(FString(TEXT("SpectatorOnly=1"))) && ReplaySpectatorPlayerControllerClass != nullptr)
+	{
+		return SpawnReplayPlayerController(InRemoteRole, FVector::ZeroVector, FRotator::ZeroRotator);
+	}
+	
+	return SpawnPlayerController(InRemoteRole, FVector::ZeroVector, FRotator::ZeroRotator);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+// deprecated
 APlayerController* AGameModeBase::SpawnPlayerController(ENetRole InRemoteRole, FVector const& SpawnLocation, FRotator const& SpawnRotation)
 {
 	return SpawnPlayerControllerCommon(InRemoteRole, SpawnLocation, SpawnRotation, PlayerControllerClass);
 }
 
+// deprecated
 APlayerController* AGameModeBase::SpawnReplayPlayerController(ENetRole InRemoteRole, FVector const& SpawnLocation, FRotator const& SpawnRotation)
 {
 	return SpawnPlayerControllerCommon(InRemoteRole, SpawnLocation, SpawnRotation, ReplaySpectatorPlayerControllerClass);
@@ -713,24 +723,15 @@ APlayerController* AGameModeBase::SpawnPlayerControllerCommon(ENetRole InRemoteR
 	return NewPC;
 }
 
-FString AGameModeBase::InitNewPlayer(APlayerController* NewPlayerController, const TSharedPtr<const FUniqueNetId>& UniqueId, const FString& Options, const FString& Portal)
-{
-	return TEXT("DEPRECATED");
-}
-
 FString AGameModeBase::InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId, const FString& Options, const FString& Portal)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// Try calling deprecated version first
-	FString DeprecatedError = InitNewPlayer(NewPlayerController, UniqueId.GetUniqueNetId(), Options, Portal);
-	if (DeprecatedError != TEXT("DEPRECATED"))
-	{
-		// This means it was implemented in subclass
-		return DeprecatedError;
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	check(NewPlayerController);
+
+	// The player needs a PlayerState to register successfully
+	if (NewPlayerController->PlayerState == nullptr)
+	{
+		return FString(TEXT("PlayerState is null"));
+	}
 
 	FString ErrorMessage;
 
@@ -876,32 +877,33 @@ void AGameModeBase::ReplicateStreamingStatus(APlayerController* PC)
 			PC->ClientCommitMapChange();
 		}
 
-		if (MyWorld->StreamingLevels.Num() > 0)
+		if (MyWorld->GetStreamingLevels().Num() > 0)
 		{
 			// Tell the player controller the current streaming level status
 			TArray<FUpdateLevelStreamingLevelStatus> LevelStatuses;
-			for (int32 LevelIndex = 0; LevelIndex < MyWorld->StreamingLevels.Num(); LevelIndex++)
+			for (ULevelStreaming* TheLevel : MyWorld->GetStreamingLevels())
 			{
-				ULevelStreaming* TheLevel = MyWorld->StreamingLevels[LevelIndex];
-
 				if (TheLevel != nullptr)
 				{
 					const ULevel* LoadedLevel = TheLevel->GetLoadedLevel();
 
+					const bool bTheLevelShouldBeVisible = TheLevel->ShouldBeVisible();
+					const bool bTheLevelShouldBeLoaded = TheLevel->ShouldBeLoaded();
+
 					UE_LOG(LogGameMode, Verbose, TEXT("ReplicateStreamingStatus: %s %i %i %i %s %i"),
 						*TheLevel->GetWorldAssetPackageName(),
-						TheLevel->bShouldBeVisible,
+						bTheLevelShouldBeVisible,
 						LoadedLevel && LoadedLevel->bIsVisible,
-						TheLevel->bShouldBeLoaded,
+						bTheLevelShouldBeLoaded,
 						*GetNameSafe(LoadedLevel),
-						TheLevel->bHasLoadRequestPending);
+						TheLevel->HasLoadRequestPending());
 
 					FUpdateLevelStreamingLevelStatus& LevelStatus = *new( LevelStatuses ) FUpdateLevelStreamingLevelStatus();
 					LevelStatus.PackageName = PC->NetworkRemapPath(TheLevel->GetWorldAssetPackageFName(), false);
-					LevelStatus.bNewShouldBeLoaded = TheLevel->bShouldBeLoaded;
-					LevelStatus.bNewShouldBeVisible = TheLevel->bShouldBeVisible;
+					LevelStatus.bNewShouldBeLoaded = bTheLevelShouldBeLoaded;
+					LevelStatus.bNewShouldBeVisible = bTheLevelShouldBeVisible;
 					LevelStatus.bNewShouldBlockOnLoad = TheLevel->bShouldBlockOnLoad;
-					LevelStatus.LODIndex = TheLevel->LevelLODIndex;
+					LevelStatus.LODIndex = TheLevel->GetLevelLODIndex();
 				}
 			}
 			PC->ClientUpdateMultipleLevelsStreamingStatus( LevelStatuses );
@@ -1044,7 +1046,8 @@ AActor* AGameModeBase::ChoosePlayerStart_Implementation(AController* Player)
 	APawn* PawnToFit = PawnClass ? PawnClass->GetDefaultObject<APawn>() : nullptr;
 	TArray<APlayerStart*> UnOccupiedStartPoints;
 	TArray<APlayerStart*> OccupiedStartPoints;
-	for (TActorIterator<APlayerStart> It(GetWorld()); It; ++It)
+	UWorld* World = GetWorld();
+	for (TActorIterator<APlayerStart> It(World); It; ++It)
 	{
 		APlayerStart* PlayerStart = *It;
 
@@ -1058,11 +1061,11 @@ AActor* AGameModeBase::ChoosePlayerStart_Implementation(AController* Player)
 		{
 			FVector ActorLocation = PlayerStart->GetActorLocation();
 			const FRotator ActorRotation = PlayerStart->GetActorRotation();
-			if (!GetWorld()->EncroachingBlockingGeometry(PawnToFit, ActorLocation, ActorRotation))
+			if (!World->EncroachingBlockingGeometry(PawnToFit, ActorLocation, ActorRotation))
 			{
 				UnOccupiedStartPoints.Add(PlayerStart);
 			}
-			else if (GetWorld()->FindTeleportSpot(PawnToFit, ActorLocation, ActorRotation))
+			else if (World->FindTeleportSpot(PawnToFit, ActorLocation, ActorRotation))
 			{
 				OccupiedStartPoints.Add(PlayerStart);
 			}

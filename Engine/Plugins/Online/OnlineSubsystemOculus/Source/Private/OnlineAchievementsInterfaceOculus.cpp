@@ -5,8 +5,9 @@
 #include "OnlineIdentityOculus.h"
 #include "OnlineMessageMultiTaskOculus.h"
 #include "OnlineSubsystemOculusPackage.h"
+#include "Templates/SharedPointer.h"
 
-class FOnlineMessageMultiTaskOculusWriteAchievements : public FOnlineMessageMultiTaskOculus
+class FOnlineMessageMultiTaskOculusWriteAchievements : public FOnlineMessageMultiTaskOculus, public TSharedFromThis<FOnlineMessageMultiTaskOculusWriteAchievements>
 {
 private:
 
@@ -14,30 +15,54 @@ private:
 	FOnlineAchievementsWriteRef WriteObject;
 	FOnAchievementsWrittenDelegate AchievementDelegate;
 
+	// private to force the use of FOnlineMessageMultiTaskOculusWriteAchievements::Create()
+	FOnlineMessageMultiTaskOculusWriteAchievements(FOnlineSubsystemOculus& InOculusSubsystem, const FUniqueNetIdOculus& InPlayerId, FOnlineAchievementsWriteRef& InWriteObject, const FOnAchievementsWrittenDelegate& InAchievementDelegate)
+		: FOnlineMessageMultiTaskOculus(InOculusSubsystem, FOnlineMessageMultiTaskOculus::FFinalizeDelegate::CreateRaw(this, &FOnlineMessageMultiTaskOculusWriteAchievements::Finalize))
+		, PlayerId(InPlayerId)
+		, WriteObject(InWriteObject)
+		, AchievementDelegate(InAchievementDelegate)
+	{}
+
+	static TSet< TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> > ActiveAchievementWriteTasks;
+
 PACKAGE_SCOPE:
 
-	FOnlineMessageMultiTaskOculusWriteAchievements(
+	static TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> Create(
 		FOnlineSubsystemOculus& InOculusSubsystem,
 		const FUniqueNetIdOculus& InPlayerId,
 		FOnlineAchievementsWriteRef& InWriteObject,
-		const FOnAchievementsWrittenDelegate& InAchievementDelegate) :
-		FOnlineMessageMultiTaskOculus(InOculusSubsystem, FOnlineMessageMultiTaskOculus::FFinalizeDelegate::CreateRaw(this, &FOnlineMessageMultiTaskOculusWriteAchievements::Finalize)),
-		PlayerId(InPlayerId),
-		WriteObject(InWriteObject),
-		AchievementDelegate(InAchievementDelegate)
+		const FOnAchievementsWrittenDelegate& InAchievementDelegate)
 	{
+		TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> NewTask = MakeShareable(new FOnlineMessageMultiTaskOculusWriteAchievements(InOculusSubsystem, InPlayerId, InWriteObject, InAchievementDelegate));
+		ActiveAchievementWriteTasks.Add(NewTask);
+
+		return NewTask;
 	}
 
 	void Finalize()
 	{
 		WriteObject->WriteState = (bDidAllRequestsFinishedSuccessfully) ? EOnlineAsyncTaskState::Done : EOnlineAsyncTaskState::Failed;
 		AchievementDelegate.ExecuteIfBound(PlayerId, true);
+
+		// this should delete this task object, make sure it happens last
+		ActiveAchievementWriteTasks.Remove(AsShared());
+	}
+
+	static void ClearAllActiveTasks()
+	{
+		ActiveAchievementWriteTasks.Empty();
 	}
 };
+TSet< TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> > FOnlineMessageMultiTaskOculusWriteAchievements::ActiveAchievementWriteTasks;
 
 FOnlineAchievementsOculus::FOnlineAchievementsOculus(class FOnlineSubsystemOculus& InSubsystem)
 : OculusSubsystem(InSubsystem)
 {
+}
+
+FOnlineAchievementsOculus::~FOnlineAchievementsOculus()
+{
+	FOnlineMessageMultiTaskOculusWriteAchievements::ClearAllActiveTasks();
 }
 
 void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, FOnlineAchievementsWriteRef& WriteObject, const FOnAchievementsWrittenDelegate& Delegate)
@@ -53,7 +78,7 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
 	if (!(LoggedInPlayerId.IsValid() && PlayerId == *LoggedInPlayerId))
 	{
-		UE_LOG_ONLINE(Error, TEXT("Can only write achievements for logged in player id"));
+		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can only write achievements for logged in player id"));
 		WriteObject->WriteState = EOnlineAsyncTaskState::Failed;
 		Delegate.ExecuteIfBound(PlayerId, false);
 		return;
@@ -68,7 +93,7 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 	}
 
 	WriteObject->WriteState = EOnlineAsyncTaskState::InProgress;
-	auto MultiTask = new FOnlineMessageMultiTaskOculusWriteAchievements(OculusSubsystem, static_cast<FUniqueNetIdOculus>(PlayerId), WriteObject, Delegate);
+	TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> MultiTask = FOnlineMessageMultiTaskOculusWriteAchievements::Create(OculusSubsystem, static_cast<FUniqueNetIdOculus>(PlayerId), WriteObject, Delegate);
 
 	// treat each achievement as unlocked
 	for (FStatPropertyArray::TConstIterator It(WriteObject->Properties); It; ++It)
@@ -84,7 +109,7 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 			return;
 		}
 
-		UE_LOG_ONLINE(Verbose, TEXT("WriteObject AchievementId: '%s'"), *AchievementId);
+		UE_LOG_ONLINE_ACHIEVEMENTS(Verbose, TEXT("WriteObject AchievementId: '%s'"), *AchievementId);
 
 		ovrRequest RequestId = 0;
 
@@ -111,7 +136,7 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 			}
 			default:
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Unknown achievement type"));
+				UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Unknown achievement type"));
 				break;
 			}
 		}
@@ -128,7 +153,7 @@ void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, 
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
 	if (!(LoggedInPlayerId.IsValid() && PlayerId == *LoggedInPlayerId))
 	{
-		UE_LOG_ONLINE(Error, TEXT("Can only query for logged in player id"));
+		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can only query for logged in player id"));
 		Delegate.ExecuteIfBound(PlayerId, false);
 		return;
 	}
@@ -289,7 +314,7 @@ EOnlineCachedResult::Type FOnlineAchievementsOculus::GetCachedAchievementDescrip
 bool FOnlineAchievementsOculus::ResetAchievements(const FUniqueNetId& PlayerId)
 {
 	// We cannot reset achievements from the client
-	UE_LOG_ONLINE(Error, TEXT("Achievements cannot be reset here"));
+	UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Achievements cannot be reset here"));
 	return false;
 };
 #endif // !UE_BUILD_SHIPPING
@@ -326,7 +351,7 @@ void FOnlineAchievementsOculus::GetWriteAchievementCountValue(FVariantData Varia
 		}
 		default:
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Could not %s convert to uint64"), VariantData.GetTypeString());
+			UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Could not %s convert to uint64"), VariantData.GetTypeString());
 			OutData = 0;
 			break;
 		}
@@ -357,7 +382,7 @@ void FOnlineAchievementsOculus::GetWriteAchievementBitfieldValue(FVariantData Va
 		}
 		default:
 		{
-			UE_LOG_ONLINE(Warning, TEXT("Could not %s convert to string"), VariantData.GetTypeString());
+			UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Could not %s convert to string"), VariantData.GetTypeString());
 			break;
 		}
 	}
@@ -373,7 +398,7 @@ double FOnlineAchievementsOculus::CalculatePlayerAchievementProgress(const FOnli
 	auto Desc = AchievementDescriptions.Find(Achievement.Id);
 	if (Desc == nullptr)
 	{
-		UE_LOG_ONLINE(Warning, TEXT("Could not calculate progress for Achievement: '%s'"), *Achievement.Id);
+		UE_LOG_ONLINE_ACHIEVEMENTS(Warning, TEXT("Could not calculate progress for Achievement: '%s'"), *Achievement.Id);
 		return 0.0;
 	}
 

@@ -1,9 +1,9 @@
-// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "EditorModeManager.h"
 #include "Engine/Selection.h"
 #include "Misc/MessageDialog.h"
-#include "EditorStyleSettings.h"
+#include "Classes/EditorStyleSettings.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GameFramework/WorldSettings.h"
@@ -23,6 +23,8 @@
 #include "Editor/EditorEngine.h"
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
+
+#include "Bookmarks/IBookmarkTypeTools.h"
 
 /*------------------------------------------------------------------------------
 	FEditorModeTools.
@@ -608,13 +610,13 @@ bool FEditorModeTools::BoxSelect( FBox& InBox, bool InSelect )
 }
 
 /** Notifies all active modes of frustum selection attempts */
-bool FEditorModeTools::FrustumSelect( const FConvexVolume& InFrustum, bool InSelect )
+bool FEditorModeTools::FrustumSelect( const FConvexVolume& InFrustum, FEditorViewportClient* InViewportClient, bool InSelect )
 {
 	bool bHandled = false;
 	for( int32 ModeIndex = 0; ModeIndex < Modes.Num(); ++ModeIndex )
 	{
 		const TSharedPtr<FEdMode>& Mode = Modes[ ModeIndex ];
-		bHandled |= Mode->FrustumSelect( InFrustum, InSelect );
+		bHandled |= Mode->FrustumSelect( InFrustum, InViewportClient, InSelect );
 	}
 	return bHandled;
 }
@@ -960,7 +962,7 @@ FVector FEditorModeTools::GetWidgetLocation() const
 		}
 	}
 	
-	return FVector(EForceInit::ForceInitToZero);
+	return FVector(ForceInitToZero);
 }
 
 /**
@@ -1001,55 +1003,22 @@ bool FEditorModeTools::GetShowFriendlyVariableNames() const
 	return GetDefault<UEditorStyleSettings>()->bShowFriendlyNames;
 }
 
+const uint32 FEditorModeTools::GetMaxNumberOfBookmarks(FEditorViewportClient* InViewportClient) const
+{
+	return IBookmarkTypeTools::Get().GetMaxNumberOfBookmarks(InViewportClient);
+}
+
+void FEditorModeTools::CompactBookmarks(FEditorViewportClient* InViewportClient) const
+{
+	IBookmarkTypeTools::Get().CompactBookmarks(InViewportClient);
+}
+
 /**
  * Sets a bookmark in the levelinfo file, allocating it if necessary.
  */
-
 void FEditorModeTools::SetBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient )
 {
-	UWorld* World = InViewportClient->GetWorld();
-	if ( World )
-	{
-		AWorldSettings* WorldSettings = World->GetWorldSettings();
-
-		// Verify the index is valid for the bookmark
-		if ( WorldSettings && InIndex < AWorldSettings::MAX_BOOKMARK_NUMBER )
-		{
-			// If the index doesn't already have a bookmark in place, create a new one
-			if ( !WorldSettings->BookMarks[ InIndex ] )
-			{
-				WorldSettings->BookMarks[InIndex] = NewObject<UBookMark>(WorldSettings);
-			}
-
-			UBookMark* CurBookMark = WorldSettings->BookMarks[ InIndex ];
-			check(CurBookMark);
-			check(InViewportClient);
-
-			// Use the rotation from the first perspective viewport can find.
-			FRotator Rotation(0,0,0);
-			if( !InViewportClient->IsOrtho() )
-			{
-				Rotation = InViewportClient->GetViewRotation();
-			}
-
-			CurBookMark->Location = InViewportClient->GetViewLocation();
-			CurBookMark->Rotation = Rotation;
-
-			// Keep a record of which levels were hidden so that we can restore these with the bookmark
-			CurBookMark->HiddenLevels.Empty();
-			for ( int32 LevelIndex = 0 ; LevelIndex < World->StreamingLevels.Num() ; ++LevelIndex )
-			{
-				ULevelStreaming* StreamingLevel = World->StreamingLevels[LevelIndex];
-				if ( StreamingLevel )
-				{
-					if( !StreamingLevel->bShouldBeVisibleInEditor )
-					{
-						CurBookMark->HiddenLevels.Add( StreamingLevel->GetFullName() );
-					}
-				}
-			}
-		}
-	}
+	IBookmarkTypeTools::Get().CreateOrSetBookmark(InIndex, InViewportClient);
 }
 
 /**
@@ -1058,17 +1027,7 @@ void FEditorModeTools::SetBookmark( uint32 InIndex, FEditorViewportClient* InVie
 
 bool FEditorModeTools::CheckBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient )
 {
-	UWorld* World = InViewportClient->GetWorld();
-	if ( World )
-	{
-		AWorldSettings* WorldSettings = World->GetWorldSettings();
-		if ( WorldSettings && InIndex < AWorldSettings::MAX_BOOKMARK_NUMBER && WorldSettings->BookMarks[ InIndex ] )
-		{
-			return ( WorldSettings->BookMarks[ InIndex ] ? true : false );
-		}
-	}
-
-	return false;
+	return IBookmarkTypeTools::Get().CheckBookmark(InIndex, InViewportClient);
 }
 
 /**
@@ -1077,48 +1036,29 @@ bool FEditorModeTools::CheckBookmark( uint32 InIndex, FEditorViewportClient* InV
 
 void FEditorModeTools::JumpToBookmark( uint32 InIndex, bool bShouldRestoreLevelVisibility, FEditorViewportClient* InViewportClient )
 {
-	UWorld* World = InViewportClient->GetWorld();
-	if ( World )
+	const IBookmarkTypeTools& BookmarkTools = IBookmarkTypeTools::Get();
+	TSharedPtr<FBookmarkBaseJumpToSettings> JumpToSettings;
+
+	if (BookmarkTools.GetBookmarkClass(InViewportClient) == UBookMark::StaticClass())
 	{
-		AWorldSettings* WorldSettings = World->GetWorldSettings();
-
-		// Can only jump to a pre-existing bookmark
-		if ( WorldSettings && InIndex < AWorldSettings::MAX_BOOKMARK_NUMBER && WorldSettings->BookMarks[ InIndex ] )
-		{
-			const UBookMark* CurBookMark = WorldSettings->BookMarks[ InIndex ];
-			check(CurBookMark);
-
-			// Set all level editing cameras to this bookmark
-			for( int32 v = 0 ; v < GEditor->LevelViewportClients.Num() ; v++ )
-			{
-				GEditor->LevelViewportClients[v]->SetViewLocation( CurBookMark->Location );
-				if( !GEditor->LevelViewportClients[v]->IsOrtho() )
-				{
-					GEditor->LevelViewportClients[v]->SetViewRotation( CurBookMark->Rotation );
-				}
-				GEditor->LevelViewportClients[v]->Invalidate();
-			}
-		}
+		TSharedPtr<FBookmarkJumpToSettings> Settings = MakeShareable<FBookmarkJumpToSettings>(new FBookmarkJumpToSettings);
+		Settings->bShouldRestorLevelVisibility = bShouldRestoreLevelVisibility;
 	}
+
+	IBookmarkTypeTools::Get().JumpToBookmark(InIndex, JumpToSettings, InViewportClient);
 }
 
+void FEditorModeTools::JumpToBookmark(uint32 InIndex, TSharedPtr<FBookmarkBaseJumpToSettings> InSettings, FEditorViewportClient* InViewportClient)
+{
+	IBookmarkTypeTools::Get().JumpToBookmark(InIndex, InSettings, InViewportClient);
+}
 
 /**
  * Clears a bookmark
  */
 void FEditorModeTools::ClearBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient )
 {
-	UWorld* World = InViewportClient->GetWorld();
-	if( World )
-	{
-		AWorldSettings* pWorldSettings = World->GetWorldSettings();
-
-		// Verify the index is valid for the bookmark
-		if ( pWorldSettings && InIndex < AWorldSettings::MAX_BOOKMARK_NUMBER )
-		{
-			pWorldSettings->BookMarks[ InIndex ] = nullptr;
-		}
-	}
+	IBookmarkTypeTools::Get().ClearBookmark(InIndex, InViewportClient);
 }
 
 /**
@@ -1126,10 +1066,7 @@ void FEditorModeTools::ClearBookmark( uint32 InIndex, FEditorViewportClient* InV
 */
 void FEditorModeTools::ClearAllBookmarks( FEditorViewportClient* InViewportClient )
 {
-	for( int i = 0; i <  AWorldSettings::MAX_BOOKMARK_NUMBER; ++i )
-	{
-		ClearBookmark( i , InViewportClient );
-	}
+	IBookmarkTypeTools::Get().ClearAllBookmarks(InViewportClient);
 }
 
 void FEditorModeTools::AddReferencedObjects( FReferenceCollector& Collector )

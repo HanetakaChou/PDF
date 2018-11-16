@@ -9,12 +9,14 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/MetaData.h"
+#include "UObject/CoreRedirects.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "AssetRegistryPrivate.h"
 #include "ARFilter.h"
 #include "DependsNode.h"
 #include "PackageReader.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
-#include "IPluginManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/CoreDelegates.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Misc/RedirectCollector.h"
@@ -64,7 +66,7 @@ UAssetRegistryImpl::UAssetRegistryImpl(const FObjectInitializer& ObjectInitializ
 	AmortizeStartTime = 0;
 	TotalAmortizeTime = 0;
 
-	MaxSecondsPerFrame = 0.015;
+	MaxSecondsPerFrame = 0.04;
 
 	// By default update the disk cache once on asset load, to incorporate changes made in PostLoad. This only happens in editor builds
 	bUpdateDiskCacheAfterLoad = true;
@@ -95,8 +97,7 @@ UAssetRegistryImpl::UAssetRegistryImpl(const FObjectInitializer& ObjectInitializ
 			// serialize the data with the memory reader (will convert FStrings to FNames, etc)
 			Serialize(SerializedAssetData);
 		}
-
-		TArray<TSharedRef<IPlugin>> ContentPlugins = IPluginManager::Get().GetEnabledPlugins();
+		TArray<TSharedRef<IPlugin>> ContentPlugins = IPluginManager::Get().GetEnabledPluginsWithContent();
 		for (TSharedRef<IPlugin> ContentPlugin : ContentPlugins)
 		{
 			if (ContentPlugin->CanContainContent())
@@ -162,6 +163,113 @@ UAssetRegistryImpl::UAssetRegistryImpl(const FObjectInitializer& ObjectInitializ
 
 	// If we were called before engine has fully initialized, refresh classes on initialize. If not this won't do anything as it already happened
 	FCoreDelegates::OnPostEngineInit.AddUObject(this, &UAssetRegistryImpl::RefreshNativeClasses);
+
+	InitRedirectors();
+}
+
+bool UAssetRegistryImpl::ResolveRedirect(const FString& InPackageName, FString& OutPackageName)
+{
+	int32 DotIndex = InPackageName.Find(TEXT("."), ESearchCase::CaseSensitive);
+
+	FString ContainerPackageName; 
+	const FString* PackageNamePtr = &InPackageName; // don't return this
+	if (DotIndex != INDEX_NONE)
+	{
+		ContainerPackageName = InPackageName.Left(DotIndex);
+		PackageNamePtr = &ContainerPackageName;
+	}
+	const FString& PackageName = *PackageNamePtr;
+
+	for (const FAssetRegistryPackageRedirect& PackageRedirect : PackageRedirects)
+	{
+		if (PackageName.Compare(PackageRedirect.SourcePackageName) == 0)
+		{
+			OutPackageName = InPackageName.Replace(*PackageRedirect.SourcePackageName, *PackageRedirect.DestPackageName);
+			return true;
+		}
+	}
+	return false;
+}
+
+void UAssetRegistryImpl::InitRedirectors()
+{
+	// plugins can't initialize redirectors in the editor, it will mess up the saving of content.
+	if ( GIsEditor )
+	{
+		return;
+	}
+
+	TArray<TSharedRef<IPlugin>> EnabledPlugins = IPluginManager::Get().GetEnabledPlugins();
+	for (TSharedRef<IPlugin> Plugin : EnabledPlugins)
+	{
+		FString PluginConfigFilename = FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), *Plugin->GetName() );
+		
+		bool bShouldRemap = false;
+		
+		if ( !GConfig->GetBool(TEXT("PluginSettings"), TEXT("RemapPluginContentToGame"), bShouldRemap, PluginConfigFilename) )
+		{
+			continue;
+		}
+
+		if (!bShouldRemap)
+		{
+			continue;
+		}
+
+		// if we are -game in editor build we might need to initialize the asset registry manually for this plugin
+		if (!FPlatformProperties::RequiresCookedData() && IsRunningGame())
+		{
+			TArray<FString> PathsToSearch;
+			
+			FString RootPackageName = FString::Printf(TEXT("/%s/"), *Plugin->GetName());
+			PathsToSearch.Add(RootPackageName);
+
+			const bool bForceRescan = false;
+			ScanPathsAndFilesSynchronous(PathsToSearch, TArray<FString>(), bForceRescan, EAssetDataCacheMode::UseModularCache);
+		}
+		
+		FName PluginPackageName = FName(*FString::Printf(TEXT("/%s/"), *Plugin->GetName()));
+		TArray<FAssetData> AssetList;
+		GetAssetsByPath(PluginPackageName, AssetList, true, false);
+
+#if 1 // new way
+		for (const FAssetData& Asset : AssetList)
+		{
+			FString NewPackageNameString = Asset.PackageName.ToString();
+			FString RootPackageName = FString::Printf(TEXT("/%s/"), *Plugin->GetName());
+
+			FString OriginalPackageNameString = NewPackageNameString.Replace(*RootPackageName, TEXT("/Game/"));
+
+
+			PackageRedirects.Add(FAssetRegistryPackageRedirect(OriginalPackageNameString, NewPackageNameString));
+
+		}
+
+
+		FCoreDelegates::FResolvePackageNameDelegate PackageResolveDelegate;
+		PackageResolveDelegate.BindUObject(this, &UAssetRegistryImpl::ResolveRedirect);
+		FCoreDelegates::PackageNameResolvers.Add(PackageResolveDelegate);
+#else
+		TArray<FCoreRedirect> PackageRedirects;
+
+		for ( const FAssetData& Asset : AssetList )
+		{
+			FString NewPackageNameString = Asset.PackageName.ToString();
+			FString RootPackageName = FString::Printf(TEXT("/%s/"), *Plugin->GetName());
+
+			FString OriginalPackageNameString = NewPackageNameString.Replace(*RootPackageName, TEXT("/Game/"));
+
+
+			PackageRedirects.Add( FCoreRedirect(ECoreRedirectFlags::Type_Package, OriginalPackageNameString, NewPackageNameString) );
+
+		}
+
+
+		FCoreRedirects::AddRedirectList(PackageRedirects, Plugin->GetName() );
+#endif
+	}
+
+	
 }
 
 void UAssetRegistryImpl::InitializeSerializationOptions(FAssetRegistrySerializationOptions& Options, const FString& PlatformIniName) const
@@ -177,6 +285,8 @@ void UAssetRegistryImpl::InitializeSerializationOptions(FAssetRegistrySerializat
 	PlatformEngineIni.GetBool(TEXT("AssetRegistry"), TEXT("bSerializePackageData"), Options.bSerializePackageData);
 	PlatformEngineIni.GetBool(TEXT("AssetRegistry"), TEXT("bUseAssetRegistryTagsWhitelistInsteadOfBlacklist"), Options.bUseAssetRegistryTagsWhitelistInsteadOfBlacklist);
 	PlatformEngineIni.GetBool(TEXT("AssetRegistry"), TEXT("bFilterAssetDataWithNoTags"), Options.bFilterAssetDataWithNoTags);
+	PlatformEngineIni.GetBool(TEXT("AssetRegistry"), TEXT("bFilterDependenciesWithNoTags"), Options.bFilterDependenciesWithNoTags);
+	PlatformEngineIni.GetBool(TEXT("AssetRegistry"), TEXT("bFilterSearchableNames"), Options.bFilterSearchableNames);
 
 	TArray<FString> FilterlistItems;
 	if (Options.bUseAssetRegistryTagsWhitelistInsteadOfBlacklist)
@@ -438,10 +548,23 @@ bool UAssetRegistryImpl::GetAssetsByClass(FName ClassName, TArray<FAssetData>& O
 	return GetAssets(Filter, OutAssetData);
 }
 
+bool UAssetRegistryImpl::GetAssetsByTags(const TArray<FName>& AssetTags, TArray<FAssetData>& OutAssetData) const
+{
+	FARFilter Filter;
+	for (const FName AssetTag : AssetTags)
+	{
+		Filter.TagsAndValues.Add(AssetTag);
+	}
+	return GetAssets(Filter, OutAssetData);
+}
+
 bool UAssetRegistryImpl::GetAssetsByTagValues(const TMultiMap<FName, FString>& AssetTagsAndValues, TArray<FAssetData>& OutAssetData) const
 {
 	FARFilter Filter;
-	Filter.TagsAndValues = AssetTagsAndValues;
+	for (const auto& AssetTagsAndValue : AssetTagsAndValues)
+	{
+		Filter.TagsAndValues.Add(AssetTagsAndValue.Key, AssetTagsAndValue.Value);
+	}
 	return GetAssets(Filter, OutAssetData);
 }
 
@@ -519,13 +642,13 @@ bool UAssetRegistryImpl::GetAssets(const FARFilter& InFilter, TArray<FAssetData>
 					for (auto FilterTagIt = Filter.TagsAndValues.CreateConstIterator(); FilterTagIt; ++FilterTagIt)
 					{
 						const FName Tag = FilterTagIt.Key();
-						const FString& Value = FilterTagIt.Value();
+						const TOptional<FString>& Value = FilterTagIt.Value();
 
 						for (UObject::FAssetRegistryTag& AssetRegistryTag : ObjectTags)
 						{
 							if (AssetRegistryTag.Name == Tag)
 							{
-								if (AssetRegistryTag.Value == Value)
+								if (!Value.IsSet() || AssetRegistryTag.Value == Value.GetValue())
 								{
 									bMatch = true;
 								}
@@ -1359,21 +1482,29 @@ void UAssetRegistryImpl::Tick(float DeltaTime)
 		CookedPackageNamesWithoutAssetDataGathered(TickStartTime, BackgroundCookedPackageNamesWithoutAssetDataResults);
 	}
 
+	// Compute total pending, plus highest pending for this run so we can show a good progress bar
+	static int32 HighestPending = 0;
+	const int32 NumPending = NumFilesToSearch + NumPathsToSearch + BackgroundPathResults.Num() + BackgroundAssetResults.Num() + BackgroundDependencyResults.Num() + BackgroundCookedPackageNamesWithoutAssetDataResults.Num();
+
+	HighestPending = FMath::Max(HighestPending, NumPending);
+
 	// Notify the status change
 	if (bIsSearching || bHadAssetsToProcess)
 	{
 		const FFileLoadProgressUpdateData ProgressUpdateData(
-			State.CachedAssetsByObjectPath.Num() + BackgroundAssetResults.Num() + BackgroundDependencyResults.Num() + NumFilesToSearch,	// NumTotalAssets
-			State.CachedAssetsByObjectPath.Num() - BackgroundDependencyResults.Num(),					// NumAssetsProcessedByAssetRegistry
-			NumFilesToSearch + BackgroundDependencyResults.Num(),								// NumAssetsPendingDataLoad
-			bIsDiscoveringFiles																	// bIsDiscoveringAssetFiles
+			HighestPending,					// NumTotalAssets
+			HighestPending - NumPending,	// NumAssetsProcessedByAssetRegistry
+			NumPending / 2,					// NumAssetsPendingDataLoad, divided by 2 because assets are double counted due to dependencies
+			bIsDiscoveringFiles				// bIsDiscoveringAssetFiles
 		);
 		FileLoadProgressUpdatedEvent.Broadcast(ProgressUpdateData);
 	}
 
 	// If completing an initial search, refresh the content browser
-	if (NumFilesToSearch == 0 && NumPathsToSearch == 0 && !bIsSearching && BackgroundPathResults.Num() == 0 && BackgroundAssetResults.Num() == 0 && BackgroundDependencyResults.Num() == 0 && BackgroundCookedPackageNamesWithoutAssetDataResults.Num() == 0)
+	if (!bIsSearching && NumPending == 0)
 	{
+		HighestPending = 0;
+
 		if (!bInitialSearchCompleted)
 		{
 #if WITH_EDITOR
@@ -1414,8 +1545,8 @@ void UAssetRegistryImpl::Serialize(FArchive& Ar)
 				// Populate the class map if adding blueprint
 				if (ClassGeneratorNames.Contains(AssetData->AssetClass))
 				{
-					const FString GeneratedClass = AssetData->GetTagValueRef<FString>("GeneratedClass");
-					const FString ParentClass = AssetData->GetTagValueRef<FString>("ParentClass");
+					const FString GeneratedClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
+					const FString ParentClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
 					if (!GeneratedClass.IsEmpty() && !ParentClass.IsEmpty())
 					{
 						const FName GeneratedClassFName = *ExportTextPathToObjectName(GeneratedClass);
@@ -1432,8 +1563,14 @@ uint32 UAssetRegistryImpl::GetAllocatedSize(bool bLogDetailed) const
 {
 	uint32 StateSize = State.GetAllocatedSize(bLogDetailed);
 
-	uint32 StaticSize = sizeof(UAssetRegistryImpl) + CachedEmptyPackages.GetAllocatedSize() + CachedInheritanceMap.GetAllocatedSize() + EditSearchableNameDelegates.GetAllocatedSize() + ClassGeneratorNames.GetAllocatedSize() + SerializationOptions.CookFilterlistTagsByClass.GetAllocatedSize();
+	uint32 StaticSize = sizeof(UAssetRegistryImpl) + CachedEmptyPackages.GetAllocatedSize() + CachedInheritanceMap.GetAllocatedSize() + EditSearchableNameDelegates.GetAllocatedSize() + ClassGeneratorNames.GetAllocatedSize() + OnDirectoryChangedDelegateHandles.GetAllocatedSize();
 	uint32 SearchSize = BackgroundAssetResults.GetAllocatedSize() + BackgroundPathResults.GetAllocatedSize() + BackgroundDependencyResults.GetAllocatedSize() + BackgroundCookedPackageNamesWithoutAssetDataResults.GetAllocatedSize() + SynchronouslyScannedPathsAndFiles.GetAllocatedSize() + CachedPathTree.GetAllocatedSize();
+
+	StaticSize += SerializationOptions.CookFilterlistTagsByClass.GetAllocatedSize();
+	for (const TPair<FName, TSet<FName>>& Pair : SerializationOptions.CookFilterlistTagsByClass)
+	{
+		StaticSize += Pair.Value.GetAllocatedSize();
+	}
 
 	if (bLogDetailed)
 	{
@@ -1585,18 +1722,18 @@ void UAssetRegistryImpl::ScanPathsAndFilesSynchronous(const TArray<FString>& InP
 		if (OutFoundAssets)
 		{
 			OutFoundAssets->Reserve(OutFoundAssets->Num() + AssetResults.Num());
-			for (const FAssetData* AssetData : AssetResults)
+			for (int32 i = 0; i < AssetResults.Num(); ++i)
 			{
-				OutFoundAssets->Add(AssetData->ObjectPath);
+				OutFoundAssets->Add(AssetResults[i]->ObjectPath);
 			}
 		}
 
 		if (OutFoundPaths)
 		{
 			OutFoundPaths->Reserve(OutFoundPaths->Num() + PathResults.Num());
-			for (const FString& Path : PathResults)
+			for (int32 i = 0; i < PathResults.Num(); ++i)
 			{
-				OutFoundPaths->Add(*Path);
+				OutFoundPaths->Add(*PathResults[i]);
 			}
 		}
 
@@ -1673,7 +1810,7 @@ void UAssetRegistryImpl::AssetSearchDataGathered(const double TickStartTime, TBa
 		// Check to see if we have run out of time in this tick
 		if (!bFlushFullBuffer && (FPlatformTime::Seconds() - TickStartTime) > MaxSecondsPerFrame)
 		{
-			break;
+			return;
 		}
 	}
 
@@ -1693,7 +1830,7 @@ void UAssetRegistryImpl::PathDataGathered(const double TickStartTime, TBackgroun
 		// Check to see if we have run out of time in this tick
 		if (!bFlushFullBuffer && (FPlatformTime::Seconds() - TickStartTime) > MaxSecondsPerFrame)
 		{
-			break;
+			return;
 		}
 	}
 
@@ -1837,7 +1974,7 @@ void UAssetRegistryImpl::DependencyDataGathered(const double TickStartTime, TBac
 		// Check to see if we have run out of time in this tick
 		if (!bFlushFullBuffer && (FPlatformTime::Seconds() - TickStartTime) > MaxSecondsPerFrame)
 		{
-			break;
+			return;
 		}
 	}
 
@@ -1859,7 +1996,7 @@ void UAssetRegistryImpl::CookedPackageNamesWithoutAssetDataGathered(const double
 		// Check to see if we have run out of time in this tick
 		if (!bFlushFullBuffer && (FPlatformTime::Seconds() - TickStartTime) > MaxSecondsPerFrame)
 		{
-			break;
+			return;
 		}
 	}
 
@@ -1930,8 +2067,8 @@ void UAssetRegistryImpl::AddAssetData(FAssetData* AssetData)
 	// Populate the class map if adding blueprint
 	if (ClassGeneratorNames.Contains(AssetData->AssetClass))
 	{
-		const FString GeneratedClass = AssetData->GetTagValueRef<FString>("GeneratedClass");
-		const FString ParentClass = AssetData->GetTagValueRef<FString>("ParentClass");
+		const FString GeneratedClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
+		const FString ParentClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
 		if (!GeneratedClass.IsEmpty() && !ParentClass.IsEmpty())
 		{
 			const FName GeneratedClassFName = *ExportTextPathToObjectName(GeneratedClass);
@@ -1946,15 +2083,15 @@ void UAssetRegistryImpl::UpdateAssetData(FAssetData* AssetData, const FAssetData
 	// Update the class map if updating a blueprint
 	if (ClassGeneratorNames.Contains(AssetData->AssetClass))
 	{
-		const FString OldGeneratedClass = AssetData->GetTagValueRef<FString>("GeneratedClass");
+		const FString OldGeneratedClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
 		if (!OldGeneratedClass.IsEmpty())
 		{
 			const FName OldGeneratedClassFName = *ExportTextPathToObjectName(OldGeneratedClass);
 			CachedInheritanceMap.Remove(OldGeneratedClassFName);
 		}
 
-		const FString NewGeneratedClass = NewAssetData.GetTagValueRef<FString>("GeneratedClass");
-		const FString NewParentClass = NewAssetData.GetTagValueRef<FString>("ParentClass");
+		const FString NewGeneratedClass = NewAssetData.GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
+		const FString NewParentClass = NewAssetData.GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
 		if (!NewGeneratedClass.IsEmpty() && !NewParentClass.IsEmpty())
 		{
 			const FName NewGeneratedClassFName = *ExportTextPathToObjectName(*NewGeneratedClass);
@@ -1978,7 +2115,7 @@ bool UAssetRegistryImpl::RemoveAssetData(FAssetData* AssetData)
 		// Remove from the class map if removing a blueprint
 		if (ClassGeneratorNames.Contains(AssetData->AssetClass))
 		{
-			const FString OldGeneratedClass = AssetData->GetTagValueRef<FString>("GeneratedClass");
+			const FString OldGeneratedClass = AssetData->GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
 			if (!OldGeneratedClass.IsEmpty())
 			{
 				const FName OldGeneratedClassFName = *ExportTextPathToObjectName(OldGeneratedClass);
@@ -2377,26 +2514,32 @@ void UAssetRegistryImpl::GetSubClasses(const TArray<FName>& InClassNames, const 
 	for (FName ClassName : InClassNames)
 	{
 		// Now find all subclass names
-		GetSubClasses_Recursive(ClassName, SubClassNames, ReverseInheritanceMap, ExcludedClassNames);
+		TSet<FName> ProcessedClassNames;
+		GetSubClasses_Recursive(ClassName, SubClassNames, ProcessedClassNames, ReverseInheritanceMap, ExcludedClassNames);
 	}
 }
 
-void UAssetRegistryImpl::GetSubClasses_Recursive(FName InClassName, TSet<FName>& SubClassNames, const TMap<FName, TSet<FName>>& ReverseInheritanceMap, const TSet<FName>& ExcludedClassNames) const
+void UAssetRegistryImpl::GetSubClasses_Recursive(FName InClassName, TSet<FName>& SubClassNames, TSet<FName>& ProcessedClassNames, const TMap<FName, TSet<FName>>& ReverseInheritanceMap, const TSet<FName>& ExcludedClassNames) const
 {
 	if (ExcludedClassNames.Contains(InClassName))
 	{
 		// This class is in the exclusion list. Exclude it.
 	}
+	else if (ProcessedClassNames.Contains(InClassName))
+	{
+		// This class has already been processed. Ignore it.
+	}
 	else
 	{
 		SubClassNames.Add(InClassName);
+		ProcessedClassNames.Add(InClassName);
 
 		const TSet<FName>* FoundSubClassNames = ReverseInheritanceMap.Find(InClassName);
 		if (FoundSubClassNames)
 		{
 			for (FName ClassName : (*FoundSubClassNames))
 			{
-				GetSubClasses_Recursive(ClassName, SubClassNames, ReverseInheritanceMap, ExcludedClassNames);
+				GetSubClasses_Recursive(ClassName, SubClassNames, ProcessedClassNames, ReverseInheritanceMap, ExcludedClassNames);
 			}
 		}
 	}

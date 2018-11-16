@@ -26,7 +26,7 @@ static const FString InvalidFilenames[] = {
 -----------------------------------------------------------------------------*/
 
 /**
- * Load a binary file to a dynamic array.
+ * Load a binary file to a dynamic array with two uninitialized bytes at end as padding.
  */
 bool FFileHelper::LoadFileToArray( TArray<uint8>& Result, const TCHAR* Filename, uint32 Flags )
 {
@@ -39,10 +39,11 @@ bool FFileHelper::LoadFileToArray( TArray<uint8>& Result, const TCHAR* Filename,
 		{
 			UE_LOG(LogStreaming,Warning,TEXT("Failed to read file '%s' error."),Filename);
 		}
-		return 0;
+		return false;
 	}
 	int64 TotalSize = Reader->TotalSize();
-	Result.Reset( TotalSize );
+	// Allocate slightly larger than file size to avoid re-allocation when caller null terminates file buffer
+	Result.Reset( TotalSize + 2 );
 	Result.AddUninitialized( TotalSize );
 	Reader->Serialize(Result.GetData(), Result.Num());
 	bool Success = Reader->Close();
@@ -118,7 +119,7 @@ bool FFileHelper::LoadFileToString( FString& Result, const TCHAR* Filename, EHas
 	TUniquePtr<FArchive> Reader( IFileManager::Get().CreateFileReader( Filename ) );
 	if( !Reader )
 	{
-		return 0;
+		return false;
 	}
 	
 	int32 Size = Reader->TotalSize();
@@ -190,7 +191,7 @@ bool FFileHelper::SaveArrayToFile(TArrayView<const uint8> Array, const TCHAR* Fi
 	FArchive* Ar = FileManager->CreateFileWriter( Filename, WriteFlags );
 	if( !Ar )
 	{
-		return 0;
+		return false;
 	}
 	Ar->Serialize(const_cast<uint8*>(Array.GetData()), Array.Num());
 	delete Ar;
@@ -484,11 +485,11 @@ bool FFileHelper::CreateBitmap( const TCHAR* Pattern, int32 SourceWidth, int32 S
 	}
 	else 
 	{
-		return 0;
+		return false;
 	}
 #endif
 	// Success.
-	return 1;
+	return true;
 }
 
 /**
@@ -514,7 +515,7 @@ bool FFileHelper::LoadANSITextFileToStrings(const TCHAR* InFilename, IFileManage
 		int32 Size = TextFile->TotalSize();
 		// read the file
 		TArray<uint8> Buffer;
-		Buffer.Empty(Size);
+		Buffer.Empty(Size + 1);
 		Buffer.AddUninitialized(Size);
 		TextFile->Serialize(Buffer.GetData(), Size);
 		// zero terminate it
@@ -573,7 +574,7 @@ bool FFileHelper::LoadANSITextFileToStrings(const TCHAR* InFilename, IFileManage
 
 /**
 * Checks to see if a filename is valid for saving.
-* A filename must be under MAX_UNREAL_FILENAME_LENGTH to be saved
+* A filename must be under FPlatformMisc::GetMaxPathLength() to be saved
 *
 * @param Filename	Filename, with or without path information, to check.
 * @param OutError	If an error occurs, this is the reason why
@@ -588,7 +589,7 @@ bool FFileHelper::IsFilenameValidForSaving(const FString& Filename, FText& OutEr
 	// Check length of the filename
 	if (BaseFilename.Len() > 0)
 	{
-		if (BaseFilename.Len() <= MAX_UNREAL_FILENAME_LENGTH)
+		if (BaseFilename.Len() <= FPlatformMisc::GetMaxPathLength())
 		{
 			bFilenameIsValid = true;
 
@@ -636,7 +637,7 @@ bool FFileHelper::IsFilenameValidForSaving(const FString& Filename, FText& OutEr
 		else
 		{
 			OutError = FText::Format(NSLOCTEXT("UnrealEd", "Error_FilenameIsTooLongForCooking", "Filename '{0}' is too long; this may interfere with cooking for consoles.  Unreal filenames should be no longer than {1} characters."),
-				FText::FromString(BaseFilename), FText::AsNumber(MAX_UNREAL_FILENAME_LENGTH));
+				FText::FromString(BaseFilename), FText::AsNumber(FPlatformMisc::GetMaxPathLength()));
 		}
 	}
 	else

@@ -15,14 +15,20 @@ FOnlineIdentityIOS::FOnlineIdentityIOS(FOnlineSubsystemIOS* InSubsystem)
 {
 }
 
-TSharedPtr<FUniqueNetIdString> FOnlineIdentityIOS::GetLocalPlayerUniqueId() const
+TSharedPtr<FUniqueNetIdIOS> FOnlineIdentityIOS::GetLocalPlayerUniqueId() const
 {
 	return UniqueNetId;
 }
 
-void FOnlineIdentityIOS::SetLocalPlayerUniqueId(const TSharedPtr<FUniqueNetIdString>& UniqueId)
+void FOnlineIdentityIOS::SetLocalPlayerUniqueId(const TSharedPtr<FUniqueNetIdIOS>& UniqueId)
 {
 	UniqueNetId = UniqueId;
+}
+
+const FUniqueNetId& FOnlineIdentityIOS::GetEmptyUniqueId()
+{
+	static TSharedRef<const FUniqueNetIdIOS> EmptyUniqueId = MakeShared<const FUniqueNetIdIOS>(FString());
+	return *EmptyUniqueId;
 }
 
 TSharedPtr<FUserOnlineAccount> FOnlineIdentityIOS::GetUserAccount(const FUniqueNetId& UserId) const
@@ -55,10 +61,10 @@ bool FOnlineIdentityIOS::Login(int32 LocalUserNum, const FOnlineAccountCredentia
 		bStartedLogin = true;
         
 		const FString PlayerId(GetLocalGameCenterUser().playerID);
-		UniqueNetId = MakeShareable( new FUniqueNetIdString( PlayerId ) );
+		UniqueNetId = MakeShareable( new FUniqueNetIdIOS( PlayerId ) );
 		TriggerOnLoginCompleteDelegates(LocalUserNum, true, *UniqueNetId, TEXT(""));
         
-        UE_LOG(LogOnline, Log, TEXT("The user %s has logged into Game Center"), *PlayerId);
+        UE_LOG_ONLINE_IDENTITY(Log, TEXT("The user %s has logged into Game Center"), *PlayerId);
 	}
 	else if([IOSAppDelegate GetDelegate].OSVersion >= 6.0f)
 	{
@@ -79,27 +85,27 @@ bool FOnlineIdentityIOS::Login(int32 LocalUserNum, const FOnlineAccountCredentia
 					{
 						/* Perform additional tasks for the authenticated player here */
 						const FString PlayerId(GetLocalGameCenterUser().playerID);
-						UniqueNetId = MakeShareable(new FUniqueNetIdString(PlayerId));
+						UniqueNetId = MakeShareable(new FUniqueNetIdIOS(PlayerId));
 
 						bWasSuccessful = true;
-						UE_LOG(LogOnline, Log, TEXT("The user %s has logged into Game Center"), *PlayerId);
+						UE_LOG_ONLINE_IDENTITY(Log, TEXT("The user %s has logged into Game Center"), *PlayerId);
 					}
 					else
 					{
 						ErrorMessage = TEXT("The user could not be authenticated by Game Center");
-						UE_LOG(LogOnline, Log, TEXT("%s"), *ErrorMessage);
+						UE_LOG_ONLINE_IDENTITY(Log, TEXT("%s"), *ErrorMessage);
 					}
 
 					if (error)
 					{
 						NSString *errstr = [error localizedDescription];
-						UE_LOG(LogOnline, Warning, TEXT("Game Center login has failed. %s]"), *FString(errstr));
+						UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Game Center login has failed. %s]"), *FString(errstr));
 					}
 
 					// Report back to the game thread whether this succeeded.
 					[FIOSAsyncTask CreateTaskWithBlock : ^ bool(void)
 					{
-						TSharedPtr<FUniqueNetIdString> UniqueIdForUser = UniqueNetId.IsValid() ? UniqueNetId : MakeShareable(new FUniqueNetIdString());
+						TSharedPtr<FUniqueNetIdIOS> UniqueIdForUser = UniqueNetId.IsValid() ? UniqueNetId : MakeShareable(new FUniqueNetIdIOS());
 						TriggerOnLoginCompleteDelegates(LocalUserNum, bWasSuccessful, *UniqueIdForUser, *ErrorMessage);
 
 						return true;
@@ -117,7 +123,7 @@ bool FOnlineIdentityIOS::Login(int32 LocalUserNum, const FOnlineAccountCredentia
 	else
 	{
 		// User is not currently logged into game center
-		TriggerOnLoginCompleteDelegates(LocalUserNum, false, FUniqueNetIdString(), TEXT("IOS version is not compatible with the game center implementation"));
+		TriggerOnLoginCompleteDelegates(LocalUserNum, false, FUniqueNetIdIOS(), TEXT("IOS version is not compatible with the game center implementation"));
 	}
 	
 	return bStartedLogin;
@@ -171,7 +177,7 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityIOS::CreateUniquePlayerId(uint8* B
 		if (StrLen > 0)
 		{
 			FString StrId((TCHAR*)Bytes);
-			return MakeShareable(new FUniqueNetIdString(StrId));
+			return MakeShareable(new FUniqueNetIdIOS(StrId));
 		}
 	}
     
@@ -180,7 +186,7 @@ TSharedPtr<const FUniqueNetId> FOnlineIdentityIOS::CreateUniquePlayerId(uint8* B
 
 TSharedPtr<const FUniqueNetId> FOnlineIdentityIOS::CreateUniquePlayerId(const FString& Str)
 {
-	return MakeShareable(new FUniqueNetIdString(Str));
+	return MakeShareable(new FUniqueNetIdIOS(Str));
 }
 
 FString FOnlineIdentityIOS::GetPlayerNickname(int32 LocalUserNum) const
@@ -221,7 +227,7 @@ FString FOnlineIdentityIOS::GetAuthToken(int32 LocalUserNum) const
 
 void FOnlineIdentityIOS::RevokeAuthToken(const FUniqueNetId& UserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate)
 {
-	UE_LOG(LogOnline, Display, TEXT("FOnlineIdentityIOS::RevokeAuthToken not implemented"));
+	UE_LOG_ONLINE_IDENTITY(Display, TEXT("FOnlineIdentityIOS::RevokeAuthToken not implemented"));
 	TSharedRef<const FUniqueNetId> UserIdRef(UserId.AsShared());
 	Subsystem->ExecuteNextTick([UserIdRef, Delegate]()
 	{
@@ -236,7 +242,7 @@ void FOnlineIdentityIOS::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivi
 		TSharedRef<const FUniqueNetId> SharedUserId = UserId.AsShared();
 		FOnQueryAppBundleIdResponse completionDelegate = FOnQueryAppBundleIdResponse::CreateLambda([this, SharedUserId, Privilege, Delegate](NSDictionary* ResponseDict)
 		{
-			UE_LOG(LogOnline, Log, TEXT("GetUserPrivilege Complete"));
+			UE_LOG_ONLINE_IDENTITY(Log, TEXT("GetUserPrivilege Complete"));
 																									   
 			uint32 Result = (uint32)EPrivilegeResults::GenericFailure;
 			if (ResponseDict != nil && [ResponseDict[@"resultCount"] integerValue] == 1)
@@ -245,12 +251,12 @@ void FOnlineIdentityIOS::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivi
 				NSDictionary* infoDictionary = [[NSBundle mainBundle] infoDictionary];
 				FString localAppId = FString(infoDictionary[@"CFBundleIdentifier"]);
 				FString localVersionString = FString(infoDictionary[@"CFBundleShortVersionString"]);
-			    UE_LOG(LogOnline, Log, TEXT("Local: %s %s"), *localAppId, *localVersionString);
+			    UE_LOG_ONLINE_IDENTITY(Log, TEXT("Local: %s %s"), *localAppId, *localVersionString);
 
 				// Get remote bundle information
 				FString remoteAppId = FString([[[ResponseDict objectForKey:@"results"] objectAtIndex:0] objectForKey:@"bundleId"]);
 				FString remoteVersionString = FString([[[ResponseDict objectForKey:@"results"] objectAtIndex:0] objectForKey:@"version"]);
-				UE_LOG(LogOnline, Log, TEXT("Remote: %s %s"), *remoteAppId, *remoteVersionString);
+				UE_LOG_ONLINE_IDENTITY(Log, TEXT("Remote: %s %s"), *remoteAppId, *remoteVersionString);
 
 				if (localAppId == remoteAppId)
 				{
@@ -268,7 +274,7 @@ void FOnlineIdentityIOS::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivi
 						if (LocalVersionParts[0] != RemoteVersionParts[0] ||
 							LocalVersionParts[1] != RemoteVersionParts[1])
 						{
-							UE_LOG(LogOnline, Log, TEXT("Needs Update"));
+							UE_LOG_ONLINE_IDENTITY(Log, TEXT("Needs Update"));
 							Result = (uint32)EPrivilegeResults::RequiredPatchAvailable;
 						}
 						else
@@ -278,24 +284,24 @@ void FOnlineIdentityIOS::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivi
 
 							if (LocalHotfixVersion != RemoteHotfixVersion)
 							{
-								UE_LOG(LogOnline, Log, TEXT("Needs Update"));
+								UE_LOG_ONLINE_IDENTITY(Log, TEXT("Needs Update"));
 								Result = (uint32)EPrivilegeResults::RequiredPatchAvailable;
 							}
 							else
 							{
-								UE_LOG(LogOnline, Log, TEXT("Does NOT Need Update"));
+								UE_LOG_ONLINE_IDENTITY(Log, TEXT("Does NOT Need Update"));
 							}
 						}
 					}
 				}
 				else
 				{
-					UE_LOG(LogOnline, Log, TEXT("BundleId does not match local bundleId"));
+					UE_LOG_ONLINE_IDENTITY(Log, TEXT("BundleId does not match local bundleId"));
 				}
 			}
 			else
 			{
-				UE_LOG(LogOnline, Log, TEXT("GetUserPrivilege invalid response"));
+				UE_LOG_ONLINE_IDENTITY(Log, TEXT("GetUserPrivilege invalid response"));
 			}
 
 			Subsystem->ExecuteNextTick([Delegate, SharedUserId, Privilege, Result]()
