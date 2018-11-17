@@ -2750,8 +2750,6 @@ IPlatformChunkInstall* FWindowsPlatformMisc::GetPlatformChunkInstall()
 // NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
 
-#include "WindowsPlatformProcess.h"
-
 static void* VXGIDLLHandle = 0;
 static int32 VXGIDLLHandleRefCount = 0;
 static FCriticalSection VXGILoadCS;

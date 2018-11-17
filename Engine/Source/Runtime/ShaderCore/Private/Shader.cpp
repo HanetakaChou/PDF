@@ -814,8 +814,6 @@ void FShaderResource::InitRHI()
 #endif
 		// NVCHANGE_END: Add VXGI
 
-	FShaderCache* ShaderCache = FShaderCache::GetShaderCache();
-
 	if(Target.Frequency == SF_Vertex)
 	{
 		Shader = FShaderCodeLibrary::CreateVertexShader((EShaderPlatform)Target.Platform, OutputHash, UncompressedCode);

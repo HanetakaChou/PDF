@@ -972,16 +972,11 @@ bool FDeferredShadingSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdLis
 		View.FinalPostProcessSettings.HBAOPowerExponent > 0.f && 
 		!View.bIsReflectionCapture)
 	{
-
-		const int32 X0 = View.ViewRect.Min.X;
-		const int32 Y0 = View.ViewRect.Min.Y;
-		const int32 X1 = View.ViewRect.Max.X;
-		const int32 Y1 = View.ViewRect.Max.Y;
-		//copy depth buffer after static pre-pass
+		// copy depth buffer after static pre-pass
 		RHICmdList.CopyTexture(
 			SceneContext.GetSceneDepthTexture(),
 			SceneContext.GetHBAOSceneDepthTexture(),
-			FResolveParams(FResolveRect(X0, Y0, X1, Y1))
+			FRHICopyTextureInfo(View.ViewRect.Max.X, View.ViewRect.Max.Y)
 		);
 	}
 #endif //WITH_GFSDK_SSAO
@@ -1118,14 +1113,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& V
 			static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
 			void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 			{
-				//copy depth buffer for viewrect 
-				const FResolveRect TargetViewRect(
-					View.ViewRect.Min.X,
-					View.ViewRect.Min.Y,
-					View.ViewRect.Max.X,
-					View.ViewRect.Max.Y
-				);
-				RHICmdList.CopyTexture(SceneContext.GetSceneDepthTexture(), SceneContext.GetHBAOSceneDepthTexture(), FResolveParams(TargetViewRect));
+				RHICmdList.CopyTexture(SceneContext.GetSceneDepthTexture(), SceneContext.GetHBAOSceneDepthTexture(), FRHICopyTextureInfo(View.ViewRect.Max.X, View.ViewRect.Max.Y));
 				RHICmdList.HandleRTThreadTaskCompletion(MyCompletionGraphEvent);
 			}
 		};

@@ -612,19 +612,6 @@ uint ExtractSubsurfaceProfileInt(FGBufferData BufferData)
 	return uint(BufferData.CustomData.r * 255.0f + 0.5f);
 }
 
-// NVCHANGE_BEGIN: Add VXGI
-Texture2D VxgiDiffuseTexture;
-SamplerState VxgiDiffuseTextureSampler;
-Texture2D VxgiSpecularTexture;
-SamplerState VxgiSpecularTextureSampler;
-Texture2D VxgiConfidenceTexture;
-SamplerState VxgiConfidenceTextureSampler;
-Texture2D VxgiAreaLightDiffuseTexture;
-SamplerState VxgiAreaLightDiffuseTextureSampler;
-Texture2D VxgiAreaLightSpecularTexture;
-SamplerState VxgiAreaLightSpecularTextureSampler;
-// NVCHANGE_END: Add VXGI
-
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	// In all but SM5 we need to explicitly declare how many samples are in a multisampled texture.
 	#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
@@ -674,13 +661,12 @@ SamplerState VxgiAreaLightSpecularTextureSampler;
 		float4 ScreenSpaceAO = Texture2DSampleLevel(SceneTexturesStruct.ScreenSpaceAOTexture, SceneTexturesStruct.ScreenSpaceAOTextureSampler, (PixelPos + 0.5f) * View.BufferSizeAndInvSize.zw, 0);
 		Out.AmbientOcclusion = ScreenSpaceAO.r;
 
-		Out.DirectionalOcclusion = Texture2DSampleLevel( DirectionalOcclusionTexture, DirectionalOcclusionSampler, (PixelPos + 0.5f) * View.BufferSizeAndInvSize.zw, 0 ).rg;
 		// NVCHANGE_BEGIN: Add VXGI
-		Out.VxgiDiffuse = VxgiDiffuseTexture.Load(int3(PixelPos, 0)).rgba;
-		Out.VxgiSpecular = VxgiSpecularTexture.Load(int3(PixelPos, 0)).rgba;
-		Out.VxgiConfidence = VxgiConfidenceTexture.Load(int3(PixelPos, 0)).r;
-		Out.VxgiAreaLightDiffuse = VxgiAreaLightDiffuseTexture.Load(int3(PixelPos, 0)).rgba;
-		Out.VxgiAreaLightSpecular = VxgiAreaLightSpecularTexture.Load(int3(PixelPos, 0)).rgba;
+		Out.VxgiDiffuse = SceneTexturesStruct.VxgiDiffuseTexture.Load(int3(PixelPos, 0)).rgba;
+		Out.VxgiSpecular = SceneTexturesStruct.VxgiSpecularTexture.Load(int3(PixelPos, 0)).rgba;
+		Out.VxgiConfidence = SceneTexturesStruct.VxgiConfidenceTexture.Load(int3(PixelPos, 0)).r;
+		Out.VxgiAreaLightDiffuse = SceneTexturesStruct.VxgiAreaLightDiffuseTexture.Load(int3(PixelPos, 0)).rgba;
+		Out.VxgiAreaLightSpecular = SceneTexturesStruct.VxgiAreaLightSpecularTexture.Load(int3(PixelPos, 0)).rgba;
 		// NVCHANGE_END: Add VXGI
 
 		return Out;
@@ -724,7 +710,7 @@ FGBufferData GetGBufferData(float2 UV, bool bGetNormalizedNormal = true)
 		float4 GBufferE = 1;
 	#endif
 
-	#if WRITES_VELOCITY_TO_GBUFFER
+	#if WRITES_VELOCITY_TO_GBUFFER7
 		float4 GBufferVelocity = Texture2DSampleLevel(SceneTexturesStruct.GBufferVelocityTexture, SceneTexturesStruct.GBufferVelocityTextureSampler, UV, 0);
 	#else
 		float4 GBufferVelocity = 0;
@@ -753,11 +739,11 @@ FScreenSpaceData GetScreenSpaceData(float2 UV, bool bGetNormalizedNormal = true)
 	Out.AmbientOcclusion = ScreenSpaceAO.r;
 
 	// NVCHANGE_BEGIN: Add VXGI
-	Out.VxgiDiffuse = Texture2DSampleLevel(VxgiDiffuseTexture, VxgiDiffuseTextureSampler, UV, 0).rgba;
-	Out.VxgiSpecular = Texture2DSampleLevel(VxgiSpecularTexture, VxgiSpecularTextureSampler, UV, 0).rgba;
-	Out.VxgiConfidence = Texture2DSampleLevel(VxgiConfidenceTexture, VxgiConfidenceTextureSampler, UV, 0).r;
-	Out.VxgiAreaLightDiffuse = Texture2DSampleLevel(VxgiAreaLightDiffuseTexture, VxgiAreaLightDiffuseTextureSampler, UV, 0).rgba;
-	Out.VxgiAreaLightSpecular = Texture2DSampleLevel(VxgiAreaLightSpecularTexture, VxgiAreaLightSpecularTextureSampler, UV, 0).rgba;
+	Out.VxgiDiffuse = Texture2DSampleLevel(SceneTexturesStruct.VxgiDiffuseTexture, SceneTexturesStruct.VxgiDiffuseTextureSampler, UV, 0).rgba;
+	Out.VxgiSpecular = Texture2DSampleLevel(SceneTexturesStruct.VxgiSpecularTexture, SceneTexturesStruct.VxgiSpecularTextureSampler, UV, 0).rgba;
+	Out.VxgiConfidence = Texture2DSampleLevel(SceneTexturesStruct.VxgiConfidenceTexture, SceneTexturesStruct.VxgiConfidenceTextureSampler, UV, 0).r;
+	Out.VxgiAreaLightDiffuse = Texture2DSampleLevel(SceneTexturesStruct.VxgiAreaLightDiffuseTexture, SceneTexturesStruct.VxgiAreaLightDiffuseTextureSampler, UV, 0).rgba;
+	Out.VxgiAreaLightSpecular = Texture2DSampleLevel(SceneTexturesStruct.VxgiAreaLightSpecularTexture, SceneTexturesStruct.VxgiAreaLightSpecularTextureSampler, UV, 0).rgba;
 	// NVCHANGE_END: Add VXGI
 
 	return Out;

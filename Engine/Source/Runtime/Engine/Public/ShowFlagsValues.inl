@@ -342,12 +342,12 @@ SHOWFLAG_FIXED_IN_SHIPPING(0, OcclusionMeshes, SFG_Visualize, NSLOCTEXT("UnrealE
 // NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
 
-SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiDiffuse, SFG_LightingComponents, LOCTEXT("VxgiDiffuse", "VXGI Diffuse"))
-SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiSpecular, SFG_LightingComponents, LOCTEXT("VxgiSpecular", "VXGI Specular"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiDiffuse, SFG_LightingComponents, NSLOCTEXT("UnrealEd", "VxgiDiffuse", "VXGI Diffuse"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiSpecular, SFG_LightingComponents, NSLOCTEXT("UnrealEd", "VxgiSpecular", "VXGI Specular"))
 
-SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiOpacityVoxels, SFG_Visualize, LOCTEXT("VxgiOpacityVoxels", "VXGI Opacity Voxels"))
-SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiEmittanceVoxels, SFG_Visualize, LOCTEXT("VxgiEmittanceVoxels", "VXGI Emittance Voxels"))
-SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiIrradianceVoxels, SFG_Visualize, LOCTEXT("VxgiIrradianceVoxels", "VXGI Indirect Irradiance Voxels"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiOpacityVoxels, SFG_Visualize, NSLOCTEXT("UnrealEd", "VxgiOpacityVoxels", "VXGI Opacity Voxels"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiEmittanceVoxels, SFG_Visualize, NSLOCTEXT("UnrealEd", "VxgiEmittanceVoxels", "VXGI Emittance Voxels"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiIrradianceVoxels, SFG_Visualize, NSLOCTEXT("UnrealEd", "VxgiIrradianceVoxels", "VXGI Indirect Irradiance Voxels"))
 
 #endif
 // NVCHANGE_END: Add VXGI
@@ -355,7 +355,7 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(VxgiIrradianceVoxels, SFG_Visualize, LOCTEXT("VxgiIrr
 // NVCHANGE_BEGIN: Add HBAO+
 #if WITH_GFSDK_SSAO
 /** HBAO+ */
-SHOWFLAG_ALWAYS_ACCESSIBLE(HBAO, SFG_LightingComponents, LOCTEXT("HBAO", "HBAO+"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(HBAO, SFG_LightingComponents, NSLOCTEXT("UnrealEd", "HBAO", "HBAO+"))
 #endif
 // NVCHANGE_END: Add HBAO+
 

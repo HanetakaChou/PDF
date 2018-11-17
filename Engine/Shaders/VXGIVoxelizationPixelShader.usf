@@ -23,6 +23,7 @@ bool IsInverseSquared;
 bool IsRadialLight;
 bool IsSpotLight;
 bool IsPointLight;
+bool IsRectLight;
 float OpacityScale;
 bool EnableEmissive;
 bool EnableIndirectIrradiance;
@@ -249,14 +250,16 @@ FDeferredLightData SetupLightData()
 	LightData.LightTangent = DeferredLightUniforms.NormalizedLightTangent;
 	LightData.SpotAnglesAndSourceRadius = float4(DeferredLightUniforms.SpotAngles, DeferredLightUniforms.SourceRadius, DeferredLightUniforms.SourceLength);
 	LightData.SoftSourceRadius = DeferredLightUniforms.SoftSourceRadius;
-	LightData.MinRoughness = DeferredLightUniforms.MinRoughness;
 	LightData.ContactShadowLength = DeferredLightUniforms.ContactShadowLength;
+	LightData.ContactShadowLengthInWS = DeferredLightUniforms.ContactShadowLength < 0.0f;
 	LightData.DistanceFadeMAD = DeferredLightUniforms.DistanceFadeMAD;
 	LightData.ShadowMapChannelMask = 0;//DeferredLightUniforms.ShadowMapChannelMask;
+	LightData.SpecularScale = DeferredLightUniforms.SpecularScale;
 
 	LightData.bInverseSquared = IsInverseSquared;
 	LightData.bRadialLight = IsRadialLight;
 	LightData.bSpotLight = IsSpotLight;
+	LightData.bRectLight = IsRectLight;
 	LightData.ShadowedBits = DeferredLightUniforms.ShadowedBits;
 
 	return LightData;

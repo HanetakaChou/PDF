@@ -266,21 +266,21 @@ FSHAHash AmendHashWithVxgiHash(const FSHAHash& FileHash)
 	return Result;
 }
 
-const FSHAHash& FVxgiGlobalShaderType::GetSourceHash() const
+const FSHAHash& FVxgiGlobalShaderType::GetSourceHash(EShaderPlatform ShaderPlatform) const
 {
 	if (!bHashInitialized)
 	{
-		AmendedSourceHash = AmendHashWithVxgiHash(FGlobalShaderType::GetSourceHash());
+		AmendedSourceHash = AmendHashWithVxgiHash(FGlobalShaderType::GetSourceHash(ShaderPlatform));
 		bHashInitialized = true;
 	}
 	return AmendedSourceHash;
 }
 
-const FSHAHash& FVxgiMeshMaterialShaderType::GetSourceHash() const
+const FSHAHash& FVxgiMeshMaterialShaderType::GetSourceHash(EShaderPlatform ShaderPlatform) const
 {
 	if (!bHashInitialized)
 	{
-		AmendedSourceHash = AmendHashWithVxgiHash(FMeshMaterialShaderType::GetSourceHash());
+		AmendedSourceHash = AmendHashWithVxgiHash(FMeshMaterialShaderType::GetSourceHash(ShaderPlatform));
 		bHashInitialized = true;
 	}
 	return AmendedSourceHash;
@@ -532,7 +532,7 @@ bool FSceneRenderer::IsVxgiEnabled(const FViewInfo& View)
 		return false;
 	}
 
-	if (IsForwardShadingEnabled(FeatureLevel))
+	if (IsForwardShadingEnabled(ShaderPlatform))
 	{
 		return false; // VXGI is incompatible with forward shading
 	}
@@ -951,7 +951,7 @@ void FSceneRenderer::RenderVxgiTracing(FRHICommandListImmediate& RHICmdList)
 		GBufferAccessShader->ConstantBuffer = RI->createConstantBuffer(Desc, NULL);
 	}
 
-	uint32 CurrentGPU = RI->getAFRGroupOfCurrentFrame(GNumActiveGPUsForRendering);
+	uint32 CurrentGPU = RI->getAFRGroupOfCurrentFrame(GNumAlternateFrameRenderingGroups);
 
 	NVRHI::PipelineStageBindings GBufferBindings;
 	GBufferBindings.textureBindingCount = 6;
@@ -1153,7 +1153,7 @@ void FSceneRenderer::RenderVxgiTracing(FRHICommandListImmediate& RHICmdList)
 	if (bVxgiTemporalReprojectionEnable)
 	{
 		FResolveParams ResolveParams;
-		RHICmdList.CopyToResolveTarget(SceneContext.GetSceneDepthTexture(), SceneContext.PrevSceneDepthZ->GetRenderTargetItem().TargetableTexture, true, ResolveParams);
+		RHICmdList.CopyToResolveTarget(SceneContext.GetSceneDepthTexture(), SceneContext.PrevSceneDepthZ->GetRenderTargetItem().TargetableTexture, ResolveParams);
 	}
 }
 
@@ -1518,8 +1518,7 @@ class FAddVxgiDiffusePS : public FGlobalShader
 	/** Default constructor. */
 	FAddVxgiDiffusePS() {}
 
-	FDeferredPixelShaderParameters DeferredParameters;
-
+	FShaderUniformBufferParameter PassUniformBuffer;
 	FShaderParameter EnableVxgiDiffuse;
 	FShaderParameter EnableAreaLightDiffuse;
 
@@ -1528,16 +1527,16 @@ public:
 	FAddVxgiDiffusePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FGlobalShader(Initializer)
 	{
-		DeferredParameters.Bind(Initializer.ParameterMap);
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStruct.GetShaderVariableName());
 		EnableVxgiDiffuse.Bind(Initializer.ParameterMap, TEXT("EnableVxgiDiffuse"));
 		EnableAreaLightDiffuse.Bind(Initializer.ParameterMap, TEXT("EnableAreaLightDiffuse"));
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, bool bVxgiAmbientOcclusionMode)
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, FUniformBufferRHIParamRef PassUniformBufferValue, bool bVxgiAmbientOcclusionMode)
 	{
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, GetPixelShader(), View.ViewUniformBuffer);
-		DeferredParameters.Set(RHICmdList, GetPixelShader(), View, EMaterialDomain::MD_PostProcess);
-
+		SetUniformBufferParameter(RHICmdList, GetPixelShader(), PassUniformBuffer, PassUniformBufferValue);
+		
 		bool bEnableVxgiDiffuse = !bVxgiAmbientOcclusionMode && View.FinalPostProcessSettings.VxgiDiffuseTracingEnabled;
 		bool bEnableAreaLightDiffuse = View.FinalPostProcessSettings.VxgiAreaLightsEnabled;
 
@@ -1549,7 +1548,7 @@ public:
 	virtual bool Serialize(FArchive& Ar)
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << DeferredParameters;
+		Ar << PassUniformBuffer;
 		Ar << EnableVxgiDiffuse;
 		Ar << EnableAreaLightDiffuse;
 		return bShaderHasOutdatedParameters;
@@ -1586,6 +1585,10 @@ void FSceneRenderer::CompositeVxgiDiffuseTracing(FRHICommandListImmediate& RHICm
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
+		FSceneTexturesUniformParameters SceneTextureParameters;
+		SetupSceneTextureUniformParameters(SceneContext, FeatureLevel, ESceneTextureSetupMode::GBuffers, SceneTextureParameters);
+		TUniformBufferRef<FSceneTexturesUniformParameters> SceneTextureUniformBuffer = TUniformBufferRef<FSceneTexturesUniformParameters>::CreateUniformBufferImmediate(SceneTextureParameters, UniformBuffer_SingleFrame);
+
 		if (CVarVxgiCompositingMode.GetValueOnRenderThread())
 		{
 			GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA>::GetRHI();
@@ -1595,7 +1598,7 @@ void FSceneRenderer::CompositeVxgiDiffuseTracing(FRHICommandListImmediate& RHICm
 
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
-			PixelShader->SetParameters(RHICmdList, View, bVxgiAmbientOcclusionMode);
+			PixelShader->SetParameters(RHICmdList, View, SceneTextureUniformBuffer, bVxgiAmbientOcclusionMode);
 		}
 		else
 		{
@@ -1605,7 +1608,7 @@ void FSceneRenderer::CompositeVxgiDiffuseTracing(FRHICommandListImmediate& RHICm
 			
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
-			PixelShader->SetParameters(RHICmdList, View, bVxgiAmbientOcclusionMode);
+			PixelShader->SetParameters(RHICmdList, View, SceneTextureUniformBuffer, bVxgiAmbientOcclusionMode);
 		}
 
 		VertexShader->SetParameters(RHICmdList, View.ViewUniformBuffer);

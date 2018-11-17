@@ -2263,7 +2263,7 @@ void FD3D12CommandContext::RHIRenderHBAO(
 	ID3D12DescriptorHeap* CurrentSRVHeap = StateCache.GetDescriptorCache()->GetViewDescriptorHeap();
 	ID3D12DescriptorHeap* CurrentSamplerHeap = StateCache.GetDescriptorCache()->GetSamplerDescriptorHeap();
 	ID3D12RootSignature* CurrentRootSigniture = StateCache.GetGraphicsRootSignature()->GetRootSignature();
-	ID3D12PipelineState* CurrentPSO = StateCache.GetPipelineStateObject();
+	ID3D12PipelineState* CurrentPSO = StateCache.GetGraphicsPipelineState()->PipelineState->GetPipelineState();
 
 	FD3D12RenderTargetView* RenderTargetViews[MaxSimultaneousRenderTargets];
 	FD3D12DepthStencilView* DSView = nullptr;

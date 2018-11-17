@@ -167,10 +167,10 @@ FSceneViewState::FSceneViewState()
 	// NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
 	VxgiViewTracer = NULL;
-	PrevGBufferA.SetNum(GNumActiveGPUsForRendering);
-	PrevGBufferB.SetNum(GNumActiveGPUsForRendering);
-	PrevViewMatricesPerGPU.SetNum(GNumActiveGPUsForRendering);
-	PrevViewRectPerGPU.SetNum(GNumActiveGPUsForRendering);
+	PrevGBufferA.SetNum(GNumAlternateFrameRenderingGroups);
+	PrevGBufferB.SetNum(GNumAlternateFrameRenderingGroups);
+	PrevViewMatricesPerGPU.SetNum(GNumAlternateFrameRenderingGroups);
+	PrevViewRectPerGPU.SetNum(GNumAlternateFrameRenderingGroups);
 #endif
 	// NVCHANGE_END: Add VXGI
 }

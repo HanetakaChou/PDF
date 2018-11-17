@@ -61,10 +61,6 @@ DECLARE_LOG_CATEGORY_EXTERN(LogD3D12RHI, Log, All);
 #endif
 // NVCHANGE_END: Add HBAO
 
-#include "AllowWindowsPlatformTypes.h"
-#include "dxgi1_4.h"
-#include "HideWindowsPlatformTypes.h"
-
 // D3D RHI public headers.
 #include "../Public/D3D12Util.h"
 #include "../Public/D3D12State.h"

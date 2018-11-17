@@ -49,12 +49,13 @@ public:
 		ConstructCompiledType InConstructCompiledRef,
 		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCompilePermutationType InShouldCompilePermutationRef,
+		ValidateCompiledResultType InValidateCompiledResultRef,
 		GetStreamOutElementsType InGetStreamOutElementsRef
-	) : FGlobalShaderType(InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount, InConstructSerializedRef, InConstructCompiledRef, InModifyCompilationEnvironmentRef, InShouldCompilePermutationRef, InGetStreamOutElementsRef)
+	) : FGlobalShaderType(InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount, InConstructSerializedRef, InConstructCompiledRef, InModifyCompilationEnvironmentRef, InShouldCompilePermutationRef, InValidateCompiledResultRef, InGetStreamOutElementsRef)
 		, bHashInitialized(false)
 	{ }
 
-	virtual const FSHAHash& GetSourceHash() const override;
+	virtual const FSHAHash& GetSourceHash(EShaderPlatform ShaderPlatform) const override;
 };
 
 class FVxgiMeshMaterialShaderType : public FMeshMaterialShaderType
@@ -73,12 +74,13 @@ public:
 		ConstructCompiledType InConstructCompiledRef,
 		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCompilePermutationType InShouldCompilePermutationRef,
+		ValidateCompiledResultType InValidateCompiledResultRef,
 		GetStreamOutElementsType InGetStreamOutElementsRef
-	) : FMeshMaterialShaderType(InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount, InConstructSerializedRef, InConstructCompiledRef, InModifyCompilationEnvironmentRef, InShouldCompilePermutationRef, InGetStreamOutElementsRef)
+	) : FMeshMaterialShaderType(InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount, InConstructSerializedRef, InConstructCompiledRef, InModifyCompilationEnvironmentRef, InShouldCompilePermutationRef, InValidateCompiledResultRef, InGetStreamOutElementsRef)
 		, bHashInitialized(false)
 	{ }
 
-	virtual const FSHAHash& GetSourceHash() const override;
+	virtual const FSHAHash& GetSourceHash(EShaderPlatform ShaderPlatform) const override;
 };
 
 template<typename LightMapPolicyType>
@@ -149,10 +151,11 @@ public:
 		const FVertexFactory* VertexFactory,
 		const FMaterial& InMaterialResource,
 		const FSceneView& View,
-		ESceneRenderTargetsMode::Type TextureMode
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
+		FUniformBufferRHIParamRef PassUniformBufferValue
 		)
 	{
-		TVXGIVoxelizationShader<LightMapPolicyType>::SetParameters(RHICmdList, this->GetVertexShader(), MaterialRenderProxy, InMaterialResource, View, View.ViewUniformBuffer, TextureMode);
+		TVXGIVoxelizationShader<LightMapPolicyType>::SetParameters(RHICmdList, this->GetVertexShader(), MaterialRenderProxy, InMaterialResource, View, ViewUniformBuffer, PassUniformBufferValue);
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory, const FSceneView& View, const FPrimitiveSceneProxy* Proxy, const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState& DrawRenderState)
@@ -297,6 +300,7 @@ public:
 	FShaderParameter IsRadialLight;
 	FShaderParameter IsSpotLight;
 	FShaderParameter IsPointLight;
+	FShaderParameter IsRectLight;
 	FShaderParameter NumLights;
 	FShaderParameter NumShadows;
 	FVXGIEmittanceShadowProjectionShaderParameters EmittanceShadowProjectionShaderParameters;
@@ -320,6 +324,7 @@ public:
 		IsRadialLight.Bind(ParameterMap, TEXT("IsRadialLight"));
 		IsSpotLight.Bind(ParameterMap, TEXT("IsSpotLight"));
 		IsPointLight.Bind(ParameterMap, TEXT("IsPointLight"));
+		IsRectLight.Bind(ParameterMap, TEXT("IsRectLight"));
 		NumLights.Bind(ParameterMap, TEXT("NumLights"));
 		NumShadows.Bind(ParameterMap, TEXT("NumShadows"));
 		EmittanceShadowProjectionShaderParameters.Bind(ParameterMap);
@@ -367,6 +372,7 @@ public:
 			SetShaderValue(RHICmdList, ShaderRHI, IsRadialLight, (LightSceneInfo->Proxy->GetLightType() != LightType_Directional));
 			SetShaderValue(RHICmdList, ShaderRHI, IsSpotLight, (LightSceneInfo->Proxy->GetLightType() == LightType_Spot));
 			SetShaderValue(RHICmdList, ShaderRHI, IsPointLight, (LightSceneInfo->Proxy->GetLightType() == LightType_Point));
+			SetShaderValue(RHICmdList, ShaderRHI, IsRectLight, (LightSceneInfo->Proxy->GetLightType() == LightType_Rect));
 		}
 		else
 		{
@@ -437,6 +443,7 @@ public:
 		Ar << IsRadialLight;
 		Ar << IsSpotLight;
 		Ar << IsPointLight;
+		Ar << IsRectLight;
 		Ar << NumLights;
 		Ar << NumShadows;
 		Ar << EmittanceShadowProjectionShaderParameters;
@@ -487,11 +494,12 @@ public:
 		const FMaterialRenderProxy* MaterialRenderProxy,
 		const FMaterial& InMaterialResource,
 		const FSceneView& View,
-		ESceneRenderTargetsMode::Type TextureMode
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
+		FUniformBufferRHIParamRef PassUniformBufferValue
 		)
 	{
 		// Set LightMapPolicy parameters
-		TVXGIVoxelizationShader<LightMapPolicyType>::SetParameters(RHICmdList, MyShader, MaterialRenderProxy, InMaterialResource, View, View.ViewUniformBuffer, TextureMode);
+		TVXGIVoxelizationShader<LightMapPolicyType>::SetParameters(RHICmdList, MyShader, MaterialRenderProxy, InMaterialResource, View, ViewUniformBuffer, PassUniformBufferValue);
 
 		EmittanceVoxelizationParameters.SetShared(RHICmdList, MyShader, this, View);
 	}
@@ -523,7 +531,7 @@ public:
 		}
 		if (PS)
 		{
-			PS->SerializeBase(Ar, false); //don't store resource again so we pass false
+			PS->SerializeBase(Ar, false, false); //don't store resource again so we pass false
 			PS->SetResource(NULL);
 		}
 		return Ar;
@@ -606,9 +614,10 @@ public:
 		const FMaterialRenderProxy* MaterialRenderProxy, 
 		const FMaterial& MaterialResource, 
 		const FSceneView& View, 
-		ESceneRenderTargetsMode::Type TextureMode)
+		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
+		FUniformBufferRHIParamRef PassUniformBufferValue)
 	{
-		ActualPermutationInUse->SetParameters(RHICmdList, MaterialRenderProxy, MaterialResource, View, TextureMode);
+		ActualPermutationInUse->SetParameters(RHICmdList, MaterialRenderProxy, MaterialResource, View, ViewUniformBuffer, PassUniformBufferValue);
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory, const FSceneView& View, const FPrimitiveSceneProxy* Proxy, const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState& DrawRenderState)
@@ -816,15 +825,15 @@ public:
 		FVoxelizationShaderParameters& VoxelizationParams = PixelShader->GetActualPermutationInUse()->EmittanceVoxelizationParameters;
 		VoxelizationParams.OpacityScaleValue = VxgiMaterialProperties.VxgiOpacityScale;
 
-		VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, VertexFactory, *MaterialResource, *View, ESceneRenderTargetsMode::SetTextures);
-		PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, ESceneRenderTargetsMode::SetTextures);
+		VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, VertexFactory, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), DrawRenderState.GetPassUniformBuffer());
+		PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), DrawRenderState.GetPassUniformBuffer());
 		if (HullShader)
 		{
-			HullShader->SetParameters(RHICmdList, MaterialRenderProxy, *View);
+			HullShader->SetParameters(RHICmdList, MaterialRenderProxy, *View, DrawRenderState.GetViewUniformBuffer(), DrawRenderState.GetPassUniformBuffer());
 		}
 		if (DomainShader)
 		{
-			DomainShader->SetParameters(RHICmdList, MaterialRenderProxy, *View);
+			DomainShader->SetParameters(RHICmdList, MaterialRenderProxy, *View, DrawRenderState.GetViewUniformBuffer(), DrawRenderState.GetPassUniformBuffer());
 		}
 	}
 
@@ -994,7 +1003,7 @@ public:
 		}
 		if (PS)
 		{
-			PS->SerializeBase(Ar, false); //don't store resource again so we pass false
+			PS->SerializeBase(Ar, false, false); //don't store resource again so we pass false
 			PS->SetResource(NULL);
 		}
 		return Ar;
@@ -1095,13 +1104,11 @@ public:
 		FRHICommandList& RHICmdList, 
 		const FMaterialRenderProxy* MaterialRenderProxy, 
 		const FMaterial& MaterialResource, 
-		const FViewInfo* View, 
-		EBlendMode BlendMode, 
-		ESceneRenderTargetsMode::Type TextureMode,
-		bool bIsInstancedStereo,
-		bool bUseDownsampledTranslucencyViewUniformBuffer) override
+		const FViewInfo* View,
+		const FDrawingPolicyRenderState& DrawRenderState,
+		EBlendMode BlendMode) override
 	{
-		ActualPermutationInUse->SetParameters(RHICmdList, MaterialRenderProxy, MaterialResource, View, BlendMode, TextureMode, bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer);
+		ActualPermutationInUse->SetParameters(RHICmdList, MaterialRenderProxy, MaterialResource, View, DrawRenderState, BlendMode);
 	}
 
 	virtual void SetMesh(
@@ -1163,12 +1170,10 @@ public:
 		ERHIFeatureLevel::Type InFeatureLevel,
 		LightMapPolicyType InLightMapPolicy,
 		EBlendMode InBlendMode,
-		ESceneRenderTargetsMode::Type InSceneTextureMode,
 		bool bInEnableSkyLight,
 		bool bInEnableAtmosphericFog,
 		const FMeshDrawingPolicyOverrideSettings& InOverrideSettings,
 		EDebugViewShaderMode InDebugViewShaderMode = DVSM_None,
-		bool bInEnableEditorPrimitiveDepthTest = false,
 		bool bInEnableReceiveDecalOutput = false)
 		: TBasePassDrawingPolicy<LightMapPolicyType>(
 			InVertexFactory,
@@ -1177,12 +1182,11 @@ public:
 			InFeatureLevel,
 			InLightMapPolicy,
 			InBlendMode,
-			InSceneTextureMode,
 			bInEnableSkyLight,
 			bInEnableAtmosphericFog,
 			InOverrideSettings,
 			InDebugViewShaderMode,
-			bInEnableEditorPrimitiveDepthTest)
+			bInEnableReceiveDecalOutput)
 	{
 		GetConeTracingPixelShader<LightMapPolicyType>(InVertexFactory, InMaterialResource, &InLightMapPolicy, this->PixelShader);
 	}

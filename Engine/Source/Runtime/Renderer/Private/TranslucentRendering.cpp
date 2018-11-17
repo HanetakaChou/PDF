@@ -431,8 +431,6 @@ public:
 				Parameters.FeatureLevel,
 				LightMapPolicy,
 				Parameters.BlendMode,
-				// Translucent meshes need scene render targets set as textures
-				ESceneRenderTargetsMode::SetTextures,
 				bIsLitMaterial && Scene && Scene->SkyLight && !Scene->SkyLight->bHasStaticLighting,
 				Scene && Scene->HasAtmosphericFog() && View.Family->EngineShowFlags.AtmosphericFog && View.Family->EngineShowFlags.Fog,
 				FMeshDrawingPolicyOverrideSettings(),
@@ -452,8 +450,8 @@ public:
 			PixelShader->SetActualPixelShaderInUse(ActualPixelShaderInUse, vxgiState.PS.userDefinedShaderPermutationIndex);
 
 			DrawingPolicy.SetupPipelineState(DrawRenderState, View);
-			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderState, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
-			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderState, &View, typename TBasePassDrawingPolicy<LightMapPolicyType>::ContextDataType(), bUseDownsampledTranslucencyViewUniformBuffer);
+			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderState, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()), DrawingPolicy.GetMaterialRenderProxy());
+			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderState, &View, typename TBasePassDrawingPolicy<LightMapPolicyType>::ContextDataType(Parameters.bIsInstancedStereo));
 
 			GDynamicRHI->RHIVXGISetCommandList(&RHICmdList);
 			GDynamicRHI->RHIVXGIApplyShaderResources(vxgiState);

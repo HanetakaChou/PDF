@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MaterialShared.h: Shared material definitions.
@@ -26,7 +26,7 @@
 #include "Serialization/ArchiveProxy.h"
 
 #if WITH_GFSDK_VXGI
-#include "Classes/Materials/MaterialInterface.h"
+#include "Engine/Classes/Materials/MaterialInterface.h"
 #endif
 
 class FMaterial;
@@ -1226,7 +1226,6 @@ public:
 #endif
 	//This is not normally exposed but we need to check and void this since the preview material compiles with less permutation for quicker feedback
 	virtual bool IsPreviewMaterial() const { return false; }
-	virtual bool HasEmissiveColorConnected() const { return false; }
 	// NVCHANGE_END: Add VXGI
 	ENGINE_API virtual enum EMaterialTessellationMode GetTessellationMode() const;
 	virtual bool IsCrackFreeDisplacementEnabled() const { return false; }
@@ -1933,7 +1932,6 @@ public:
 #if WITH_GFSDK_VXGI
 	ENGINE_API virtual FVxgiMaterialProperties GetVxgiMaterialProperties() const override;
 	ENGINE_API virtual bool IsPreviewMaterial() const override;
-	ENGINE_API virtual bool HasEmissiveColorConnected() const override;
 #endif
 	// NVCHANGE_END: Add VXGI
 	ENGINE_API virtual enum EMaterialTessellationMode GetTessellationMode() const override;

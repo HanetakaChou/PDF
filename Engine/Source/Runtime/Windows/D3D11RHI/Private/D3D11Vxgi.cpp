@@ -8,9 +8,9 @@
 
 #include "GFSDK_NVRHI.h"
 
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <d3d11.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #include "nvapi.h"
 
 VXGI::IGlobalIllumination* FD3D11DynamicRHI::RHIVXGIGetInterface()

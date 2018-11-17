@@ -344,9 +344,6 @@ private:
 #endif
 	// NVCHANGE_END: Add VXGI
 
-	/** Target platform and frequency. */
-	FShaderTarget Target;
-
 	/** Compiled bytecode. */
 	TArray<uint8> Code;
 

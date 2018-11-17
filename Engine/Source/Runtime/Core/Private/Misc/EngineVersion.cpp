@@ -10,22 +10,12 @@
 // NVCHANGE_BEGIN: Add VXGI
 #if WITH_GFSDK_VXGI
 #include "GFSDK_VXGI.h"
-#define VXGI_BRANCH_NAME BRANCH_NAME "+VXGI-" VXGI_VERSION_STRING
 #endif
 // NVCHANGE_END: Add VXGI
 
 // Global instance of the current engine version
 
-// NVCHANGE_BEGIN: Add VXGI
-#if WITH_GFSDK_VXGI
-FEngineVersion FEngineVersion::CurrentVersion(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, ENGINE_PATCH_VERSION, BuildSettings::GetCurrentChangelist() | (BuildSettings::IsLicenseeVersion()? (1U << 31) : 0), VXGI_BRANCH_NAME);
-#else
-// NVCHANGE_END: Add VXGI
 FEngineVersion FEngineVersion::CurrentVersion(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, ENGINE_PATCH_VERSION, BuildSettings::GetCurrentChangelist() | (BuildSettings::IsLicenseeVersion()? (1U << 31) : 0), BuildSettings::GetBranchName());
-// NVCHANGE_BEGIN: Add VXGI
-#endif
-// NVCHANGE_END: Add VXGI
-
 
 // Global instance of the current engine version
 

@@ -4,13 +4,14 @@
 
 #include "D3D11RHIPrivate.h"
 #include "D3D11NvRHI.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <d3d11.h>
 	#include <d3dcompiler.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #include "nvapi.h"
 
 #include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "PipelineStateCache.h"
 
 namespace NVRHI
@@ -452,7 +453,7 @@ namespace NVRHI
 		{
 			buffer->BufferRHI = GDynamicRHI->RHICreateStructuredBuffer(buffer->EffectiveStride, d.byteSize, buffer->Usage, CreateInfo);
 
-			if (IsRHIDeviceNVIDIA() && GNumActiveGPUsForRendering > 1)
+			if (IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1)
 			{
 				void* IHVHandle = nullptr;
 				ID3D11Buffer* D3DBuffer = ((FD3D11StructuredBuffer*)buffer->BufferRHI.GetReference())->Resource;
@@ -902,12 +903,12 @@ namespace NVRHI
 
 	uint32 FRendererInterfaceD3D11::getNumberOfAFRGroups()
 	{
-		return GNumActiveGPUsForRendering;
+		return GNumAlternateFrameRenderingGroups;
 	}
 
 	uint32 FRendererInterfaceD3D11::getAFRGroupOfCurrentFrame(uint32 numAFRGroups) 
 	{
-		if (IsRHIDeviceNVIDIA() && GNumActiveGPUsForRendering > 1)
+		if (IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1)
 		{
 			NV_GET_CURRENT_SLI_STATE SLICaps = {};
 			SLICaps.version = NV_GET_CURRENT_SLI_STATE_VER;
@@ -1611,8 +1612,6 @@ namespace NVRHI
 
 			InitPSO.RenderTargetFormats[RTVIndex] = Target->TextureRHI->GetFormat();
 			InitPSO.RenderTargetFlags[RTVIndex] = Target->TextureRHI->GetFlags();
-			InitPSO.RenderTargetLoadActions[RTVIndex] = ERenderTargetLoadAction::ELoad;
-			InitPSO.RenderTargetStoreActions[RTVIndex] = ERenderTargetStoreAction::EStore;
 
 			if (InitPSO.NumSamples == 0)
 				InitPSO.NumSamples = Target->TextureRHI->GetNumSamples();

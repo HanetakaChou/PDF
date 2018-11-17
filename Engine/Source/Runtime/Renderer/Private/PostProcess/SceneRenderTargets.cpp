@@ -2824,6 +2824,22 @@ void SetupSceneTextureUniformParameters(
 		SceneTextureParameters.SceneColorCopyTexture = BlackDefault2D;
 		SceneTextureParameters.SceneColorCopyTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		}
+
+
+	// NVCHANGE_BEGIN: Add VXGI
+#if WITH_GFSDK_VXGI
+		SceneTextureParameters.VxgiDiffuseTexture = SceneContext.GetVxgiOutputDiffuse();
+		SceneTextureParameters.VxgiSpecularTexture = SceneContext.GetVxgiOutputSpecular();
+		SceneTextureParameters.VxgiConfidenceTexture = SceneContext.GetVxgiOutputConfidence();
+		SceneTextureParameters.VxgiAreaLightDiffuseTexture = SceneContext.GetVxgiOutputAreaLightDiffuse();
+		SceneTextureParameters.VxgiAreaLightSpecularTexture = SceneContext.GetVxgiOutputAreaLightSpecular();
+		SceneTextureParameters.VxgiDiffuseTextureSampler = TStaticSamplerState<>::GetRHI();
+		SceneTextureParameters.VxgiSpecularTextureSampler = TStaticSamplerState<>::GetRHI();
+		SceneTextureParameters.VxgiConfidenceTextureSampler = TStaticSamplerState<>::GetRHI();
+		SceneTextureParameters.VxgiAreaLightDiffuseTextureSampler = TStaticSamplerState<>::GetRHI();
+		SceneTextureParameters.VxgiAreaLightSpecularTextureSampler = TStaticSamplerState<>::GetRHI();
+#endif
+	// NVCHANGE_END: Add VXGI
 }
 
 template< typename TRHICmdList >
@@ -2904,15 +2920,6 @@ TUniformBufferRef<FMobileSceneTextureUniformParameters> CreateMobileSceneTexture
 		TRHICmdList& RHICmdList,						\
 		ERHIFeatureLevel::Type FeatureLevel				\
 	);
-		// NVCHANGE_BEGIN: Add VXGI
-#if WITH_GFSDK_VXGI	
-		SetTextureParameter(RHICmdList, ShaderRHI, VxgiDiffuseTexture, VxgiDiffuseTextureSampler, TStaticSamplerState<>::GetRHI(), SceneContext.GetVxgiOutputDiffuse());
-		SetTextureParameter(RHICmdList, ShaderRHI, VxgiSpecularTexture, VxgiSpecularTextureSampler, TStaticSamplerState<>::GetRHI(), SceneContext.GetVxgiOutputSpecular());
-		SetTextureParameter(RHICmdList, ShaderRHI, VxgiConfidenceTexture, VxgiConfidenceTextureSampler, TStaticSamplerState<>::GetRHI(), SceneContext.GetVxgiOutputConfidence());
-		SetTextureParameter(RHICmdList, ShaderRHI, VxgiAreaLightDiffuseTexture, VxgiAreaLightDiffuseTextureSampler, TStaticSamplerState<>::GetRHI(), SceneContext.GetVxgiOutputAreaLightDiffuse());
-		SetTextureParameter(RHICmdList, ShaderRHI, VxgiAreaLightSpecularTexture, VxgiAreaLightSpecularTextureSampler, TStaticSamplerState<>::GetRHI(), SceneContext.GetVxgiOutputAreaLightSpecular());
-#endif
-		// NVCHANGE_END: Add VXGI
 
 IMPLEMENT_CreateMobileSceneTextureUniformBuffer( FRHICommandList );
 IMPLEMENT_CreateMobileSceneTextureUniformBuffer( FRHICommandListImmediate );

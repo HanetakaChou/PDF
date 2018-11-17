@@ -1053,11 +1053,6 @@ bool FMaterialResource::IsPreviewMaterial() const
 	return Material->bIsPreviewMaterial;
 }
 
-bool FMaterialResource::HasEmissiveColorConnected() const
-{
-	return Material->EmissiveColor.IsConnected();
-}
-
 #endif
 // NVCHANGE_END: Add VXGI
 

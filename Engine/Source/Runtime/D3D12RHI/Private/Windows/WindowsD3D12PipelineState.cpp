@@ -9,9 +9,9 @@
 #include "Misc/ScopeRWLock.h"
 #include "Stats/StatsMisc.h"
 
-#include <AllowWindowsPlatformTypes.h>
+#include <Windows/AllowWindowsPlatformTypes.h>
 #include <nvapi.h>
-#include <HideWindowsPlatformTypes.h>
+#include <Windows/HideWindowsPlatformTypes.h>
 
 // UE-65533
 // Using asynchronous PSO creation to preload the PSO cache significantly speeds up startup.
@@ -327,7 +327,7 @@ void FD3D12PipelineStateCache::AddToDiskCache(const FD3D12LowLevelGraphicsPipeli
 	// NVCHANGE_BEGIN: Add VXGI
 	// Do not write the PSOs with NV extensions because the extension descriptors are opaque, their size is generally unknown,
 	// and they contain pointers inside. Writing them to disk requires a deep copy.
-	if (!DiskCache.IsInErrorState() && Args.Args.Desc->NumNvidiaShaderExtensions == 0)
+	if (!DiskCache.IsInErrorState() && Desc.NumNvidiaShaderExtensions == 0)
 	// NVCHANGE_END: Add VXGI
 	{
 		DiskCache.BeginAppendPSO();
@@ -454,8 +454,6 @@ void FD3D12PipelineStateCache::WriteOutShaderBlob(PSO_CACHE_TYPE Cache, ID3D12Pi
 
 			DiskCaches[Cache].AppendData(&currentOffset, sizeof(currentOffset));
 			DiskCaches[Cache].AppendData(&bufferSize, sizeof(bufferSize));
-
-			DriverShaderBlobs++;
 
 			DiskBinaryCache.Flush();
 		}
@@ -750,9 +748,11 @@ void FD3D12PipelineState::Create(const GraphicsPipelineCreationArgs& InCreationA
 	// NVCHANGE_BEGIN: Add VXGI
 	if (InCreationArgs.Args.Desc->NumNvidiaShaderExtensions)
 	{
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Desc = InCreationArgs.Args.Desc->Desc.GraphicsDescV0();
+
 		NvAPI_Status status = NvAPI_D3D12_CreateGraphicsPipelineState(
 			GetParentAdapter()->GetD3DDevice(),
-			&InCreationArgs.Args.Desc->Desc,
+			&D3D12Desc,
 			InCreationArgs.Args.Desc->NumNvidiaShaderExtensions,
 			(const NVAPI_D3D12_PSO_EXTENSION_DESC**)InCreationArgs.Args.Desc->NvidiaShaderExtensions,
 			PipelineState.GetInitReference());

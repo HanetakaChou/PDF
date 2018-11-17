@@ -4,13 +4,14 @@
 
 #include "D3D12RHIPrivate.h"
 #include "D3D12NvRHI.h"
-#include "AllowWindowsPlatformTypes.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include <D3D12.h>
 #include <nvapi.h>
-#include "HideWindowsPlatformTypes.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "PipelineStateCache.h"
-#include "MemoryWriter.h"
 
 namespace NVRHI
 {
@@ -1334,7 +1335,7 @@ namespace NVRHI
 		if (it != m_DepthStencilStates.end())
 			return it->second;
 
-		D3D12_DEPTH_STENCIL_DESC DepthStencilDesc = {};
+		D3D12_DEPTH_STENCIL_DESC1 DepthStencilDesc = {};
 
 		DepthStencilDesc.DepthEnable = depthStencilState.depthEnable;
 		DepthStencilDesc.DepthWriteMask = depthStencilState.depthWriteMask == DepthStencilState::DEPTH_WRITE_MASK_ALL ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
@@ -1598,8 +1599,6 @@ namespace NVRHI
 
 			InitPSO.RenderTargetFormats[RTVIndex] = Target->TextureRHI->GetFormat();
 			InitPSO.RenderTargetFlags[RTVIndex] = Target->TextureRHI->GetFlags();
-			InitPSO.RenderTargetLoadActions[RTVIndex] = ERenderTargetLoadAction::ELoad;
-			InitPSO.RenderTargetStoreActions[RTVIndex] = ERenderTargetStoreAction::EStore;
 
 			if (InitPSO.NumSamples == 0)
 				InitPSO.NumSamples = Target->TextureRHI->GetNumSamples();

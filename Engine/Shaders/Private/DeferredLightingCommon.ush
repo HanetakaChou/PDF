@@ -329,19 +329,6 @@ float4 GetDynamicLighting(float3 WorldPosition, float3 CameraVector, FGBufferDat
 			}
 			else
 		{
-// NVCHANGE_BEGIN: Add VXGI
-#if VXGI_EMITTANCE_VOXELIZATION
-
-			float3 SurfaceLightingDiff = Diffuse_Lambert(GBuffer.DiffuseColor);
-			LightAccumulator_Add(LightAccumulator, SurfaceLightingDiff, 0, LightColor * (NoL * SurfaceAttenuation), false);
-
-			// accumulate subsurface
-			float3 SubsurfaceLighting = SubsurfaceShading(GBuffer, L, V, N, SubsurfaceShadow, Random);
-			LightAccumulator_Add(LightAccumulator, SubsurfaceLighting, 0, LightColor * SubsurfaceAttenuation, false);
-#else
-// NVCHANGE_END: Add VXGI
-
-			const float ClearCoatRoughness	= GBuffer.CustomData.y;
 				FCapsuleLight Capsule = GetCapsule( ToLight, LightData );
 
 			#if REFERENCE_QUALITY
@@ -358,10 +345,6 @@ float4 GetDynamicLighting(float3 WorldPosition, float3 CameraVector, FGBufferDat
 
 					LightAccumulator.EstimatedCost += 0.4f;		// add the cost of the lighting computations (should sum up to 1 form one light)
 			#endif
-
-// NVCHANGE_BEGIN: Add VXGI
-#endif // VXGI_EMITTANCE_VOXELIZATION
-// NVCHANGE_END: Add VXGI
 		}
 	}
 
