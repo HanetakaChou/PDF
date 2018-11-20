@@ -520,6 +520,7 @@ namespace NVRHI
 		FConstantBuffer* pCB = new FConstantBuffer(this);
 		pCB->Desc = d;
 		pCB->Layout.ConstantBufferSize = d.byteSize;
+		pCB->Layout.ComputeHash();
 
 		if (data)
 			writeConstantBuffer(pCB, data, d.byteSize);
@@ -1536,12 +1537,6 @@ namespace NVRHI
 			return;
 
 		ShaderType shader = static_cast<ShaderType>(FShader::Unwrap(bindings.shader));
-
-		for (uint32 n = 0; n < bindings.constantBufferBindingCount; n++)
-		{
-			const auto& binding = bindings.constantBuffers[n];
-			m_RHICmdList->SetShaderUniformBuffer(shader, binding.slot, nullptr);
-		}
 
 		for (uint32 n = 0; n < bindings.textureBindingCount; n++)
 		{

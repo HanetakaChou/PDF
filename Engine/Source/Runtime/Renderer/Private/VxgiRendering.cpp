@@ -1245,6 +1245,17 @@ void FSceneRenderer::RenderVxgiVoxelizationPass(
 	VXGI::IGlobalIllumination* VxgiInterface = GDynamicRHI->RHIVXGIGetInterface();
 	VxgiInterface->beginVoxelizationDrawCallGroup();
 
+	FSceneRenderTargets& SceneRenderTargets = FSceneRenderTargets::Get(RHICmdList);
+
+
+	FSceneTexturesUniformParameters PassParameters;
+	FMemory::Memzero(PassParameters);
+	
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	SetupSceneTextureUniformParameters(SceneContext, View.FeatureLevel, ESceneTextureSetupMode::None, PassParameters);
+
+	TUniformBufferRef<FSceneTexturesUniformParameters> PassUniformBuffer = TUniformBufferRef<FSceneTexturesUniformParameters>::CreateUniformBufferImmediate(PassParameters, UniformBuffer_SingleFrame);
+
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, StaticGeometry);
 
@@ -1330,6 +1341,7 @@ void FSceneRenderer::RenderVxgiVoxelizationPass(
 		FDrawingPolicyRenderState RenderState(View);
 		RenderState.SetBlendState(TStaticBlendState<>::GetRHI());
 		RenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
+		RenderState.SetPassUniformBuffer(PassUniformBuffer);
 		Scene->VxgiVoxelizationDrawList.DrawVisible(RHICmdList, View, RenderState, StaticMeshVisibilityMap, View.StaticMeshBatchVisibility);
 	}
 
@@ -1341,6 +1353,7 @@ void FSceneRenderer::RenderVxgiVoxelizationPass(
 		FDrawingPolicyRenderState RenderState(View);
 		RenderState.SetBlendState(TStaticBlendState<>::GetRHI());
 		RenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
+		RenderState.SetPassUniformBuffer(PassUniformBuffer);
 
 		if (Args.LightSceneInfo)
 		{

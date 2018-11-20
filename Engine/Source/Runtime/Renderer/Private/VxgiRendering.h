@@ -91,6 +91,7 @@ protected:
 	TVXGIVoxelizationShader(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) :
 		FMeshMaterialShader(Initializer)
 	{
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStruct.GetShaderVariableName());
 	}
 
 public:
@@ -377,6 +378,8 @@ public:
 		else
 		{
 			FDeferredLightUniformStruct DeferredLightUniformsValue;
+			FMemory::Memzero(DeferredLightUniformsValue);
+			DeferredLightUniformsValue.SourceTexture = GWhiteTexture->TextureRHI;
 			SetUniformBufferParameterImmediate(RHICmdList, ShaderRHI, Shader->GetUniformBufferParameter<FDeferredLightUniformStruct>(), DeferredLightUniformsValue);
 
 			SetShaderValue(RHICmdList, ShaderRHI, NumLights, 0);
