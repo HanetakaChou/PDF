@@ -1658,6 +1658,42 @@ namespace NVRHI
 			}
 		}
 
+		FViewportBounds Viewports[16];
+		FScissorRect ScissorRects[16];
+		FScissorRect UnrestrictedScissorRects[16];
+
+		for (uint32 vp = 0; vp < state.renderState.viewportCount; vp++)
+		{
+			Viewports[vp].TopLeftX = state.renderState.viewports[vp].minX;
+			Viewports[vp].TopLeftY = state.renderState.viewports[vp].minY;
+			Viewports[vp].Width = state.renderState.viewports[vp].maxX - state.renderState.viewports[vp].minX;
+			Viewports[vp].Height = state.renderState.viewports[vp].maxY - state.renderState.viewports[vp].minY;
+			Viewports[vp].MinDepth = state.renderState.viewports[vp].minZ;
+			Viewports[vp].MaxDepth = state.renderState.viewports[vp].maxZ;
+
+			UnrestrictedScissorRects[vp].Left = 0;
+			UnrestrictedScissorRects[vp].Top = 0;
+			UnrestrictedScissorRects[vp].Right = GetMax2DTextureDimension();
+			UnrestrictedScissorRects[vp].Bottom = GetMax2DTextureDimension();
+
+			if (state.renderState.rasterState.scissorEnable)
+			{
+				ScissorRects[vp].Left = state.renderState.scissorRects[vp].minX;
+				ScissorRects[vp].Top = state.renderState.scissorRects[vp].minY;
+				ScissorRects[vp].Right = state.renderState.scissorRects[vp].maxX;
+				ScissorRects[vp].Bottom = state.renderState.scissorRects[vp].maxY;
+			}
+			else
+			{
+				ScissorRects[vp] = UnrestrictedScissorRects[vp];
+			}
+		}
+
+		if (state.renderState.clearColorTarget || state.renderState.clearDepthTarget || state.renderState.clearStencilTarget)
+		{
+			m_RHICmdList->SetViewportsAndScissorRects(state.renderState.viewportCount, Viewports, UnrestrictedScissorRects);
+		}
+
 		FRHISetRenderTargetsInfo Info;
 
 		for (uint32 RTVIndex = 0; RTVIndex < state.renderState.targetCount; RTVIndex++)
@@ -1684,34 +1720,6 @@ namespace NVRHI
 		FLinearColor BlendFactors(state.renderState.blendState.blendFactor.r, state.renderState.blendState.blendFactor.g, state.renderState.blendState.blendFactor.b, state.renderState.blendState.blendFactor.a);
 		m_RHICmdList->SetBlendFactor(BlendFactors);
 		m_RHICmdList->SetStencilRef(state.renderState.depthStencilState.stencilRefValue);
-
-		FViewportBounds Viewports[16];
-		FScissorRect ScissorRects[16];
-
-		for (uint32 vp = 0; vp < state.renderState.viewportCount; vp++)
-		{
-			Viewports[vp].TopLeftX = state.renderState.viewports[vp].minX;
-			Viewports[vp].TopLeftY = state.renderState.viewports[vp].minY;
-			Viewports[vp].Width = state.renderState.viewports[vp].maxX - state.renderState.viewports[vp].minX;
-			Viewports[vp].Height = state.renderState.viewports[vp].maxY - state.renderState.viewports[vp].minY;
-			Viewports[vp].MinDepth = state.renderState.viewports[vp].minZ;
-			Viewports[vp].MaxDepth = state.renderState.viewports[vp].maxZ;
-
-			if (state.renderState.rasterState.scissorEnable)
-			{
-				ScissorRects[vp].Left = state.renderState.scissorRects[vp].minX;
-				ScissorRects[vp].Top = state.renderState.scissorRects[vp].minY;
-				ScissorRects[vp].Right = state.renderState.scissorRects[vp].maxX;
-				ScissorRects[vp].Bottom = state.renderState.scissorRects[vp].maxY;
-			}
-			else
-			{
-				ScissorRects[vp].Left = 0;
-				ScissorRects[vp].Top = 0;
-				ScissorRects[vp].Right = GetMax2DTextureDimension();
-				ScissorRects[vp].Bottom = GetMax2DTextureDimension();
-			}
-		}
 
 		m_RHICmdList->SetViewportsAndScissorRects(state.renderState.viewportCount, Viewports, ScissorRects);
 	}

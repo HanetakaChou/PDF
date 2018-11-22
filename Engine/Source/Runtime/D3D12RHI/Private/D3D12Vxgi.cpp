@@ -82,7 +82,7 @@ void FD3D12DynamicRHI::RHIVXGISetVoxelizationParameters(const VXGI::Voxelization
 {
 	VXGI::VoxelizationParameters ParametersWithHwFeatures = Parameters;
 	ParametersWithHwFeatures.enabledHardwareFeatures = VXGI::HardwareFeatures::Enum(ParametersWithHwFeatures.enabledHardwareFeatures & ~VXGI::HardwareFeatures::NVAPI_QUAD_FILL);
-
+	
 	// If the cvars define a new set of parameters, see if it's valid and try to set them
 	if(!bVxgiVoxelizationParametersSet || ParametersWithHwFeatures != VxgiVoxelizationParameters)
 	{
@@ -227,7 +227,9 @@ void FD3D12CommandContext::RHICopyStructuredBufferData(FStructuredBufferRHIParam
 
 	if(SrcBuffer->ResourceLocation.GetResource()->RequiresResourceStateTracking())
 		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcBuffer->ResourceLocation.GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-	
+
+	CommandListHandle.FlushResourceBarriers();
+
 	numCopies++;
 	CommandListHandle->CopyBufferRegion(
 		DestBuffer->ResourceLocation.GetResource()->GetResource(), DestOffset + DestBuffer->ResourceLocation.GetOffsetFromBaseOfResource(),

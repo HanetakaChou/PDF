@@ -628,11 +628,23 @@ public:
 		{
 			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetDepthOnlyViewSubresourceSubset());
 		}
+		// NVCHANGE_BEGIN
+		else
+		{
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_READ, pView->GetDepthOnlyViewSubresourceSubset());
+		}
+		// NVCHANGE_END
 
 		if (bStencilIsWritable)
 		{
 			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetStencilOnlyViewSubresourceSubset());
 		}
+		// NVCHANGE_BEGIN
+		else if(bHasStencil)
+		{
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_READ, pView->GetStencilOnlyViewSubresourceSubset());
+		}
+		// NVCHANGE_END
 #endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 

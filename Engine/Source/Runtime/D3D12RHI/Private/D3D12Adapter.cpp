@@ -211,6 +211,12 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 				// but will hopefully be resolved when the RHI switches to use the engine's resource tracking system.
 				(D3D12_MESSAGE_ID)1008,
 
+				// The debug runtime on Win10 RS5 doesn't understand how the NVIDIA driver assigns descriptor handles.
+				D3D12_MESSAGE_ID_COPY_DESCRIPTORS_INVALID_RANGES,
+
+				// The engine calls GetGPUVirtualAddress on all resources, not just buffers.
+				D3D12_MESSAGE_ID_GETGPUVIRTUALADDRESS_INVALID_RESOURCE_DIMENSION,
+
 #if ENABLE_RESIDENCY_MANAGEMENT
 				// TODO: Remove this when the debug layers work for executions which are guarded by a fence
 				D3D12_MESSAGE_ID_INVALID_USE_OF_NON_RESIDENT_RESOURCE

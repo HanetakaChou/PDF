@@ -36,11 +36,6 @@ struct FD3D12_GRAPHICS_PIPELINE_STATE_STREAM
 	CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_MASK SampleMask;
 	CD3DX12_PIPELINE_STATE_STREAM_CACHED_PSO CachedPSO;
 	//CD3DX12_PIPELINE_STATE_STREAM_VIEW_INSTANCING ViewInstancingDesc;
-
-	// NVCHANGE_BEGIN: Add VXGI
-	const void* NvidiaShaderExtensions[4];
-	uint32 NumNvidiaShaderExtensions;
-	// NVCHANGE_END: Add VXGI
 };
 
 // Compute pipeline stream struct that represents the latest version of PSO subobjects currently used by the RHI.
