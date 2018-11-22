@@ -39,7 +39,7 @@ FAQ
 **A:** No, it's a separate branch of the engine. The UE plug-in interface is very limiting, and complicated technologies like VXGI cannot work through it. In order to combine several GameWorks technologies, you have to merge the corresponding branches. Alternatively, you can use a third-party merged branch.
 
 **Q:** What are the minimum and recommended PC system requirements to run VXGI?
-**A:** Minimum: a 64-bit Windows 7 system with any DirectX 11 class GPU. Recommended: a fast 4+ core processor (more is better because VXGI needs to compile a few heavy shaders for every material), 16 GB of system memory, and an NVIDIA GeForce GTX 9xx series GPU (GM20x or newer architecture).
+**A:** Minimum: a 64-bit Windows 7 system with any DirectX 11 class GPU. Recommended: a fast 4+ core processor (more is better because VXGI needs to compile a few heavy shaders for every material), 16 GB of system memory, and an NVIDIA GeForce 900-series or later GPU. Other GPUs support VXGI operation in occlusion-only mode, i.e. VXAO or VXAL.
 
 **Q:** Do I have to build the engine from source to use VXGI, or there is a binary distribution available somewhere?
 **A:** Currently there are no binary distributions, so you have to build it. It's not that hard, all you need is a free edition of Microsoft Visual Studio 2015 or 2017.
@@ -55,6 +55,9 @@ FAQ
 - In the PostProcessVolume, the "Settings/VXGI Diffuse/Enable Diffuse Tracing" box is checked
 
 It is also useful to switch the View mode to "VXGI Opacity Voxels" or "VXGI Emittance Voxels" to make sure that the objects you need are represented as voxels and emit (or reflect) light.
+
+**Q:** I can only see the opacity voxels, no emittance voxels, and all the settings seem to be correct.
+**A:** VXGI 2.0 supports emittance voxelization (and therefore indirect illumination) only on NVIDIA GeForce 900-series GPUs or newer. Look for the following message in the engine log to see if that's the reason: "VXGI support is limited to occlusion-only mode on this GPU". VXGI 1.0 did support indirect illumination on all GPUs, but it was significantly slower. It's still available in older branches of UE4.
 
 **Q:** Shadows from area lights are way too soft or missing.
 **A:** Make sure that the voxels are not too large, ideally they should be comparable in size to the features that you'd like too see in shadows. Use r.VXGI.VoxelSize to adjust that.
