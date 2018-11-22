@@ -3492,8 +3492,9 @@ UMaterialExpressionVxgiVoxelization::UMaterialExpressionVxgiVoxelization(const c
 
 #if WITH_EDITORONLY_DATA
 	MenuCategories.Add(ConstructorStatics.NAME_Constants);
-#endif
+
 	bShaderInputData = true;
+#endif
 }
 
 #if WITH_EDITOR
@@ -3531,13 +3532,14 @@ UMaterialExpressionVxgiTraceCone::UMaterialExpressionVxgiTraceCone(const class F
 
 #if WITH_EDITORONLY_DATA
 	MenuCategories.Add(ConstructorStatics.NAME_Lighting);
-#endif
-	bShaderInputData = true;
 
-	MaxSamples = 128;
+	bShaderInputData = true;
 
 	Outputs.Reset();
 	Outputs.Add(FExpressionOutput(TEXT("Irradiance"), 1, 1, 1, 1, 0));
+#endif
+
+	MaxSamples = 128;
 }
 
 #if WITH_EDITOR
