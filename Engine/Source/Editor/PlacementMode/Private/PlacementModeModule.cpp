@@ -161,7 +161,7 @@ void FPlacementModeModule::StartupModule()
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactorySkyLight::StaticClass(), SortOrder += 10)));
 
 		// NVCHANGE_BEGIN: Add VXGI
-		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryAreaLight::StaticClass(), FAssetData(LoadObject<UStaticMesh>(nullptr, *UActorFactoryBasicShape::BasicPlane.ToString())), FName("ClassThumbnail.Plane"), BasicShapeColorOverride, SortOrder += 10, NSLOCTEXT("PlacementMode", "Area Light", "Area Light"))));
+		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryAreaLight::StaticClass(), FAssetData(LoadObject<UStaticMesh>(nullptr, *UActorFactoryBasicShape::BasicPlane.ToString())), FName("ClassThumbnail.Plane"), BasicShapeColorOverride, SortOrder += 10, NSLOCTEXT("PlacementMode", "VXGI Area Light", "VXGI Area Light"))));
 		// NVCHANGE_END: Add VXGI
 	}
 
