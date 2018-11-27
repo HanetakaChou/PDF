@@ -226,7 +226,7 @@ float GetForwardDynamicShadow(float3 WorldPosition)
 	if (NumShadows == 1)
 	{
 		BRANCH
-		if (IsPointLight)
+		if (IsPointLight || IsRectLight)
 		{
 			DynamicShadow = GetVxgiPointLightShadow(WorldPosition, DeferredLightUniforms.LightPosition, DeferredLightUniforms.LightInvRadius, PointLightDepthBiasParameters.x);
 		}
