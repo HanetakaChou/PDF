@@ -389,7 +389,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The default Windows SDK version to be used, if installed.
 		/// </summary>
-		static readonly VersionNumber DefaultVersion = VersionNumber.Parse("10.0.16299.0");
+		static readonly VersionNumber DefaultVersion = VersionNumber.Parse("10.0.17134.0");
 
 		/// <summary>
 		/// Cache of Visual Studio installation directories
@@ -680,21 +680,37 @@ namespace UnrealBuildTool
 							    {
 								    break;
 							    }
-    
-							    ISetupInstance2 Instance = (ISetupInstance2)Instances[0];
-							    if((Instance.GetState() & InstanceState.Local) == InstanceState.Local)
-							    {
-									ISetupInstanceCatalog Catalog = (ISetupInstanceCatalog)Instance as ISetupInstanceCatalog;
-									if (Catalog != null && Catalog.IsPrerelease())
-									{
-										PreReleaseInstallDirs.Add(new DirectoryReference(Instance.GetInstallationPath()));
-									}
-									else
-									{
-										InstallDirs.Add(new DirectoryReference(Instance.GetInstallationPath()));
-									}
-							    }
-						    }
+
+								ISetupInstance2 Instance = (ISetupInstance2)Instances[0];
+
+								if ((Instance.GetState() & InstanceState.Local) != InstanceState.Local)
+								{
+									continue;
+								}
+
+								VersionNumber Version;
+								if (!VersionNumber.TryParse(Instance.GetInstallationVersion(), out Version))
+								{
+									continue;
+								}
+
+								int MajorVersion = Version.GetComponent(0);
+
+								if (MajorVersion != 15)
+								{
+									continue;
+								}
+
+								ISetupInstanceCatalog Catalog = (ISetupInstanceCatalog)Instance as ISetupInstanceCatalog;
+								if (Catalog != null && Catalog.IsPrerelease())
+								{
+									PreReleaseInstallDirs.Add(new DirectoryReference(Instance.GetInstallationPath()));
+								}
+								else
+								{
+									InstallDirs.Add(new DirectoryReference(Instance.GetInstallationPath()));
+								}
+							}
 					    }
 					    catch
 					    {
