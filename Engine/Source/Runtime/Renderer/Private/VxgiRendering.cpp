@@ -598,6 +598,8 @@ void FSceneRenderer::SetVxgiVoxelizationParameters(VXGI::VoxelizationParameters&
 	Params.useEmittanceInterpolation = true;
 	Params.useHighQualityEmittanceDownsampling = !!CVarVxgiHighQualityEmittanceDownsamplingEnable.GetValueOnAnyThread();
 	Params.enableMultiBounce = bVxgiMultiBounceEnable;
+
+	Params.enabledHardwareFeatures = VXGI::HardwareFeatures::TYPED_UAV_LOAD;
 }
 
 void FSceneRenderer::PrepareForVxgiVoxelization(FRHICommandList& RHICmdList)

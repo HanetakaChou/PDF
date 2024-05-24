@@ -6,7 +6,7 @@
 #include "D3D12NvRHI.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <D3D12.h>
-#include <nvapi.h>
+// #include "nvapi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #include "Serialization/MemoryReader.h"
@@ -613,48 +613,9 @@ namespace NVRHI
 
 		check(d.numCustomSemantics == 0); // Custom semantics are not supported by this implementation
 
-		TArray<NVAPI_D3D12_PSO_EXTENSION_DESC*> Extensions;
+		check(!((d.fastGSFlags & FastGeometryShaderFlags::FORCE_FAST_GS) || d.numCustomSemantics || d.pCoordinateSwizzling));
 
-		if ((d.fastGSFlags & FastGeometryShaderFlags::FORCE_FAST_GS) || d.numCustomSemantics || d.pCoordinateSwizzling)
-		{
-			NVAPI_D3D12_PSO_GEOMETRY_SHADER_DESC* pExtn = new NVAPI_D3D12_PSO_GEOMETRY_SHADER_DESC();
-			memset(pExtn, 0, sizeof(*pExtn));
-			pExtn->baseVersion = NV_PSO_EXTENSION_DESC_VER;
-			pExtn->psoExtension = NV_PSO_GEOMETRY_SHADER_EXTENSION;
-			pExtn->version = NV_GEOMETRY_SHADER_PSO_EXTENSION_DESC_VER;
-
-			pExtn->NumCustomSemantics = d.numCustomSemantics;
-			pExtn->pCustomSemantics = d.numCustomSemantics ? d.pCustomSemantics : nullptr;
-			pExtn->UseCoordinateSwizzle = d.pCoordinateSwizzling != nullptr;
-			pExtn->pCoordinateSwizzling = d.pCoordinateSwizzling != nullptr ? d.pCoordinateSwizzling : nullptr;
-			pExtn->ForceFastGS = (d.fastGSFlags & FastGeometryShaderFlags::FORCE_FAST_GS) != 0;
-			pExtn->UseViewportMask = (d.fastGSFlags & FastGeometryShaderFlags::USE_VIEWPORT_MASK) != 0;
-			pExtn->OffsetRtIndexByVpIndex = (d.fastGSFlags & FastGeometryShaderFlags::OFFSET_RT_INDEX_BY_VP_INDEX) != 0;
-			pExtn->DontUseViewportOrder = (d.fastGSFlags & FastGeometryShaderFlags::STRICT_API_ORDER) != 0;
-			pExtn->UseSpecificShaderExt = d.useSpecificShaderExt;
-			pExtn->UseAttributeSkipMask = false;
-
-			Extensions.Add(pExtn);
-		}
-
-		if (d.hlslExtensionsUAV >= 0)
-		{
-			NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC* pExtn = new NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC();
-			memset(pExtn, 0, sizeof(*pExtn));
-			pExtn->baseVersion = NV_PSO_EXTENSION_DESC_VER;
-			pExtn->psoExtension = NV_PSO_SET_SHADER_EXTNENSION_SLOT_AND_SPACE;
-			pExtn->version = NV_SET_SHADER_EXTENSION_SLOT_DESC_VER;
-
-			pExtn->uavSlot = d.hlslExtensionsUAV;
-			pExtn->registerSpace = 0;
-
-			Extensions.Add(pExtn);
-		}
-
-		if (Extensions.Num() > 0)
-		{
-			GDynamicRHI->RHISetExtensionsForNextShader((const void* const*)&Extensions[0], Extensions.Num());
-		}
+		check(d.hlslExtensionsUAV <= 0);
 
 		switch (d.shaderType)
 		{
@@ -676,11 +637,6 @@ namespace NVRHI
 		case ShaderType::SHADER_COMPUTE:
 			Result = GDynamicRHI->RHICreateComputeShader(CodeArray);
 			break;
-		}
-
-		if (Extensions.Num() > 0)
-		{
-			GDynamicRHI->RHISetExtensionsForNextShader(nullptr, 0);
 		}
 
 		check(Result.IsValid());

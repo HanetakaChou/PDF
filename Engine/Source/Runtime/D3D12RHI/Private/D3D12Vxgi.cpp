@@ -48,16 +48,24 @@ void FD3D12DynamicRHI::CreateVxgiInterface()
 
 	// See if we're running on a GPU which only supports AO mode, set VxgiTier accordingly
 	VxgiRendererD3D12->setTreatErrorsAsFatal(false);
-    VXGI::VoxelizationParameters DefaultParams;
-    DefaultParams.persistentVoxelData = false;
-    DefaultParams.ambientOcclusionMode = false;
+
+	VXGI::VoxelizationParameters DefaultParams;
+	DefaultParams.persistentVoxelData = false;
+	DefaultParams.ambientOcclusionMode = false;
+	DefaultParams.enabledHardwareFeatures = VXGI::HardwareFeatures::TYPED_UAV_LOAD;
 	if (VXGI_FAILED(VxgiInterface->validateVoxelizationParameters(DefaultParams)))
 	{
 		VxgiTier = EVxgiTier::OcclusionOnly;
 		UE_LOG(LogD3D12RHI, Warning, TEXT("VXGI support is limited to occlusion-only mode on this GPU."));
+
+		DefaultParams.ambientOcclusionMode = true;
 	}
 	else
+	{
 		VxgiTier = EVxgiTier::Full;
+	}
+	VxgiInterface->setVoxelizationParameters(DefaultParams);
+
 	VxgiRendererD3D12->setTreatErrorsAsFatal(true);
 }
 
@@ -102,7 +110,7 @@ void FD3D12DynamicRHI::RHIVXGISetVoxelizationParameters(const VXGI::Voxelization
 	{
 		VXGI::VoxelizationParameters DefaultVParams;
 		DefaultVParams.persistentVoxelData = false;
-		DefaultVParams.enabledHardwareFeatures = ParametersWithHwFeatures.enabledHardwareFeatures;
+		DefaultVParams.enabledHardwareFeatures = VXGI::HardwareFeatures::TYPED_UAV_LOAD;
 
 		auto Status = VxgiInterface->setVoxelizationParameters(DefaultVParams);
 		check(VXGI_SUCCEEDED(Status));

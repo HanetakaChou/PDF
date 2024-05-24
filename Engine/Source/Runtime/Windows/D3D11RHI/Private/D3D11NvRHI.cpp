@@ -8,7 +8,7 @@
 	#include <d3d11.h>
 	#include <d3dcompiler.h>
 #include "Windows/HideWindowsPlatformTypes.h"
-#include "nvapi.h"
+// #include "nvapi.h"
 
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -453,15 +453,7 @@ namespace NVRHI
 		{
 			buffer->BufferRHI = GDynamicRHI->RHICreateStructuredBuffer(buffer->EffectiveStride, d.byteSize, buffer->Usage, CreateInfo);
 
-			if (IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1)
-			{
-				void* IHVHandle = nullptr;
-				ID3D11Buffer* D3DBuffer = ((FD3D11StructuredBuffer*)buffer->BufferRHI.GetReference())->Resource;
-				NvAPI_D3D_GetObjectHandleForResource(m_Device, D3DBuffer, (NVDX_ObjectHandle*)&(IHVHandle));
-				
-				NvU32 ManualAFR = 1;
-				NvAPI_D3D_SetResourceHint(m_Device, (NVDX_ObjectHandle)IHVHandle, NVAPI_D3D_SRH_CATEGORY_SLI, NVAPI_D3D_SRH_SLI_APP_CONTROLLED_INTERFRAME_CONTENT_SYNC, &ManualAFR);
-			}
+			check(!(IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1));
 		}
 		else
 			buffer->BufferRHI = nullptr;
@@ -581,72 +573,23 @@ namespace NVRHI
 			break;
 		case ShaderType::SHADER_GEOMETRY:
 		{
-			if (d.numCustomSemantics == 0 && uint32_t(d.fastGSFlags) == 0 && d.pCoordinateSwizzling == nullptr)
-			{
-				Result = GDynamicRHI->RHICreateGeometryShader(CodeArray);
-			}
-			else
-			{
-				check((d.fastGSFlags & FastGeometryShaderFlags::COMPATIBILITY_MODE) == 0); // Compatibility mode FastGS is not supported by this implementation
+			check(d.numCustomSemantics == 0 && uint32_t(d.fastGSFlags) == 0 && d.pCoordinateSwizzling == nullptr);
 
-				NvAPI_D3D11_CREATE_GEOMETRY_SHADER_EX Args = {};
-				Args.version = NVAPI_D3D11_CREATEGEOMETRYSHADEREX_2_VERSION;
-				Args.NumCustomSemantics = d.numCustomSemantics;
-				Args.pCustomSemantics = d.pCustomSemantics;
-				Args.UseCoordinateSwizzle = d.pCoordinateSwizzling != nullptr;
-				Args.pCoordinateSwizzling = d.pCoordinateSwizzling;
-				Args.ForceFastGS = (d.fastGSFlags & FastGeometryShaderFlags::FORCE_FAST_GS) != 0;
-				Args.UseViewportMask = (d.fastGSFlags & FastGeometryShaderFlags::USE_VIEWPORT_MASK) != 0;
-				Args.OffsetRtIndexByVpIndex = (d.fastGSFlags & FastGeometryShaderFlags::OFFSET_RT_INDEX_BY_VP_INDEX) != 0;
-				Args.DontUseViewportOrder = (d.fastGSFlags & FastGeometryShaderFlags::STRICT_API_ORDER) != 0;
-				Args.UseSpecificShaderExt = d.useSpecificShaderExt;
-
-				ID3D11GeometryShader* gs = NULL;
-				if (NvAPI_D3D11_CreateGeometryShaderEx_2(m_Device, binary, binarySize, nullptr, &Args, &gs) != NVAPI_OK)
-					return nullptr;
-
-				FD3D11GeometryShader* Shader = new FD3D11GeometryShader;
-
-				Shader->Resource = gs;
-
-				FD3D11ShaderResourceTable BlankTable;
-				Shader->ShaderResourceTable = BlankTable;
-				Shader->bShaderNeedsGlobalConstantBuffer = false;
-
-				Result = Shader;
-			}
+			Result = GDynamicRHI->RHICreateGeometryShader(CodeArray);
 		}
 		break;
 		case ShaderType::SHADER_PIXEL:
 		{
-			if (d.hlslExtensionsUAV >= 0)
-			{
-				if (NvAPI_D3D11_SetNvShaderExtnSlot(m_Device, d.hlslExtensionsUAV) != NVAPI_OK)
-					return nullptr;
-			}
+			check(d.hlslExtensionsUAV <= 0);
 
 			Result = GDynamicRHI->RHICreatePixelShader(CodeArray);
-
-			if (d.hlslExtensionsUAV >= 0)
-			{
-				NvAPI_D3D11_SetNvShaderExtnSlot(m_Device, ~0u);
-			}
 		}
 		break;
 		case ShaderType::SHADER_COMPUTE:
 		{
-			if (d.hlslExtensionsUAV >= 0)
-			{
-				if (NvAPI_D3D11_SetNvShaderExtnSlot(m_Device, d.hlslExtensionsUAV) != NVAPI_OK)
-					return nullptr;
-			}
+			check(d.hlslExtensionsUAV <= 0);
 
 			Result = GDynamicRHI->RHICreateComputeShader(CodeArray);
-
-			if (d.hlslExtensionsUAV >= 0)
-			{
-				NvAPI_D3D11_SetNvShaderExtnSlot(m_Device, ~0u);
-			}
 		}
 		break;
 		}
@@ -909,19 +852,7 @@ namespace NVRHI
 
 	uint32 FRendererInterfaceD3D11::getAFRGroupOfCurrentFrame(uint32 numAFRGroups) 
 	{
-		if (IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1)
-		{
-			NV_GET_CURRENT_SLI_STATE SLICaps = {};
-			SLICaps.version = NV_GET_CURRENT_SLI_STATE_VER;
-			NvAPI_Status SLIStatus = NvAPI_D3D_GetCurrentSLIState(m_Device, &SLICaps);
-			if (SLIStatus == NVAPI_OK)
-			{
-				if (SLICaps.numAFRGroups > 1)
-				{
-					return SLICaps.currentAFRIndex;
-				}
-			}
-		}
+		check(!(IsRHIDeviceNVIDIA() && GNumAlternateFrameRenderingGroups > 1));
 
 		return 0;
 	}
@@ -1255,27 +1186,9 @@ namespace NVRHI
 		FD3D11RasterizerState* RasterizerState = new FD3D11RasterizerState();
 
 		bool extendedState = rasterState.conservativeRasterEnable || rasterState.forcedSampleCount || rasterState.programmableSamplePositionsEnable || rasterState.quadFillEnable;
-		
-		if (extendedState)
-		{
-			NvAPI_D3D11_RASTERIZER_DESC_EX descEx;
-			memset(&descEx, 0, sizeof(descEx));
-			memcpy(&descEx, &RasterizerDesc, sizeof(RasterizerDesc));
+		check(!extendedState);
 
-			descEx.ConservativeRasterEnable = rasterState.conservativeRasterEnable;
-			descEx.ProgrammableSamplePositionsEnable = rasterState.programmableSamplePositionsEnable;
-			descEx.SampleCount = rasterState.forcedSampleCount;
-			descEx.ForcedSampleCount = rasterState.forcedSampleCount;
-			descEx.QuadFillMode = rasterState.quadFillEnable ? NVAPI_QUAD_FILLMODE_BBOX : NVAPI_QUAD_FILLMODE_DISABLED;
-			memcpy(descEx.SamplePositionsX, rasterState.samplePositionsX, sizeof(rasterState.samplePositionsX));
-			memcpy(descEx.SamplePositionsY, rasterState.samplePositionsY, sizeof(rasterState.samplePositionsY));
-
-			NvAPI_D3D11_CreateRasterizerState(m_Device, &descEx, RasterizerState->Resource.GetInitReference());
-		}
-		else
-		{
-			m_Device->CreateRasterizerState(&RasterizerDesc, RasterizerState->Resource.GetInitReference());
-		}
+		m_Device->CreateRasterizerState(&RasterizerDesc, RasterizerState->Resource.GetInitReference());
 
 		check(RasterizerState->Resource.IsValid());
 

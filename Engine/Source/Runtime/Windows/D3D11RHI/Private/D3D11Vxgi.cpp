@@ -11,7 +11,7 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 	#include <d3d11.h>
 #include "Windows/HideWindowsPlatformTypes.h"
-#include "nvapi.h"
+// #include "nvapi.h"
 
 VXGI::IGlobalIllumination* FD3D11DynamicRHI::RHIVXGIGetInterface()
 {
@@ -56,16 +56,24 @@ void FD3D11DynamicRHI::CreateVxgiInterface()
 
 	// See if we're running on a GPU which only supports AO mode, set VxgiTier accordingly
 	VxgiRendererD3D11->setTreatErrorsAsFatal(false);
+
     VXGI::VoxelizationParameters DefaultParams;
     DefaultParams.persistentVoxelData = false;
     DefaultParams.ambientOcclusionMode = false;
+	DefaultParams.enabledHardwareFeatures = VXGI::HardwareFeatures::TYPED_UAV_LOAD;
     if (VXGI_FAILED(VxgiInterface->validateVoxelizationParameters(DefaultParams)))
 	{
 		VxgiTier = EVxgiTier::OcclusionOnly;
 		UE_LOG(LogD3D11RHI, Warning, TEXT("VXGI support is limited to occlusion-only mode on this GPU."));
+
+		DefaultParams.ambientOcclusionMode = true;
 	}
 	else
+	{
 		VxgiTier = EVxgiTier::Full;
+	}
+	VxgiInterface->setVoxelizationParameters(DefaultParams);
+
 	VxgiRendererD3D11->setTreatErrorsAsFatal(true);
 }
 
@@ -107,6 +115,7 @@ void FD3D11DynamicRHI::RHIVXGISetVoxelizationParameters(const VXGI::Voxelization
 	{
 		VXGI::VoxelizationParameters DefaultVParams;
         DefaultVParams.persistentVoxelData = false;
+		DefaultVParams.enabledHardwareFeatures = VXGI::HardwareFeatures::TYPED_UAV_LOAD;
 
 		auto Status = VxgiInterface->setVoxelizationParameters(DefaultVParams);
 		check(VXGI_SUCCEEDED(Status));
@@ -214,10 +223,7 @@ void FD3D11DynamicRHI::RHICopyStructuredBufferData(FStructuredBufferRHIParamRef 
 
 void FD3D11DynamicRHI::RHISetEnableUAVBarriers(bool bEnable, const FTextureRHIParamRef* Textures, uint32 NumTextures, const FStructuredBufferRHIParamRef* Buffers, uint32 NumBuffers)
 {
-	if (bEnable)
-		NvAPI_D3D11_EndUAVOverlap(GetDevice());
-	else
-		NvAPI_D3D11_BeginUAVOverlap(GetDevice());
+
 }
 #endif
 // NVCHANGE_END: Add VXGI
