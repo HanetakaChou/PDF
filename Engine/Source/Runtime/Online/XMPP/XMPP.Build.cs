@@ -25,26 +25,6 @@ public class XMPP : ModuleRules
 		
 		bool TargetPlatformSupportsJingle = false;
 		bool TargetPlatformSupportsStrophe = false;
-		
-		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-		{
-			TargetPlatformSupportsJingle = true;
-		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32 ||
-			Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.PS4 ||
-			Target.Platform == UnrealTargetPlatform.Mac)
-		{
-			TargetPlatformSupportsJingle = true;
-			TargetPlatformSupportsStrophe = true;
-		}
-		else if (Target.Platform == UnrealTargetPlatform.XboxOne ||
-			Target.Platform == UnrealTargetPlatform.Android ||
-			Target.Platform == UnrealTargetPlatform.IOS ||
-			Target.Platform == UnrealTargetPlatform.Switch)
-		{
-			TargetPlatformSupportsStrophe = true;
-		}
 
 		if (TargetPlatformSupportsJingle)
 		{
@@ -67,14 +47,7 @@ public class XMPP : ModuleRules
 			PrivateDefinitions.Add("WITH_XMPP_STROPHE=0");
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.Win32 ||
-			Target.Platform == UnrealTargetPlatform.Mac ||
-			Target.Platform == UnrealTargetPlatform.PS4)
-		{
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
-		}
-		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "libcurl");
 		}

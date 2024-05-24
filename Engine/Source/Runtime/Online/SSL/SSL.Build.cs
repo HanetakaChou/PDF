@@ -8,14 +8,7 @@ public class SSL : ModuleRules
     {
         PublicDefinitions.Add("SSL_PACKAGE=1");
 
-		bool bShouldUseModule =
-			Target.Platform == UnrealTargetPlatform.Mac ||
-			Target.Platform == UnrealTargetPlatform.Win32 ||
-			Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) ||
-            Target.Platform == UnrealTargetPlatform.IOS ||
-            Target.Platform == UnrealTargetPlatform.Android ||
-            Target.Platform == UnrealTargetPlatform.PS4;
+		bool bShouldUseModule = false;
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
